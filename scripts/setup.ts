@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import crypto from 'crypto';
 import { execSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -296,6 +297,15 @@ async function main() {
     console.log();
     info('No API key needed — it uses your existing WhatsApp account.');
     console.log();
+
+    console.log(`  ${c.bold}Message security:${c.reset}`);
+    console.log();
+    bullet('All message bodies are encrypted at rest (AES-256-GCM)');
+    bullet('Messages auto-delete after 3 days');
+    bullet('The database and session files are gitignored and never committed');
+    bullet('Encryption key is stored in your .env (auto-generated if not set)');
+    console.log();
+
     warn('Note: WhatsApp may occasionally disconnect and require a re-scan.');
     console.log();
   }
@@ -598,10 +608,14 @@ async function main() {
     '',
     '# ── Integrations ──────────────────────────────────────────────',
     `GOOGLE_API_KEY=${env.GOOGLE_API_KEY || ''}`,
+    '',
+    '# ── Database Encryption ───────────────────────────────────────',
+    '# Auto-generated. DO NOT share or commit.',
+    `DB_ENCRYPTION_KEY=${env.DB_ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex')}`,
   ];
 
   // Preserve unknown keys
-  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED']);
+  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','DB_ENCRYPTION_KEY']);
   for (const [k, v] of Object.entries(env)) {
     if (!known.has(k) && v) lines.push(`${k}=${v}`);
   }
@@ -645,6 +659,9 @@ async function main() {
     console.log();
     info('The session saves to store/waweb/ and persists across restarts.');
     info('Then use /wa in Telegram to access your chats.');
+    console.log();
+    ok('Message bodies are encrypted at rest and auto-deleted after 3 days.');
+    ok('The store/ directory is gitignored and will never be committed.');
   }
 
   // ── 15. Multi-agent setup (optional) ────────────────────────────────────
