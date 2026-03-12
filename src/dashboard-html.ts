@@ -35,14 +35,26 @@ export function getDashboardHtml(token: string, chatId: string): string {
   .privacy-toggle { background: none; border: none; cursor: pointer; color: #888; font-size: 16px; padding: 2px 6px; margin-left: 8px; transition: color 0.15s; vertical-align: middle; }
   .privacy-toggle:hover { color: #ccc; }
   /* Hive Mind table */
-  .hive-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  .hive-table th { text-align: left; padding: 4px 8px; font-size: 11px; color: #666; font-weight: 600; text-transform: uppercase; border-bottom: 1px solid #333; }
+  .hive-table { width: 100%; border-collapse: collapse; }
+  .hive-table th { text-align: left; padding: 4px 8px; font-size: 11px; color: #666; font-weight: 600; text-transform: uppercase; border-bottom: 1px solid #333; white-space: nowrap; }
   .hive-table td { padding: 6px 8px; font-size: 12px; border-bottom: 1px solid #1e1e1e; vertical-align: top; }
-  .hive-table .col-time { width: 80px; white-space: nowrap; color: #9ca3af; }
-  .hive-table .col-agent { width: 70px; white-space: nowrap; font-weight: 600; }
-  .hive-table .col-action { width: 140px; white-space: nowrap; color: #9ca3af; }
-  .hive-table .col-summary { color: #d4d4d8; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-  .hive-scroll { max-height: 300px; overflow-y: auto; overflow-x: auto; }
+  .hive-table .col-time { white-space: nowrap; color: #9ca3af; }
+  .hive-table .col-agent { white-space: nowrap; font-weight: 600; }
+  .hive-table .col-action { white-space: nowrap; color: #9ca3af; }
+  .hive-table .col-summary { color: #d4d4d8; word-break: break-word; line-height: 1.4; }
+  .hive-scroll { max-height: 300px; overflow-y: auto; }
+  /* Summary stats bar */
+  .summary-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+  .summary-stat { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; }
+  .summary-stat-val { font-size: 20px; font-weight: 700; color: #fff; line-height: 1.2; }
+  .summary-stat-label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; }
+  @media (max-width: 640px) { .summary-bar { grid-template-columns: repeat(2, 1fr); } }
+  /* Memory item expand on click */
+  .mem-expand { cursor: pointer; transition: background 0.15s; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; }
+  .mem-expand:hover { background: #222; }
+  .mem-expand .mem-full { display: none; margin-top: 4px; color: #d4d4d8; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; }
+  .mem-expand.open .mem-full { display: block; }
+  .mem-expand.open .mem-preview { display: none; }
   /* Task prompt text */
   .task-prompt { transition: filter 0.2s; cursor: pointer; }
   .device-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
@@ -150,6 +162,26 @@ export function getDashboardHtml(token: string, chatId: string): string {
 </div>
 <div id="bot-info" class="flex items-center gap-3 mb-4 text-xs text-gray-500" style="display:none"></div>
 
+<!-- Summary Stats Bar -->
+<div id="summary-bar" class="summary-bar" style="display:none">
+  <div class="summary-stat">
+    <span class="summary-stat-val" id="sum-messages">-</span>
+    <span class="summary-stat-label">Messages</span>
+  </div>
+  <div class="summary-stat">
+    <span class="summary-stat-val" id="sum-agents">-</span>
+    <span class="summary-stat-label">Agents</span>
+  </div>
+  <div class="summary-stat">
+    <span class="summary-stat-val" id="sum-cost">-</span>
+    <span class="summary-stat-label">Cost Today</span>
+  </div>
+  <div class="summary-stat">
+    <span class="summary-stat-val" id="sum-memories">-</span>
+    <span class="summary-stat-label">Memories</span>
+  </div>
+</div>
+
 <!-- Agent Status Cards -->
 <div id="agents-section" class="mb-5" style="display:none">
   <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Agents</h2>
@@ -196,11 +228,17 @@ export function getDashboardHtml(token: string, chatId: string): string {
     <canvas id="salience-chart" height="120"></canvas>
   </div>
   <div class="card">
-    <div class="text-xs text-gray-400 mb-1">Fading Soon <span class="text-gray-600">(salience &lt; 0.5)</span><span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Memories about to fade away (importance &lt; 0.5). They will soon be forgotten by the bot unless reinforced.</span></span></div>
+    <div class="flex items-center justify-between mb-1">
+      <div class="text-xs text-gray-400">Fading Soon <span class="text-gray-600">(salience &lt; 0.5)</span><span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Memories about to fade away (importance &lt; 0.5). They will soon be forgotten by the bot unless reinforced.</span></span></div>
+      <button class="text-xs text-gray-600 hover:text-gray-400 transition" onclick="openMemoryDrawer('semantic')">Browse all &rarr;</button>
+    </div>
     <div id="fading-list" class="text-sm"></div>
   </div>
   <div class="card">
-    <div class="text-xs text-gray-400 mb-1">Most Accessed<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Memories most frequently accessed by the bot. A high score means this memory is often useful.</span></span></div>
+    <div class="flex items-center justify-between mb-1">
+      <div class="text-xs text-gray-400">Recently Retrieved<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Semantic memories the bot most recently pulled up during conversations. Shows what knowledge is actively being used.</span></span></div>
+      <button class="text-xs text-gray-600 hover:text-gray-400 transition" onclick="openMemoryDrawer('semantic')">Browse all &rarr;</button>
+    </div>
     <div id="top-accessed-list" class="text-sm"></div>
   </div>
   <div class="card">
@@ -501,7 +539,7 @@ async function loadMemories() {
     if (data.fading.length === 0) {
       fading.innerHTML = '<span class="text-gray-600">None fading</span>';
     } else {
-      fading.innerHTML = data.fading.map(m => '<div class="fade-text truncate py-0.5">' + m.salience.toFixed(2) + ' &middot; ' + escapeHtml(m.content.slice(0,80)) + '</div>').join('');
+      fading.innerHTML = data.fading.map(m => '<div class="fade-text py-0.5 mem-expand" onclick="this.classList.toggle(&quot;open&quot;)"><span class="mem-preview">' + m.salience.toFixed(2) + ' &middot; ' + escapeHtml(m.content.slice(0,80)) + (m.content.length > 80 ? '...' : '') + '</span><div class="mem-full">' + escapeHtml(m.content) + '</div></div>').join('');
     }
 
     // Top accessed
@@ -509,7 +547,7 @@ async function loadMemories() {
     if (data.topAccessed.length === 0) {
       top.innerHTML = '<span class="text-gray-600">No memories yet</span>';
     } else {
-      top.innerHTML = data.topAccessed.map(m => '<div class="top-text truncate py-0.5">' + m.salience.toFixed(2) + ' &middot; ' + escapeHtml(m.content.slice(0,80)) + '</div>').join('');
+      top.innerHTML = data.topAccessed.map(m => '<div class="top-text py-0.5 mem-expand" onclick="this.classList.toggle(&quot;open&quot;)"><span class="mem-preview">' + formatDate(m.accessed_at) + ' &middot; ' + escapeHtml(m.content.slice(0,80)) + (m.content.length > 80 ? '...' : '') + '</span><div class="mem-full">' + escapeHtml(m.content) + '</div></div>').join('');
     }
 
     // Timeline
@@ -778,10 +816,28 @@ function toggleSectionBlur(section) {
   localStorage.setItem('privacyBlur_' + section + '_all', shouldReveal ? 'revealed' : 'blurred');
 }
 
+async function loadSummary() {
+  try {
+    const [tokens, agents, mems] = await Promise.all([
+      api('/api/tokens?chatId=' + CHAT_ID),
+      api('/api/agents'),
+      api('/api/memories?chatId=' + CHAT_ID),
+    ]);
+    const bar = document.getElementById('summary-bar');
+    bar.style.display = '';
+    document.getElementById('sum-messages').textContent = tokens.stats.todayTurns || '0';
+    const activeCount = agents.agents ? agents.agents.filter(a => a.running).length : 0;
+    document.getElementById('sum-agents').textContent = activeCount + '/' + (agents.agents ? agents.agents.length : 0);
+    document.getElementById('sum-cost').textContent = '$' + (tokens.stats.todayCost || 0).toFixed(2);
+    const totalMem = (mems.stats.semantic || 0) + (mems.stats.episodic || 0);
+    document.getElementById('sum-memories').textContent = totalMem;
+  } catch {}
+}
+
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary()]);
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }

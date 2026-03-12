@@ -845,8 +845,8 @@ export function getDashboardLowSalienceMemories(chatId: string, limit = 10): Mem
 export function getDashboardTopAccessedMemories(chatId: string, limit = 5): Memory[] {
   return db
     .prepare(
-      `SELECT * FROM memories WHERE chat_id = ?
-       ORDER BY salience DESC LIMIT ?`,
+      `SELECT * FROM memories WHERE chat_id = ? AND sector = 'semantic'
+       ORDER BY accessed_at DESC LIMIT ?`,
     )
     .all(chatId, limit) as Memory[];
 }
