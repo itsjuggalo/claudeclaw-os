@@ -17,6 +17,7 @@ const envConfig = readEnvFile([
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
   'CLAUDECLAW_CONFIG',
+  'DB_ENCRYPTION_KEY',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -117,3 +118,7 @@ export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
+
+// Database encryption key (SQLCipher). Required for encrypted database access.
+export const DB_ENCRYPTION_KEY =
+  process.env.DB_ENCRYPTION_KEY || envConfig.DB_ENCRYPTION_KEY || '';

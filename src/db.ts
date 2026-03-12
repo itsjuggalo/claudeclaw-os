@@ -1,8 +1,67 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { STORE_DIR } from './config.js';
+import { DB_ENCRYPTION_KEY, STORE_DIR } from './config.js';
+
+// ── Field-Level Encryption (AES-256-GCM) ────────────────────────────
+// All message bodies (WhatsApp, Slack) are encrypted before storage
+// and decrypted on read. The key lives in .env (DB_ENCRYPTION_KEY).
+
+let encryptionKey: Buffer | null = null;
+
+function getEncryptionKey(): Buffer {
+  if (encryptionKey) return encryptionKey;
+  const hex = DB_ENCRYPTION_KEY;
+  if (!hex || hex.length < 32) {
+    throw new Error(
+      'DB_ENCRYPTION_KEY is missing or too short. Run: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))" and add to .env',
+    );
+  }
+  encryptionKey = Buffer.from(hex, 'hex');
+  return encryptionKey;
+}
+
+/**
+ * Encrypt a plaintext string with AES-256-GCM.
+ * Returns a compact string: iv:authTag:ciphertext (all hex-encoded).
+ */
+export function encryptField(plaintext: string): string {
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+/**
+ * Decrypt a string produced by encryptField().
+ * Returns the original plaintext. If decryption fails (wrong key, tampered),
+ * returns the raw input unchanged (graceful fallback for pre-encryption data).
+ */
+export function decryptField(ciphertext: string): string {
+  try {
+    const parts = ciphertext.split(':');
+    if (parts.length !== 3) return ciphertext; // Not encrypted, return as-is
+    const [ivHex, authTagHex, dataHex] = parts;
+    if (!ivHex || !authTagHex || !dataHex) return ciphertext;
+
+    const key = getEncryptionKey();
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const data = Buffer.from(dataHex, 'hex');
+
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch {
+    // Decryption failed: probably pre-encryption plaintext data
+    return ciphertext;
+  }
+}
 
 let db: Database.Database;
 
@@ -163,6 +222,10 @@ function createSchema(database: Database.Database): void {
 export function initDatabase(): void {
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const dbPath = path.join(STORE_DIR, 'claudeclaw.db');
+
+  // Validate encryption key is available before proceeding
+  getEncryptionKey();
+
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   createSchema(db);
@@ -226,6 +289,8 @@ function runMigrations(database: Database.Database): void {
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
 export function _initTestDatabase(): void {
+  // Use a test encryption key for field-level encryption
+  encryptionKey = crypto.randomBytes(32);
   db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
   createSchema(db);
@@ -468,14 +533,15 @@ export function enqueueWaMessage(toChatId: string, body: string): number {
   const now = Math.floor(Date.now() / 1000);
   const result = db.prepare(
     `INSERT INTO wa_outbox (to_chat_id, body, created_at) VALUES (?, ?, ?)`,
-  ).run(toChatId, body, now);
+  ).run(toChatId, encryptField(body), now);
   return result.lastInsertRowid as number;
 }
 
 export function getPendingWaMessages(): WaOutboxItem[] {
-  return db.prepare(
+  const rows = db.prepare(
     `SELECT id, to_chat_id, body, created_at FROM wa_outbox WHERE sent_at IS NULL ORDER BY created_at`,
   ).all() as WaOutboxItem[];
+  return rows.map((r) => ({ ...r, body: decryptField(r.body) }));
 }
 
 export function markWaMessageSent(id: number): void {
@@ -484,6 +550,43 @@ export function markWaMessageSent(id: number): void {
 }
 
 // ── WhatsApp messages ────────────────────────────────────────────────
+
+/**
+ * Prune WhatsApp messages older than the given number of days.
+ * Covers wa_messages, wa_outbox (sent only), and wa_message_map.
+ */
+export function pruneWaMessages(retentionDays = 3): { messages: number; outbox: number; map: number } {
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400;
+
+  const msgResult = db.prepare(
+    'DELETE FROM wa_messages WHERE created_at < ?',
+  ).run(cutoff);
+
+  const outboxResult = db.prepare(
+    'DELETE FROM wa_outbox WHERE sent_at IS NOT NULL AND created_at < ?',
+  ).run(cutoff);
+
+  const mapResult = db.prepare(
+    'DELETE FROM wa_message_map WHERE created_at < ?',
+  ).run(cutoff);
+
+  return {
+    messages: msgResult.changes,
+    outbox: outboxResult.changes,
+    map: mapResult.changes,
+  };
+}
+
+/**
+ * Prune Slack messages older than the given number of days.
+ */
+export function pruneSlackMessages(retentionDays = 3): number {
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400;
+  const result = db.prepare(
+    'DELETE FROM slack_messages WHERE created_at < ?',
+  ).run(cutoff);
+  return result.changes;
+}
 
 // ── Conversation Log ──────────────────────────────────────────────────
 
@@ -588,7 +691,27 @@ export function saveWaMessage(
   db.prepare(
     `INSERT INTO wa_messages (chat_id, contact_name, body, timestamp, is_from_me, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(chatId, contactName, body, timestamp, isFromMe ? 1 : 0, now);
+  ).run(chatId, contactName, encryptField(body), timestamp, isFromMe ? 1 : 0, now);
+}
+
+export interface WaMessageRow {
+  id: number;
+  chat_id: string;
+  contact_name: string;
+  body: string;
+  timestamp: number;
+  is_from_me: number;
+  created_at: number;
+}
+
+export function getRecentWaMessages(chatId: string, limit = 20): WaMessageRow[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM wa_messages WHERE chat_id = ?
+       ORDER BY timestamp DESC LIMIT ?`,
+    )
+    .all(chatId, limit) as WaMessageRow[];
+  return rows.map((r) => ({ ...r, body: decryptField(r.body) }));
 }
 
 // ── Slack messages ────────────────────────────────────────────────
@@ -605,7 +728,7 @@ export function saveSlackMessage(
   db.prepare(
     `INSERT INTO slack_messages (channel_id, channel_name, user_name, body, timestamp, is_from_me, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(channelId, channelName, userName, body, timestamp, isFromMe ? 1 : 0, now);
+  ).run(channelId, channelName, userName, encryptField(body), timestamp, isFromMe ? 1 : 0, now);
 }
 
 export interface SlackMessageRow {
@@ -620,12 +743,13 @@ export interface SlackMessageRow {
 }
 
 export function getRecentSlackMessages(channelId: string, limit = 20): SlackMessageRow[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT * FROM slack_messages WHERE channel_id = ?
        ORDER BY created_at DESC LIMIT ?`,
     )
     .all(channelId, limit) as SlackMessageRow[];
+  return rows.map((r) => ({ ...r, body: decryptField(r.body) }));
 }
 
 // ── Token Usage ──────────────────────────────────────────────────────

@@ -7,7 +7,17 @@
      - agents/*/agent.yaml (obsidian paths must be commented-out examples)
      - launchd/*.plist (use __PROJECT_DIR__ and __HOME__ placeholders)
      - Any script in scripts/
-     Before every git commit, grep for personal paths and usernames. -->
+     Before every git commit, grep for personal paths and usernames.
+
+     DATA SECURITY — HARD RULES:
+     - store/ directory MUST NEVER be committed. It contains the SQLite database
+       with WhatsApp messages, Slack messages, session tokens, and conversation logs.
+     - store/waweb/ contains active WhatsApp Web session keys — treat as credentials.
+     - *.db and *.db-wal and *.db-shm files must never appear in git history.
+     - The wa_messages, wa_outbox, wa_message_map, and slack_messages tables have
+       a 3-day auto-purge policy enforced in runDecaySweep(). Do not disable this.
+     - If any database file or store/ content is ever accidentally staged, remove it
+       immediately with git rm --cached and add to .gitignore. -->
 
 You are [YOUR ASSISTANT NAME]'s personal AI assistant, accessible via Telegram. You run as a persistent service on their Mac or Linux machine.
 
