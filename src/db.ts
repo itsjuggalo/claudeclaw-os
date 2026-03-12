@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DB_ENCRYPTION_KEY, STORE_DIR } from './config.js';
+import { cosineSimilarity } from './embeddings.js';
 
 // ── Field-Level Encryption (AES-256-GCM) ────────────────────────────
 // All message bodies (WhatsApp, Slack) are encrypted before storage
@@ -89,18 +90,34 @@ function createSchema(database: Database.Database): void {
     );
 
     CREATE TABLE IF NOT EXISTS memories (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      chat_id     TEXT NOT NULL,
-      topic_key   TEXT,
-      content     TEXT NOT NULL,
-      sector      TEXT NOT NULL DEFAULT 'semantic',
-      salience    REAL NOT NULL DEFAULT 1.0,
-      created_at  INTEGER NOT NULL,
-      accessed_at INTEGER NOT NULL
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id       TEXT NOT NULL,
+      source        TEXT NOT NULL DEFAULT 'conversation',
+      raw_text      TEXT NOT NULL,
+      summary       TEXT NOT NULL,
+      entities      TEXT NOT NULL DEFAULT '[]',
+      topics        TEXT NOT NULL DEFAULT '[]',
+      connections   TEXT NOT NULL DEFAULT '[]',
+      importance    REAL NOT NULL DEFAULT 0.5,
+      salience      REAL NOT NULL DEFAULT 1.0,
+      consolidated  INTEGER NOT NULL DEFAULT 0,
+      embedding     TEXT,
+      created_at    INTEGER NOT NULL,
+      accessed_at   INTEGER NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_memories_chat ON memories(chat_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_memories_sector ON memories(chat_id, sector);
+
+    CREATE TABLE IF NOT EXISTS consolidations (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id       TEXT NOT NULL,
+      source_ids    TEXT NOT NULL,
+      summary       TEXT NOT NULL,
+      insight       TEXT NOT NULL,
+      created_at    INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_consolidations_chat ON consolidations(chat_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS wa_message_map (
       telegram_msg_id INTEGER PRIMARY KEY,
@@ -199,22 +216,29 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_inter_agent_tasks_status ON inter_agent_tasks(status, created_at DESC);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-      content,
+      summary,
+      raw_text,
+      entities,
+      topics,
       content=memories,
       content_rowid=id
     );
 
     CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
-      INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+      INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
+        VALUES (new.id, new.summary, new.raw_text, new.entities, new.topics);
     END;
 
     CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      INSERT INTO memories_fts(memories_fts, rowid, summary, raw_text, entities, topics)
+        VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
     END;
 
     CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
-      INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+      INSERT INTO memories_fts(memories_fts, rowid, summary, raw_text, entities, topics)
+        VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
+      INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
+        VALUES (new.id, new.summary, new.raw_text, new.entities, new.topics);
     END;
   `);
 }
@@ -285,6 +309,109 @@ function runMigrations(database: Database.Database): void {
   if (!taskColNames.includes('last_status')) {
     database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN last_status TEXT`);
   }
+
+  // ── Memory V2 migration ──────────────────────────────────────────────
+  // Detect old schema (has 'sector' column but no 'importance') and migrate.
+  const memCols = database.prepare(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>;
+  const memColNames = memCols.map((c) => c.name);
+  const isOldSchema = memColNames.includes('sector') && !memColNames.includes('importance');
+
+  if (isOldSchema) {
+    database.exec(`
+      -- Drop old FTS triggers first
+      DROP TRIGGER IF EXISTS memories_fts_insert;
+      DROP TRIGGER IF EXISTS memories_fts_delete;
+      DROP TRIGGER IF EXISTS memories_fts_update;
+
+      -- Drop old FTS table
+      DROP TABLE IF EXISTS memories_fts;
+
+      -- Drop old indexes (they'll conflict with new table's indexes)
+      DROP INDEX IF EXISTS idx_memories_chat;
+      DROP INDEX IF EXISTS idx_memories_sector;
+
+      -- Backup old memories table
+      ALTER TABLE memories RENAME TO memories_v1_backup;
+
+      -- Create new memories table
+      CREATE TABLE memories (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id       TEXT NOT NULL,
+        source        TEXT NOT NULL DEFAULT 'conversation',
+        raw_text      TEXT NOT NULL,
+        summary       TEXT NOT NULL,
+        entities      TEXT NOT NULL DEFAULT '[]',
+        topics        TEXT NOT NULL DEFAULT '[]',
+        connections   TEXT NOT NULL DEFAULT '[]',
+        importance    REAL NOT NULL DEFAULT 0.5,
+        salience      REAL NOT NULL DEFAULT 1.0,
+        consolidated  INTEGER NOT NULL DEFAULT 0,
+        embedding     TEXT,
+        created_at    INTEGER NOT NULL,
+        accessed_at   INTEGER NOT NULL
+      );
+
+      CREATE INDEX idx_memories_chat ON memories(chat_id, created_at DESC);
+      CREATE INDEX idx_memories_importance ON memories(chat_id, importance DESC);
+      CREATE INDEX idx_memories_unconsolidated ON memories(chat_id, consolidated);
+
+      -- Create consolidations table
+      CREATE TABLE IF NOT EXISTS consolidations (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id       TEXT NOT NULL,
+        source_ids    TEXT NOT NULL,
+        summary       TEXT NOT NULL,
+        insight       TEXT NOT NULL,
+        created_at    INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_consolidations_chat ON consolidations(chat_id, created_at DESC);
+
+      -- Create new FTS table
+      CREATE VIRTUAL TABLE memories_fts USING fts5(
+        summary,
+        raw_text,
+        entities,
+        topics,
+        content=memories,
+        content_rowid=id
+      );
+
+      -- Create new triggers
+      CREATE TRIGGER memories_fts_insert AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
+          VALUES (new.id, new.summary, new.raw_text, new.entities, new.topics);
+      END;
+
+      CREATE TRIGGER memories_fts_delete AFTER DELETE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, summary, raw_text, entities, topics)
+          VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
+      END;
+
+      CREATE TRIGGER memories_fts_update AFTER UPDATE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, summary, raw_text, entities, topics)
+          VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
+        INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
+          VALUES (new.id, new.summary, new.raw_text, new.entities, new.topics);
+      END;
+    `);
+    console.log('[migration] Memory V2: backed up old memories to memories_v1_backup, created new schema');
+  }
+
+  // Ensure memory V2 indexes exist (covers both migrated and fresh installs)
+  const memColsPost = database.prepare(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>;
+  if (memColsPost.some((c) => c.name === 'importance')) {
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(chat_id, importance DESC);
+      CREATE INDEX IF NOT EXISTS idx_memories_unconsolidated ON memories(chat_id, consolidated);
+    `);
+  }
+
+  // Add embedding column if missing (V2 tables created before embedding support)
+  if (memColsPost.some((c) => c.name === 'importance') && !memColsPost.some((c) => c.name === 'embedding')) {
+    database.exec(`ALTER TABLE memories ADD COLUMN embedding TEXT`);
+    console.log('[migration] Added embedding column to memories table');
+  }
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -314,50 +441,131 @@ export function clearSession(chatId: string, agentId = 'main'): void {
   db.prepare('DELETE FROM sessions WHERE chat_id = ? AND agent_id = ?').run(chatId, agentId);
 }
 
-// ── Memory ──────────────────────────────────────────────────────────
+// ── Memory (V2: structured with LLM extraction) ────────────────────
 
 export interface Memory {
   id: number;
   chat_id: string;
-  topic_key: string | null;
-  content: string;
-  sector: string;
+  source: string;
+  raw_text: string;
+  summary: string;
+  entities: string;    // JSON array
+  topics: string;      // JSON array
+  connections: string; // JSON array
+  importance: number;
   salience: number;
+  consolidated: number;
+  embedding: string | null; // JSON array of floats
   created_at: number;
   accessed_at: number;
 }
 
-export function saveMemory(
-  chatId: string,
-  content: string,
-  sector = 'semantic',
-  topicKey?: string,
-): void {
-  const now = Math.floor(Date.now() / 1000);
-  db.prepare(
-    `INSERT INTO memories (chat_id, content, sector, topic_key, created_at, accessed_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(chatId, content, sector, topicKey ?? null, now, now);
+export interface Consolidation {
+  id: number;
+  chat_id: string;
+  source_ids: string;  // JSON array of memory IDs
+  summary: string;
+  insight: string;
+  created_at: number;
 }
 
+export function saveStructuredMemory(
+  chatId: string,
+  rawText: string,
+  summary: string,
+  entities: string[],
+  topics: string[],
+  importance: number,
+  source = 'conversation',
+): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `INSERT INTO memories (chat_id, source, raw_text, summary, entities, topics, importance, created_at, accessed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    chatId,
+    source,
+    rawText,
+    summary,
+    JSON.stringify(entities),
+    JSON.stringify(topics),
+    importance,
+    now,
+    now,
+  );
+  return result.lastInsertRowid as number;
+}
+
+const STOP_WORDS = new Set([
+  'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+  'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought',
+  'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
+  'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
+  'between', 'out', 'off', 'over', 'under', 'again', 'further', 'then',
+  'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each',
+  'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no',
+  'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
+  'just', 'because', 'but', 'and', 'or', 'if', 'while', 'about',
+  'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those',
+  'am', 'it', 'its', 'my', 'me', 'we', 'our', 'you', 'your', 'he',
+  'him', 'his', 'she', 'her', 'they', 'them', 'their', 'i', 'up',
+  'down', 'get', 'got', 'like', 'make', 'know', 'think', 'take',
+  'come', 'go', 'see', 'look', 'find', 'give', 'tell', 'say',
+  'much', 'many', 'well', 'also', 'back', 'use', 'way',
+  'feel', 'mark', 'marks', 'does', 'how',
+]);
+
+/**
+ * Extract meaningful keywords from a query, stripping stop words and short tokens.
+ */
+function extractKeywords(query: string): string[] {
+  return query
+    .replace(/[""]/g, '"')
+    .replace(/[^\w\s]/g, '')
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+}
+
+/**
+ * Search memories using embedding similarity (primary) with FTS5/LIKE fallback.
+ * The queryEmbedding parameter is optional; if provided, vector search is used first.
+ * If not provided (or no embeddings in DB), falls back to keyword search.
+ */
 export function searchMemories(
   chatId: string,
   query: string,
-  limit = 3,
+  limit = 5,
+  queryEmbedding?: number[],
 ): Memory[] {
-  // Sanitize for FTS5: strip special chars, add * for prefix matching
-  const sanitized = query
-    .replace(/[""]/g, '"')
-    .replace(/[^\w\s]/g, '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => `"${w}"*`)
-    .join(' ');
+  // Strategy 1: Vector similarity search (if embedding provided)
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const candidates = getMemoriesWithEmbeddings(chatId);
+    if (candidates.length > 0) {
+      const scored = candidates
+        .map((c) => ({ id: c.id, score: cosineSimilarity(queryEmbedding, c.embedding) }))
+        .filter((s) => s.score > 0.3) // minimum similarity threshold
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
 
-  if (!sanitized) return [];
+      if (scored.length > 0) {
+        const ids = scored.map((s) => s.id);
+        const placeholders = ids.map(() => '?').join(',');
+        return db
+          .prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`)
+          .all(...ids) as Memory[];
+      }
+    }
+  }
 
-  return db
+  // Strategy 2: FTS5 keyword search with OR
+  const keywords = extractKeywords(query);
+  if (keywords.length === 0) return [];
+
+  const ftsQuery = keywords.map((w) => `"${w}"*`).join(' OR ');
+  let results = db
     .prepare(
       `SELECT memories.* FROM memories
        JOIN memories_fts ON memories.id = memories_fts.rowid
@@ -365,7 +573,55 @@ export function searchMemories(
        ORDER BY rank
        LIMIT ?`,
     )
-    .all(sanitized, chatId, limit) as Memory[];
+    .all(ftsQuery, chatId, limit) as Memory[];
+
+  if (results.length > 0) return results;
+
+  // Strategy 3: LIKE fallback on summary + entities + topics
+  const likeConditions = keywords.map(() =>
+    `(summary LIKE ? OR entities LIKE ? OR topics LIKE ? OR raw_text LIKE ?)`,
+  ).join(' OR ');
+  const likeParams: string[] = [];
+  for (const kw of keywords) {
+    const pattern = `%${kw}%`;
+    likeParams.push(pattern, pattern, pattern, pattern);
+  }
+
+  results = db
+    .prepare(
+      `SELECT * FROM memories
+       WHERE chat_id = ? AND (${likeConditions})
+       ORDER BY importance DESC, accessed_at DESC
+       LIMIT ?`,
+    )
+    .all(chatId, ...likeParams, limit) as Memory[];
+
+  return results;
+}
+
+export function saveMemoryEmbedding(memoryId: number, embedding: number[]): void {
+  db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(embedding), memoryId);
+}
+
+export function getMemoriesWithEmbeddings(chatId: string): Array<{ id: number; embedding: number[]; summary: string; importance: number }> {
+  const rows = db
+    .prepare('SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND embedding IS NOT NULL')
+    .all(chatId) as Array<{ id: number; embedding: string; summary: string; importance: number }>;
+  return rows.map((r) => ({
+    id: r.id,
+    embedding: JSON.parse(r.embedding) as number[],
+    summary: r.summary,
+    importance: r.importance,
+  }));
+}
+
+export function getRecentHighImportanceMemories(chatId: string, limit = 5): Memory[] {
+  return db
+    .prepare(
+      `SELECT * FROM memories WHERE chat_id = ? AND importance >= 0.5
+       ORDER BY accessed_at DESC LIMIT ?`,
+    )
+    .all(chatId, limit) as Memory[];
 }
 
 export function getRecentMemories(chatId: string, limit = 5): Memory[] {
@@ -383,12 +639,83 @@ export function touchMemory(id: number): void {
   ).run(now, id);
 }
 
+/**
+ * Importance-weighted decay. High-importance memories decay slower.
+ * - importance >= 0.8: 1% per day (retains ~460 days)
+ * - importance >= 0.5: 2% per day (retains ~230 days)
+ * - importance < 0.5:  5% per day (retains ~90 days)
+ */
 export function decayMemories(): void {
   const oneDayAgo = Math.floor(Date.now() / 1000) - 86400;
-  db.prepare(
-    'UPDATE memories SET salience = salience * 0.98 WHERE created_at < ?',
-  ).run(oneDayAgo);
-  db.prepare('DELETE FROM memories WHERE salience < 0.1').run();
+  db.prepare(`
+    UPDATE memories SET salience = salience * CASE
+      WHEN importance >= 0.8 THEN 0.99
+      WHEN importance >= 0.5 THEN 0.98
+      ELSE 0.95
+    END
+    WHERE created_at < ?
+  `).run(oneDayAgo);
+  db.prepare('DELETE FROM memories WHERE salience < 0.05').run();
+}
+
+// ── Consolidation CRUD ──────────────────────────────────────────────
+
+export function getUnconsolidatedMemories(chatId: string, limit = 20): Memory[] {
+  return db
+    .prepare(
+      `SELECT * FROM memories WHERE chat_id = ? AND consolidated = 0
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(chatId, limit) as Memory[];
+}
+
+export function saveConsolidation(
+  chatId: string,
+  sourceIds: number[],
+  summary: string,
+  insight: string,
+): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `INSERT INTO consolidations (chat_id, source_ids, summary, insight, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(chatId, JSON.stringify(sourceIds), summary, insight, now);
+  return result.lastInsertRowid as number;
+}
+
+export function updateMemoryConnections(memoryId: number, connections: Array<{ linked_to: number; relationship: string }>): void {
+  const row = db.prepare('SELECT connections FROM memories WHERE id = ?').get(memoryId) as { connections: string } | undefined;
+  if (!row) return;
+  const existing: Array<{ linked_to: number; relationship: string }> = JSON.parse(row.connections);
+  const merged = [...existing, ...connections];
+  db.prepare('UPDATE memories SET connections = ? WHERE id = ?').run(JSON.stringify(merged), memoryId);
+}
+
+export function markMemoriesConsolidated(ids: number[]): void {
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => '?').join(',');
+  db.prepare(`UPDATE memories SET consolidated = 1 WHERE id IN (${placeholders})`).run(...ids);
+}
+
+export function getRecentConsolidations(chatId: string, limit = 5): Consolidation[] {
+  return db
+    .prepare(
+      `SELECT * FROM consolidations WHERE chat_id = ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(chatId, limit) as Consolidation[];
+}
+
+export function searchConsolidations(chatId: string, query: string, limit = 3): Consolidation[] {
+  // Simple LIKE search on consolidation summaries and insights
+  const pattern = `%${query.replace(/[%_]/g, '')}%`;
+  return db
+    .prepare(
+      `SELECT * FROM consolidations
+       WHERE chat_id = ? AND (summary LIKE ? OR insight LIKE ?)
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(chatId, pattern, pattern, limit) as Consolidation[];
 }
 
 // ── Scheduled Tasks ──────────────────────────────────────────────────
@@ -788,10 +1115,10 @@ export interface SessionTokenSummary {
 
 export interface DashboardMemoryStats {
   total: number;
-  semantic: number;
-  episodic: number;
+  consolidations: number;
+  avgImportance: number;
   avgSalience: number;
-  salienceDistribution: { bucket: string; count: number }[];
+  importanceDistribution: { bucket: string; count: number }[];
 }
 
 export function getDashboardMemoryStats(chatId: string): DashboardMemoryStats {
@@ -799,23 +1126,25 @@ export function getDashboardMemoryStats(chatId: string): DashboardMemoryStats {
     .prepare(
       `SELECT
          COUNT(*) as total,
-         SUM(CASE WHEN sector = 'semantic' THEN 1 ELSE 0 END) as semantic,
-         SUM(CASE WHEN sector = 'episodic' THEN 1 ELSE 0 END) as episodic,
+         AVG(importance) as avgImportance,
          AVG(salience) as avgSalience
        FROM memories WHERE chat_id = ?`,
     )
-    .get(chatId) as { total: number; semantic: number; episodic: number; avgSalience: number | null };
+    .get(chatId) as { total: number; avgImportance: number | null; avgSalience: number | null };
+
+  const consolidationCount = db
+    .prepare('SELECT COUNT(*) as cnt FROM consolidations WHERE chat_id = ?')
+    .get(chatId) as { cnt: number };
 
   const buckets = db
     .prepare(
       `SELECT
          CASE
-           WHEN salience < 0.5 THEN '0-0.5'
-           WHEN salience < 1.0 THEN '0.5-1'
-           WHEN salience < 2.0 THEN '1-2'
-           WHEN salience < 3.0 THEN '2-3'
-           WHEN salience < 4.0 THEN '3-4'
-           ELSE '4-5'
+           WHEN importance < 0.2 THEN '0-0.2'
+           WHEN importance < 0.4 THEN '0.2-0.4'
+           WHEN importance < 0.6 THEN '0.4-0.6'
+           WHEN importance < 0.8 THEN '0.6-0.8'
+           ELSE '0.8-1.0'
          END as bucket,
          COUNT(*) as count
        FROM memories WHERE chat_id = ?
@@ -826,10 +1155,10 @@ export function getDashboardMemoryStats(chatId: string): DashboardMemoryStats {
 
   return {
     total: counts.total,
-    semantic: counts.semantic,
-    episodic: counts.episodic,
+    consolidations: consolidationCount.cnt,
+    avgImportance: counts.avgImportance ?? 0,
     avgSalience: counts.avgSalience ?? 0,
-    salienceDistribution: buckets,
+    importanceDistribution: buckets,
   };
 }
 
@@ -845,25 +1174,28 @@ export function getDashboardLowSalienceMemories(chatId: string, limit = 10): Mem
 export function getDashboardTopAccessedMemories(chatId: string, limit = 5): Memory[] {
   return db
     .prepare(
-      `SELECT * FROM memories WHERE chat_id = ? AND sector = 'semantic'
+      `SELECT * FROM memories WHERE chat_id = ? AND importance >= 0.5
        ORDER BY accessed_at DESC LIMIT ?`,
     )
     .all(chatId, limit) as Memory[];
 }
 
-export function getDashboardMemoryTimeline(chatId: string, days = 30): { date: string; semantic: number; episodic: number }[] {
+export function getDashboardMemoryTimeline(chatId: string, days = 30): { date: string; count: number }[] {
   return db
     .prepare(
       `SELECT
          date(created_at, 'unixepoch') as date,
-         SUM(CASE WHEN sector = 'semantic' THEN 1 ELSE 0 END) as semantic,
-         SUM(CASE WHEN sector = 'episodic' THEN 1 ELSE 0 END) as episodic
+         COUNT(*) as count
        FROM memories
        WHERE chat_id = ? AND created_at >= unixepoch('now', ?)
        GROUP BY date
        ORDER BY date`,
     )
-    .all(chatId, `-${days} days`) as { date: string; semantic: number; episodic: number }[];
+    .all(chatId, `-${days} days`) as { date: string; count: number }[];
+}
+
+export function getDashboardConsolidations(chatId: string, limit = 5): Consolidation[] {
+  return getRecentConsolidations(chatId, limit);
 }
 
 export interface DashboardTokenStats {
@@ -937,16 +1269,28 @@ export function getDashboardRecentTokenUsage(chatId: string, limit = 20): Recent
     .all(chatId, limit) as RecentTokenUsageRow[];
 }
 
-export function getDashboardMemoriesBySector(chatId: string, sector: string, limit = 50, offset = 0): { memories: Memory[]; total: number } {
+export function getDashboardMemoriesList(chatId: string, limit = 50, offset = 0, sortBy: 'importance' | 'salience' | 'recent' = 'importance'): { memories: Memory[]; total: number } {
   const total = db
-    .prepare('SELECT COUNT(*) as cnt FROM memories WHERE chat_id = ? AND sector = ?')
-    .get(chatId, sector) as { cnt: number };
+    .prepare('SELECT COUNT(*) as cnt FROM memories WHERE chat_id = ?')
+    .get(chatId) as { cnt: number };
+
+  let orderClause: string;
+  switch (sortBy) {
+    case 'salience':
+      orderClause = 'ORDER BY salience DESC, created_at DESC';
+      break;
+    case 'recent':
+      orderClause = 'ORDER BY created_at DESC';
+      break;
+    default:
+      orderClause = 'ORDER BY importance DESC, created_at DESC';
+  }
+
   const memories = db
     .prepare(
-      `SELECT * FROM memories WHERE chat_id = ? AND sector = ?
-       ORDER BY salience DESC, created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT * FROM memories WHERE chat_id = ? ${orderClause} LIMIT ? OFFSET ?`,
     )
-    .all(chatId, sector, limit, offset) as Memory[];
+    .all(chatId, limit, offset) as Memory[];
   return { memories, total: total.cnt };
 }
 

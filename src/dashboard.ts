@@ -16,10 +16,11 @@ import {
   getDashboardLowSalienceMemories,
   getDashboardTopAccessedMemories,
   getDashboardMemoryTimeline,
+  getDashboardConsolidations,
+  getDashboardMemoriesList,
   getDashboardTokenStats,
   getDashboardCostTimeline,
   getDashboardRecentTokenUsage,
-  getDashboardMemoriesBySector,
   getSession,
   getSessionTokenUsage,
   getHiveMindEntries,
@@ -104,16 +105,17 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const fading = getDashboardLowSalienceMemories(chatId, 10);
     const topAccessed = getDashboardTopAccessedMemories(chatId, 5);
     const timeline = getDashboardMemoryTimeline(chatId, 30);
-    return c.json({ stats, fading, topAccessed, timeline });
+    const consolidations = getDashboardConsolidations(chatId, 5);
+    return c.json({ stats, fading, topAccessed, timeline, consolidations });
   });
 
-  // Memory list by sector (for drill-down)
+  // Memory list (for drill-down drawer)
   app.get('/api/memories/list', (c) => {
     const chatId = c.req.query('chatId') || '';
-    const sector = c.req.query('sector') || 'semantic';
     const limit = parseInt(c.req.query('limit') || '50', 10);
     const offset = parseInt(c.req.query('offset') || '0', 10);
-    const result = getDashboardMemoriesBySector(chatId, sector, limit, offset);
+    const sortBy = (c.req.query('sort') || 'importance') as 'importance' | 'salience' | 'recent';
+    const result = getDashboardMemoriesList(chatId, limit, offset, sortBy);
     return c.json(result);
   });
 

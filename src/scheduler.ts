@@ -10,6 +10,7 @@ import {
   resetStuckTasks,
 } from './db.js';
 import { logger } from './logger.js';
+import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram } from './bot.js';
 
@@ -70,51 +71,56 @@ async function runDueTasks(): Promise<void> {
 
     logger.info({ taskId: task.id, prompt: task.prompt.slice(0, 60) }, 'Firing task');
 
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
+    // Route through the message queue so scheduled tasks wait for any
+    // in-flight user message to finish before running. This prevents
+    // two Claude processes from hitting the same session simultaneously.
+    const chatId = ALLOWED_CHAT_ID || 'scheduler';
+    messageQueue.enqueue(chatId, async () => {
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
-    try {
-      await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
-
-      // Run as a fresh agent call (no session — scheduled tasks are autonomous)
-      const result = await runAgent(task.prompt, undefined, () => {}, undefined, undefined, abortController);
-      clearTimeout(timeout);
-
-      if (result.aborted) {
-        // Task was killed by timeout — nextRun already computed above
-        updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
-        await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
-        logger.warn({ taskId: task.id }, 'Task timed out');
-        continue;
-      }
-
-      const text = result.text?.trim() || 'Task completed with no output.';
-      await sender(formatForTelegram(text));
-
-      // Inject task output into the active chat session so user replies have context
-      if (ALLOWED_CHAT_ID) {
-        const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
-        logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Scheduled task]: ${task.prompt}`, activeSession ?? undefined, schedulerAgentId);
-        logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
-      }
-
-      updateTaskAfterRun(task.id, nextRun, text, 'success');
-
-      logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
-    } catch (err) {
-      clearTimeout(timeout);
-      const errMsg = err instanceof Error ? err.message : String(err);
-      updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
-
-      logger.error({ err, taskId: task.id }, 'Scheduled task failed');
       try {
-        await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`);
-      } catch {
-        // ignore send failure
+        await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
+
+        // Run as a fresh agent call (no session — scheduled tasks are autonomous)
+        const result = await runAgent(task.prompt, undefined, () => {}, undefined, undefined, abortController);
+        clearTimeout(timeout);
+
+        if (result.aborted) {
+          updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
+          await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
+          logger.warn({ taskId: task.id }, 'Task timed out');
+          return;
+        }
+
+        const text = result.text?.trim() || 'Task completed with no output.';
+        await sender(formatForTelegram(text));
+
+        // Inject task output into the active chat session so user replies have context
+        if (ALLOWED_CHAT_ID) {
+          const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
+          logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Scheduled task]: ${task.prompt}`, activeSession ?? undefined, schedulerAgentId);
+          logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
+        }
+
+        updateTaskAfterRun(task.id, nextRun, text, 'success');
+
+        logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
+      } catch (err) {
+        clearTimeout(timeout);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
+
+        logger.error({ err, taskId: task.id }, 'Scheduled task failed');
+        try {
+          await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`);
+        } catch {
+          // ignore send failure
+        }
+      } finally {
+        runningTaskIds.delete(task.id);
       }
-    } finally {
-      runningTaskIds.delete(task.id);
-    }
+    });
   }
 }
 

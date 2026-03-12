@@ -786,7 +786,11 @@ export function createBot(): Bot {
       await ctx.reply('No memories yet.');
       return;
     }
-    const lines = recent.map(m => `<b>[${m.sector}]</b> ${escapeHtml(m.content)}`).join('\n');
+    const lines = recent.map(m => {
+      const topics = (() => { try { return JSON.parse(m.topics); } catch { return []; } })();
+      const topicStr = topics.length > 0 ? ` <i>(${escapeHtml(topics.join(', '))})</i>` : '';
+      return `<b>[${m.importance.toFixed(1)}]</b> ${escapeHtml(m.summary)}${topicStr}`;
+    }).join('\n');
     await ctx.reply(`<b>Recent memories</b>\n\n${lines}`, { parse_mode: 'HTML' });
   });
 
@@ -1233,6 +1237,16 @@ export async function processMessageFromDashboard(
 
   logger.info({ messageLen: text.length, source: 'dashboard' }, 'Processing dashboard message');
 
+  // Route through the message queue so dashboard messages wait for any
+  // in-flight Telegram message or scheduled task to finish first.
+  messageQueue.enqueue(chatIdStr, () => processDashboardMessage(botApi, text, chatIdStr));
+}
+
+async function processDashboardMessage(
+  botApi: Api<RawApi>,
+  text: string,
+  chatIdStr: string,
+): Promise<void> {
   emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: text, source: 'dashboard' });
   setProcessing(chatIdStr, true);
 

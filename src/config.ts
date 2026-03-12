@@ -18,6 +18,7 @@ const envConfig = readEnvFile([
   'DASHBOARD_URL',
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
+  'GOOGLE_API_KEY',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -122,3 +123,7 @@ export const DASHBOARD_URL =
 // Database encryption key (SQLCipher). Required for encrypted database access.
 export const DB_ENCRYPTION_KEY =
   process.env.DB_ENCRYPTION_KEY || envConfig.DB_ENCRYPTION_KEY || '';
+
+// Google API key for Gemini (memory extraction + consolidation)
+export const GOOGLE_API_KEY =
+  process.env.GOOGLE_API_KEY || envConfig.GOOGLE_API_KEY || '';

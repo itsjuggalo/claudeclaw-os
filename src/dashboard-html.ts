@@ -212,37 +212,42 @@ export function getDashboardHtml(token: string, chatId: string): string {
 <div id="memory-section" class="mt-5">
   <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Memory Landscape</h2>
   <div class="grid grid-cols-2 gap-3 mb-3">
-    <div class="card clickable-card text-center" onclick="openMemoryDrawer('semantic')">
-      <div class="stat-val" id="mem-semantic">-</div>
-      <div class="stat-label">Semantic<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Number of semantic memories \u2014 general knowledge and long-lasting facts retained by the bot.</span></span></div>
+    <div class="card clickable-card text-center" onclick="openMemoryDrawer()">
+      <div class="stat-val" id="mem-total">-</div>
+      <div class="stat-label">Memories<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Total structured memories extracted from conversations. Only genuinely important information gets stored.</span></span></div>
       <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
     </div>
-    <div class="card clickable-card text-center" onclick="openMemoryDrawer('episodic')">
-      <div class="stat-val" id="mem-episodic">-</div>
-      <div class="stat-label">Episodic<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Number of episodic memories \u2014 specific events and conversations remembered by the bot.</span></span></div>
-      <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
+    <div class="card text-center">
+      <div class="stat-val" id="mem-consolidations">-</div>
+      <div class="stat-label">Insights<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Consolidation insights discovered by finding patterns across memories. Generated every 30 minutes.</span></span></div>
     </div>
   </div>
   <div class="card">
-    <div class="text-xs text-gray-400 mb-2">Salience Distribution<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Distribution of memories by importance level (salience). Higher scores mean the memory is deemed more important and will be retained longer.</span></span></div>
-    <canvas id="salience-chart" height="120"></canvas>
+    <div class="text-xs text-gray-400 mb-2">Importance Distribution<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Distribution of memories by LLM-assigned importance (0-1). Higher = more critical to remember long-term.</span></span></div>
+    <canvas id="importance-chart" height="120"></canvas>
   </div>
   <div class="card">
     <div class="flex items-center justify-between mb-1">
-      <div class="text-xs text-gray-400">Fading Soon <span class="text-gray-600">(salience &lt; 0.5)</span><span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Memories about to fade away (importance &lt; 0.5). They will soon be forgotten by the bot unless reinforced.</span></span></div>
-      <button class="text-xs text-gray-600 hover:text-gray-400 transition" onclick="openMemoryDrawer('semantic')">Browse all &rarr;</button>
+      <div class="text-xs text-gray-400">Fading Soon <span class="text-gray-600">(salience &lt; 0.5)</span><span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Memories losing salience. High-importance ones decay slower; low-importance ones fade fast.</span></span></div>
+      <button class="text-xs text-gray-600 hover:text-gray-400 transition" onclick="openMemoryDrawer()">Browse all &rarr;</button>
     </div>
     <div id="fading-list" class="text-sm"></div>
   </div>
   <div class="card">
     <div class="flex items-center justify-between mb-1">
-      <div class="text-xs text-gray-400">Recently Retrieved<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Semantic memories the bot most recently pulled up during conversations. Shows what knowledge is actively being used.</span></span></div>
-      <button class="text-xs text-gray-600 hover:text-gray-400 transition" onclick="openMemoryDrawer('semantic')">Browse all &rarr;</button>
+      <div class="text-xs text-gray-400">Recently Retrieved<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">High-importance memories recently used in conversations.</span></span></div>
+      <button class="text-xs text-gray-600 hover:text-gray-400 transition" onclick="openMemoryDrawer()">Browse all &rarr;</button>
     </div>
     <div id="top-accessed-list" class="text-sm"></div>
   </div>
   <div class="card">
-    <div class="text-xs text-gray-400 mb-2">Memory Creation (30d)<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Number of new memories created per day over the last 30 days, broken down by type (semantic vs episodic).</span></span></div>
+    <div class="flex items-center justify-between mb-1">
+      <div class="text-xs text-gray-400">Recent Insights<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Patterns and connections discovered across memories by the consolidation engine.</span></span></div>
+    </div>
+    <div id="insights-list" class="text-sm"></div>
+  </div>
+  <div class="card">
+    <div class="text-xs text-gray-400 mb-2">Memory Creation (30d)<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Number of new memories created per day over the last 30 days. Only meaningful exchanges get stored.</span></span></div>
     <canvas id="memory-timeline-chart" height="140"></canvas>
   </div>
 </div>
@@ -359,7 +364,6 @@ detectDevice();
 window.addEventListener('resize', detectDevice);
 
 // Memory drawer state
-let drawerSector = '';
 let drawerOffset = 0;
 let drawerTotal = 0;
 const DRAWER_PAGE = 30;
@@ -379,21 +383,33 @@ function formatDate(ts) {
 }
 
 function renderMemoryItem(m) {
+  let entities = [];
+  let topics = [];
+  let connections = [];
+  try { entities = JSON.parse(m.entities); } catch {}
+  try { topics = JSON.parse(m.topics); } catch {}
+  try { connections = JSON.parse(m.connections); } catch {}
+  const topicTags = topics.length > 0 ? '<div class="mt-1">' + topics.map(t => '<span style="background:#1e293b;padding:1px 6px;border-radius:4px;margin-right:3px;font-size:11px;color:#94a3b8">' + escapeHtml(t) + '</span>').join('') + '</div>' : '';
+  const entityLine = entities.length > 0 ? '<div class="text-xs text-gray-600 mt-1">entities: ' + escapeHtml(entities.join(', ')) + '</div>' : '';
+  const connLine = connections.length > 0 ? '<div class="text-xs text-gray-600 mt-1">linked to: ' + connections.map(c => '#' + c.linked_to + ' (' + escapeHtml(c.relationship || '') + ')').join(', ') + '</div>' : '';
+
   return '<div class="mem-item" onclick="this.classList.toggle(&quot;expanded&quot;)">' +
     '<div class="flex items-center gap-2 mb-1">' +
-      '<span class="salience-dot" style="background:' + salienceColor(m.salience) + '"></span>' +
-      '<span class="text-xs font-semibold" style="color:' + salienceColor(m.salience) + '">' + m.salience.toFixed(2) + '</span>' +
+      '<span class="salience-dot" style="background:' + importanceColor(m.importance) + '"></span>' +
+      '<span class="text-xs font-semibold" style="color:' + importanceColor(m.importance) + '">' + m.importance.toFixed(2) + '</span>' +
+      '<span class="text-xs text-gray-700 ml-1">sal ' + m.salience.toFixed(2) + '</span>' +
       '<span class="text-xs text-gray-600 ml-auto">' + formatDate(m.created_at) + '</span>' +
     '</div>' +
-    '<div class="text-sm text-gray-300 mem-content">' + escapeHtml(m.content) + '</div>' +
-    (m.topic_key ? '<div class="text-xs text-gray-600 mt-1">' + escapeHtml(m.topic_key) + '</div>' : '') +
+    '<div class="text-sm text-gray-300 mem-content">' + escapeHtml(m.summary) + '</div>' +
+    topicTags +
+    entityLine +
+    connLine +
   '</div>';
 }
 
-async function openMemoryDrawer(sector) {
-  drawerSector = sector;
+async function openMemoryDrawer() {
   drawerOffset = 0;
-  document.getElementById('drawer-title').textContent = sector.charAt(0).toUpperCase() + sector.slice(1) + ' Memories';
+  document.getElementById('drawer-title').textContent = 'All Memories';
   document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
   document.getElementById('drawer-overlay').classList.add('open');
   document.getElementById('drawer').classList.add('open');
@@ -402,18 +418,17 @@ async function openMemoryDrawer(sector) {
 }
 
 async function loadDrawerPage() {
-  const data = await api('/api/memories/list?chatId=' + CHAT_ID + '&sector=' + drawerSector + '&limit=' + DRAWER_PAGE + '&offset=' + drawerOffset);
+  const data = await api('/api/memories/list?chatId=' + CHAT_ID + '&sort=importance&limit=' + DRAWER_PAGE + '&offset=' + drawerOffset);
   drawerTotal = data.total;
   const body = document.getElementById('drawer-body');
   if (drawerOffset === 0) body.innerHTML = '';
   body.innerHTML += data.memories.map(renderMemoryItem).join('');
   drawerOffset += data.memories.length;
   document.getElementById('drawer-count').textContent = drawerTotal + ' total';
-  // Calculate avg salience from visible items
-  const avgSal = data.memories.length > 0
-    ? (data.memories.reduce((s, m) => s + m.salience, 0) / data.memories.length).toFixed(2)
+  const avgImp = data.memories.length > 0
+    ? (data.memories.reduce((s, m) => s + m.importance, 0) / data.memories.length).toFixed(2)
     : '0';
-  document.getElementById('drawer-avg-salience').textContent = 'avg salience ' + avgSal;
+  document.getElementById('drawer-avg-salience').textContent = 'avg importance ' + avgImp;
   const btn = document.getElementById('drawer-load-more');
   if (drawerOffset < drawerTotal) btn.classList.remove('hidden');
   else btn.classList.add('hidden');
@@ -514,21 +529,37 @@ async function loadTasks() {
   }
 }
 
+function importanceColor(imp) {
+  if (imp >= 0.8) return '#10b981';
+  if (imp >= 0.6) return '#22c55e';
+  if (imp >= 0.4) return '#eab308';
+  if (imp >= 0.2) return '#f97316';
+  return '#ef4444';
+}
+
+function renderTopics(topicsJson) {
+  try {
+    const topics = JSON.parse(topicsJson);
+    if (!topics.length) return '';
+    return '<div class="text-xs text-gray-600 mt-0.5">' + topics.map(t => '<span style="background:#1e293b;padding:1px 6px;border-radius:4px;margin-right:3px">' + escapeHtml(t) + '</span>').join('') + '</div>';
+  } catch { return ''; }
+}
+
 async function loadMemories() {
   try {
     const data = await api('/api/memories?chatId=' + CHAT_ID);
-    document.getElementById('mem-semantic').textContent = data.stats.semantic;
-    document.getElementById('mem-episodic').textContent = data.stats.episodic;
+    document.getElementById('mem-total').textContent = data.stats.total;
+    document.getElementById('mem-consolidations').textContent = data.stats.consolidations;
 
-    // Salience chart
-    const bucketLabels = ['0-0.5','0.5-1','1-2','2-3','3-4','4-5'];
-    const bucketColors = ['#ef4444','#f97316','#eab308','#84cc16','#22c55e','#10b981'];
+    // Importance distribution chart
+    const bucketLabels = ['0-0.2','0.2-0.4','0.4-0.6','0.6-0.8','0.8-1.0'];
+    const bucketColors = ['#ef4444','#f97316','#eab308','#22c55e','#10b981'];
     const bucketData = bucketLabels.map(b => {
-      const found = data.stats.salienceDistribution.find(d => d.bucket === b);
+      const found = data.stats.importanceDistribution.find(d => d.bucket === b);
       return found ? found.count : 0;
     });
     if (salienceChart) salienceChart.destroy();
-    salienceChart = new Chart(document.getElementById('salience-chart'), {
+    salienceChart = new Chart(document.getElementById('importance-chart'), {
       type: 'bar',
       data: { labels: bucketLabels, datasets: [{ data: bucketData, backgroundColor: bucketColors, borderRadius: 4 }] },
       options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { color: '#666' }, grid: { color: '#222' } }, x: { ticks: { color: '#666' }, grid: { display: false } } } }
@@ -539,7 +570,7 @@ async function loadMemories() {
     if (data.fading.length === 0) {
       fading.innerHTML = '<span class="text-gray-600">None fading</span>';
     } else {
-      fading.innerHTML = data.fading.map(m => '<div class="fade-text py-0.5 mem-expand" onclick="this.classList.toggle(&quot;open&quot;)"><span class="mem-preview">' + m.salience.toFixed(2) + ' &middot; ' + escapeHtml(m.content.slice(0,80)) + (m.content.length > 80 ? '...' : '') + '</span><div class="mem-full">' + escapeHtml(m.content) + '</div></div>').join('');
+      fading.innerHTML = data.fading.map(m => '<div class="fade-text py-0.5 mem-expand" onclick="this.classList.toggle(&quot;open&quot;)"><span class="mem-preview"><span style="color:' + importanceColor(m.importance) + '">[' + m.importance.toFixed(1) + ']</span> ' + escapeHtml(m.summary.slice(0,80)) + (m.summary.length > 80 ? '...' : '') + '</span><div class="mem-full">' + escapeHtml(m.summary) + renderTopics(m.topics) + '</div></div>').join('');
     }
 
     // Top accessed
@@ -547,7 +578,15 @@ async function loadMemories() {
     if (data.topAccessed.length === 0) {
       top.innerHTML = '<span class="text-gray-600">No memories yet</span>';
     } else {
-      top.innerHTML = data.topAccessed.map(m => '<div class="top-text py-0.5 mem-expand" onclick="this.classList.toggle(&quot;open&quot;)"><span class="mem-preview">' + formatDate(m.accessed_at) + ' &middot; ' + escapeHtml(m.content.slice(0,80)) + (m.content.length > 80 ? '...' : '') + '</span><div class="mem-full">' + escapeHtml(m.content) + '</div></div>').join('');
+      top.innerHTML = data.topAccessed.map(m => '<div class="top-text py-0.5 mem-expand" onclick="this.classList.toggle(&quot;open&quot;)"><span class="mem-preview"><span style="color:' + importanceColor(m.importance) + '">[' + m.importance.toFixed(1) + ']</span> ' + escapeHtml(m.summary.slice(0,80)) + (m.summary.length > 80 ? '...' : '') + '</span><div class="mem-full">' + escapeHtml(m.summary) + renderTopics(m.topics) + '</div></div>').join('');
+    }
+
+    // Insights
+    const insights = document.getElementById('insights-list');
+    if (!data.consolidations || data.consolidations.length === 0) {
+      insights.innerHTML = '<span class="text-gray-600">No insights yet</span>';
+    } else {
+      insights.innerHTML = data.consolidations.map(c => '<div class="py-1 mem-expand" onclick="this.classList.toggle(&quot;open&quot;)"><span class="mem-preview" style="color:#a78bfa">' + escapeHtml(c.insight.slice(0,100)) + (c.insight.length > 100 ? '...' : '') + '</span><div class="mem-full" style="color:#d4d4d8">' + escapeHtml(c.summary) + '<div class="text-xs text-gray-600 mt-1">' + formatDate(c.created_at) + '</div></div></div>').join('');
     }
 
     // Timeline
@@ -558,8 +597,7 @@ async function loadMemories() {
         data: {
           labels: data.timeline.map(d => d.date.slice(5)),
           datasets: [
-            { label: 'Semantic', data: data.timeline.map(d => d.semantic), borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.1)', fill: true, tension: 0.3 },
-            { label: 'Episodic', data: data.timeline.map(d => d.episodic), borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.1)', fill: true, tension: 0.3 }
+            { label: 'Memories', data: data.timeline.map(d => d.count), borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.1)', fill: true, tension: 0.3 }
           ]
         },
         options: { responsive: true, plugins: { legend: { labels: { color: '#888', boxWidth: 12 } } }, scales: { y: { ticks: { color: '#666' }, grid: { color: '#222' } }, x: { ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { display: false } } } }
@@ -829,8 +867,7 @@ async function loadSummary() {
     const activeCount = agents.agents ? agents.agents.filter(a => a.running).length : 0;
     document.getElementById('sum-agents').textContent = activeCount + '/' + (agents.agents ? agents.agents.length : 0);
     document.getElementById('sum-cost').textContent = '$' + (tokens.stats.todayCost || 0).toFixed(2);
-    const totalMem = (mems.stats.semantic || 0) + (mems.stats.episodic || 0);
-    document.getElementById('sum-memories').textContent = totalMem;
+    document.getElementById('sum-memories').textContent = mems.stats.total || '0';
   } catch {}
 }
 

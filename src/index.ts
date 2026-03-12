@@ -4,11 +4,12 @@ import path from 'path';
 import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
 import { createBot } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, setAgentOverrides } from './config.js';
+import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
 import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
+import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
@@ -126,6 +127,22 @@ async function main(): Promise<void> {
 
   runDecaySweep();
   setInterval(() => runDecaySweep(), 24 * 60 * 60 * 1000);
+
+  // Memory consolidation: find patterns across recent memories every 30 minutes
+  if (ALLOWED_CHAT_ID && GOOGLE_API_KEY) {
+    // Delay first consolidation 2 minutes after startup to let things settle
+    setTimeout(() => {
+      void runConsolidation(ALLOWED_CHAT_ID).catch((err) =>
+        logger.error({ err }, 'Initial consolidation failed'),
+      );
+    }, 2 * 60 * 1000);
+    setInterval(() => {
+      void runConsolidation(ALLOWED_CHAT_ID).catch((err) =>
+        logger.error({ err }, 'Periodic consolidation failed'),
+      );
+    }, 30 * 60 * 1000);
+    logger.info('Memory consolidation enabled (every 30 min)');
+  }
 
   cleanupOldUploads();
 
