@@ -841,6 +841,14 @@ No content is forwarded automatically. You pull it on demand.
 
 Messages you send via the bot go into a `wa_outbox` SQLite table. The daemon's outbox poller (every 3 seconds) picks them up and delivers them. If the daemon is temporarily down, messages queue and deliver when it comes back.
 
+### Message security
+
+All WhatsApp message bodies are **encrypted at rest** using AES-256-GCM before being written to the database. Even if someone accesses `store/claudeclaw.db` directly, message content is unreadable without the encryption key in your `.env`.
+
+Messages are also **automatically deleted after 3 days**. The retention sweep runs on startup and every 24 hours, covering `wa_messages`, `wa_outbox`, and `wa_message_map`. This is enforced in code and cannot be bypassed without modifying `runDecaySweep()` in `src/memory.ts`.
+
+The `store/` directory (database, WhatsApp session, logs) is gitignored with multiple layers of protection. It will never be committed to the repo.
+
 ---
 
 ## Memory
@@ -989,6 +997,10 @@ slack_messages   -- Slack message history
 conversation_log -- Full conversation turns (used by /respin)
 ```
 
+**Encryption:** WhatsApp and Slack message bodies are encrypted with AES-256-GCM before storage. The key lives in your `.env` as `DB_ENCRYPTION_KEY`. Raw `SELECT` queries on the `body` column will return ciphertext. Use the app's read functions to get decrypted content.
+
+**Retention:** Messages in `wa_messages`, `wa_outbox`, `wa_message_map`, and `slack_messages` are auto-deleted after 3 days by `runDecaySweep()`.
+
 Inspect it directly:
 
 ```bash
@@ -1134,6 +1146,8 @@ ClaudeClaw is designed to run on your personal machine for your own use. A few t
 **`notify.sh` is called by Claude.** The notification script sends Telegram messages via `curl`. Since Claude has full shell access, it can call this script with any content. This is by design (it's how progress updates work), but be aware that prompt injection via external content (web pages, files) could theoretically cause Claude to send unexpected messages.
 
 **Set `ALLOWED_CHAT_ID` immediately.** Until this is set, the bot responds to any Telegram user who messages it. The setup wizard helps you configure this, but if you start the bot manually before setting it, it's open to everyone who knows the bot username.
+
+**Message data is encrypted and ephemeral.** WhatsApp and Slack message bodies are encrypted with AES-256-GCM before being written to the database. A 3-day auto-purge runs on startup and every 24 hours, deleting all message data older than 3 days from `wa_messages`, `wa_outbox`, `wa_message_map`, and `slack_messages`. The encryption key is stored in `.env` (which is gitignored). The `store/` directory containing the database and WhatsApp session is protected by multiple gitignore rules and will never appear in version control.
 
 ---
 
