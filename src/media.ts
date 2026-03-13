@@ -1,7 +1,9 @@
 import fs from 'fs';
-import path from 'path';
 import https from 'https';
+import path from 'path';
 import { fileURLToPath } from 'url';
+
+import { logger } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -192,6 +194,6 @@ export function cleanupOldUploads(maxAgeMs: number = 24 * 60 * 60 * 1000): void 
   }
 
   if (deleted > 0) {
-    console.log(`cleanupOldUploads: deleted ${deleted} file(s) from ${UPLOADS_DIR}`);
+    logger.info({ deleted, dir: UPLOADS_DIR }, 'Cleaned up old uploads');
   }
 }
