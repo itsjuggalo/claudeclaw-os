@@ -152,8 +152,9 @@ export function runDecaySweep(): void {
   const wa = pruneWaMessages(3);
   const slack = pruneSlackMessages(3);
   if (wa.messages + wa.outbox + wa.map + slack > 0) {
-    console.log(
-      `[retention] Pruned: ${wa.messages} WA msgs, ${wa.outbox} WA outbox, ${wa.map} WA map, ${slack} Slack msgs`,
+    logger.info(
+      { wa_messages: wa.messages, wa_outbox: wa.outbox, wa_map: wa.map, slack },
+      'Retention pruning complete',
     );
   }
 }

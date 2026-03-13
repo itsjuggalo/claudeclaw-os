@@ -5,6 +5,7 @@ import path from 'path';
 
 import { DB_ENCRYPTION_KEY, STORE_DIR } from './config.js';
 import { cosineSimilarity } from './embeddings.js';
+import { logger } from './logger.js';
 
 // ── Field-Level Encryption (AES-256-GCM) ────────────────────────────
 // All message bodies (WhatsApp, Slack) are encrypted before storage
@@ -395,7 +396,7 @@ function runMigrations(database: Database.Database): void {
           VALUES (new.id, new.summary, new.raw_text, new.entities, new.topics);
       END;
     `);
-    console.log('[migration] Memory V2: backed up old memories to memories_v1_backup, created new schema');
+    logger.info('Memory V2 migration: backed up old memories, created new schema');
   }
 
   // Ensure memory V2 indexes exist (covers both migrated and fresh installs)
@@ -410,7 +411,7 @@ function runMigrations(database: Database.Database): void {
   // Add embedding column if missing (V2 tables created before embedding support)
   if (memColsPost.some((c) => c.name === 'importance') && !memColsPost.some((c) => c.name === 'embedding')) {
     database.exec(`ALTER TABLE memories ADD COLUMN embedding TEXT`);
-    console.log('[migration] Added embedding column to memories table');
+    logger.info('Migration: added embedding column to memories table');
   }
 }
 
