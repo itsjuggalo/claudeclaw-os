@@ -6,6 +6,7 @@ import { serve } from '@hono/node-server';
 import fs from 'fs';
 import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
+import crypto from 'crypto';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -26,12 +27,54 @@ import {
   getHiveMindEntries,
   getAgentTokenStats,
   getAgentRecentConversation,
+  getMissionTasks,
+  getMissionTask,
+  createMissionTask,
+  cancelMissionTask,
+  deleteMissionTask,
+  reassignMissionTask,
+  assignMissionTask,
+  getUnassignedMissionTasks,
+  getMissionTaskHistory,
 } from './db.js';
+import { generateContent, parseJsonResponse } from './gemini.js';
 import { listAgentIds, loadAgentConfig } from './agent-config.js';
 import { processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
+
+async function classifyTaskAgent(prompt: string): Promise<string | null> {
+  try {
+    const agentIds = listAgentIds();
+    const agentDescriptions = agentIds.map((id) => {
+      try {
+        const config = loadAgentConfig(id);
+        return `- ${id}: ${config.description}`;
+      } catch { return `- ${id}: (no description)`; }
+    });
+
+    const classificationPrompt = `Given these agents and their roles:
+- main: Primary assistant, general tasks, anything that doesn't clearly fit another agent
+${agentDescriptions.join('\n')}
+
+Which ONE agent is best suited for this task?
+Task: "${prompt.slice(0, 500)}"
+
+Reply with JSON: {"agent": "agent_id"}`;
+
+    const response = await generateContent(classificationPrompt);
+    const parsed = parseJsonResponse<{ agent: string }>(response);
+    if (parsed?.agent) {
+      const validAgents = ['main', ...agentIds];
+      if (validAgents.includes(parsed.agent)) return parsed.agent;
+    }
+    return 'main'; // fallback
+  } catch (err) {
+    logger.error({ err }, 'Auto-assign classification failed');
+    return null;
+  }
+}
 
 export function startDashboard(botApi?: Api<RawApi>): void {
   if (!DASHBOARD_TOKEN) {
@@ -44,7 +87,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers)
   app.use('*', async (c, next) => {
     c.header('Access-Control-Allow-Origin', '*');
-    c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type');
     if (c.req.method === 'OPTIONS') return c.body(null, 204);
     await next();
@@ -96,6 +139,111 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const id = c.req.param('id');
     resumeScheduledTask(id);
     return c.json({ ok: true });
+  });
+
+  // ── Mission Control endpoints ────────────────────────────────────────
+
+  app.get('/api/mission/tasks', (c) => {
+    const agentId = c.req.query('agent') || undefined;
+    const status = c.req.query('status') || undefined;
+    const tasks = getMissionTasks(agentId, status);
+    return c.json({ tasks });
+  });
+
+  app.get('/api/mission/tasks/:id', (c) => {
+    const id = c.req.param('id');
+    const task = getMissionTask(id);
+    if (!task) return c.json({ error: 'Not found' }, 404);
+    return c.json({ task });
+  });
+
+  app.post('/api/mission/tasks', async (c) => {
+    const body = await c.req.json<{
+      title?: string;
+      prompt?: string;
+      assigned_agent?: string;
+      priority?: number;
+    }>();
+
+    const title = body?.title?.trim();
+    const prompt = body?.prompt?.trim();
+    const assignedAgent = body?.assigned_agent?.trim() || null;
+    const priority = Math.max(0, Math.min(10, body?.priority ?? 0));
+
+    if (!title || title.length > 200) return c.json({ error: 'title required (max 200 chars)' }, 400);
+    if (!prompt || prompt.length > 10000) return c.json({ error: 'prompt required (max 10000 chars)' }, 400);
+
+    // Validate agent if provided
+    if (assignedAgent) {
+      const validAgents = ['main', ...listAgentIds()];
+      if (!validAgents.includes(assignedAgent)) {
+        return c.json({ error: `Unknown agent: ${assignedAgent}. Valid: ${validAgents.join(', ')}` }, 400);
+      }
+    }
+
+    const id = crypto.randomBytes(4).toString('hex');
+    createMissionTask(id, title, prompt, assignedAgent, 'dashboard', priority);
+
+    const task = getMissionTask(id);
+    return c.json({ task }, 201);
+  });
+
+  app.post('/api/mission/tasks/:id/cancel', (c) => {
+    const id = c.req.param('id');
+    const ok = cancelMissionTask(id);
+    return c.json({ ok });
+  });
+
+  // Auto-assign a single task via Gemini classification
+  app.post('/api/mission/tasks/:id/auto-assign', async (c) => {
+    const id = c.req.param('id');
+    const task = getMissionTask(id);
+    if (!task) return c.json({ error: 'Not found' }, 404);
+    if (task.assigned_agent) return c.json({ error: 'Already assigned' }, 400);
+
+    const agent = await classifyTaskAgent(task.prompt);
+    if (!agent) return c.json({ error: 'Classification failed' }, 500);
+
+    assignMissionTask(id, agent);
+    return c.json({ ok: true, assigned_agent: agent });
+  });
+
+  // Auto-assign all unassigned tasks
+  app.post('/api/mission/tasks/auto-assign-all', async (c) => {
+    const tasks = getUnassignedMissionTasks();
+    if (tasks.length === 0) return c.json({ assigned: 0 });
+
+    const results: Array<{ id: string; agent: string }> = [];
+    for (const task of tasks) {
+      const agent = await classifyTaskAgent(task.prompt);
+      if (agent && assignMissionTask(task.id, agent)) {
+        results.push({ id: task.id, agent });
+      }
+    }
+    return c.json({ assigned: results.length, results });
+  });
+
+  app.patch('/api/mission/tasks/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = await c.req.json<{ assigned_agent?: string }>();
+    const newAgent = body?.assigned_agent?.trim();
+    if (!newAgent) return c.json({ error: 'assigned_agent required' }, 400);
+    const validAgents = ['main', ...listAgentIds()];
+    if (!validAgents.includes(newAgent)) return c.json({ error: 'Unknown agent' }, 400);
+    const ok = reassignMissionTask(id, newAgent);
+    return c.json({ ok });
+  });
+
+  app.delete('/api/mission/tasks/:id', (c) => {
+    const id = c.req.param('id');
+    const ok = deleteMissionTask(id);
+    return c.json({ ok });
+  });
+
+  app.get('/api/mission/history', (c) => {
+    const limit = parseInt(c.req.query('limit') || '30', 10);
+    const offset = parseInt(c.req.query('offset') || '0', 10);
+    return c.json(getMissionTaskHistory(limit, offset));
   });
 
   // Memory stats

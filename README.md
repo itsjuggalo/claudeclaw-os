@@ -211,7 +211,7 @@ Then restart the bot (Ctrl+C and `npm start`, or restart the background service)
 
 ## How it works
 
-![ClaudeClaw architecture](assets/architecture.jpeg)
+![ClaudeClaw architecture](assets/architecture.png)
 
 ## What's included
 
@@ -227,12 +227,16 @@ With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
 | SQLite memory | ✅ | Auto-initialized on first run, nothing to configure |
 | Session persistence | ✅ | Context carries across every message |
 | Scheduled tasks | ✅ | Ask Claude to run anything on a cron schedule |
+| Mission Control | ✅ | Dashboard task board with auto-assign. Needs `GOOGLE_API_KEY` for auto-assign |
+| Web dashboard | ✅ | Live monitoring via Cloudflare tunnel. Needs `DASHBOARD_TOKEN` |
+| Multi-agent | ✅ | Run multiple specialized agents in parallel |
 | All your skills | ✅ | Every skill in `~/.claude/skills/` auto-loads |
 | WhatsApp (`/wa`) | ✅ | No API key, but needs the wa-daemon running |
 | Voice input | ❌ | Needs `GROQ_API_KEY` |
 | Voice output (macOS) | ✅ | Uses `say` + ffmpeg locally — no API key needed |
 | Voice output (cloud) | ❌ | ElevenLabs or Gradium API key for higher quality |
 | Video analysis | ❌ | Needs `GOOGLE_API_KEY` + `gemini-api-dev` skill |
+| Memory consolidation | ❌ | Needs `GOOGLE_API_KEY` for Gemini-powered pattern detection |
 
 ---
 
@@ -537,13 +541,16 @@ Below that, the dashboard is organized into panels:
 
 | Panel | What it shows you |
 |-------|-------------------|
-| **Hive Mind** | A real-time activity feed showing what each agent has been doing, with timestamps and color-coded agent names. The summary column wraps naturally so you can read full entries without horizontal scrolling. |
-| **Scheduled Tasks** | Every task you've set up. Shows whether it's running or paused, when it will run next (with a live countdown), and what happened last time it ran. Tap to expand details. Pause, resume, or delete tasks directly from the dashboard. |
-| **Memory Landscape** | How many things your assistant remembers, broken down by type. Tap the numbers to browse individual memories in a slide-up drawer. Two highlight sections: **Fading Soon** (memories about to be forgotten, salience < 0.5) and **Recently Retrieved** (semantic memories the bot actually pulled up in recent conversations). Click any memory item to expand and read the full content. Each section has a "Browse all" link to open the full memory drawer. Includes a salience distribution chart and a 30-day memory creation timeline. |
-| **System Health** | A visual meter showing how full the conversation window is (green = plenty of room, yellow = getting full, red = almost out). Also shows how long the current session has been running, whether Telegram, WhatsApp and Slack are connected, and the bot's username. |
-| **Tokens & Cost** | How much you've spent today and all-time. A chart showing daily costs over the past month. A donut chart showing how efficiently the system is using cached data (higher = cheaper). |
+| **Agents** | Status cards for every configured agent. Shows live/off status, model, today's turns and cost. Color-coded borders per agent. |
+| **Hive Mind** | A real-time activity feed showing what each agent has been doing, with timestamps and color-coded agent names. Includes a privacy blur toggle. |
+| **Tasks** | Unassigned mission tasks waiting to be routed. Create tasks with a title and prompt, then either drag them to an agent column or click **Auto-assign** to let Gemini classify and route them automatically. |
+| **Mission Control** | A kanban board with one column per agent. Shows running and recently completed tasks per agent. Click **History** to open a paginated drawer of all completed tasks with full results. Completed tasks stay visible for 30 minutes, then move to history. |
+| **Scheduled Tasks** | Recurring cron tasks. Shows status, next run countdown, last result. Pause, resume, or delete directly. |
+| **Memory Landscape** | Total memories, consolidation insights, importance distribution chart. Sections for fading memories (salience < 0.5) and recently retrieved. Tap to browse all memories in a drill-down drawer. Includes a 30-day memory creation timeline. |
+| **System Health** | Context window gauge (green/yellow/red), session age, compaction count, connection status for Telegram, WhatsApp, and Slack. |
+| **Tokens & Cost** | Today's spend, all-time cost, 30-day cost timeline chart, cache hit rate chart. |
 
-The dashboard also has a **live chat overlay**: a floating chat button that opens a real-time conversation panel. You can send messages to Claude directly from the dashboard and see responses stream in via SSE (Server-Sent Events). It shows tool progress in real time (e.g. "Reading file", "Running command") and has a stop button to abort queries mid-execution. Messages sent from the dashboard are also relayed to your Telegram chat.
+The dashboard also has a **live chat overlay**: a floating chat button that opens a real-time conversation panel. You can send messages to Claude directly from the dashboard and see responses stream in via SSE (Server-Sent Events). It shows tool progress in real time and has a stop button to abort queries mid-execution. Messages sent from the dashboard are also relayed to your Telegram chat.
 
 On your phone it's a single scrollable page. On a computer it splits into two columns automatically.
 
@@ -865,52 +872,64 @@ The `store/` directory (database, WhatsApp session, logs) is gitignored with mul
 
 ## Memory
 
-![ClaudeClaw memory system diagram](assets/memory-diagram.jpeg)
+![ClaudeClaw memory system diagram](assets/memory-diagram.png)
 
-ClaudeClaw has three layers of context working simultaneously, all automatic, nothing to configure.
+ClaudeClaw has a structured memory system that extracts, consolidates, and recalls knowledge across all sessions. Everything is automatic.
 
 ### Layer 1 — Session resumption
 
-Every time you send a message, Claude Code resumes the same session using a stored session ID. This means Claude carries your full conversation history — tool use, reasoning, prior decisions — across messages without you re-sending anything. It's the same as if you never left the terminal.
+Every time you send a message, Claude Code resumes the same session using a stored session ID. This means Claude carries your full conversation history across messages without you re-sending anything. It's the same as if you never left the terminal.
 
 Use `/newchat` to start a completely fresh session when you want a clean slate.
 
-### Layer 2 — SQLite memory with FTS5 search
+### Layer 2 — Structured memory extraction (Gemini-powered)
 
-Every meaningful message is saved to SQLite with a salience score and automatically recalled on relevant future messages. This works across `/newchat` resets — it's persistent, not session-bound.
+After each conversation turn, Gemini Flash evaluates whether the exchange contains anything worth remembering long-term. If it does, it extracts structured data: a summary, entities, topics, connections to other memories, and an importance score (0.0 to 1.0). Only memories scoring 0.5+ are saved. This filters out noise like "ok thanks" or command acknowledgments.
 
-**How saving works:**
+Each memory also gets a vector embedding for semantic search.
 
-| Message type | Sector | Decay rate |
-|-------------|--------|-----------|
-| Contains: `my`, `I am`, `I prefer`, `remember`, `always`, `never` | `semantic` | Slow — long-lived |
-| Any other message over 20 chars (not a `/command`) | `episodic` | Faster |
+**Importance tiers and decay:**
 
-**How salience works:**
-- Every memory starts at `1.0`
-- Each time a memory is retrieved and used: `+0.1` (capped at `5.0`)
-- Every day, all memories older than 24 hours: `× 0.98` (2% decay)
-- When salience drops below `0.1`: automatically deleted
+| Importance | What gets this score | Daily decay | Approximate lifespan |
+|-----------|---------------------|------------|---------------------|
+| 0.8 - 1.0 | Core identity, critical rules, strong preferences | 1% per day | ~460 days |
+| 0.5 - 0.7 | Useful context, standing decisions, workflows | 2% per day | ~230 days |
+| Below 0.5 | Not saved (filtered at extraction) | n/a | n/a |
+| Pinned | Anything you mark as permanent | No decay | Forever |
 
-Things you mention often survive longer. Things you only said once fade away.
+Memories that are actually useful in conversations get a salience boost (+0.1 per use). Memories that surface but aren't relevant get penalized (-0.05). This feedback loop means the system learns what matters over time.
 
-### Layer 3 — Context injection
+### Layer 3 — Five-layer context injection
 
-Before every message you send, two searches run in parallel:
-1. **FTS5 keyword search** — matches your message text against all stored memories, returns top 3
-2. **Recency fallback** — the 5 most recently accessed memories
+Before every message, five parallel searches build your memory context:
+
+1. **Semantic vector search** — finds memories similar in meaning to your message (cosine similarity > 0.3)
+2. **High-importance recall** — recent memories with importance >= 0.5
+3. **Consolidation insights** — patterns detected across multiple memories (e.g., "User consistently prefers X over Y")
+4. **Team activity** — what other agents have done in the last 24 hours (from the Hive Mind)
+5. **Conversation history recall** — triggered when you say things like "remember when" or "what did we discuss"
 
 The results are deduplicated and prepended to your message as a block Claude sees:
 
 ```
 [Memory context]
-- you prefer short bullet replies over long paragraphs (semantic)
-- working on the YouTube channel rebrand this week (episodic)
-- always send Telegram updates for heavy tasks (semantic)
+Relevant memories:
+- [0.8] User prefers short bullet replies over long paragraphs
+- [0.6] Working on YouTube channel rebrand this week
+
+Insights:
+- User has strong communication preferences: concise, no fluff
+
+[Team activity]
+- [comms] 2h ago: Processed weekly email digest
 [End memory context]
 ```
 
-Claude uses this to answer without you re-explaining context every time.
+### Consolidation (every 30 minutes)
+
+A background process finds patterns across unconsolidated memories: themes, contradictions, and connections. When a newer memory contradicts an older one, the older memory is superseded (importance reduced, marked as outdated). Consolidation insights surface in the memory context block.
+
+Requires `GOOGLE_API_KEY` in your `.env` (Gemini Flash, costs ~$0.03/day).
 
 ### Commands
 
@@ -919,46 +938,25 @@ Claude uses this to answer without you re-explaining context every time.
 /forget    clear the current session (memories keep decaying naturally)
 ```
 
+### Pinning memories
+
+High-importance memories (0.8+) trigger a Telegram notification when saved, giving you a chance to pin them. Pinned memories never decay.
+
 ### Changing how memory works
 
-Memory behavior is controlled by two files you can edit:
-
-**`src/memory.ts`** — controls what gets saved and when:
+**`src/memory-ingest.ts`** — controls what gets extracted and the importance threshold:
 ```typescript
-const SEMANTIC_SIGNALS = /\b(my|i am|i'm|i prefer|remember|always|never)\b/i;
+// The Gemini extraction prompt defines what's worth remembering
+// Importance threshold (default: 0.5) filters low-value memories
 ```
-Add words to this regex to make more things save as long-lived semantic memories.
 
 **`src/db.ts`** — controls decay constants:
 ```typescript
-db.prepare('UPDATE memories SET salience = salience * 0.98 WHERE ...')  // decay rate
-db.prepare('DELETE FROM memories WHERE salience < 0.1')                 // deletion threshold
+// importance >= 0.8: 0.99 multiplier (1% daily decay)
+// importance >= 0.5: 0.98 multiplier (2% daily decay)
+// pinned = 1: no decay
+// Deleted when salience < 0.05
 ```
-
-**Prompts you can send Claude to manage memory:**
-
-```
-"Remember that I always want responses in bullet points"
-→ Saved as semantic memory (high salience, slow decay)
-
-"Remember my Obsidian vault is at ~/Documents/Notes"
-→ Saved as semantic memory
-
-"What do you remember about me?"
-→ Claude searches memories and summarizes
-
-"Forget everything we've talked about today"
-→ Tell Claude to run: DELETE FROM memories WHERE created_at > strftime('%s','now','-1 day')
-
-"Show me all my stored memories"
-→ Claude runs: SELECT content, sector, salience FROM memories ORDER BY salience DESC
-```
-
-You can also ask Claude to manually insert a high-salience memory about anything:
-```
-"Remember permanently that I run a YouTube channel about AI and my timezone is EST"
-```
-Claude will insert it directly into the memories table with high salience.
 
 ---
 
@@ -991,6 +989,48 @@ node dist/schedule-cli.js delete <id>
 
 ---
 
+## Mission Control
+
+Mission Control lets you create one-shot tasks and assign them to any agent from the dashboard or via Telegram.
+
+### How it works
+
+1. **Create a task** from the dashboard (click "+ New") or tell your main agent: "have research look into X"
+2. The task appears in the **Tasks inbox** on the dashboard, unassigned
+3. **Assign it** by dragging it to an agent column, or click **Auto-assign** to let Gemini classify and route it to the best agent automatically
+4. The target agent picks it up within 60 seconds, executes it, and sends the result to your Telegram chat
+5. Completed tasks appear in the agent's column for 30 minutes, then move to the **History** drawer
+
+### Auto-assign
+
+When you click Auto-assign, Gemini Flash reads the task prompt and matches it against your agent descriptions (from their `agent.yaml` files). A task about "draft a reply to John's email" routes to the comms agent. A task about "research competitors" routes to the research agent. Costs about $0.0001 per classification.
+
+### From Telegram
+
+Your main agent can create mission tasks for other agents. Just say things like:
+- "have research look into the top competitors in AI coding"
+- "get ops to update the Stripe pricing"
+- "ask comms to draft a reply to that partnership email"
+
+The main agent creates the task via CLI and responds immediately. The target agent picks it up asynchronously.
+
+### CLI
+
+```bash
+node dist/mission-cli.js create --agent research --title "Competitor analysis" "Full prompt here"
+node dist/mission-cli.js list
+node dist/mission-cli.js result <id>
+node dist/mission-cli.js cancel <id>
+```
+
+Omit `--agent` to create an unassigned task (assign from dashboard).
+
+### Safety
+
+Mission tasks go through the same FIFO message queue as user messages and scheduled tasks. They can never collide with an active conversation. Each task runs in a fresh session and has a 10-minute timeout.
+
+---
+
 ## Database
 
 ClaudeClaw ships with SQLite and **creates everything automatically on first run**. No migrations, no setup, no external database server. File lives at `store/claudeclaw.db`.
@@ -998,15 +1038,20 @@ ClaudeClaw ships with SQLite and **creates everything automatically on first run
 **Schema:**
 
 ```sql
-sessions         -- Claude Code session IDs, one per chat
-memories         -- Conversation memory with FTS5 search and salience decay
-memories_fts     -- Virtual FTS5 table, auto-synced via triggers
-scheduled_tasks  -- Cron-scheduled autonomous tasks
-wa_message_map   -- Maps Telegram message IDs to WhatsApp chats
-wa_outbox        -- Queued outgoing WhatsApp messages
-wa_messages      -- Incoming WhatsApp message history
-slack_messages   -- Slack message history
-conversation_log -- Full conversation turns (used by /respin)
+sessions          -- Claude Code session IDs, one per chat per agent
+memories          -- Structured memories with importance, salience, embeddings
+memories_fts      -- Virtual FTS5 table, auto-synced via triggers
+consolidations    -- Insights synthesized across memories (patterns, contradictions)
+scheduled_tasks   -- Cron-scheduled recurring tasks (per agent)
+mission_tasks     -- One-shot async tasks for Mission Control
+conversation_log  -- Full conversation turns (per agent, used by /respin)
+token_usage       -- Per-turn token counts and cost tracking
+hive_mind         -- Cross-agent activity log
+inter_agent_tasks -- Real-time delegation tracking (@agent: syntax)
+wa_message_map    -- Maps Telegram message IDs to WhatsApp chats
+wa_outbox         -- Queued outgoing WhatsApp messages
+wa_messages       -- Incoming WhatsApp message history (encrypted, 3-day retention)
+slack_messages    -- Slack message history (encrypted, 3-day retention)
 ```
 
 **Encryption:** WhatsApp and Slack message bodies are encrypted with AES-256-GCM before storage. The key lives in your `.env` as `DB_ENCRYPTION_KEY`. Raw `SELECT` queries on the `body` column will return ciphertext. Use the app's read functions to get decrypted content.
@@ -1018,10 +1063,11 @@ Inspect it directly:
 ```bash
 sqlite3 store/claudeclaw.db
 
-SELECT * FROM memories ORDER BY accessed_at DESC LIMIT 10;
+SELECT summary, importance, salience FROM memories ORDER BY created_at DESC LIMIT 10;
 SELECT * FROM scheduled_tasks;
+SELECT title, status, assigned_agent FROM mission_tasks ORDER BY created_at DESC;
+SELECT agent_id, action, summary FROM hive_mind ORDER BY created_at DESC LIMIT 10;
 SELECT * FROM sessions;
-SELECT * FROM wa_outbox WHERE sent_at IS NULL;
 ```
 
 ---
@@ -1243,7 +1289,7 @@ ClaudeClaw converts Claude's Markdown to Telegram-safe HTML (bold, italic, code 
 
 ```mermaid
 flowchart TD
-    Phone["📱 Telegram App"] -->|message| TGAPI["Telegram Bot API"]
+    Phone["Telegram App"] -->|message| TGAPI["Telegram Bot API"]
     TGAPI -->|long-poll| Bot["bot.ts\n(grammy)"]
 
     Bot -->|voice note| STT["Groq Whisper\nTranscription"]
@@ -1252,23 +1298,33 @@ flowchart TD
     DL --> Handler
     Bot -->|text| Handler["handleMessage()"]
 
-    Handler -->|FTS5 + recency| Mem["Memory Layer\nSQLite"]
+    Handler -->|"5-layer retrieval"| Mem["Memory Layer\nVector + FTS5 + Gemini"]
     Mem -->|context block| Agent
+
+    Handler -->|"@agent: syntax"| Orch["orchestrator.ts\nAgent delegation"]
+    Orch -->|route to agent| Agent
 
     Agent["agent.ts\nClaude Agent SDK"] -->|spawns subprocess| CC["claude CLI\n~/.claude/ auth"]
     CC -->|loads| Config["CLAUDE.md\n+ ~/.claude/skills/"]
     CC -->|uses| Tools["Bash · Web · MCP\nFile system · APIs"]
     CC -->|result| Agent
 
-    Agent --> Format["Format + Split\nMarkdown → HTML"]
+    Agent --> Format["Format + Split\nMarkdown to HTML"]
     Format -->|reply| TGAPI
 
-    Sched["Scheduler\ncron tasks"] -->|every 60s| Agent
+    Sched["Scheduler\ncron + mission tasks"] -->|every 60s| Agent
     WA["WhatsApp daemon\n:4242"] --> Bot
+    Dashboard["Dashboard\nHono + SSE"] --> Bot
+    Mission["Mission Control\nTasks inbox + kanban"] --> Sched
 
     DB[("SQLite\nstore/claudeclaw.db")] --- Mem
     DB --- Sched
     DB --- WA
+    DB --- Dashboard
+    DB --- Mission
+
+    Gemini["Gemini API\nextraction + auto-assign"] --- Mem
+    Gemini --- Mission
 ```
 
 ---
@@ -1291,22 +1347,33 @@ claudeclaw/
 │
 │  ← Bot source code (src/)
 ├── src/
-│   ├── index.ts          Main entrypoint — starts everything
-│   ├── bot.ts            Handles all Telegram messages (text, voice, photo, etc.)
-│   ├── agent.ts          Runs Claude Code — the core integration
-│   ├── db.ts             SQLite database — all tables and queries
-│   ├── memory.ts         Memory saving, searching, and decay logic
-│   ├── scheduler.ts      Cron task runner — fires tasks every 60 seconds
-│   ├── voice.ts          Voice transcription (Groq) and synthesis (ElevenLabs)
-│   ├── media.ts          Downloads files from Telegram, cleans up after 24h
-│   ├── slack.ts           Slack API client (conversations, messages, send)
-│   ├── slack-cli.ts       CLI wrapper for Slack (used by the slack skill)
-│   ├── whatsapp.ts        WhatsApp client via whatsapp-web.js
-│   ├── dashboard.ts       Web dashboard server (Hono + API routes + token auth)
-│   ├── dashboard-html.ts  Dashboard HTML/CSS/JS (Tailwind + Chart.js, no build step)
-│   ├── config.ts          Reads .env safely (never pollutes process.env)
-│   ├── env.ts             Low-level .env file parser
-│   └── schedule-cli.ts    CLI tool for managing scheduled tasks
+│   ├── index.ts             Main entrypoint — starts everything
+│   ├── bot.ts               Handles all Telegram messages (text, voice, photo, etc.)
+│   ├── agent.ts             Runs Claude Code via Agent SDK
+│   ├── agent-config.ts      Loads agent YAML configs and CLAUDE.md templates
+│   ├── orchestrator.ts      Agent delegation routing (@agent: syntax)
+│   ├── db.ts                SQLite database — all tables and queries
+│   ├── memory.ts            5-layer context injection and memory feedback
+│   ├── memory-ingest.ts     Gemini-powered memory extraction from conversations
+│   ├── memory-consolidate.ts Pattern detection across memories (every 30 min)
+│   ├── embeddings.ts        Vector embeddings for semantic memory search
+│   ├── gemini.ts            Gemini API client (extraction, classification)
+│   ├── scheduler.ts         Cron + mission task runner — checks every 60 seconds
+│   ├── schedule-cli.ts      CLI for managing scheduled tasks
+│   ├── mission-cli.ts       CLI for creating/managing mission tasks
+│   ├── voice.ts             Voice transcription (Groq) and synthesis (ElevenLabs)
+│   ├── media.ts             Downloads files from Telegram, cleans up after 24h
+│   ├── slack.ts             Slack API client (conversations, messages, send)
+│   ├── slack-cli.ts         CLI wrapper for Slack (used by the slack skill)
+│   ├── whatsapp.ts          WhatsApp client via whatsapp-web.js
+│   ├── dashboard.ts         Web dashboard server (Hono + API routes + token auth)
+│   ├── dashboard-html.ts    Dashboard HTML/CSS/JS (Tailwind + Chart.js, no build step)
+│   ├── state.ts             Shared state and SSE event emitter
+│   ├── message-queue.ts     Per-chat FIFO queue (prevents session collisions)
+│   ├── config.ts            Reads .env safely (never pollutes process.env)
+│   ├── env.ts               Low-level .env file parser
+│   ├── obsidian.ts          Obsidian vault context injection (per agent)
+│   └── logger.ts            Structured logging via pino
 │
 │  ← Skills (copy to ~/.claude/skills/ to activate)
 ├── skills/
@@ -1374,7 +1441,7 @@ Think about the roles that make sense for your workflow. Here are the templates 
 
 | Template | What it handles | Default model |
 |----------|----------------|---------------|
-| `comms` | Email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn DMs | Sonnet |
+| `comms` | Email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn DMs | Sonnet |
 | `content` | YouTube scripts, LinkedIn posts, carousels, trend research | Sonnet |
 | `ops` | Calendar, billing, Stripe, Gumroad, admin, task management | Sonnet |
 | `research` | Deep web research, academic sources, competitive intel | Sonnet |
@@ -1407,7 +1474,7 @@ For each agent, you need two files in `agents/<name>/`:
 **agent.yaml** -- the agent's config:
 ```yaml
 name: Comms
-description: Email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn
+description: Email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn
 telegram_bot_token_env: COMMS_BOT_TOKEN
 model: claude-sonnet-4-6
 

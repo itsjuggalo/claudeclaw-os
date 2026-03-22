@@ -74,8 +74,14 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   let obsidian: AgentConfig['obsidian'];
   const obsRaw = raw['obsidian'] as Record<string, unknown> | undefined;
   if (obsRaw) {
+    const vault = obsRaw['vault'] as string;
+    if (vault && !fs.existsSync(vault)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[${agentId}] WARNING: Obsidian vault path does not exist: ${vault}`);
+      console.warn(`[${agentId}] Update obsidian.vault in agent.yaml to your local vault path.`);
+    }
     obsidian = {
-      vault: obsRaw['vault'] as string,
+      vault,
       folders: (obsRaw['folders'] as string[]) ?? [],
       readOnly: (obsRaw['read_only'] as string[]) ?? [],
     };

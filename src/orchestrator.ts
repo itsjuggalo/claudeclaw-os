@@ -7,6 +7,7 @@ import { loadAgentConfig, listAgentIds, resolveAgentClaudeMd } from './agent-con
 import { PROJECT_ROOT } from './config.js';
 import { logToHiveMind, createInterAgentTask, completeInterAgentTask } from './db.js';
 import { logger } from './logger.js';
+import { buildMemoryContext } from './memory.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -166,10 +167,19 @@ export async function delegateToAgent(
       }
     }
 
-    // Build the delegated prompt with agent role context
-    const fullPrompt = systemPrompt
-      ? `[Agent role — follow these instructions]\n${systemPrompt}\n[End agent role]\n\n${prompt}`
-      : prompt;
+    // Build memory context for the delegated agent
+    const { contextText: memCtx } = await buildMemoryContext(chatId, prompt, agentId);
+
+    // Build the delegated prompt with agent role context + memory
+    const contextParts: string[] = [];
+    if (systemPrompt) {
+      contextParts.push(`[Agent role — follow these instructions]\n${systemPrompt}\n[End agent role]`);
+    }
+    if (memCtx) {
+      contextParts.push(memCtx);
+    }
+    contextParts.push(prompt);
+    const fullPrompt = contextParts.join('\n\n');
 
     // Create an AbortController with timeout
     const abortCtrl = new AbortController();

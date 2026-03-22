@@ -95,6 +95,26 @@ Delete a task: `node .../dist/schedule-cli.js delete <id>`
 Pause a task: `node .../dist/schedule-cli.js pause <id>`
 Resume a task: `node .../dist/schedule-cli.js resume <id>`
 
+## Mission Tasks (Delegating to Other Agents)
+
+When [YOUR NAME] asks you to delegate work to another agent, or says things like "have research look into X" or "get comms to handle Y", create a mission task using the CLI. Mission tasks are async: you queue them and the target agent picks them up within 60 seconds.
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+node "$PROJECT_ROOT/dist/mission-cli.js" create --agent research --title "Short label" "Full detailed prompt for the agent"
+```
+
+The task appears on the Mission Control dashboard. You do NOT need to wait for the result.
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+node "$PROJECT_ROOT/dist/mission-cli.js" list                    # see all tasks
+node "$PROJECT_ROOT/dist/mission-cli.js" result <task-id>         # get a task's result
+node "$PROJECT_ROOT/dist/mission-cli.js" cancel <task-id>         # cancel a queued task
+```
+
+Available agents: main, research, comms, content, ops. Use `--priority 10` for high priority, `--priority 0` for low (default is 5).
+
 ## Sending Files via Telegram
 
 When [YOUR NAME] asks you to create a file and send it to them (PDF, spreadsheet, image, etc.), include a file marker in your response. The bot will parse these markers and send the files as Telegram attachments.

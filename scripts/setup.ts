@@ -682,7 +682,7 @@ async function main() {
   if (wantAgents) {
     console.log();
     info('Available templates:');
-    console.log(`  1. ${c.bold}comms${c.reset}     — email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn`);
+    console.log(`  1. ${c.bold}comms${c.reset}     — email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn`);
     console.log(`  2. ${c.bold}content${c.reset}   — YouTube scripts, LinkedIn posts, trend research`);
     console.log(`  3. ${c.bold}ops${c.reset}       — calendar, billing, Stripe, Gumroad, admin`);
     console.log(`  4. ${c.bold}research${c.reset}  — deep web research, academic, competitive intel`);

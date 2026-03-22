@@ -19,6 +19,7 @@ const envConfig = readEnvFile([
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
+  'AGENT_TIMEOUT_MS',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -104,10 +105,12 @@ export const MAX_MESSAGE_LENGTH = 4096;
 export const TYPING_REFRESH_MS = 4000;
 
 // Maximum time (ms) an agent query can run before being auto-aborted.
-// Prevents runaway commands (e.g. recursive `find /`) from blocking the bot indefinitely.
-// Default: 5 minutes. Override via AGENT_TIMEOUT_MS in .env.
+// Safety net for truly stuck commands (e.g. recursive `find /`).
+// Default: 15 minutes. Use /stop in Telegram to manually kill a running query.
+// Previously 5 min, which caused mid-execution timeouts on bulk API work
+// (posting YouTube comments, sending multiple messages) leading to duplicate posts.
 export const AGENT_TIMEOUT_MS = parseInt(
-  process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '300000',
+  process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '900000',
   10,
 );
 
@@ -135,3 +138,12 @@ export const DB_ENCRYPTION_KEY =
 // Google API key for Gemini (memory extraction + consolidation)
 export const GOOGLE_API_KEY =
   process.env.GOOGLE_API_KEY || envConfig.GOOGLE_API_KEY || '';
+
+// Streaming strategy for progressive Telegram updates.
+// 'global-throttle' (default): edits a placeholder message with streamed text,
+//   rate-limited to ~24 edits/min per chat to respect Telegram limits.
+// 'single-agent-only': streaming disabled when multiple agents are active on same chat.
+// 'off': no streaming, wait for full response.
+export type StreamStrategy = 'global-throttle' | 'single-agent-only' | 'off';
+export const STREAM_STRATEGY: StreamStrategy =
+  (process.env.STREAM_STRATEGY || 'off') as StreamStrategy;

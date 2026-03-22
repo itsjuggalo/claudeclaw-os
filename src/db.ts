@@ -216,6 +216,24 @@ function createSchema(database: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_inter_agent_tasks_status ON inter_agent_tasks(status, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS mission_tasks (
+      id              TEXT PRIMARY KEY,
+      title           TEXT NOT NULL,
+      prompt          TEXT NOT NULL,
+      assigned_agent  TEXT,
+      status          TEXT NOT NULL DEFAULT 'queued',
+      result          TEXT,
+      error           TEXT,
+      created_by      TEXT NOT NULL DEFAULT 'dashboard',
+      priority        INTEGER NOT NULL DEFAULT 0,
+      created_at      INTEGER NOT NULL,
+      started_at      INTEGER,
+      completed_at    INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mission_status
+      ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       summary,
       raw_text,
@@ -389,7 +407,7 @@ function runMigrations(database: Database.Database): void {
           VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
       END;
 
-      CREATE TRIGGER memories_fts_update AFTER UPDATE ON memories BEGIN
+      CREATE TRIGGER memories_fts_update AFTER UPDATE OF summary, raw_text, entities, topics ON memories BEGIN
         INSERT INTO memories_fts(memories_fts, rowid, summary, raw_text, entities, topics)
           VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
         INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
@@ -412,6 +430,81 @@ function runMigrations(database: Database.Database): void {
   if (memColsPost.some((c) => c.name === 'importance') && !memColsPost.some((c) => c.name === 'embedding')) {
     database.exec(`ALTER TABLE memories ADD COLUMN embedding TEXT`);
     logger.info('Migration: added embedding column to memories table');
+  }
+
+  // Hive Mind V2: Add agent_id to memories for attribution
+  if (!memColsPost.some((c: { name: string }) => c.name === 'agent_id')) {
+    database.exec(`ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
+    logger.info('Migration: added agent_id column to memories table');
+  }
+
+  // Hive Mind V2: Add embedding + model tracking to consolidations
+  const consolCols = database.prepare('PRAGMA table_info(consolidations)').all() as Array<{ name: string }>;
+  if (!consolCols.some((c) => c.name === 'embedding')) {
+    database.exec(`ALTER TABLE consolidations ADD COLUMN embedding TEXT`);
+    logger.info('Migration: added embedding column to consolidations table');
+  }
+  if (!consolCols.some((c) => c.name === 'embedding_model')) {
+    database.exec(`ALTER TABLE consolidations ADD COLUMN embedding_model TEXT DEFAULT 'embedding-001'`);
+  }
+
+  // Add embedding_model to memories too (future-proofing)
+  if (!memColsPost.some((c: { name: string }) => c.name === 'embedding_model')) {
+    database.exec(`ALTER TABLE memories ADD COLUMN embedding_model TEXT DEFAULT 'embedding-001'`);
+  }
+
+  // Hive Mind V2: Fix FTS5 update trigger to only fire on content column changes.
+  // The old trigger fires on every UPDATE (including salience/importance-only changes),
+  // causing massive write amplification during decay sweeps.
+  const triggerCheck = database.prepare(
+    `SELECT sql FROM sqlite_master WHERE type='trigger' AND name='memories_fts_update'`,
+  ).get() as { sql: string } | undefined;
+  if (triggerCheck?.sql && !triggerCheck.sql.includes('UPDATE OF')) {
+    database.exec(`
+      DROP TRIGGER IF EXISTS memories_fts_update;
+      CREATE TRIGGER memories_fts_update AFTER UPDATE OF summary, raw_text, entities, topics ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, summary, raw_text, entities, topics)
+          VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
+        INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
+          VALUES (new.id, new.summary, new.raw_text, new.entities, new.topics);
+      END;
+    `);
+    logger.info('Migration: restricted FTS5 update trigger to content columns only');
+  }
+
+  // Hive Mind V2: Add superseded_by for contradiction resolution
+  if (!memColsPost.some((c: { name: string }) => c.name === 'superseded_by')) {
+    database.exec(`ALTER TABLE memories ADD COLUMN superseded_by INTEGER REFERENCES memories(id)`);
+    logger.info('Migration: added superseded_by column to memories table');
+  }
+
+  // Hive Mind V2: Add pinned flag for permanent memories that never decay.
+  // Memories are only pinned explicitly by the user ("remember this permanently")
+  // or via /pin command. No auto-pinning: the user controls what's permanent.
+  if (!memColsPost.some((c: { name: string }) => c.name === 'pinned')) {
+    database.exec(`ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+    logger.info('Migration: added pinned column to memories table');
+  }
+
+  // Mission Control: migrate assigned_agent from NOT NULL to nullable (allow unassigned tasks)
+  const missionCols = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string; notnull: number }>;
+  const assignedCol = missionCols.find((c) => c.name === 'assigned_agent');
+  if (assignedCol && assignedCol.notnull === 1) {
+    database.exec(`
+      CREATE TABLE mission_tasks_new (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL,
+        assigned_agent TEXT, status TEXT NOT NULL DEFAULT 'queued',
+        result TEXT, error TEXT, created_by TEXT NOT NULL DEFAULT 'dashboard',
+        priority INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+        started_at INTEGER, completed_at INTEGER
+      );
+      INSERT INTO mission_tasks_new SELECT * FROM mission_tasks;
+      DROP TABLE mission_tasks;
+      ALTER TABLE mission_tasks_new RENAME TO mission_tasks;
+      CREATE INDEX IF NOT EXISTS idx_mission_status
+        ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
+    `);
+    logger.info('Migration: made mission_tasks.assigned_agent nullable');
   }
 }
 
@@ -448,6 +541,7 @@ export interface Memory {
   id: number;
   chat_id: string;
   source: string;
+  agent_id: string;
   raw_text: string;
   summary: string;
   entities: string;    // JSON array
@@ -456,6 +550,7 @@ export interface Memory {
   importance: number;
   salience: number;
   consolidated: number;
+  pinned: number;      // 1 = permanent, never decays
   embedding: string | null; // JSON array of floats
   created_at: number;
   accessed_at: number;
@@ -468,6 +563,8 @@ export interface Consolidation {
   summary: string;
   insight: string;
   created_at: number;
+  embedding?: string;
+  embedding_model?: string;
 }
 
 export function saveStructuredMemory(
@@ -478,11 +575,12 @@ export function saveStructuredMemory(
   topics: string[],
   importance: number,
   source = 'conversation',
+  agentId = 'main',
 ): number {
   const now = Math.floor(Date.now() / 1000);
   const result = db.prepare(
-    `INSERT INTO memories (chat_id, source, raw_text, summary, entities, topics, importance, created_at, accessed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO memories (chat_id, source, raw_text, summary, entities, topics, importance, agent_id, created_at, accessed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     chatId,
     source,
@@ -491,6 +589,7 @@ export function saveStructuredMemory(
     JSON.stringify(entities),
     JSON.stringify(topics),
     importance,
+    agentId,
     now,
     now,
   );
@@ -554,9 +653,12 @@ export function searchMemories(
       if (scored.length > 0) {
         const ids = scored.map((s) => s.id);
         const placeholders = ids.map(() => '?').join(',');
-        return db
-          .prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`)
+        const rows = db
+          .prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND superseded_by IS NULL`)
           .all(...ids) as Memory[];
+        // Preserve similarity-score ordering (SQL IN doesn't guarantee order)
+        const rowMap = new Map(rows.map((r) => [r.id, r]));
+        return ids.map((id) => rowMap.get(id)).filter(Boolean) as Memory[];
       }
     }
   }
@@ -570,7 +672,7 @@ export function searchMemories(
     .prepare(
       `SELECT memories.* FROM memories
        JOIN memories_fts ON memories.id = memories_fts.rowid
-       WHERE memories_fts MATCH ? AND memories.chat_id = ?
+       WHERE memories_fts MATCH ? AND memories.chat_id = ? AND memories.superseded_by IS NULL
        ORDER BY rank
        LIMIT ?`,
     )
@@ -591,7 +693,7 @@ export function searchMemories(
   results = db
     .prepare(
       `SELECT * FROM memories
-       WHERE chat_id = ? AND (${likeConditions})
+       WHERE chat_id = ? AND superseded_by IS NULL AND (${likeConditions})
        ORDER BY importance DESC, accessed_at DESC
        LIMIT ?`,
     )
@@ -606,7 +708,7 @@ export function saveMemoryEmbedding(memoryId: number, embedding: number[]): void
 
 export function getMemoriesWithEmbeddings(chatId: string): Array<{ id: number; embedding: number[]; summary: string; importance: number }> {
   const rows = db
-    .prepare('SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND embedding IS NOT NULL')
+    .prepare('SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND embedding IS NOT NULL AND superseded_by IS NULL')
     .all(chatId) as Array<{ id: number; embedding: string; summary: string; importance: number }>;
   return rows.map((r) => ({
     id: r.id,
@@ -640,11 +742,39 @@ export function touchMemory(id: number): void {
   ).run(now, id);
 }
 
+export function penalizeMemory(memoryId: number): void {
+  db.prepare(
+    `UPDATE memories SET salience = MAX(0.05, salience - 0.05) WHERE id = ?`,
+  ).run(memoryId);
+}
+
+/**
+ * Batch-update salience for multiple memories in a single transaction.
+ * Reduces SQLite lock contention when multiple agents finish concurrently.
+ */
+export function batchUpdateMemoryRelevance(
+  allIds: number[],
+  usefulIds: Set<number>,
+): void {
+  const txn = db.transaction(() => {
+    for (const id of allIds) {
+      if (usefulIds.has(id)) {
+        touchMemory(id);
+      } else {
+        penalizeMemory(id);
+      }
+    }
+  });
+  txn();
+}
+
 /**
  * Importance-weighted decay. High-importance memories decay slower.
- * - importance >= 0.8: 1% per day (retains ~460 days)
- * - importance >= 0.5: 2% per day (retains ~230 days)
- * - importance < 0.5:  5% per day (retains ~90 days)
+ * Pinned memories are exempt from decay entirely.
+ * - pinned:             no decay (permanent)
+ * - importance >= 0.8:  1% per day (retains ~460 days)
+ * - importance >= 0.5:  2% per day (retains ~230 days)
+ * - importance < 0.5:   5% per day (retains ~90 days)
  */
 export function decayMemories(): void {
   const oneDayAgo = Math.floor(Date.now() / 1000) - 86400;
@@ -654,9 +784,17 @@ export function decayMemories(): void {
       WHEN importance >= 0.5 THEN 0.98
       ELSE 0.95
     END
-    WHERE created_at < ?
+    WHERE created_at < ? AND pinned = 0
   `).run(oneDayAgo);
-  db.prepare('DELETE FROM memories WHERE salience < 0.05').run();
+  db.prepare('DELETE FROM memories WHERE salience < 0.05 AND pinned = 0').run();
+}
+
+export function pinMemory(memoryId: number): void {
+  db.prepare('UPDATE memories SET pinned = 1 WHERE id = ?').run(memoryId);
+}
+
+export function unpinMemory(memoryId: number): void {
+  db.prepare('UPDATE memories SET pinned = 0 WHERE id = ?').run(memoryId);
 }
 
 // ── Consolidation CRUD ──────────────────────────────────────────────
@@ -684,12 +822,37 @@ export function saveConsolidation(
   return result.lastInsertRowid as number;
 }
 
+export function saveConsolidationEmbedding(consolidationId: number, embedding: number[]): void {
+  db.prepare('UPDATE consolidations SET embedding = ?, embedding_model = ? WHERE id = ?')
+    .run(JSON.stringify(embedding), 'embedding-001', consolidationId);
+}
+
+export function getConsolidationsWithEmbeddings(chatId: string): Array<{ id: number; embedding: number[]; summary: string; insight: string }> {
+  const rows = db
+    .prepare('SELECT id, embedding, summary, insight FROM consolidations WHERE chat_id = ? AND embedding IS NOT NULL AND embedding_model = ?')
+    .all(chatId, 'embedding-001') as Array<{ id: number; embedding: string; summary: string; insight: string }>;
+  return rows.map((r) => ({ ...r, embedding: JSON.parse(r.embedding) as number[] }));
+}
+
+export function supersedeMemory(oldId: number, newId: number): void {
+  db.prepare(
+    `UPDATE memories SET superseded_by = ?, importance = importance * 0.3, salience = salience * 0.5 WHERE id = ?`,
+  ).run(newId, oldId);
+}
+
 export function updateMemoryConnections(memoryId: number, connections: Array<{ linked_to: number; relationship: string }>): void {
   const row = db.prepare('SELECT connections FROM memories WHERE id = ?').get(memoryId) as { connections: string } | undefined;
   if (!row) return;
   const existing: Array<{ linked_to: number; relationship: string }> = JSON.parse(row.connections);
   const merged = [...existing, ...connections];
-  db.prepare('UPDATE memories SET connections = ? WHERE id = ?').run(JSON.stringify(merged), memoryId);
+  // Deduplicate by linked_to to prevent unbounded growth on re-consolidation
+  const seen = new Set<number>();
+  const deduped = merged.filter((c) => {
+    if (seen.has(c.linked_to)) return false;
+    seen.add(c.linked_to);
+    return true;
+  });
+  db.prepare('UPDATE memories SET connections = ? WHERE id = ?').run(JSON.stringify(deduped), memoryId);
 }
 
 export function markMemoriesConsolidated(ids: number[]): void {
@@ -972,6 +1135,44 @@ export function getRecentConversation(
        ORDER BY created_at DESC LIMIT ?`,
     )
     .all(chatId, limit) as ConversationTurn[];
+}
+
+/**
+ * Search conversation_log by keywords. Used when the user asks about
+ * past conversations ("remember when we...", "what did we talk about").
+ * Returns recent turns that match any keyword, grouped chronologically.
+ */
+export function searchConversationHistory(
+  chatId: string,
+  query: string,
+  agentId?: string,
+  daysBack = 7,
+  limit = 20,
+): ConversationTurn[] {
+  const cutoff = Math.floor(Date.now() / 1000) - (daysBack * 86400);
+  const keywords = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length >= 3)
+    .slice(0, 8);
+  if (keywords.length === 0) return [];
+
+  const conditions = keywords.map(() => 'content LIKE ?').join(' OR ');
+  const params: (string | number)[] = [chatId, cutoff];
+  for (const kw of keywords) {
+    params.push(`%${kw}%`);
+  }
+
+  const agentFilter = agentId ? ' AND agent_id = ?' : '';
+  if (agentId) params.push(agentId);
+
+  return db
+    .prepare(
+      `SELECT * FROM conversation_log
+       WHERE chat_id = ? AND created_at > ? AND (${conditions})${agentFilter}
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(...params, limit) as ConversationTurn[];
 }
 
 /**
@@ -1354,6 +1555,25 @@ export function getHiveMindEntries(limit = 20, agentId?: string): HiveMindEntry[
 }
 
 /**
+ * Get recent hive_mind entries from agents OTHER than the given one.
+ * Used to give each agent awareness of what teammates have been doing.
+ */
+export function getOtherAgentActivity(
+  excludeAgentId: string,
+  hoursBack = 24,
+  limit = 10,
+): HiveMindEntry[] {
+  const cutoff = Math.floor(Date.now() / 1000) - (hoursBack * 3600);
+  return db
+    .prepare(
+      `SELECT * FROM hive_mind
+       WHERE agent_id != ? AND created_at > ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(excludeAgentId, cutoff, limit) as HiveMindEntry[];
+}
+
+/**
  * Get conversation turns for a specific session, ordered chronologically.
  * Used for hive-mind auto-commit on session end.
  */
@@ -1492,4 +1712,158 @@ export function getInterAgentTasks(
       'SELECT * FROM inter_agent_tasks ORDER BY created_at DESC LIMIT ?',
     )
     .all(limit) as InterAgentTask[];
+}
+
+// ── Mission Tasks (one-shot async tasks for Mission Control) ─────────
+
+export interface MissionTask {
+  id: string;
+  title: string;
+  prompt: string;
+  assigned_agent: string | null;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  result: string | null;
+  error: string | null;
+  created_by: string;
+  priority: number;
+  created_at: number;
+  started_at: number | null;
+  completed_at: number | null;
+}
+
+export function createMissionTask(
+  id: string,
+  title: string,
+  prompt: string,
+  assignedAgent: string | null = null,
+  createdBy = 'dashboard',
+  priority = 0,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`,
+  ).run(id, title, prompt, assignedAgent, createdBy, priority, now);
+}
+
+export function getUnassignedMissionTasks(): MissionTask[] {
+  return db
+    .prepare(
+      `SELECT * FROM mission_tasks WHERE assigned_agent IS NULL AND status = 'queued'
+       ORDER BY priority DESC, created_at ASC`,
+    )
+    .all() as MissionTask[];
+}
+
+export function getMissionTasks(agentId?: string, status?: string): MissionTask[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (agentId) {
+    conditions.push('assigned_agent = ?');
+    params.push(agentId);
+  }
+  if (status) {
+    conditions.push('status = ?');
+    params.push(status);
+  }
+
+  const where = conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
+  return db
+    .prepare(
+      `SELECT * FROM mission_tasks${where}
+       ORDER BY
+         CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+         priority DESC, created_at DESC`,
+    )
+    .all(...params) as MissionTask[];
+}
+
+export function getMissionTask(id: string): MissionTask | null {
+  return (db.prepare('SELECT * FROM mission_tasks WHERE id = ?').get(id) as MissionTask) ?? null;
+}
+
+export function claimNextMissionTask(agentId: string): MissionTask | null {
+  const txn = db.transaction(() => {
+    const task = db
+      .prepare(
+        `SELECT * FROM mission_tasks
+         WHERE assigned_agent = ? AND status = 'queued'
+         ORDER BY priority DESC, created_at ASC
+         LIMIT 1`,
+      )
+      .get(agentId) as MissionTask | undefined;
+    if (!task) return null;
+    db.prepare(
+      `UPDATE mission_tasks SET status = 'running', started_at = ? WHERE id = ?`,
+    ).run(Math.floor(Date.now() / 1000), task.id);
+    return { ...task, status: 'running' as const, started_at: Math.floor(Date.now() / 1000) };
+  });
+  return txn();
+}
+
+export function completeMissionTask(
+  id: string,
+  result: string | null,
+  status: 'completed' | 'failed',
+  error?: string,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE mission_tasks SET status = ?, result = ?, error = ?, completed_at = ? WHERE id = ?`,
+  ).run(status, result, error ?? null, now, id);
+}
+
+export function cancelMissionTask(id: string): boolean {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status IN ('queued', 'running')`,
+  ).run(Math.floor(Date.now() / 1000), id);
+  return result.changes > 0;
+}
+
+export function deleteMissionTask(id: string): boolean {
+  const result = db.prepare(
+    `DELETE FROM mission_tasks WHERE id = ? AND status IN ('completed', 'cancelled', 'failed')`,
+  ).run(id);
+  return result.changes > 0;
+}
+
+export function cleanupOldMissionTasks(olderThanDays = 7): number {
+  const cutoff = Math.floor(Date.now() / 1000) - olderThanDays * 86400;
+  const result = db.prepare(
+    `DELETE FROM mission_tasks WHERE status IN ('completed', 'cancelled', 'failed') AND completed_at < ?`,
+  ).run(cutoff);
+  return result.changes;
+}
+
+export function reassignMissionTask(id: string, newAgent: string): boolean {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET assigned_agent = ? WHERE id = ? AND status = 'queued'`,
+  ).run(newAgent, id);
+  return result.changes > 0;
+}
+
+export function assignMissionTask(id: string, agent: string): boolean {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET assigned_agent = ? WHERE id = ? AND assigned_agent IS NULL AND status = 'queued'`,
+  ).run(agent, id);
+  return result.changes > 0;
+}
+
+export function getMissionTaskHistory(limit = 30, offset = 0): { tasks: MissionTask[]; total: number } {
+  const total = (db.prepare(
+    `SELECT COUNT(*) as c FROM mission_tasks WHERE status IN ('completed', 'failed', 'cancelled')`,
+  ).get() as { c: number }).c;
+  const tasks = db.prepare(
+    `SELECT * FROM mission_tasks WHERE status IN ('completed', 'failed', 'cancelled')
+     ORDER BY completed_at DESC LIMIT ? OFFSET ?`,
+  ).all(limit, offset) as MissionTask[];
+  return { tasks, total };
+}
+
+export function resetStuckMissionTasks(agentId: string): number {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET status = 'queued', started_at = NULL WHERE status = 'running' AND assigned_agent = ?`,
+  ).run(agentId);
+  return result.changes;
 }

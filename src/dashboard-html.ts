@@ -196,6 +196,50 @@ export function getDashboardHtml(token: string, chatId: string): string {
   </div>
 </div>
 
+<!-- Tasks Inbox -->
+<div id="tasks-inbox-section" class="mb-5" style="display:none">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Tasks</h2>
+    <div class="flex gap-2">
+      <button onclick="autoAssignAll()" id="auto-assign-all-btn" style="background:#1a1a1a;color:#a78bfa;border:1px solid #2a2a2a;border-radius:8px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;display:none">Auto-assign All</button>
+      <button onclick="openMissionModal()" style="background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer">+ New</button>
+    </div>
+  </div>
+  <div id="tasks-inbox" class="flex flex-wrap gap-3"></div>
+</div>
+
+<!-- Mission Control -->
+<div id="mission-section" class="mb-5" style="display:none">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Mission Control</h2>
+    <button onclick="openTaskHistory()" style="background:none;border:none;color:#6b7280;font-size:12px;cursor:pointer">History &rarr;</button>
+  </div>
+  <div id="mission-board" class="flex gap-3 overflow-x-auto pb-2" style="scroll-snap-type: x mandatory;">
+  </div>
+</div>
+
+<!-- Mission Task Creation Modal -->
+<div id="mission-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:40;opacity:0;pointer-events:none;transition:opacity 0.2s"></div>
+<div id="mission-modal" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.95);z-index:50;background:#141414;border:1px solid #2a2a2a;border-radius:12px;width:90%;max-width:440px;opacity:0;pointer-events:none;transition:transform 0.2s ease,opacity 0.2s ease">
+  <div class="flex items-center justify-between px-4 pt-4 pb-2">
+    <h3 class="text-sm font-bold text-white">New Task</h3>
+    <button onclick="closeMissionModal()" class="text-gray-500 hover:text-white" style="background:none;border:none;cursor:pointer;font-size:16px">&times;</button>
+  </div>
+  <div style="padding:0 16px 16px">
+    <input type="text" id="mission-title" placeholder="Title" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" maxlength="200">
+    <textarea id="mission-prompt" rows="3" placeholder="What should the agent do?" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;resize:vertical;margin-bottom:8px;box-sizing:border-box" maxlength="10000"></textarea>
+    <div class="flex gap-2 items-center">
+      <select id="mission-priority" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:6px 10px;color:#e0e0e0;font-size:12px;outline:none">
+        <option value="0">Low</option>
+        <option value="5" selected>Medium</option>
+        <option value="10">High</option>
+      </select>
+      <button onclick="createMissionTask()" style="flex:1;background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:8px;font-size:13px;font-weight:600;cursor:pointer">Create</button>
+    </div>
+    <div id="mission-error" class="text-red-400 text-xs mt-2" style="display:none"></div>
+  </div>
+</div>
+
 <!-- Desktop: 2-column grid. Mobile: stacked. -->
 <div class="lg:grid lg:grid-cols-2 lg:gap-6">
 
@@ -338,6 +382,21 @@ export function getDashboardHtml(token: string, chatId: string): string {
   <div class="drawer-body" id="drawer-body"></div>
   <div id="drawer-load-more" class="px-4 pb-4 hidden">
     <button onclick="loadMoreMemories()" class="w-full py-2 text-sm text-gray-400 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg hover:text-white transition">Load more</button>
+  </div>
+</div>
+
+<!-- Task History Drawer -->
+<div id="history-overlay" class="drawer-overlay" onclick="closeTaskHistory()"></div>
+<div id="history-drawer" class="drawer">
+  <div class="drawer-handle"></div>
+  <div class="flex items-center justify-between px-4 pt-3 pb-1">
+    <h3 class="text-base font-bold text-white">Task History</h3>
+    <button onclick="closeTaskHistory()" class="text-gray-500 hover:text-white text-xl leading-none">&times;</button>
+  </div>
+  <div class="px-4 pb-2"><span class="text-xs text-gray-500" id="history-count"></span></div>
+  <div class="drawer-body" id="history-body"></div>
+  <div id="history-load-more" class="px-4 pb-4 hidden">
+    <button onclick="loadMoreHistory()" class="w-full py-2 text-sm text-gray-400 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg hover:text-white transition">Load more</button>
   </div>
 </div>
 
@@ -871,10 +930,366 @@ async function loadSummary() {
   } catch {}
 }
 
+// ── Mission Control ──────────────────────────────────────────────────
+
+let missionAgentsList = [];
+
+async function loadMissionControl() {
+  try {
+    const [taskData, agentData] = await Promise.all([
+      api('/api/mission/tasks'),
+      api('/api/agents'),
+    ]);
+    const tasks = taskData.tasks || [];
+    missionAgentsList = agentData.agents || [];
+
+    // Split: unassigned go to inbox, assigned go to agent columns
+    const unassigned = tasks.filter(t => !t.assigned_agent && t.status === 'queued');
+    // Only show completed tasks for 30 minutes, then they move to history only
+    const now = Math.floor(Date.now() / 1000);
+    const DONE_VISIBLE_SECS = 30 * 60;
+    const assigned = tasks.filter(t => {
+      if (!t.assigned_agent) return false;
+      if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
+        return t.completed_at && (now - t.completed_at) < DONE_VISIBLE_SECS;
+      }
+      return true;
+    });
+
+    // Tasks Inbox
+    const inboxSection = document.getElementById('tasks-inbox-section');
+    const inboxEl = document.getElementById('tasks-inbox');
+    const autoAllBtn = document.getElementById('auto-assign-all-btn');
+    inboxSection.style.display = '';
+    autoAllBtn.style.display = unassigned.length > 0 ? '' : 'none';
+    if (unassigned.length > 0) {
+      inboxEl.innerHTML = unassigned.map(renderInboxCard).join('');
+    } else {
+      inboxEl.innerHTML = '<div class="text-xs text-gray-600 py-2">No unassigned tasks. Click + New to create one.</div>';
+    }
+
+    // Mission Control agent columns
+    if (assigned.length === 0 && missionAgentsList.length <= 1) {
+      document.getElementById('mission-section').style.display = 'none';
+    } else {
+      document.getElementById('mission-section').style.display = '';
+      const board = document.getElementById('mission-board');
+      const agentIds = missionAgentsList.map(a => a.id);
+      const cols = {};
+      agentIds.forEach(id => { cols[id] = []; });
+
+      assigned.forEach(t => {
+        if (cols[t.assigned_agent]) cols[t.assigned_agent].push(t);
+      });
+
+      let html = '';
+      agentIds.forEach(id => {
+        const agent = missionAgentsList.find(a => a.id === id);
+        const color = AGENT_COLORS[id] || '#6b7280';
+        const dot = agent && agent.running
+          ? '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c55e;margin-right:4px"></span>'
+          : '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;border:1px solid #555;margin-right:4px"></span>';
+        const agentTasks = cols[id] || [];
+        html += '<div class="flex-shrink-0" style="min-width:220px;scroll-snap-align:start;">' +
+          '<div class="text-xs font-semibold mb-1 uppercase" style="color:' + color + '">' + dot + (agent ? agent.name : id) + '</div>' +
+          '<div data-drop-agent="' + id + '" ondragover="missionDragOver(event)" ondragleave="missionDragLeave(event)" ondrop="missionDrop(event)" style="border:1px solid #2a2a2a;border-radius:10px;padding:8px;min-height:120px;background:#141414;transition:border-color 0.2s,background 0.2s">' +
+          (agentTasks.length ? agentTasks.map(renderMissionCard).join('') : '<div class="text-xs text-gray-600 text-center py-4">No tasks</div>') +
+          '</div></div>';
+      });
+
+      board.innerHTML = html;
+    }
+  } catch(e) {
+    console.error('Mission load error:', e);
+  }
+}
+
+function renderInboxCard(t) {
+  const priorityDot = t.priority >= 8 ? '#ef4444' : t.priority >= 4 ? '#fbbf24' : '#6b7280';
+  const timeAgo = elapsed(t.created_at);
+  return '<div data-mid="' + t.id + '" draggable="true" ondragstart="missionDragStart(event)" ondragend="missionDragEnd(event)" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:12px;min-width:200px;max-width:280px;cursor:grab;transition:opacity 0.15s">' +
+    '<div class="flex items-center justify-between mb-2">' +
+      '<span class="text-sm font-semibold text-white" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.title) + '</span>' +
+      '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + priorityDot + ';margin-left:6px;flex-shrink:0"></span>' +
+    '</div>' +
+    '<div class="text-xs text-gray-500 mb-2" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.prompt.slice(0, 60)) + '</div>' +
+    '<div class="flex items-center justify-between">' +
+      '<button data-mid="' + t.id + '" onclick="autoAssignOne(this.dataset.mid)" style="background:#1e1b4b;color:#a78bfa;border:1px solid #312e81;border-radius:6px;padding:2px 10px;font-size:11px;cursor:pointer">Auto-assign</button>' +
+      '<div class="flex items-center gap-1">' +
+        '<button data-mid="' + t.id + '" data-mact="cancel" onclick="missionAction(this.dataset.mid,this.dataset.mact)" title="Remove" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:12px">&times;</button>' +
+        '<span class="text-xs text-gray-600">' + timeAgo + '</span>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function renderMissionCard(t) {
+  const color = AGENT_COLORS[t.assigned_agent] || '#6b7280';
+  const priorityDot = t.priority >= 8 ? '#ef4444' : t.priority >= 4 ? '#fbbf24' : '#6b7280';
+  const statusMap = {
+    queued: '<span class="pill pill-paused">queued</span>',
+    running: '<span class="pill pill-running">running</span>',
+    completed: '<span class="pill pill-active">done</span>',
+    failed: '<span class="pill" style="background:#7f1d1d;color:#f87171">failed</span>',
+    cancelled: '<span class="pill" style="background:#374151;color:#9ca3af">cancelled</span>',
+  };
+  const statusPill = statusMap[t.status] || '<span class="pill">' + t.status + '</span>';
+  const agentBadge = t.status === 'queued' ? '<span class="text-xs" style="color:' + color + '">@' + t.assigned_agent + '</span>' : '';
+  const timeAgo = elapsed(t.created_at);
+  let durationStr = '';
+  if (t.completed_at && t.started_at) {
+    const dur = t.completed_at - t.started_at;
+    durationStr = dur < 60 ? ' in ' + dur + 's' : ' in ' + Math.floor(dur/60) + 'm ' + (dur%60) + 's';
+  }
+
+  let resultHtml = '';
+  if (t.status === 'completed' && t.result) {
+    resultHtml = '<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">View result' + durationStr + '</summary><pre class="text-xs text-gray-400 mt-1 whitespace-pre-wrap break-words" style="max-height:200px;overflow-y:auto">' + escapeHtml(t.result.slice(0, 2000)) + (t.result.length > 2000 ? '...' : '') + '</pre></details>';
+  } else if (t.status === 'failed' && t.error) {
+    resultHtml = '<div class="text-xs text-red-400 mt-1">' + escapeHtml(t.error.slice(0, 200)) + '</div>';
+  }
+
+  const cancelBtn = (t.status === 'queued' || t.status === 'running')
+    ? '<button data-mid="' + t.id + '" data-mact="cancel" onclick="missionAction(this.dataset.mid,this.dataset.mact)" title="Cancel" style="background:none;border:none;cursor:pointer;color:#f87171;font-size:12px;padding:1px 3px">&times;</button>'
+    : '';
+  const deleteBtn = (t.status === 'completed' || t.status === 'cancelled' || t.status === 'failed')
+    ? '<button data-mid="' + t.id + '" data-mact="delete" onclick="missionAction(this.dataset.mid,this.dataset.mact)" title="Remove" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:12px;padding:1px 3px">&times;</button>'
+    : '';
+
+  const draggable = t.status === 'queued' ? ' draggable="true" ondragstart="missionDragStart(event)" ondragend="missionDragEnd(event)"' : '';
+  const grabStyle = t.status === 'queued' ? 'cursor:grab;' : '';
+  return '<div data-mid="' + t.id + '"' + draggable + ' style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:10px;margin-bottom:8px;' + grabStyle + 'transition:opacity 0.15s">' +
+    '<div class="flex items-center justify-between mb-1">' +
+      '<span class="text-xs font-semibold text-white" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.title) + '</span>' +
+      '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + priorityDot + ';margin-left:6px;flex-shrink:0" title="Priority: ' + t.priority + '"></span>' +
+    '</div>' +
+    '<div class="flex items-center justify-between">' +
+      '<div class="flex items-center gap-2">' + statusPill + agentBadge + '</div>' +
+      '<div class="flex items-center gap-1">' + cancelBtn + deleteBtn + '<span class="text-xs text-gray-600">' + timeAgo + '</span></div>' +
+    '</div>' +
+    resultHtml +
+  '</div>';
+}
+
+async function missionAction(id, action) {
+  try {
+    if (action === 'cancel') {
+      await fetch(BASE + '/api/mission/tasks/' + id + '/cancel?token=' + TOKEN, { method: 'POST' });
+    } else if (action === 'delete') {
+      await fetch(BASE + '/api/mission/tasks/' + id + '?token=' + TOKEN, { method: 'DELETE' });
+    }
+    await loadMissionControl();
+  } catch(e) { console.error('Mission action failed:', e); }
+}
+
+// ── Drag & Drop ──────────────────────────────────────────────────────
+
+var missionDragId = null;
+
+function missionDragStart(e) {
+  missionDragId = e.currentTarget.dataset.mid;
+  e.currentTarget.style.opacity = '0.4';
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function missionDragEnd(e) {
+  e.currentTarget.style.opacity = '1';
+  missionDragId = null;
+  document.querySelectorAll('[data-drop-agent]').forEach(function(el) {
+    el.style.borderColor = '#2a2a2a';
+    el.style.background = '#141414';
+  });
+}
+
+function missionDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  var col = e.currentTarget.closest('[data-drop-agent]');
+  if (col) {
+    col.style.borderColor = '#4f46e5';
+    col.style.background = 'rgba(79,70,229,0.08)';
+  }
+}
+
+function missionDragLeave(e) {
+  var col = e.currentTarget.closest('[data-drop-agent]');
+  if (col && !col.contains(e.relatedTarget)) {
+    col.style.borderColor = '#2a2a2a';
+    col.style.background = '#141414';
+  }
+}
+
+async function missionDrop(e) {
+  e.preventDefault();
+  var col = e.currentTarget.closest('[data-drop-agent]');
+  if (col) {
+    col.style.borderColor = '#2a2a2a';
+    col.style.background = '#141414';
+  }
+  if (!missionDragId || !col) return;
+  var newAgent = col.dataset.dropAgent;
+  try {
+    await fetch(BASE + '/api/mission/tasks/' + missionDragId + '?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigned_agent: newAgent }),
+    });
+    await loadMissionControl();
+  } catch(err) { console.error('Reassign failed:', err); }
+  missionDragId = null;
+}
+
+async function autoAssignOne(id) {
+  try {
+    const res = await fetch(BASE + '/api/mission/tasks/' + id + '/auto-assign?token=' + TOKEN, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      await loadMissionControl();
+    } else {
+      console.error('Auto-assign failed:', data.error);
+    }
+  } catch(e) { console.error('Auto-assign error:', e); }
+}
+
+async function autoAssignAll() {
+  var btn = document.getElementById('auto-assign-all-btn');
+  btn.textContent = 'Assigning...';
+  btn.disabled = true;
+  try {
+    const res = await fetch(BASE + '/api/mission/tasks/auto-assign-all?token=' + TOKEN, { method: 'POST' });
+    const data = await res.json();
+    await loadMissionControl();
+  } catch(e) { console.error('Auto-assign all error:', e); }
+  btn.textContent = 'Auto-assign All';
+  btn.disabled = false;
+}
+
+function openMissionModal() {
+  document.getElementById('mission-error').style.display = 'none';
+  document.getElementById('mission-overlay').style.opacity = '1';
+  document.getElementById('mission-overlay').style.pointerEvents = 'auto';
+  var m = document.getElementById('mission-modal');
+  m.style.opacity = '1';
+  m.style.pointerEvents = 'auto';
+  m.style.transform = 'translate(-50%,-50%) scale(1)';
+  setTimeout(function() { document.getElementById('mission-title').focus(); }, 200);
+}
+
+function closeMissionModal() {
+  document.getElementById('mission-overlay').style.opacity = '0';
+  document.getElementById('mission-overlay').style.pointerEvents = 'none';
+  var m = document.getElementById('mission-modal');
+  m.style.opacity = '0';
+  m.style.pointerEvents = 'none';
+  m.style.transform = 'translate(-50%,-50%) scale(0.95)';
+  document.getElementById('mission-title').value = '';
+  document.getElementById('mission-prompt').value = '';
+  document.getElementById('mission-priority').value = '5';
+  document.getElementById('mission-error').style.display = 'none';
+}
+document.getElementById('mission-overlay').addEventListener('click', closeMissionModal);
+
+async function createMissionTask() {
+  const title = document.getElementById('mission-title').value.trim();
+  const prompt = document.getElementById('mission-prompt').value.trim();
+  const priority = parseInt(document.getElementById('mission-priority').value, 10);
+  const errEl = document.getElementById('mission-error');
+
+  if (!title) { errEl.textContent = 'Title is required'; errEl.style.display = ''; return; }
+  if (!prompt) { errEl.textContent = 'Prompt is required'; errEl.style.display = ''; return; }
+
+  try {
+    const res = await fetch(BASE + '/api/mission/tasks?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title, prompt: prompt, priority: priority }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      errEl.textContent = data.error || 'Failed to create task';
+      errEl.style.display = '';
+      return;
+    }
+    closeMissionModal();
+    await loadMissionControl();
+  } catch(e) {
+    errEl.textContent = 'Network error';
+    errEl.style.display = '';
+  }
+}
+
+// ── Task History Drawer ──────────────────────────────────────────────
+
+var historyOffset = 0;
+var historyTotal = 0;
+var HISTORY_PAGE = 20;
+
+async function openTaskHistory() {
+  historyOffset = 0;
+  document.getElementById('history-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
+  document.getElementById('history-overlay').classList.add('open');
+  document.getElementById('history-drawer').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  await loadHistoryPage();
+}
+
+async function loadHistoryPage() {
+  var data = await api('/api/mission/history?limit=' + HISTORY_PAGE + '&offset=' + historyOffset);
+  historyTotal = data.total;
+  document.getElementById('history-count').textContent = historyTotal + ' completed task' + (historyTotal === 1 ? '' : 's');
+  var body = document.getElementById('history-body');
+  if (historyOffset === 0) body.innerHTML = '';
+  if (data.tasks.length === 0 && historyOffset === 0) {
+    body.innerHTML = '<div class="text-gray-500 text-sm text-center py-8">No task history yet.</div>';
+  } else {
+    body.innerHTML += data.tasks.map(function(t) {
+      var color = AGENT_COLORS[t.assigned_agent] || '#6b7280';
+      var statusCls = t.status === 'completed' ? 'pill-active' : t.status === 'failed' ? '' : '';
+      var statusStyle = t.status === 'failed' ? 'background:#7f1d1d;color:#f87171' : t.status === 'cancelled' ? 'background:#374151;color:#9ca3af' : '';
+      var dur = '';
+      if (t.completed_at && t.started_at) {
+        var d = t.completed_at - t.started_at;
+        dur = d < 60 ? d + 's' : Math.floor(d/60) + 'm ' + (d%60) + 's';
+      }
+      var date = new Date(t.completed_at * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      var time = new Date(t.completed_at * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      var resultHtml = t.result ? '<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">View result</summary><pre class="text-xs text-gray-400 mt-1 whitespace-pre-wrap break-words" style="max-height:200px;overflow-y:auto">' + escapeHtml(t.result.slice(0, 2000)) + '</pre></details>' : '';
+      var errorHtml = t.error ? '<div class="text-xs text-red-400 mt-1">' + escapeHtml(t.error.slice(0, 200)) + '</div>' : '';
+      return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:12px;margin-bottom:8px">' +
+        '<div class="flex items-center justify-between mb-1">' +
+          '<span class="text-sm font-semibold text-white">' + escapeHtml(t.title) + '</span>' +
+          '<span class="pill ' + statusCls + '" style="' + statusStyle + '">' + t.status + '</span>' +
+        '</div>' +
+        '<div class="flex items-center gap-2 text-xs text-gray-500">' +
+          '<span style="color:' + color + '">@' + (t.assigned_agent || 'unassigned') + '</span>' +
+          '<span>' + date + ' ' + time + '</span>' +
+          (dur ? '<span>' + dur + '</span>' : '') +
+        '</div>' +
+        resultHtml + errorHtml +
+      '</div>';
+    }).join('');
+  }
+  historyOffset += data.tasks.length;
+  var btn = document.getElementById('history-load-more');
+  if (historyOffset < historyTotal) btn.classList.remove('hidden');
+  else btn.classList.add('hidden');
+}
+
+async function loadMoreHistory() { await loadHistoryPage(); }
+
+function closeTaskHistory() {
+  document.getElementById('history-overlay').classList.remove('open');
+  document.getElementById('history-drawer').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// Poll mission tasks more frequently (every 15s) for responsiveness
+setInterval(loadMissionControl, 15000);
+
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary(), loadMissionControl()]);
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }
