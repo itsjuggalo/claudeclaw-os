@@ -14,6 +14,7 @@ import {
   resumeScheduledTask,
   getConversationPage,
   getDashboardMemoryStats,
+  getDashboardPinnedMemories,
   getDashboardLowSalienceMemories,
   getDashboardTopAccessedMemories,
   getDashboardMemoryTimeline,
@@ -258,6 +259,12 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   });
 
   // Memory list (for drill-down drawer)
+  app.get('/api/memories/pinned', (c) => {
+    const chatId = c.req.query('chatId') || '';
+    const memories = getDashboardPinnedMemories(chatId);
+    return c.json({ memories });
+  });
+
   app.get('/api/memories/list', (c) => {
     const chatId = c.req.query('chatId') || '';
     const limit = parseInt(c.req.query('limit') || '50', 10);

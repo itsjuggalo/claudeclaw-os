@@ -1391,6 +1391,12 @@ export function getDashboardMemoryStats(chatId: string): DashboardMemoryStats {
   };
 }
 
+export function getDashboardPinnedMemories(chatId: string): Memory[] {
+  return db
+    .prepare('SELECT * FROM memories WHERE chat_id = ? AND pinned = 1 ORDER BY importance DESC')
+    .all(chatId) as Memory[];
+}
+
 export function getDashboardLowSalienceMemories(chatId: string, limit = 10): Memory[] {
   return db
     .prepare(

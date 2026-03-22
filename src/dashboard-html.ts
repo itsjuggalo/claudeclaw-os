@@ -296,10 +296,10 @@ export function getDashboardHtml(token: string, chatId: string): string {
       <div class="stat-label">Insights</div>
       <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
     </div>
-    <div class="card text-center">
+    <div class="card clickable-card text-center" onclick="openPinnedDrawer()" style="cursor:pointer">
       <div class="stat-val" id="mem-pinned" style="color:#60a5fa">-</div>
       <div class="stat-label">Pinned</div>
-      <div class="text-xs text-gray-600 mt-1">Never decay</div>
+      <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
     </div>
   </div>
   <div class="card">
@@ -507,6 +507,29 @@ async function openMemoryDrawer() {
   document.getElementById('drawer').classList.add('open');
   document.body.style.overflow = 'hidden';
   await loadDrawerPage();
+}
+
+async function openPinnedDrawer() {
+  document.getElementById('drawer-title').textContent = 'Pinned Memories';
+  document.getElementById('drawer-count').textContent = '';
+  document.getElementById('drawer-avg-salience').textContent = '';
+  document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
+  document.getElementById('drawer-load-more').classList.add('hidden');
+  document.getElementById('drawer-overlay').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  try {
+    var data = await api('/api/memories/pinned?chatId=' + CHAT_ID);
+    var mems = data.memories || [];
+    document.getElementById('drawer-count').textContent = mems.length + ' pinned';
+    if (mems.length === 0) {
+      document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">No pinned memories. Use /pin to make important memories permanent.</div>';
+      return;
+    }
+    document.getElementById('drawer-body').innerHTML = mems.map(renderMemoryItem).join('');
+  } catch(e) {
+    document.getElementById('drawer-body').innerHTML = '<div class="text-red-400 text-sm text-center py-8">Failed to load pinned memories</div>';
+  }
 }
 
 async function openInsightsDrawer() {
