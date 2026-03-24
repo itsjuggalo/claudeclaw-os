@@ -18,7 +18,7 @@
 
 > Your Claude Code CLI, delivered to your phone via Telegram.
 
-ClaudeClaw is not a chatbot wrapper. It spawns the actual `claude` CLI on your Mac or Linux machine and pipes the result back to your Telegram chat. Everything that works in your terminal — your skills, your tools, your context — works from your phone.
+ClaudeClaw is not a chatbot wrapper. It spawns the actual `claude` CLI on your Mac or Linux machine and pipes the result back to your Telegram chat. Everything that works in your terminal (your skills, your tools, your context) works from your phone.
 
 ---
 
@@ -30,7 +30,7 @@ Follow these steps in order. The whole thing takes about 5 minutes.
 
 ---
 
-### Step 1 — What you need before anything else
+### Step 1: What you need before anything else
 
 | Requirement | Notes |
 |-------------|-------|
@@ -49,28 +49,28 @@ Without this, git operations will fail with a confusing error about missing iden
 
 **macOS users:** After starting ClaudeClaw for the first time, your Mac may show "Node wants to access..." permission dialogs. You need to click Allow on each one or the bot will silently hang. Keep an eye on your Mac screen during the first run.
 
-**Which Claude plan works best?** ClaudeClaw runs the `claude` CLI, so any plan works (Free, Pro, Max). However, complex multi-step tasks (building skills, debugging code, multi-agent work) perform significantly better on **Opus**. If you're on the Free or Pro plan and Claude struggles with a task, the model matters. Sonnet is fast but often can't handle the kind of agentic work ClaudeClaw enables. Max ($100 or $200) with Opus is the recommended experience.
+**Which Claude plan works best?** ClaudeClaw runs the `claude` CLI, so any plan works (Free, Pro, Max). However, complex multi-step tasks (building skills, debugging code, multi-agent work) perform significantly better on **Opus**: If you're on the Free or Pro plan and Claude struggles with a task, the model matters. Sonnet is fast but often can't handle the kind of agentic work ClaudeClaw enables. Max ($100 or $200) with Opus is the recommended experience.
 
-**New to the terminal?** Download [Warp](https://www.warp.dev) — it's a modern terminal with AI built in. If you hit any OS-level issues during setup (permissions, missing tools, PATH problems), type `/agent` in Warp and describe what went wrong. It will walk you through fixing it. This alone will save you hours of Googling.
+**New to the terminal?** Download [Warp](https://www.warp.dev), it's a modern terminal with AI built in. If you hit any OS-level issues during setup (permissions, missing tools, PATH problems), type `/agent` in Warp and describe what went wrong. It will walk you through fixing it. This alone will save you hours of Googling.
 
 That's it for hard requirements. Everything else (voice, video, WhatsApp) is optional and the setup wizard will ask about them.
 
 ---
 
-### Step 2 — Create a Telegram bot
+### Step 2: Create a Telegram bot
 
 You need a bot token from Telegram. This is what ClaudeClaw uses to send and receive messages.
 
 1. Open Telegram and search for **@BotFather**
 2. Send `/newbot`
-3. Follow the prompts — give it a name and a username (e.g. `MyAssistantBot`)
-4. Copy the token BotFather gives you — it looks like `1234567890:AAFxxxxxxx`
+3. Follow the prompts, give it a name and a username (e.g. `MyAssistantBot`)
+4. Copy the token BotFather gives you, it looks like `1234567890:AAFxxxxxxx`
 
 Keep this token handy for the next step.
 
 ---
 
-### Step 3 — Clone and install
+### Step 3: Clone and install
 
 ```bash
 git clone https://github.com/earlyaidopters/claudeclaw.git
@@ -80,7 +80,7 @@ npm install
 
 ---
 
-### Step 4 — Run the setup wizard
+### Step 4: Run the setup wizard
 
 ```bash
 npm run setup
@@ -99,21 +99,21 @@ The wizard walks you through everything interactively:
 
 > **Prefer to let Claude handle it?** After cloning, `cd` into the repo, run `claude`, and paste:
 > ```
-> I just cloned ClaudeClaw. Please read README.md and set me up completely —
+> I just cloned ClaudeClaw. Please read README.md and set me up completely.
 > install deps, configure .env, help me get any API keys I need, and set up
 > the background service for my OS.
 > ```
 
 ---
 
-### Step 5 — Get your Telegram chat ID
+### Step 5: Get your Telegram chat ID
 
-Your chat ID locks the bot to you — no one else can use it.
+Your chat ID locks the bot to you, no one else can use it.
 
 1. Start the bot: `npm start`
 2. Open Telegram and message your bot
 3. Send `/chatid`
-4. The bot replies with a number — that's your chat ID
+4. The bot replies with a number. that's your chat ID
 5. Add it to `.env`:
    ```
    ALLOWED_CHAT_ID=your_number_here
@@ -124,7 +124,7 @@ Your chat ID locks the bot to you — no one else can use it.
 
 ---
 
-### Step 6 — Send your first message
+### Step 6: Send your first message
 
 With the bot running, send any message. Try:
 
@@ -138,28 +138,28 @@ or
 Check my calendar for today
 ```
 
-or just start talking. Claude Code is running on your machine — it has access to your files, the web, and every skill you've installed.
+or just start talking. Claude Code is running on your machine, it has access to your files, the web, and every skill you've installed.
 
 ---
 
-### Step 7 — Run as a background service
+### Step 7: Run as a background service
 
 You probably want ClaudeClaw running automatically, not manually in a terminal.
 
-**macOS** — the setup wizard installs a launchd agent. Or manually:
+**macOS**: the setup wizard installs a launchd agent. Or manually:
 ```bash
 # After running npm run setup, it's already installed.
 # Logs:
 tail -f /tmp/claudeclaw.log
 ```
 
-**Linux** — the setup wizard installs a systemd user service:
+**Linux**: the setup wizard installs a systemd user service:
 ```bash
 systemctl --user status claudeclaw
 journalctl --user -u claudeclaw -f
 ```
 
-**Windows** — use WSL2 (recommended) and follow the Linux steps, or:
+**Windows**: use WSL2 (recommended) and follow the Linux steps, or:
 ```bash
 npm install -g pm2
 pm2 start dist/index.js --name claudeclaw
@@ -168,7 +168,7 @@ pm2 save && pm2 startup
 
 ---
 
-### Step 8 — Check everything is healthy
+### Step 8: Check everything is healthy
 
 ```bash
 npm run status
@@ -224,7 +224,7 @@ With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
 |---------|--------|-------|
 | Text messaging | ✅ | Full Claude Code, all tools |
 | Photos | ✅ | Claude reads and analyzes them |
-| Documents | ✅ | PDF, code, text — anything Claude Code can open |
+| Documents | ✅ | PDF, code, text. anything Claude Code can open |
 | SQLite memory | ✅ | Auto-initialized on first run, nothing to configure |
 | Session persistence | ✅ | Context carries across every message |
 | Scheduled tasks | ✅ | Ask Claude to run anything on a cron schedule |
@@ -234,26 +234,26 @@ With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
 | All your skills | ✅ | Every skill in `~/.claude/skills/` auto-loads |
 | WhatsApp (`/wa`) | ✅ | No API key, but needs the wa-daemon running |
 | Voice input | ❌ | Needs `GROQ_API_KEY` |
-| Voice output (macOS) | ✅ | Uses `say` + ffmpeg locally — no API key needed |
+| Voice output (macOS) | ✅ | Uses `say` + ffmpeg locally, no API key needed |
 | Voice output (cloud) | ❌ | ElevenLabs or Gradium API key for higher quality |
 | Video analysis | ❌ | Needs `GOOGLE_API_KEY` + `gemini-api-dev` skill |
 | Memory consolidation | ❌ | Needs `GOOGLE_API_KEY` for Gemini-powered pattern detection |
 
 ---
 
-## API keys — what each does and alternatives
+## API keys. what each does and alternatives
 
 ### Telegram Bot Token (required)
 
-**Get it:** [@BotFather](https://t.me/botfather) → `/newbot` — free, instant.
+**Get it:** [@BotFather](https://t.me/botfather) → `/newbot`. free, instant.
 
 ---
 
-### Groq — voice input (optional)
+### Groq. voice input (optional)
 
 **What it does:** Transcribes your voice notes using Whisper before passing them to Claude.
 
-**Get it:** [console.groq.com](https://console.groq.com) — free tier, no card needed.
+**Get it:** [console.groq.com](https://console.groq.com). free tier, no card needed.
 
 **Model:** `whisper-large-v3`
 
@@ -262,11 +262,11 @@ With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
 | **Groq** (default) | Free | Fastest to set up |
 | OpenAI Whisper | ~$0.006/min | Swap `transcribeAudio()` in `src/voice.ts` |
 | AssemblyAI | Free tier | More features |
-| Local Whisper.cpp | Free | No API, runs on your Mac — needs code change |
+| Local Whisper.cpp | Free | No API, runs on your Mac. needs code change |
 
 ---
 
-### ElevenLabs — voice output (optional)
+### ElevenLabs. voice output (optional)
 
 **What it does:** Converts Claude's responses to audio in your cloned voice.
 
@@ -284,19 +284,19 @@ similarity_boost: 0.75  (higher = closer to you but can distort)
 |----------|------|-------|
 | **ElevenLabs** (primary) | Free tier + paid | Best cloning quality |
 | **Gradium AI** (built-in alternative) | Free tier (45k credits/mo) | Add `GRADIUM_API_KEY` + `GRADIUM_VOICE_ID` to `.env` |
-| **macOS say + ffmpeg** (built-in fallback) | Free | No API key — works offline. Set `TTS_VOICE` in `.env` to change voice |
-| OpenAI TTS | ~$0.015/1k chars | Good quality, no cloning — needs code change |
-| Google Cloud TTS | Free tier | More robotic — needs code change |
+| **macOS say + ffmpeg** (built-in fallback) | Free | No API key. works offline. Set `TTS_VOICE` in `.env` to change voice |
+| OpenAI TTS | ~$0.015/1k chars | Good quality, no cloning. needs code change |
+| Google Cloud TTS | Free tier | More robotic. needs code change |
 
-The TTS cascade tries ElevenLabs first, falls back to Gradium, then to macOS `say`. Configure whichever providers you want — even just the local fallback works fine.
+The TTS cascade tries ElevenLabs first, falls back to Gradium, then to macOS `say`. Configure whichever providers you want. even just the local fallback works fine.
 
 ---
 
-### Google — video analysis (optional)
+### Google. video analysis (optional)
 
 **What it does:** Analyzes videos you send using Gemini. Also handles images, audio, function calling, structured output, and code execution via the `gemini-api-dev` skill.
 
-**Get it:** [aistudio.google.com](https://aistudio.google.com) → "Get API key" — free tier.
+**Get it:** [aistudio.google.com](https://aistudio.google.com) → "Get API key". free tier.
 
 **Skill to install:** The `gemini-api-dev` skill is published by Google at:
 - Skill docs: [github.com/google-gemini/gemini-skills/.../gemini-api-dev/SKILL.md](https://github.com/google-gemini/gemini-skills/blob/main/skills/gemini-api-dev/SKILL.md)
@@ -311,7 +311,7 @@ The skill reads `GOOGLE_API_KEY` from the environment automatically.
 
 **What it does:** Bypasses your Max subscription and uses pay-per-token billing instead.
 
-**When to use it:** Server deployments, or if you want zero ambiguity about billing. The Max plan assumes "ordinary individual usage" — an always-on bot can hit limits faster than expected.
+**When to use it:** Server deployments, or if you want zero ambiguity about billing. The Max plan assumes "ordinary individual usage". an always-on bot can hit limits faster than expected.
 
 **Get it:** [console.anthropic.com](https://console.anthropic.com)
 
@@ -361,7 +361,7 @@ In short: a CLI is a tool you run in the terminal, a skill is a set of instructi
 
 ![Voice pipeline](assets/voice-pipeline.jpeg)
 
-Sending a voice note transcribes it and executes it as a command. **The reply comes back as text by default** — not audio.
+Sending a voice note transcribes it and executes it as a command. **The reply comes back as text by default**: not audio.
 
 To get a voice reply back from a specific voice note, say one of these anywhere in your message:
 ```
@@ -374,9 +374,9 @@ To toggle voice replies on permanently for all messages, send `/voice`. Send it 
 
 Voice output uses a cascade of TTS providers. If the first one fails, it tries the next:
 
-1. **ElevenLabs** (primary) — best quality, voice cloning
-2. **Gradium AI** (alternative) — free tier with 45k credits/month
-3. **macOS `say` + ffmpeg** (local fallback) — no API key needed, works offline on Mac
+1. **ElevenLabs** (primary). best quality, voice cloning
+2. **Gradium AI** (alternative). free tier with 45k credits/month
+3. **macOS `say` + ffmpeg** (local fallback), no API key needed, works offline on Mac
 
 If all TTS providers fail, it falls back to text automatically.
 
@@ -397,7 +397,7 @@ Check for voice-back trigger phrases
 
 ### Photos → analyzed immediately
 
-Send a photo with or without a caption. Caption becomes the instruction. No caption — Claude describes what it sees.
+Send a photo with or without a caption. Caption becomes the instruction. No caption. Claude describes what it sees.
 
 ### Documents → read and processed
 
@@ -421,11 +421,11 @@ Claude can also send photos inline using `[SEND_PHOTO:/path]`, and attach captio
 
 ### Sessions persist
 
-Claude Code sessions carry full context across messages. Reference something from earlier — Claude knows. Send `/newchat` to start fresh.
+Claude Code sessions carry full context across messages. Reference something from earlier. Claude knows. Send `/newchat` to start fresh.
 
 ### Skills load automatically
 
-Every skill in `~/.claude/skills/` loads on every session. Call them directly (`/gmail check inbox`) or describe what you want — Claude routes automatically if you've listed the skill in `CLAUDE.md`.
+Every skill in `~/.claude/skills/` loads on every session. Call them directly (`/gmail check inbox`) or describe what you want. Claude routes automatically if you've listed the skill in `CLAUDE.md`.
 
 ---
 
@@ -436,9 +436,9 @@ Every skill in `~/.claude/skills/` loads on every session. Call them directly (`
 | Command | What it does |
 |---------|-------------|
 | `/help` | List all available commands |
-| `/stop` | Cancel the current agent query mid-execution — works from Telegram and the dashboard |
+| `/stop` | Cancel the current agent query mid-execution. works from Telegram and the dashboard |
 | `/model` | Switch Claude model for this chat. `/model haiku` for speed, `/model sonnet` for balance, `/model opus` (default) for full power. Resets on restart |
-| `/voice` | Toggle voice replies on/off for all messages. When off, voice notes still get transcribed and executed — replies just come back as text |
+| `/voice` | Toggle voice replies on/off for all messages. When off, voice notes still get transcribed and executed. replies just come back as text |
 | `/newchat` | Wipe the Claude Code session and start fresh. Use when context gets stale or the conversation window is filling up |
 | `/respin` | Pull the last 20 conversation turns back into a fresh session. Run this right after `/newchat` to keep recent context without the full token weight |
 | `/memory` | Show what the bot remembers about you (recent memories from SQLite) |
@@ -448,8 +448,8 @@ Every skill in `~/.claude/skills/` loads on every session. Call them directly (`
 
 | Command | What it does |
 |---------|-------------|
-| `/wa` | Open the WhatsApp interface — shows recent chats, pick one to read and reply |
-| `/slack` | Open the Slack interface — same flow as WhatsApp |
+| `/wa` | Open the WhatsApp interface. shows recent chats, pick one to read and reply |
+| `/slack` | Open the Slack interface, same flow as WhatsApp |
 | `/dashboard` | Get a clickable link to the live web dashboard |
 
 **Security:**
@@ -526,9 +526,9 @@ When you start ClaudeClaw, a small web page starts running alongside the bot. It
 
 Here's what happens when you use it:
 
-1. **You send `/dashboard` in Telegram** — the bot replies with a clickable link
-2. **You tap the link** — a web page opens in your browser with four live panels
-3. **The page updates itself every 60 seconds** — no need to refresh manually
+1. **You send `/dashboard` in Telegram**: the bot replies with a clickable link
+2. **You tap the link**: a web page opens in your browser with four live panels
+3. **The page updates itself every 60 seconds**: no need to refresh manually
 
 By default, this web page only works on the same computer running the bot. If you want to open it from your phone while you're out, you can add a free tunnel (explained below).
 
@@ -564,7 +564,7 @@ On your phone it's a single scrollable page. On a computer it splits into two co
 
 ### How to turn it on
 
-#### Step 1 — Generate a password for the dashboard
+#### Step 1: Generate a password for the dashboard
 
 Open your terminal and paste this command:
 
@@ -572,11 +572,11 @@ Open your terminal and paste this command:
 node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
 ```
 
-It prints a long random string like `a3f8c2d1e5b794...` — this is your dashboard password. **Copy it.** You'll need it in the next step.
+It prints a long random string like `a3f8c2d1e5b794...`. this is your dashboard password. **Copy it.** You'll need it in the next step.
 
-#### Step 2 — Add the password to your settings
+#### Step 2: Add the password to your settings
 
-Open the `.env` file in your ClaudeClaw folder. (This is the same file where your Telegram token and other keys live. Open it with any text editor — TextEdit on Mac, Notepad on Windows, or whatever your terminal editor is.)
+Open the `.env` file in your ClaudeClaw folder. (This is the same file where your Telegram token and other keys live. Open it with any text editor. TextEdit on Mac, Notepad on Windows, or whatever your terminal editor is.)
 
 Add this line:
 
@@ -587,13 +587,13 @@ DASHBOARD_TOKEN=paste_the_long_string_here
 That's the only setting you need. There are two optional ones you can ignore for now:
 
 ```
-DASHBOARD_PORT=3141          # the dashboard uses port 3141 by default — only change this if something else on your computer already uses that port
-DASHBOARD_URL=               # leave this blank for now — you only fill this in if you set up phone access (Step 5 below)
+DASHBOARD_PORT=3141          # the dashboard uses port 3141 by default. only change this if something else on your computer already uses that port
+DASHBOARD_URL=               # leave this blank for now. you only fill this in if you set up phone access (Step 5 below)
 ```
 
 Save the file.
 
-#### Step 3 — Rebuild and restart
+#### Step 3: Rebuild and restart
 
 ```bash
 npm run build
@@ -602,7 +602,7 @@ npm start
 
 You should see a log line that says `Dashboard server running`. If you don't, double-check that `DASHBOARD_TOKEN` is in your `.env`.
 
-#### Step 4 — Open the dashboard
+#### Step 4: Open the dashboard
 
 The easiest way: **send `/dashboard` to your bot in Telegram.** It replies with a clickable link. Tap it. Done.
 
@@ -616,9 +616,9 @@ Replace `YOUR_TOKEN` with the password from Step 1, and `YOUR_CHAT_ID` with the 
 
 If that's all you need, stop here. The next step is only if you want to access the dashboard from your phone while away from home.
 
-#### Step 5 (optional) — Access from your phone anywhere
+#### Step 5 (optional). Access from your phone anywhere
 
-Right now the dashboard only works when you're on the same computer. To open it from your phone (or anywhere), you need a "tunnel" — a free service that securely connects your computer to the internet without opening any ports.
+Right now the dashboard only works when you're on the same computer. To open it from your phone (or anywhere), you need a "tunnel". a free service that securely connects your computer to the internet without opening any ports.
 
 **Option A: Quick tunnel** (free, takes 2 minutes, but the link changes every time you restart)
 
@@ -647,7 +647,7 @@ Restart the bot (`npm run build && npm start`). Now when you send `/dashboard` i
 
 **Option B: Permanent URL** (free, but you need to buy a cheap domain for $5-12/year)
 
-This gives you a URL that never changes — like `https://dash.mysite.com`. You need a domain registered through Cloudflare. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → Domain Registration → Register Domain. Cheapest options: `.work`, `.xyz`, `.site` (around $5-12/year).
+This gives you a URL that never changes. like `https://dash.mysite.com`. You need a domain registered through Cloudflare. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → Domain Registration → Register Domain. Cheapest options: `.work`, `.xyz`, `.site` (around $5-12/year).
 
 Once you have a domain, run these commands one at a time:
 
@@ -655,10 +655,10 @@ Once you have a domain, run these commands one at a time:
 # 1. Install the tunnel tool (skip if you already did this)
 brew install cloudflare/cloudflare/cloudflared
 
-# 2. Log in to Cloudflare (this opens your browser — pick your domain when asked)
+# 2. Log in to Cloudflare (this opens your browser. pick your domain when asked)
 cloudflared tunnel login
 
-# 3. Create a tunnel (remember the ID it prints — you'll need it)
+# 3. Create a tunnel (remember the ID it prints. you'll need it)
 cloudflared tunnel create claudeclaw
 
 # 4. Connect your domain to the tunnel (replace with your actual domain)
@@ -711,7 +711,7 @@ brew services start cloudflared
 - **The dashboard link contains your password.** Treat it like you'd treat a password. Don't screenshot the address bar and post it somewhere. The dashboard can only show data (nobody can change or delete anything through it), but your task details and memory content would be visible.
 - **If the bot stops, the dashboard stops.** They run together. Restart the bot and the dashboard comes back automatically.
 - **Quick tunnel links are temporary.** If you used Option A and restart the tunnel tool, you get a new URL and the old one stops working. Option B (permanent URL) doesn't have this problem.
-- **For extra security:** Cloudflare Access (free for up to 50 users) can add a login page in front of the dashboard, so even if someone finds the URL they'd need to authenticate. This is optional — the token alone is fine for personal use.
+- **For extra security:** Cloudflare Access (free for up to 50 users) can add a login page in front of the dashboard, so even if someone finds the URL they'd need to authenticate. This is optional. the token alone is fine for personal use.
 
 <details>
 <summary><strong>Dashboard API reference (for developers)</strong></summary>
@@ -740,7 +740,7 @@ All endpoints require `?token=YOUR_TOKEN`. Per-user endpoints also need `&chatId
 
 Requires a Slack User OAuth Token. This connects to your workspace so ClaudeClaw can read and send messages on your behalf.
 
-### Step 1 — Create a Slack app
+### Step 1: Create a Slack app
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps)
 2. Click the green **Create New App** button (top right)
@@ -752,7 +752,7 @@ Requires a Slack User OAuth Token. This connects to your workspace so ClaudeClaw
 
 You'll land on the **Basic Information** page for your new app.
 
-### Step 2 — Add User Token Scopes
+### Step 2: Add User Token Scopes
 
 This is the critical step. You need to add permissions so the app can read and send messages as you.
 
@@ -778,7 +778,7 @@ This is the critical step. You need to add permissions so the app can read and s
 
    After adding all 11, your User Token Scopes section should show all of them listed.
 
-### Step 3 — Install the app to your workspace
+### Step 3: Install the app to your workspace
 
 1. Scroll back up to the top of the **OAuth & Permissions** page
 2. Under **OAuth Tokens for Your Workspace**, click **Install to Workspace**
@@ -788,7 +788,7 @@ This is the critical step. You need to add permissions so the app can read and s
 6. You'll now see a **User OAuth Token** field with a token that starts with `xoxp-`
 7. Click **Copy** to copy the token
 
-### Step 4 — Add the token to ClaudeClaw
+### Step 4: Add the token to ClaudeClaw
 
 1. Open your `.env` file in the ClaudeClaw project directory
 2. Add the token:
@@ -797,7 +797,7 @@ This is the critical step. You need to add permissions so the app can read and s
    ```
 3. Restart ClaudeClaw
 
-### Step 5 — Verify it works
+### Step 5: Verify it works
 
 Send `/slack` in your Telegram chat. You should see a numbered list of your recent Slack conversations with unread counts.
 
@@ -843,7 +843,7 @@ No API key needed. Uses your existing WhatsApp account via Linked Devices.
 npx tsx scripts/wa-daemon.ts
 ```
 
-A QR code prints. Open WhatsApp → Settings → Linked Devices → scan within 30 seconds. Session saves to `store/waweb/` — you only scan once.
+A QR code prints. Open WhatsApp → Settings → Linked Devices → scan within 30 seconds. Session saves to `store/waweb/`. you only scan once.
 
 ### Use it from Telegram
 
@@ -858,7 +858,7 @@ r 2 <text>       quick-reply to chat #2 without opening it
 
 When someone messages you on WhatsApp:
 ```
-📱 John Smith — new message
+📱 John Smith. new message
 /wa to view & reply
 ```
 
@@ -872,7 +872,7 @@ Messages you send via the bot go into a `wa_outbox` SQLite table. The daemon's o
 
 All WhatsApp message bodies are **encrypted at rest** using AES-256-GCM before being written to the database. Even if someone accesses `store/claudeclaw.db` directly, message content is unreadable without the encryption key in your `.env`.
 
-Messages are also **automatically deleted after 3 days**. The retention sweep runs on startup and every 24 hours, covering `wa_messages`, `wa_outbox`, and `wa_message_map`. This is enforced in code and cannot be bypassed without modifying `runDecaySweep()` in `src/memory.ts`.
+Messages are also **automatically deleted after 3 days**: The retention sweep runs on startup and every 24 hours, covering `wa_messages`, `wa_outbox`, and `wa_message_map`. This is enforced in code and cannot be bypassed without modifying `runDecaySweep()` in `src/memory.ts`.
 
 The `store/` directory (database, WhatsApp session, logs) is gitignored with multiple layers of protection. It will never be committed to the repo.
 
@@ -884,13 +884,13 @@ The `store/` directory (database, WhatsApp session, logs) is gitignored with mul
 
 ClaudeClaw has a structured memory system that extracts, consolidates, and recalls knowledge across all sessions. Everything is automatic.
 
-### Layer 1 — Session resumption
+### Layer 1. Session resumption
 
 Every time you send a message, Claude Code resumes the same session using a stored session ID. This means Claude carries your full conversation history across messages without you re-sending anything. It's the same as if you never left the terminal.
 
 Use `/newchat` to start a completely fresh session when you want a clean slate.
 
-### Layer 2 — Structured memory extraction (Gemini-powered)
+### Layer 2. Structured memory extraction (Gemini-powered)
 
 After each conversation turn, Gemini Flash evaluates whether the exchange contains anything worth remembering long-term. If it does, it extracts structured data: a summary, entities, topics, connections to other memories, and an importance score (0.0 to 1.0). Only memories scoring 0.5+ are saved. This filters out noise like "ok thanks" or command acknowledgments.
 
@@ -907,15 +907,15 @@ Each memory also gets a vector embedding for semantic search.
 
 Memories that are actually useful in conversations get a salience boost (+0.1 per use). Memories that surface but aren't relevant get penalized (-0.05). This feedback loop means the system learns what matters over time.
 
-### Layer 3 — Five-layer context injection
+### Layer 3. Five-layer context injection
 
 Before every message, five parallel searches build your memory context:
 
-1. **Semantic vector search** — finds memories similar in meaning to your message (cosine similarity > 0.3)
-2. **High-importance recall** — recent memories with importance >= 0.5
-3. **Consolidation insights** — patterns detected across multiple memories (e.g., "User consistently prefers X over Y")
-4. **Team activity** — what other agents have done in the last 24 hours (from the Hive Mind)
-5. **Conversation history recall** — triggered when you say things like "remember when" or "what did we discuss"
+1. **Semantic vector search**: finds memories similar in meaning to your message (cosine similarity > 0.3)
+2. **High-importance recall**: recent memories with importance >= 0.5
+3. **Consolidation insights**: patterns detected across multiple memories (e.g., "User consistently prefers X over Y")
+4. **Team activity**: what other agents have done in the last 24 hours (from the Hive Mind)
+5. **Conversation history recall**: triggered when you say things like "remember when" or "what did we discuss"
 
 The results are deduplicated and prepended to your message as a block Claude sees:
 
@@ -952,13 +952,13 @@ High-importance memories (0.8+) trigger a Telegram notification when saved, givi
 
 ### Changing how memory works
 
-**`src/memory-ingest.ts`** — controls what gets extracted and the importance threshold:
+**`src/memory-ingest.ts`**: controls what gets extracted and the importance threshold:
 ```typescript
 // The Gemini extraction prompt defines what's worth remembering
 // Importance threshold (default: 0.5) filters low-value memories
 ```
 
-**`src/db.ts`** — controls decay constants:
+**`src/db.ts`**: controls decay constants:
 ```typescript
 // importance >= 0.8: 0.99 multiplier (1% daily decay)
 // importance >= 0.5: 0.98 multiplier (2% daily decay)
@@ -1041,7 +1041,7 @@ Mission tasks go through the same FIFO message queue as user messages and schedu
 
 ## Database
 
-ClaudeClaw ships with SQLite and **creates everything automatically on first run**. No migrations, no setup, no external database server. File lives at `store/claudeclaw.db`.
+ClaudeClaw ships with SQLite and **creates everything automatically on first run**: No migrations, no setup, no external database server. File lives at `store/claudeclaw.db`.
 
 **Schema:**
 
@@ -1082,19 +1082,19 @@ SELECT * FROM sessions;
 
 ## Customizing your assistant (CLAUDE.md)
 
-`CLAUDE.md` is loaded into every Claude Code session. It's the personality and context file — the main thing to edit to make ClaudeClaw yours.
+`CLAUDE.md` is loaded into every Claude Code session. It's the personality and context file. the main thing to edit to make ClaudeClaw yours.
 
 The sections that matter most:
 
-**Personality rules** — Be specific. "No em dashes, ever" and "don't narrate what you're about to do, just do it" change behavior on every single message.
+**Personality rules**: Be specific. "No em dashes, ever" and "don't narrate what you're about to do, just do it" change behavior on every single message.
 
-**Who you are** — What you do, your projects, your context. The more specific, the less you have to explain per message.
+**Who you are**: What you do, your projects, your context. The more specific, the less you have to explain per message.
 
-**Your environment** — File paths Claude should be able to reach without being told: your Obsidian vault, project directories, anything you reference regularly.
+**Your environment**: File paths Claude should be able to reach without being told: your Obsidian vault, project directories, anything you reference regularly.
 
-**Skills table** — Maps skill names to trigger phrases. This teaches Claude to invoke them automatically when you describe a task.
+**Skills table**: Maps skill names to trigger phrases. This teaches Claude to invoke them automatically when you describe a task.
 
-**Message format** — How responses should look in Telegram: tight and scannable, summary-first for long outputs, how to handle task lists.
+**Message format**: How responses should look in Telegram: tight and scannable, summary-first for long outputs, how to handle task lists.
 
 ---
 
@@ -1113,16 +1113,16 @@ ClaudeClaw auto-loads every skill in `~/.claude/skills/`. Install a skill by cop
 ClaudeClaw ships with ready-to-use skills in the `skills/` directory. Copy any of these to activate them:
 
 ```bash
-# Gmail — read, triage, reply, send, create filters
+# Gmail. read, triage, reply, send, create filters
 cp -r skills/gmail ~/.claude/skills/gmail
 
-# Google Calendar — schedule meetings, check availability, send invites
+# Google Calendar. schedule meetings, check availability, send invites
 cp -r skills/google-calendar ~/.claude/skills/google-calendar
 
-# Slack — list conversations, read messages, send replies
+# Slack. list conversations, read messages, send replies
 cp -r skills/slack ~/.claude/skills/slack
 
-# TLDR — summarize conversations and save as notes
+# TLDR. summarize conversations and save as notes
 cp -r skills/tldr ~/.claude/skills/tldr
 ```
 
@@ -1132,12 +1132,12 @@ cp -r skills/tldr ~/.claude/skills/tldr
 
 ### Other recommended skills
 
-- `todo` — read tasks from Obsidian or text files
-- `agent-browser` — browse the web, fill forms, scrape data
-- `maestro` — run multiple tasks in parallel with sub-agents
+- `todo`. read tasks from Obsidian or text files
+- `agent-browser`. browse the web, fill forms, scrape data
+- `maestro`. run multiple tasks in parallel with sub-agents
 
 **For video analysis:**
-- `gemini-api-dev` — published by Google, handles video/image/audio/text
+- `gemini-api-dev`. published by Google, handles video/image/audio/text
   - Docs: [github.com/google-gemini/gemini-skills/.../gemini-api-dev/SKILL.md](https://github.com/google-gemini/gemini-skills/blob/main/skills/gemini-api-dev/SKILL.md)
   - Install: copy the `gemini-api-dev` folder to `~/.claude/skills/`
 
@@ -1150,12 +1150,12 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | From [@BotFather](https://t.me/botfather) |
-| `ALLOWED_CHAT_ID` | Yes | Your chat ID — send `/chatid` to get it |
+| `ALLOWED_CHAT_ID` | Yes | Your chat ID. send `/chatid` to get it |
 | `ANTHROPIC_API_KEY` | No | Pay-per-token instead of Max subscription |
-| `GROQ_API_KEY` | No | Voice input — [console.groq.com](https://console.groq.com) |
-| `ELEVENLABS_API_KEY` | No | Voice output — [elevenlabs.io](https://elevenlabs.io) |
+| `GROQ_API_KEY` | No | Voice input. [console.groq.com](https://console.groq.com) |
+| `ELEVENLABS_API_KEY` | No | Voice output. [elevenlabs.io](https://elevenlabs.io) |
 | `ELEVENLABS_VOICE_ID` | No | Your ElevenLabs voice ID string |
-| `GOOGLE_API_KEY` | No | Gemini — [aistudio.google.com](https://aistudio.google.com) |
+| `GOOGLE_API_KEY` | No | Gemini. [aistudio.google.com](https://aistudio.google.com) |
 | `SLACK_USER_TOKEN` | No | Slack User OAuth Token (starts with `xoxp-`) |
 | `GOOGLE_CREDS_PATH` | No | Path to Google OAuth credentials.json (default: `~/.config/gmail/credentials.json`) |
 | `GMAIL_TOKEN_PATH` | No | Path to Gmail OAuth token (default: `~/.config/gmail/token.json`) |
@@ -1171,7 +1171,7 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 
 ```bash
 npm run setup     # Interactive setup wizard
-npm run status    # Health check — env, bot, DB, service
+npm run status    # Health check. env, bot, DB, service
 npm run build     # Compile TypeScript → dist/
 npm start         # Run compiled bot (production)
 npm run dev       # Run with tsx, no build needed (development)
@@ -1185,9 +1185,9 @@ npm run typecheck # Type-check without compiling
 
 **Yes.** On February 19, 2026, Anthropic published their [Legal and Compliance page](https://docs.anthropic.com/en/docs/legal-and-compliance) banning OAuth tokens in third-party tools. ClaudeClaw is not affected.
 
-**What's banned:** Tools that extract your OAuth token and make API calls with it from third-party code — impersonating Claude Code without running it (e.g. the old OpenClaw).
+**What's banned:** Tools that extract your OAuth token and make API calls with it from third-party code. impersonating Claude Code without running it (e.g. the old OpenClaw).
 
-**Why ClaudeClaw is different:** `@anthropic-ai/claude-agent-sdk`'s `query()` spawns the `claude` binary as a child process. That subprocess manages its own OAuth from `~/.claude/`. ClaudeClaw never reads or transmits your token. It runs Claude Code and reads the output — identical to `claude -p "message"` in a terminal.
+**Why ClaudeClaw is different:** `@anthropic-ai/claude-agent-sdk`'s `query()` spawns the `claude` binary as a child process. That subprocess manages its own OAuth from `~/.claude/`. ClaudeClaw never reads or transmits your token. It runs Claude Code and reads the output. identical to `claude -p "message"` in a terminal.
 
 | | ClaudeClaw | Token-extraction tools |
 |---|---|---|
@@ -1282,7 +1282,7 @@ Or view it in the dashboard via the API: `GET /api/audit?limit=50`.
 - You do **not** need to fill in every bracket. At minimum: `[YOUR ASSISTANT NAME]`, `[YOUR NAME]`, and `[PATH TO CLAUDECLAW]` (the full path to your claudeclaw directory)
 
 **Git errors during setup**
-- "Please tell me who you are" — run `git config --global user.name "Your Name"` and `git config --global user.email "you@email.com"`
+- "Please tell me who you are". run `git config --global user.name "Your Name"` and `git config --global user.email "you@email.com"`
 - Git needs these set once, globally, before it can do anything
 
 **Can't access the internet / "break out"**
@@ -1300,7 +1300,7 @@ Or view it in the dashboard via the API: `GET /api/audit?limit=50`.
 
 **WhatsApp not connecting**
 - `wa-daemon` must be running separately: `npx tsx scripts/wa-daemon.ts`
-- QR code expires after ~30s — kill and restart the daemon if it timed out
+- QR code expires after ~30s. kill and restart the daemon if it timed out
 - To force re-authentication, delete `store/waweb/` and restart the daemon
 
 **"409 Conflict: terminated by other getUpdates request"**
@@ -1310,14 +1310,14 @@ Or view it in the dashboard via the API: `GET /api/audit?limit=50`.
 - Send `/newchat` for a fresh start
 
 **File downloads fail**
-- Telegram caps downloads at 20MB — this is a Telegram API limit, not a ClaudeClaw one
+- Telegram caps downloads at 20MB. this is a Telegram API limit, not a ClaudeClaw one
 
 ---
 
 ## Common confusions
 
 **"Do I need the mega prompt / Rebuild_Prompt.md?"**
-No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLAUDE.md` in the repo **is** the prompt — it loads automatically into every Claude Code session. You personalize it once (replace the `[BRACKETED]` placeholders with your info) and forget about it. Just clone the repo, run setup, and go. When you `git pull` updates, your personalized `.env` stays untouched (gitignored) and `CLAUDE.md` changes are merged by git.
+No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLAUDE.md` in the repo **is** the prompt, it loads automatically into every Claude Code session. You personalize it once (replace the `[BRACKETED]` placeholders with your info) and forget about it. Just clone the repo, run setup, and go. When you `git pull` updates, your personalized `.env` stays untouched (gitignored) and `CLAUDE.md` changes are merged by git.
 
 **"Does this use Claude Remote?"**
 No. ClaudeClaw has nothing to do with Anthropic's Remote product. It runs the `claude` CLI locally on your own machine (Mac, Linux, or Windows via WSL2) and pipes results to Telegram. No cloud VMs, no remote sessions.
@@ -1393,29 +1393,29 @@ claudeclaw/
 │
 │  ← Files you'll actually touch
 ├── CLAUDE.md             ← START HERE: your assistant's personality and context
-├── banner.txt            ← ASCII art shown on startup — edit or replace freely
+├── banner.txt            ← ASCII art shown on startup. edit or replace freely
 ├── .env                  ← Your API keys (created by setup wizard, gitignored)
 │
 │  ← Configuration and setup
-├── .env.example          Template for .env — shows all available variables
+├── .env.example          Template for .env. shows all available variables
 ├── claudeclaw.plist      macOS LaunchAgent template (setup wizard uses this)
 ├── package.json          npm scripts and dependencies
 ├── tsconfig.json         TypeScript compiler config
 │
 │  ← Bot source code (src/)
 ├── src/
-│   ├── index.ts             Main entrypoint — starts everything
+│   ├── index.ts             Main entrypoint. starts everything
 │   ├── bot.ts               Handles all Telegram messages (text, voice, photo, etc.)
 │   ├── agent.ts             Runs Claude Code via Agent SDK
 │   ├── agent-config.ts      Loads agent YAML configs and CLAUDE.md templates
 │   ├── orchestrator.ts      Agent delegation routing (@agent: syntax)
-│   ├── db.ts                SQLite database — all tables and queries
+│   ├── db.ts                SQLite database. all tables and queries
 │   ├── memory.ts            5-layer context injection and memory feedback
 │   ├── memory-ingest.ts     Gemini-powered memory extraction from conversations
 │   ├── memory-consolidate.ts Pattern detection across memories (every 30 min)
 │   ├── embeddings.ts        Vector embeddings for semantic memory search
 │   ├── gemini.ts            Gemini API client (extraction, classification)
-│   ├── scheduler.ts         Cron + mission task runner — checks every 60 seconds
+│   ├── scheduler.ts         Cron + mission task runner. checks every 60 seconds
 │   ├── schedule-cli.ts      CLI for managing scheduled tasks
 │   ├── mission-cli.ts       CLI for creating/managing mission tasks
 │   ├── voice.ts             Voice transcription (Groq) and synthesis (ElevenLabs)
@@ -1440,24 +1440,24 @@ claudeclaw/
 │
 │  ← Scripts (scripts/)
 ├── scripts/
-│   ├── setup.ts          Interactive setup wizard — run with: npm run setup
-│   ├── status.ts         Health check — run with: npm run status
+│   ├── setup.ts          Interactive setup wizard. run with: npm run setup
+│   ├── status.ts         Health check. run with: npm run status
 │   ├── notify.sh         Sends a Telegram message from the shell (used by Claude)
-│   └── wa-daemon.ts      WhatsApp daemon — run separately for WhatsApp bridge
+│   └── wa-daemon.ts      WhatsApp daemon. run separately for WhatsApp bridge
 │
 │  ← Runtime data (auto-created, gitignored)
 ├── store/
-│   ├── claudeclaw.db     SQLite database — created automatically on first run
+│   ├── claudeclaw.db     SQLite database. created automatically on first run
 │   ├── claudeclaw.pid    Tracks the running process to prevent duplicates
-│   └── waweb/            WhatsApp session — scan QR once, persists here
+│   └── waweb/            WhatsApp session. scan QR once, persists here
 │
 └── workspace/
-    └── uploads/          Telegram media downloads — auto-deleted after 24 hours
+    └── uploads/          Telegram media downloads. auto-deleted after 24 hours
 ```
 
 **The only files you need to edit to get started:**
-1. `CLAUDE.md` — fill in your name, what you do, your file paths, your skills
-2. `.env` — add your API keys (the setup wizard does this for you)
+1. `CLAUDE.md`. fill in your name, what you do, your file paths, your skills
+2. `.env`. add your API keys (the setup wizard does this for you)
 
 Everything else runs without modification.
 
@@ -1851,9 +1851,9 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setMyProfilePhoto" \
 
 The same `runAgent()` pattern in `src/agent.ts` works on any channel:
 
-- **[NanoClaw](https://github.com/qwibitai/nanoclaw)** — WhatsApp, isolated Linux containers
-- **[OpenClaw](https://github.com/openclaw/openclaw)** — Telegram, WhatsApp, Slack, Discord, iMessage, Signal, and more
-- **[TinyClaw](https://github.com/jlia0/tinyclaw)** — ~400 lines of shell, Claude Code + tmux, zero dependencies
+- **[NanoClaw](https://github.com/qwibitai/nanoclaw)**: WhatsApp, isolated Linux containers
+- **[OpenClaw](https://github.com/openclaw/openclaw)**: Telegram, WhatsApp, Slack, Discord, iMessage, Signal, and more
+- **[TinyClaw](https://github.com/jlia0/tinyclaw)**: ~400 lines of shell, Claude Code + tmux, zero dependencies
 
 ---
 
