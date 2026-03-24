@@ -241,7 +241,7 @@ With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
 
 ---
 
-## API keys. what each does and alternatives
+## API keys: what each does and alternatives
 
 ### Telegram Bot Token (required)
 
@@ -249,7 +249,7 @@ With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
 
 ---
 
-### Groq. voice input (optional)
+### Groq: voice input (optional)
 
 **What it does:** Transcribes your voice notes using Whisper before passing them to Claude.
 
@@ -266,7 +266,7 @@ With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
 
 ---
 
-### ElevenLabs. voice output (optional)
+### ElevenLabs: voice output (optional)
 
 **What it does:** Converts Claude's responses to audio in your cloned voice.
 
@@ -292,7 +292,7 @@ The TTS cascade tries ElevenLabs first, falls back to Gradium, then to macOS `sa
 
 ---
 
-### Google. video analysis (optional)
+### Google: video analysis (optional)
 
 **What it does:** Analyzes videos you send using Gemini. Also handles images, audio, function calling, structured output, and code execution via the `gemini-api-dev` skill.
 
@@ -655,10 +655,10 @@ Once you have a domain, run these commands one at a time:
 # 1. Install the tunnel tool (skip if you already did this)
 brew install cloudflare/cloudflare/cloudflared
 
-# 2. Log in to Cloudflare (this opens your browser. pick your domain when asked)
+# 2. Log in to Cloudflare (this opens your browser: pick your domain when asked)
 cloudflared tunnel login
 
-# 3. Create a tunnel (remember the ID it prints. you'll need it)
+# 3. Create a tunnel (remember the ID it prints: you'll need it)
 cloudflared tunnel create claudeclaw
 
 # 4. Connect your domain to the tunnel (replace with your actual domain)
@@ -1113,16 +1113,16 @@ ClaudeClaw auto-loads every skill in `~/.claude/skills/`. Install a skill by cop
 ClaudeClaw ships with ready-to-use skills in the `skills/` directory. Copy any of these to activate them:
 
 ```bash
-# Gmail. read, triage, reply, send, create filters
+# Gmail: read, triage, reply, send, create filters
 cp -r skills/gmail ~/.claude/skills/gmail
 
-# Google Calendar. schedule meetings, check availability, send invites
+# Google Calendar: schedule meetings, check availability, send invites
 cp -r skills/google-calendar ~/.claude/skills/google-calendar
 
-# Slack. list conversations, read messages, send replies
+# Slack: list conversations, read messages, send replies
 cp -r skills/slack ~/.claude/skills/slack
 
-# TLDR. summarize conversations and save as notes
+# TLDR: summarize conversations and save as notes
 cp -r skills/tldr ~/.claude/skills/tldr
 ```
 
@@ -1492,7 +1492,7 @@ All agents share your machine, your SQLite database, your global skills (`~/.cla
 
 **This is 100% optional.** `npm start` with no flags works exactly like before. Zero breaking changes.
 
-### Step 1 -- Decide what agents you want
+### Step 1: Decide what agents you want
 
 Think about the roles that make sense for your workflow. Here are the templates we ship:
 
@@ -1505,7 +1505,7 @@ Think about the roles that make sense for your workflow. Here are the templates 
 
 You can start with one and add more later. Or use the blank `_template` and define your own role entirely.
 
-### Step 2 -- Create Telegram bots
+### Step 2: Create Telegram bots
 
 Each agent needs its own Telegram bot. Open Telegram and message **@BotFather**:
 
@@ -1524,7 +1524,7 @@ npm run agent:create
 
 It walks you through template selection, bot creation, token setup, and a test start.
 
-### Step 3 -- Configure each agent
+### Step 3: Configure each agent
 
 For each agent, you need two files in `agents/<name>/`:
 
@@ -1558,7 +1558,7 @@ Add the bot token to `.env`:
 COMMS_BOT_TOKEN=1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-### Step 4 -- Start your agents
+### Step 4: Start your agents
 
 You have two options: run agents in foreground terminals (great for testing), or install them as persistent background services with `launchd` (recommended for daily use).
 
@@ -1645,7 +1645,7 @@ bash scripts/uninstall-launchd.sh
 
 **Linux users:** launchd is macOS-only. On Linux, use `systemd` or run agents with `pm2` / `screen` / `tmux`. The same `npm start -- --agent comms` command works everywhere.
 
-### Step 5 -- Message your agents
+### Step 5: Message your agents
 
 Open each agent's chat in Telegram and send `/start`. They'll respond with their name and role. From there, use them like you use the main bot -- voice notes, photos, files, slash commands -- everything works.
 
@@ -1700,7 +1700,7 @@ If you use Obsidian, agents can be assigned vault folders. Open tasks (`- [ ]` l
 ```yaml
 # In agent.yaml
 obsidian:
-  vault: /Users/you/ObsidianVault
+  vault: ~/ObsidianVault
   folders:
     - Client Work/       # agent can read and reference
     - Inbox/
