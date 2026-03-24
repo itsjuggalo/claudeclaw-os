@@ -37,9 +37,24 @@ import {
   assignMissionTask,
   getUnassignedMissionTasks,
   getMissionTaskHistory,
+  getAuditLog,
+  getAuditLogCount,
+  getRecentBlockedActions,
 } from './db.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
+import { getSecurityStatus } from './security.js';
 import { listAgentIds, loadAgentConfig, setAgentModel } from './agent-config.js';
+import {
+  listTemplates,
+  validateAgentId,
+  validateBotToken,
+  createAgent,
+  activateAgent,
+  deactivateAgent,
+  deleteAgent,
+  suggestBotNames,
+  isAgentRunning,
+} from './agent-create.js';
 import { processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { logger } from './logger.js';
@@ -444,6 +459,120 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       try { setAgentModel(id, model); updated.push(id); } catch {}
     }
     return c.json({ ok: true, model, updated });
+  });
+
+  // ── Agent Creation & Management ──────────────────────────────────────
+
+  // List available agent templates
+  app.get('/api/agents/templates', (c) => {
+    return c.json({ templates: listTemplates() });
+  });
+
+  // Validate an agent ID (before creation)
+  app.get('/api/agents/validate-id', (c) => {
+    const id = c.req.query('id') || '';
+    const result = validateAgentId(id);
+    const suggestions = id ? suggestBotNames(id) : null;
+    return c.json({ ...result, suggestions });
+  });
+
+  // Validate a bot token
+  app.post('/api/agents/validate-token', async (c) => {
+    const body = await c.req.json<{ token?: string }>();
+    const token = body?.token?.trim();
+    if (!token) return c.json({ ok: false, error: 'token required' }, 400);
+    const result = await validateBotToken(token);
+    return c.json(result);
+  });
+
+  // Create a new agent
+  app.post('/api/agents/create', async (c) => {
+    const body = await c.req.json<{
+      id?: string;
+      name?: string;
+      description?: string;
+      model?: string;
+      template?: string;
+      botToken?: string;
+    }>();
+
+    const id = body?.id?.trim();
+    const name = body?.name?.trim();
+    const description = body?.description?.trim();
+    const botToken = body?.botToken?.trim();
+
+    if (!id) return c.json({ error: 'id required' }, 400);
+    if (!name) return c.json({ error: 'name required' }, 400);
+    if (!description) return c.json({ error: 'description required' }, 400);
+    if (!botToken) return c.json({ error: 'botToken required' }, 400);
+
+    try {
+      const result = await createAgent({
+        id,
+        name,
+        description,
+        model: body?.model?.trim() || undefined,
+        template: body?.template?.trim() || undefined,
+        botToken,
+      });
+      return c.json({ ok: true, ...result }, 201);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: msg }, 400);
+    }
+  });
+
+  // Activate an agent (install service + start)
+  app.post('/api/agents/:id/activate', (c) => {
+    const agentId = c.req.param('id');
+    if (agentId === 'main') return c.json({ error: 'Cannot activate main via this endpoint' }, 400);
+    const result = activateAgent(agentId);
+    return c.json(result);
+  });
+
+  // Deactivate an agent (stop + uninstall service)
+  app.post('/api/agents/:id/deactivate', (c) => {
+    const agentId = c.req.param('id');
+    if (agentId === 'main') return c.json({ error: 'Cannot deactivate main via this endpoint' }, 400);
+    const result = deactivateAgent(agentId);
+    return c.json(result);
+  });
+
+  // Delete an agent entirely
+  app.delete('/api/agents/:id/full', (c) => {
+    const agentId = c.req.param('id');
+    if (agentId === 'main') return c.json({ error: 'Cannot delete main' }, 400);
+    const result = deleteAgent(agentId);
+    if (result.ok) {
+      return c.json({ ok: true });
+    }
+    return c.json({ error: result.error }, 500);
+  });
+
+  // Check if a specific agent is running
+  app.get('/api/agents/:id/status', (c) => {
+    const agentId = c.req.param('id');
+    return c.json({ running: isAgentRunning(agentId) });
+  });
+
+  // ── Security & Audit ─────────────────────────────────────────────────
+
+  app.get('/api/security/status', (c) => {
+    return c.json(getSecurityStatus());
+  });
+
+  app.get('/api/audit', (c) => {
+    const limit = parseInt(c.req.query('limit') || '50', 10);
+    const offset = parseInt(c.req.query('offset') || '0', 10);
+    const agentId = c.req.query('agent') || undefined;
+    const entries = getAuditLog(limit, offset, agentId);
+    const total = getAuditLogCount(agentId);
+    return c.json({ entries, total });
+  });
+
+  app.get('/api/audit/blocked', (c) => {
+    const limit = parseInt(c.req.query('limit') || '10', 10);
+    return c.json({ entries: getRecentBlockedActions(limit) });
   });
 
   // Hive mind feed

@@ -195,6 +195,7 @@ export function getDashboardHtml(token: string, chatId: string): string {
   <div class="flex items-center justify-between mb-2">
     <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Agents</h2>
     <div class="flex items-center gap-2">
+      <button onclick="openCreateAgentWizard()" style="background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer">+ New Agent</button>
       <div class="model-picker" onclick="toggleModelPicker(this)" style="display:inline-block">
         <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
         <div class="model-menu" style="display:none;right:0;left:auto">
@@ -268,6 +269,103 @@ export function getDashboardHtml(token: string, chatId: string): string {
     <button onclick="closeAgentModal()" class="text-gray-500 hover:text-white" style="background:none;border:none;cursor:pointer;font-size:16px">&times;</button>
   </div>
   <div id="agent-modal-body" style="overflow-y:auto;padding:0 16px 16px;flex:1"></div>
+</div>
+
+<!-- Create Agent Wizard Modal -->
+<div id="create-agent-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:40;opacity:0;pointer-events:none;transition:opacity 0.2s"></div>
+<div id="create-agent-modal" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.95);z-index:50;background:#141414;border:1px solid #2a2a2a;border-radius:12px;width:90%;max-width:480px;max-height:85vh;opacity:0;pointer-events:none;transition:transform 0.2s ease,opacity 0.2s ease;display:flex;flex-direction:column">
+  <div class="flex items-center justify-between px-4 pt-4 pb-2">
+    <h3 class="text-sm font-bold text-white" id="create-agent-title">New Agent</h3>
+    <button onclick="closeCreateAgentWizard()" class="text-gray-500 hover:text-white" style="background:none;border:none;cursor:pointer;font-size:16px">&times;</button>
+  </div>
+  <!-- Step indicators -->
+  <div class="flex gap-2 px-4 mb-3">
+    <div id="caw-step-1-dot" style="flex:1;height:3px;border-radius:2px;background:#4f46e5;transition:background 0.2s"></div>
+    <div id="caw-step-2-dot" style="flex:1;height:3px;border-radius:2px;background:#2a2a2a;transition:background 0.2s"></div>
+    <div id="caw-step-3-dot" style="flex:1;height:3px;border-radius:2px;background:#2a2a2a;transition:background 0.2s"></div>
+  </div>
+  <div id="create-agent-body" style="overflow-y:auto;padding:0 16px 16px;flex:1">
+    <!-- Step 1: Basics -->
+    <div id="caw-step-1">
+      <label class="text-xs text-gray-400 block mb-1">Agent ID <span class="text-gray-600">(lowercase, no spaces)</span></label>
+      <input type="text" id="caw-id" placeholder="e.g. analytics" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:4px;box-sizing:border-box" maxlength="30" oninput="cawIdChanged()">
+      <div id="caw-id-status" class="text-xs mb-3" style="min-height:16px"></div>
+
+      <label class="text-xs text-gray-400 block mb-1">Display Name</label>
+      <input type="text" id="caw-name" placeholder="e.g. Analytics" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" maxlength="50" oninput="cawNameManuallyEdited=true">
+
+      <label class="text-xs text-gray-400 block mb-1">Description</label>
+      <input type="text" id="caw-desc" placeholder="What this agent does" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" maxlength="200">
+
+      <div class="flex gap-2 mb-3">
+        <div style="flex:1">
+          <label class="text-xs text-gray-400 block mb-1">Model</label>
+          <select id="caw-model" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
+            <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
+            <option value="claude-opus-4-6">Opus 4.6</option>
+            <option value="claude-haiku-4-5">Haiku 4.5</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label class="text-xs text-gray-400 block mb-1">Template</label>
+          <select id="caw-template" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
+            <option value="_template">Blank</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="caw-step1-error" class="text-red-400 text-xs mb-2" style="display:none"></div>
+      <button onclick="cawGoStep2()" style="width:100%;background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer">Next: Set up Telegram bot</button>
+    </div>
+
+    <!-- Step 2: BotFather + Token -->
+    <div id="caw-step-2" style="display:none">
+      <div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:14px;margin-bottom:12px">
+        <div class="text-xs text-gray-400 font-semibold uppercase mb-2">Create a Telegram bot</div>
+        <div class="text-xs text-gray-300 leading-relaxed">
+          1. Open <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color:#60a5fa;text-decoration:none">@BotFather</a> in Telegram<br>
+          2. Send <code style="background:#222;padding:1px 4px;border-radius:3px">/newbot</code><br>
+          3. Name it: <span id="caw-suggested-name" style="color:#a78bfa;cursor:pointer" onclick="copyToClipboard(this.textContent)" title="Click to copy"></span><br>
+          4. Username: <span id="caw-suggested-username" style="color:#a78bfa;cursor:pointer" onclick="copyToClipboard(this.textContent)" title="Click to copy"></span><br>
+          5. Copy the token BotFather gives you
+        </div>
+      </div>
+
+      <label class="text-xs text-gray-400 block mb-1">Bot Token</label>
+      <div style="position:relative">
+        <input type="text" id="caw-token" placeholder="Paste token from BotFather" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;padding-right:70px;color:#e0e0e0;font-size:13px;outline:none;box-sizing:border-box;font-family:monospace" oninput="cawTokenChanged()">
+        <div id="caw-token-status" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px"></div>
+      </div>
+      <div id="caw-token-info" class="text-xs mt-2" style="min-height:16px"></div>
+
+      <div class="flex gap-2 mt-3">
+        <button onclick="cawGoStep1()" style="flex:0 0 auto;background:#1a1a1a;color:#9ca3af;border:1px solid #2a2a2a;border-radius:8px;padding:10px 16px;font-size:13px;cursor:pointer">Back</button>
+        <button id="caw-create-btn" onclick="cawCreate()" style="flex:1;background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;opacity:0.5;pointer-events:none">Create Agent</button>
+      </div>
+      <div id="caw-step2-error" class="text-red-400 text-xs mt-2" style="display:none"></div>
+    </div>
+
+    <!-- Step 3: Confirmation + Activate -->
+    <div id="caw-step-3" style="display:none">
+      <div style="text-align:center;margin-bottom:16px">
+        <div style="width:48px;height:48px;border-radius:50%;background:#064e3b;margin:0 auto 8px;display:flex;align-items:center;justify-content:center">
+          <svg width="24" height="24" fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+        <div class="text-sm font-semibold text-white">Agent Created</div>
+      </div>
+
+      <div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:14px;margin-bottom:12px">
+        <div id="caw-summary" class="text-xs text-gray-300 leading-relaxed"></div>
+      </div>
+
+      <div id="caw-activate-section">
+        <button id="caw-activate-btn" onclick="cawActivate()" style="width:100%;background:#064e3b;color:#6ee7b7;border:1px solid #065f46;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer">Activate (install service + start)</button>
+        <div id="caw-activate-status" class="text-xs text-center mt-2" style="min-height:16px"></div>
+      </div>
+
+      <button onclick="closeCreateAgentWizard();loadAgents();loadMissionControl();" style="width:100%;background:#1a1a1a;color:#9ca3af;border:1px solid #2a2a2a;border-radius:8px;padding:8px;font-size:12px;cursor:pointer;margin-top:8px">Done</button>
+    </div>
+  </div>
 </div>
 
 <!-- Desktop: 2-column grid. Mobile: stacked. -->
@@ -862,8 +960,12 @@ async function loadAgents() {
     const data = await api('/api/agents');
     const section = document.getElementById('agents-section');
     const container = document.getElementById('agents-container');
-    if (!data.agents || data.agents.length <= 1) { section.style.display = 'none'; return; }
+    // Always show agents section so "+ New Agent" button is accessible
     section.style.display = '';
+    if (!data.agents || data.agents.length <= 1) {
+      container.innerHTML = '<div class="text-xs text-gray-600 py-2">No agents yet. Click + New Agent to create one.</div>';
+      return;
+    }
     container.innerHTML = data.agents.map(a => {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
@@ -992,9 +1094,67 @@ async function toggleAgentDetail(agentId) {
       }).join('');
     }
 
+    // Agent management controls (not for main)
+    if (agentId !== 'main') {
+      html += '<div class="flex gap-2 mt-4 pt-3" style="border-top:1px solid #2a2a2a">';
+      if (agent && agent.running) {
+        html += '<button data-agent="' + agentId + '" data-act="stop" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="flex:1;background:#1a1a1a;color:#f87171;border:1px solid #7f1d1d;border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer">Stop</button>';
+      } else {
+        html += '<button data-agent="' + agentId + '" data-act="start" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="flex:1;background:#064e3b;color:#6ee7b7;border:1px solid #065f46;border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer">Start</button>';
+      }
+      html += '<button data-agent="' + agentId + '" data-act="delete" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="background:#1a1a1a;color:#6b7280;border:1px solid #2a2a2a;border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer">Delete</button>';
+      html += '</div>';
+      html += '<div id="agent-action-status" class="text-xs text-center mt-2" style="min-height:16px"></div>';
+    }
+
     if (!html) html = '<div class="text-gray-500 text-sm text-center py-8">No activity yet for this agent.</div>';
     body.innerHTML = html;
   } catch(e) { body.innerHTML = '<div class="text-red-400 text-sm text-center py-8">Failed to load agent details</div>'; }
+}
+
+async function agentModalAction(agentId, action) {
+  var status = document.getElementById('agent-action-status');
+  if (!status) return;
+
+  if (action === 'delete') {
+    if (!confirm('Delete agent "' + agentId + '"? This removes all config, the service, and the bot token from .env.')) return;
+    status.innerHTML = '<span style="color:#fbbf24">Deleting...</span>';
+    try {
+      var res = await fetch(BASE + '/api/agents/' + agentId + '/full?token=' + TOKEN, { method: 'DELETE' });
+      var data = await res.json();
+      if (data.ok) {
+        status.innerHTML = '<span style="color:#6ee7b7">Deleted</span>';
+        setTimeout(function() { closeAgentModal(); loadAgents(); loadMissionControl(); }, 800);
+      } else {
+        status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Delete failed') + '</span>';
+      }
+    } catch(e) { status.innerHTML = '<span style="color:#f87171">Network error</span>'; }
+    return;
+  }
+
+  if (action === 'stop') {
+    status.innerHTML = '<span style="color:#fbbf24">Stopping...</span>';
+    try {
+      await fetch(BASE + '/api/agents/' + agentId + '/deactivate?token=' + TOKEN, { method: 'POST' });
+      status.innerHTML = '<span style="color:#6ee7b7">Stopped</span>';
+      setTimeout(function() { closeAgentModal(); loadAgents(); }, 800);
+    } catch(e) { status.innerHTML = '<span style="color:#f87171">Failed</span>'; }
+    return;
+  }
+
+  if (action === 'start') {
+    status.innerHTML = '<span style="color:#fbbf24">Starting...</span>';
+    try {
+      var res = await fetch(BASE + '/api/agents/' + agentId + '/activate?token=' + TOKEN, { method: 'POST' });
+      var data = await res.json();
+      if (data.ok) {
+        status.innerHTML = '<span style="color:#6ee7b7">Started' + (data.pid ? ' (PID ' + data.pid + ')' : '') + '</span>';
+        setTimeout(function() { closeAgentModal(); loadAgents(); }, 800);
+      } else {
+        status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Start failed') + '</span>';
+      }
+    } catch(e) { status.innerHTML = '<span style="color:#f87171">Network error</span>'; }
+  }
 }
 
 function closeAgentModal() {
@@ -1007,6 +1167,287 @@ function closeAgentModal() {
   modal.style.transform = 'translate(-50%,-50%) scale(0.95)';
 }
 document.getElementById('agent-modal-overlay').addEventListener('click', closeAgentModal);
+
+// ── Create Agent Wizard ──────────────────────────────────────────────
+
+let cawStep = 1;
+let cawIdValid = false;
+let cawTokenValid = false;
+let cawBotInfo = null;
+let cawCreatedId = null;
+let cawIdDebounce = null;
+let cawTokenDebounce = null;
+let cawNameManuallyEdited = false;
+
+function openCreateAgentWizard() {
+  cawStep = 1;
+  cawIdValid = false;
+  cawTokenValid = false;
+  cawBotInfo = null;
+  cawCreatedId = null;
+  cawNameManuallyEdited = false;
+  document.getElementById('caw-id').value = '';
+  document.getElementById('caw-name').value = '';
+  document.getElementById('caw-desc').value = '';
+  document.getElementById('caw-model').value = 'claude-sonnet-4-6';
+  document.getElementById('caw-token').value = '';
+  document.getElementById('caw-id-status').innerHTML = '';
+  document.getElementById('caw-token-status').innerHTML = '';
+  document.getElementById('caw-token-info').innerHTML = '';
+  document.getElementById('caw-step1-error').style.display = 'none';
+  document.getElementById('caw-step2-error').style.display = 'none';
+  cawShowStep(1);
+  loadCawTemplates();
+  var o = document.getElementById('create-agent-overlay');
+  var m = document.getElementById('create-agent-modal');
+  o.style.opacity = '1'; o.style.pointerEvents = 'auto';
+  m.style.opacity = '1'; m.style.pointerEvents = 'auto';
+  m.style.transform = 'translate(-50%,-50%) scale(1)';
+  setTimeout(function() { document.getElementById('caw-id').focus(); }, 200);
+}
+
+function closeCreateAgentWizard() {
+  var o = document.getElementById('create-agent-overlay');
+  var m = document.getElementById('create-agent-modal');
+  o.style.opacity = '0'; o.style.pointerEvents = 'none';
+  m.style.opacity = '0'; m.style.pointerEvents = 'none';
+  m.style.transform = 'translate(-50%,-50%) scale(0.95)';
+}
+document.getElementById('create-agent-overlay').addEventListener('click', closeCreateAgentWizard);
+
+function cawShowStep(n) {
+  cawStep = n;
+  document.getElementById('caw-step-1').style.display = n === 1 ? '' : 'none';
+  document.getElementById('caw-step-2').style.display = n === 2 ? '' : 'none';
+  document.getElementById('caw-step-3').style.display = n === 3 ? '' : 'none';
+  for (var i = 1; i <= 3; i++) {
+    document.getElementById('caw-step-' + i + '-dot').style.background = i <= n ? '#4f46e5' : '#2a2a2a';
+  }
+  var titles = { 1: 'New Agent', 2: 'Connect Telegram', 3: 'Agent Created' };
+  document.getElementById('create-agent-title').textContent = titles[n] || 'New Agent';
+}
+
+async function loadCawTemplates() {
+  try {
+    var data = await api('/api/agents/templates');
+    var sel = document.getElementById('caw-template');
+    sel.innerHTML = '';
+    (data.templates || []).forEach(function(t) {
+      var opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.name + (t.id === '_template' ? '' : ' - ' + t.description.slice(0, 40));
+      sel.appendChild(opt);
+    });
+  } catch(e) { console.error('Templates load error:', e); }
+}
+
+function cawIdChanged() {
+  var id = document.getElementById('caw-id').value.trim().toLowerCase();
+  document.getElementById('caw-id').value = id;
+  var status = document.getElementById('caw-id-status');
+  cawIdValid = false;
+
+  if (!id) { status.innerHTML = ''; return; }
+
+  // Auto-fill name from ID unless user has manually typed a name
+  if (!cawNameManuallyEdited) {
+    var nameInput = document.getElementById('caw-name');
+    nameInput.value = id.replace(/[-_]/g, ' ').replace(/\\b\\w/g, function(c) { return c.toUpperCase(); });
+  }
+
+  clearTimeout(cawIdDebounce);
+  status.innerHTML = '<span style="color:#6b7280">Checking...</span>';
+  cawIdDebounce = setTimeout(async function() {
+    try {
+      var data = await api('/api/agents/validate-id?id=' + encodeURIComponent(id));
+      if (data.ok) {
+        cawIdValid = true;
+        status.innerHTML = '<span style="color:#6ee7b7">Available</span>';
+      } else {
+        status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error) + '</span>';
+      }
+    } catch(e) {
+      status.innerHTML = '<span style="color:#f87171">Validation error</span>';
+    }
+  }, 400);
+}
+
+function cawGoStep1() { cawShowStep(1); }
+
+function cawGoStep2() {
+  var id = document.getElementById('caw-id').value.trim();
+  var name = document.getElementById('caw-name').value.trim();
+  var desc = document.getElementById('caw-desc').value.trim();
+  var errEl = document.getElementById('caw-step1-error');
+
+  if (!id) { errEl.textContent = 'Agent ID is required'; errEl.style.display = ''; return; }
+  if (!cawIdValid) { errEl.textContent = 'Agent ID is not valid or already taken'; errEl.style.display = ''; return; }
+  if (!name) { errEl.textContent = 'Display name is required'; errEl.style.display = ''; return; }
+  if (!desc) { errEl.textContent = 'Description is required'; errEl.style.display = ''; return; }
+
+  errEl.style.display = 'none';
+
+  // Set suggested bot names
+  var label = id.replace(/[-_]/g, ' ').replace(/\\b\\w/g, function(c) { return c.toUpperCase(); });
+  document.getElementById('caw-suggested-name').textContent = 'ClaudeClaw ' + label;
+  document.getElementById('caw-suggested-username').textContent = 'claudeclaw_' + id.replace(/-/g, '_') + '_bot';
+
+  // Reset token state
+  cawTokenValid = false;
+  cawBotInfo = null;
+  document.getElementById('caw-token').value = '';
+  document.getElementById('caw-token-status').innerHTML = '';
+  document.getElementById('caw-token-info').innerHTML = '';
+  var btn = document.getElementById('caw-create-btn');
+  btn.style.opacity = '0.5';
+  btn.style.pointerEvents = 'none';
+
+  cawShowStep(2);
+  setTimeout(function() { document.getElementById('caw-token').focus(); }, 200);
+}
+
+function cawTokenChanged() {
+  var token = document.getElementById('caw-token').value.trim();
+  var status = document.getElementById('caw-token-status');
+  var info = document.getElementById('caw-token-info');
+  var btn = document.getElementById('caw-create-btn');
+  cawTokenValid = false;
+  cawBotInfo = null;
+  btn.style.opacity = '0.5';
+  btn.style.pointerEvents = 'none';
+
+  if (!token || !token.includes(':')) {
+    status.innerHTML = '';
+    info.innerHTML = '';
+    return;
+  }
+
+  clearTimeout(cawTokenDebounce);
+  status.innerHTML = '<span style="color:#fbbf24">...</span>';
+  info.innerHTML = '';
+
+  cawTokenDebounce = setTimeout(async function() {
+    try {
+      var data = await fetch(BASE + '/api/agents/validate-token?token=' + TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token }),
+      }).then(function(r) { return r.json(); });
+
+      if (data.ok && data.botInfo) {
+        cawTokenValid = true;
+        cawBotInfo = data.botInfo;
+        status.innerHTML = '<span style="color:#6ee7b7">&#10003;</span>';
+        info.innerHTML = '<span style="color:#6ee7b7">Verified: @' + escapeHtml(data.botInfo.username) + '</span>';
+        btn.style.opacity = '1';
+        btn.style.pointerEvents = 'auto';
+      } else {
+        status.innerHTML = '<span style="color:#f87171">&#10007;</span>';
+        info.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Invalid token') + '</span>';
+      }
+    } catch(e) {
+      status.innerHTML = '<span style="color:#f87171">!</span>';
+      info.innerHTML = '<span style="color:#f87171">Could not validate</span>';
+    }
+  }, 600);
+}
+
+async function cawCreate() {
+  if (!cawTokenValid) return;
+
+  var btn = document.getElementById('caw-create-btn');
+  var errEl = document.getElementById('caw-step2-error');
+  btn.textContent = 'Creating...';
+  btn.style.pointerEvents = 'none';
+  errEl.style.display = 'none';
+
+  try {
+    var res = await fetch(BASE + '/api/agents/create?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: document.getElementById('caw-id').value.trim(),
+        name: document.getElementById('caw-name').value.trim(),
+        description: document.getElementById('caw-desc').value.trim(),
+        model: document.getElementById('caw-model').value,
+        template: document.getElementById('caw-template').value,
+        botToken: document.getElementById('caw-token').value.trim(),
+      }),
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) {
+      errEl.textContent = data.error || 'Failed to create agent';
+      errEl.style.display = '';
+      btn.textContent = 'Create Agent';
+      btn.style.pointerEvents = 'auto';
+      return;
+    }
+
+    cawCreatedId = data.agentId;
+
+    // Build summary
+    var summary = '<div style="margin-bottom:6px"><span style="color:#6b7280">Agent ID:</span> <span class="text-white">' + escapeHtml(data.agentId) + '</span></div>' +
+      '<div style="margin-bottom:6px"><span style="color:#6b7280">Bot:</span> <span style="color:#6ee7b7">@' + escapeHtml(data.botInfo.username) + '</span></div>' +
+      '<div style="margin-bottom:6px"><span style="color:#6b7280">Directory:</span> <span style="color:#9ca3af;font-size:11px">' + escapeHtml(data.agentDir) + '</span></div>' +
+      '<div><span style="color:#6b7280">Token stored as:</span> <span style="color:#9ca3af">' + escapeHtml(data.envKey) + '</span></div>';
+    document.getElementById('caw-summary').innerHTML = summary;
+
+    // Reset activate section
+    var actBtn = document.getElementById('caw-activate-btn');
+    actBtn.textContent = 'Activate (install service + start)';
+    actBtn.style.opacity = '1';
+    actBtn.style.pointerEvents = 'auto';
+    actBtn.style.background = '#064e3b';
+    actBtn.style.color = '#6ee7b7';
+    actBtn.style.borderColor = '#065f46';
+    document.getElementById('caw-activate-status').innerHTML = '';
+
+    cawShowStep(3);
+  } catch(e) {
+    errEl.textContent = 'Network error';
+    errEl.style.display = '';
+    btn.textContent = 'Create Agent';
+    btn.style.pointerEvents = 'auto';
+  }
+}
+
+async function cawActivate() {
+  if (!cawCreatedId) return;
+  var btn = document.getElementById('caw-activate-btn');
+  var status = document.getElementById('caw-activate-status');
+  btn.textContent = 'Starting...';
+  btn.style.pointerEvents = 'none';
+  status.innerHTML = '<span style="color:#fbbf24">Installing service and starting agent...</span>';
+
+  try {
+    var res = await fetch(BASE + '/api/agents/' + cawCreatedId + '/activate?token=' + TOKEN, { method: 'POST' });
+    var data = await res.json();
+    if (data.ok) {
+      btn.textContent = 'Running';
+      btn.style.background = '#064e3b';
+      btn.style.color = '#6ee7b7';
+      status.innerHTML = '<span style="color:#6ee7b7">Agent is live' + (data.pid ? ' (PID ' + data.pid + ')' : '') + '. Send it a message in Telegram!</span>';
+    } else {
+      btn.textContent = 'Retry Activation';
+      btn.style.pointerEvents = 'auto';
+      status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Activation failed') + '</span>';
+    }
+  } catch(e) {
+    btn.textContent = 'Retry Activation';
+    btn.style.pointerEvents = 'auto';
+    status.innerHTML = '<span style="color:#f87171">Network error</span>';
+  }
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(function() {
+    // Brief visual feedback
+    var el = event.target;
+    var orig = el.style.color;
+    el.style.color = '#6ee7b7';
+    setTimeout(function() { el.style.color = orig; }, 800);
+  }).catch(function() {});
+}
 
 async function loadHiveMind() {
   try {
