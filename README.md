@@ -89,8 +89,9 @@ npm run setup
 The wizard walks you through everything interactively:
 
 - Checks your environment (Node, Claude CLI, builds if needed)
-- Asks which features you want — voice input, voice output, video analysis, WhatsApp
-- Offers to clone other Claw projects for inspiration (NanoClaw, OpenClaw, TinyClaw)
+- Asks which features you want (voice input, voice output, video analysis, WhatsApp)
+- Sets up your Telegram bot token and chat ID
+- **Configures security**: PIN lock, emergency kill phrase, idle auto-lock
 - Opens your editor to personalize `CLAUDE.md`
 - Lists the skills you'll want to install and where to get them
 - Prompts for API keys **only for the features you selected**
@@ -451,11 +452,18 @@ Every skill in `~/.claude/skills/` loads on every session. Call them directly (`
 | `/slack` | Open the Slack interface — same flow as WhatsApp |
 | `/dashboard` | Get a clickable link to the live web dashboard |
 
+**Security:**
+
+| Command | What it does |
+|---------|-------------|
+| `/lock` | Lock the session immediately. Requires PIN to unlock. Only works when PIN is configured. |
+| `/status` | Show current security status: PIN enabled, locked/unlocked, idle timeout, kill phrase |
+
 **Setup (one-time):**
 
 | Command | What it does |
 |---------|-------------|
-| `/start` | First message to the bot — confirms it's running |
+| `/start` | First message to the bot, confirms it's running |
 | `/chatid` | Shows your Telegram chat ID for the `ALLOWED_CHAT_ID` setting in `.env` |
 
 All built-in commands are registered in Telegram's command menu, so you get autocomplete when you type `/`.
@@ -541,7 +549,7 @@ Below that, the dashboard is organized into panels:
 
 | Panel | What it shows you |
 |-------|-------------------|
-| **Agents** | Status cards for every configured agent. Shows live/off status, model, today's turns and cost. Color-coded borders per agent. |
+| **Agents** | Status cards for every configured agent. Shows live/off status, model, today's turns and cost. Click a card to see recent conversation, hive mind activity, and Start/Stop/Delete controls. **+ New Agent** button opens a 3-step wizard to create and activate a new agent directly from the dashboard. |
 | **Hive Mind** | A real-time activity feed showing what each agent has been doing, with timestamps and color-coded agent names. Includes a privacy blur toggle. |
 | **Tasks** | Unassigned mission tasks waiting to be routed. Create tasks with a title and prompt, then either drag them to an agent column or click **Auto-assign** to let Gemini classify and route them automatically. |
 | **Mission Control** | A kanban board with one column per agent. Shows running and recently completed tasks per agent. Click **History** to open a paginated drawer of all completed tasks with full results. Completed tasks stay visible for 30 minutes, then move to history. |
@@ -1193,19 +1201,68 @@ For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-tok
 
 ---
 
-## Security notes
+## Security
 
-ClaudeClaw is designed to run on your personal machine for your own use. A few things to be aware of:
+ClaudeClaw has multiple security layers. Some are always on, others are opt-in. The setup wizard (`npm run setup`) configures all of them interactively.
 
-**`bypassPermissions` mode.** The bot runs Claude Code with `permissionMode: 'bypassPermissions'`. This is required because there's no terminal to approve tool-use prompts. It means Claude can execute any tool (shell commands, file reads, web requests) without confirmation. This is safe when the bot is locked to your chat ID on your own machine. Do not expose it to untrusted users.
+### Always on
 
-**WhatsApp daemon runs on localhost only.** The `wa-daemon` HTTP API (port 4242) and Chrome DevTools Protocol (port 9222) bind to `127.0.0.1`. They are not accessible from outside your machine, but any process running locally can reach them. If you run untrusted code on the same machine, be aware that it could interact with your WhatsApp session.
+These protections are active in every ClaudeClaw installation, no configuration needed.
 
-**`notify.sh` is called by Claude.** The notification script sends Telegram messages via `curl`. Since Claude has full shell access, it can call this script with any content. This is by design (it's how progress updates work), but be aware that prompt injection via external content (web pages, files) could theoretically cause Claude to send unexpected messages.
+| Layer | What it does |
+|-------|-------------|
+| **Chat ID restriction** | `ALLOWED_CHAT_ID` locks the bot to a single Telegram account. Messages from any other user are silently dropped. |
+| **Private chat only** | The bot rejects all group chats. Only private (1-on-1) conversations are accepted. |
+| **Audit logging** | Every action (messages, commands, delegations, lock/unlock, blocked attempts) is recorded to the `audit_log` table in SQLite with timestamps, agent ID, and chat ID. |
+| **DB file permissions** | The `store/` directory is set to `0700` and all database files to `0600` on startup (owner-only access). |
+| **Message encryption** | WhatsApp and Slack message bodies are encrypted with AES-256-GCM before being written to the database. The key is stored in `.env` (gitignored). |
+| **Message auto-purge** | A 3-day retention sweep runs on startup and every 24 hours, deleting all message data from `wa_messages`, `wa_outbox`, `wa_message_map`, and `slack_messages`. |
 
-**Set `ALLOWED_CHAT_ID` immediately.** Until this is set, the bot responds to any Telegram user who messages it. The setup wizard helps you configure this, but if you start the bot manually before setting it, it's open to everyone who knows the bot username.
+**`bypassPermissions` mode.** The bot runs Claude Code with `permissionMode: 'bypassPermissions'` because there is no terminal to approve tool-use prompts. Claude can execute any tool (shell commands, file reads, web requests) without confirmation. This is safe when the bot is locked to your chat ID on your own machine. Do not expose it to untrusted users.
 
-**Message data is encrypted and ephemeral.** WhatsApp and Slack message bodies are encrypted with AES-256-GCM before being written to the database. A 3-day auto-purge runs on startup and every 24 hours, deleting all message data older than 3 days from `wa_messages`, `wa_outbox`, `wa_message_map`, and `slack_messages`. The encryption key is stored in `.env` (which is gitignored). The `store/` directory containing the database and WhatsApp session is protected by multiple gitignore rules and will never appear in version control.
+### PIN lock (opt-in)
+
+PIN lock adds a session gate. When enabled, the bot starts locked and ignores all messages until you send the correct PIN.
+
+| Behavior | Detail |
+|----------|--------|
+| **Startup** | Bot starts locked. Send your PIN as a regular message to unlock. |
+| **`/lock`** | Locks the session immediately. |
+| **`/status`** | Shows current security status (locked/unlocked, idle timeout, kill phrase). |
+| **Idle auto-lock** | If `IDLE_LOCK_MINUTES` is set, the session re-locks after that many minutes of inactivity. |
+
+The PIN is stored as a salted SHA-256 hash. The plaintext never touches disk.
+
+### Emergency kill switch (opt-in)
+
+Set `EMERGENCY_KILL_PHRASE` to a unique phrase. Sending it immediately stops all ClaudeClaw launchd/systemd services and force-exits the process. This is a hard stop, not a lock. Use it if something goes wrong and you need everything shut down now.
+
+The setup wizard can generate one for you, or you can choose your own.
+
+### Security .env reference
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ALLOWED_CHAT_ID` | **Yes** | Your Telegram chat ID. Bot ignores all other users. |
+| `DB_ENCRYPTION_KEY` | **Yes** | AES-256 key for message field encryption. Auto-generated on first run. |
+| `SECURITY_PIN_HASH` | No | Salted SHA-256 hash of your PIN. Format: `salt:hash`. Setup wizard generates this. |
+| `IDLE_LOCK_MINUTES` | No | Auto-lock after N minutes of inactivity. Only active when PIN is set. |
+| `EMERGENCY_KILL_PHRASE` | No | Phrase that immediately kills all agents and exits. |
+
+### Viewing the audit log
+
+```bash
+sqlite3 store/claudeclaw.db \
+  "SELECT datetime(created_at,'unixepoch'), action, detail FROM audit_log ORDER BY created_at DESC LIMIT 20;"
+```
+
+Or view it in the dashboard via the API: `GET /api/audit?limit=50`.
+
+### Other things to know
+
+**WhatsApp daemon runs on localhost only.** The `wa-daemon` HTTP API (port 4242) and Chrome DevTools Protocol (port 9222) bind to `127.0.0.1`. They are not accessible from outside your machine, but any local process can reach them.
+
+**`notify.sh` is called by Claude.** The notification script sends Telegram messages via `curl`. Since Claude has full shell access, it can call this script with any content. This is by design (progress updates), but prompt injection via external content could theoretically cause unexpected messages.
 
 ---
 
@@ -1697,7 +1754,61 @@ When agents are configured, the dashboard adds panels at the top:
 
 All existing dashboard panels (tasks, memory, health, tokens, chat) continue to work as before.
 
-### Create your own agent from scratch
+### Create your own agent
+
+There are three ways to create an agent. Pick whichever fits your workflow.
+
+#### Option A: Dashboard wizard (recommended)
+
+Click **"+ New Agent"** in the Agents section of the dashboard. The wizard walks you through three steps:
+
+1. **Basics** -- pick an agent ID, display name, description, model, and template
+2. **Connect Telegram** -- the wizard suggests a bot name and username for BotFather, then you paste the token. It validates the token live against the Telegram API and shows the resolved `@username` on success.
+3. **Activate** -- creates the agent directory, writes `agent.yaml` and `CLAUDE.md`, saves the bot token to `.env`, generates a launchd/systemd service config, and optionally starts the agent immediately.
+
+Available templates: `comms`, `content`, `ops`, `research`, and `blank` (the default `_template`). The template dropdown is populated from `agents/` on disk, so any custom template directories you add will appear automatically.
+
+#### Option B: CLI
+
+The `agent-create-cli` handles everything non-interactively. Useful for scripting or when the dashboard isn't running.
+
+```bash
+# Create and activate in one shot
+node dist/agent-create-cli.js \
+  --id analytics \
+  --name "Analytics" \
+  --description "Data analysis and reporting" \
+  --template research \
+  --token "123456789:ABCdef..." \
+  --activate
+
+# Validate a token without creating anything
+node dist/agent-create-cli.js --validate --token "123456789:ABCdef..."
+
+# List available templates
+node dist/agent-create-cli.js --templates
+
+# Get suggested BotFather names for an ID
+node dist/agent-create-cli.js --suggest --id analytics
+```
+
+Flags:
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--id` | Yes | Lowercase identifier (letters, numbers, hyphens, underscores) |
+| `--name` | Yes | Display name shown in the dashboard and logs |
+| `--description` | Yes | What this agent does |
+| `--token` | Yes | Telegram bot token from @BotFather |
+| `--model` | No | Claude model (default: `claude-sonnet-4-6`) |
+| `--template` | No | Template to clone from (default: `_template`) |
+| `--activate` | No | Install launchd/systemd service and start immediately |
+
+The CLI validates the bot token against the Telegram API before creating anything. If validation fails, it exits with a non-zero code and no files are written.
+
+#### Option C: Manual setup (advanced)
+
+If you prefer full control, create the files yourself:
 
 ```bash
 # 1. Copy the template
@@ -1717,6 +1828,8 @@ echo "MYAGENT_BOT_TOKEN=your_token_here" >> .env
 npm run build
 npm start -- --agent myagent
 ```
+
+With the manual approach you also need to create launchd/systemd configs yourself if you want the agent to run as a background service. The dashboard wizard and CLI handle this automatically.
 
 ### Profile pictures
 
