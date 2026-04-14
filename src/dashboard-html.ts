@@ -1193,7 +1193,7 @@ async function applyVoices() {
 loadVoices();
 
 // ── Live Meetings (Pika video meeting bot) ────────────────────────
-// Lets Mark pop open meet.google.com/new, then send any agent into the
+// Lets the user pop open meet.google.com/new, then send any agent into the
 // meeting as a real-time AI avatar. Clipboard auto-read on first Send.
 //
 // IMPORTANT: This block is embedded inside a TypeScript template literal
@@ -1332,7 +1332,7 @@ async function sendVoiceAgentToMeet() {
   // hits /api/meet/join-voice and uses the voice-mode DOM elements.
   // Until RECALL_API_KEY is set and the audio pipeline is wired, the
   // server returns a "needs setup" or "needs implementation" error
-  // which we surface clearly so Mark knows what to do.
+  // which we surface clearly so the user knows what to do.
   const agentSel = document.getElementById('meet-voice-agent-select');
   const urlInput = document.getElementById('meet-voice-url-input');
   const autoBrief = document.getElementById('meet-voice-auto-brief').checked;
@@ -1406,7 +1406,7 @@ var __lastDailyRoomUrl = '';
 async function createDailyRoom() {
   // Daily.co mode. Creates a fresh room server-side and spawns a
   // Pipecat agent in it. Returns the room URL which we display with
-  // a copy-to-clipboard button so Mark can share it.
+  // a copy-to-clipboard button so the user can share it.
   const agentSel = document.getElementById('meet-daily-agent-select');
   const modeSel = document.getElementById('meet-daily-mode-select');
   const autoBrief = document.getElementById('meet-daily-auto-brief').checked;

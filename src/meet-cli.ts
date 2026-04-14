@@ -274,11 +274,11 @@ async function synthesizeBrief(params: {
     `You are building the pre-flight reference card for a live video meeting. The agent will be a video avatar in the call, so EVERY EXTRA CHARACTER in your output costs real-time latency on every turn. Be ruthlessly concise.`,
     ``,
     `Meeting URL: ${params.meetUrl}`,
-    params.contextHint ? `Context hint from Mark: ${params.contextHint}` : '',
+    params.contextHint ? `Context hint from the user: ${params.contextHint}` : '',
     ``,
     `Quick research (use your tools, do not invent facts):`,
     `1. Calendar: today + next 24h, find event matching this URL, capture attendees + title.`,
-    `2. Gmail: for each non-Mark attendee, skim last 30 days of messages. Note the gist.`,
+    `2. Gmail: for each non-owner attendee, skim last 30 days of messages. Note the gist.`,
     `3. Memory/vault: pull any salient facts about attendees or topic. Skip if nothing found.`,
     ``,
     `Write the reference card in EXACTLY this format. No other text. Stay under 800 characters total:`,
@@ -286,7 +286,7 @@ async function synthesizeBrief(params: {
     `**Meeting**: [one sentence]`,
     `**Attendees**: [name - one fact each, max 3 people]`,
     `**Context**: [1-3 bullets, concrete only]`,
-    `**Mark wants**: [one sentence]`,
+    `**User wants**: [one sentence]`,
     ``,
     `If you find nothing for a field, omit it. No padding, no "likely questions", no "response guidelines" (those get appended separately). Return ONLY the card.`,
   ].filter(Boolean).join('\n');
@@ -353,10 +353,10 @@ function buildMinimalBrief(params: { agentId: string; meetUrl: string; contextHi
   // instructions; this is just the scene-setting. Total ~200 chars
   // before the footer.
   const lines = [
-    `**Meeting**: Ad-hoc call, ${params.agentId} agent representing Mark.`,
+    `**Meeting**: Ad-hoc call, ${params.agentId} agent representing the user.`,
   ];
   if (params.contextHint) {
-    lines.push(`**Context from Mark**: ${params.contextHint}`);
+    lines.push(`**Context from user**: ${params.contextHint}`);
   }
   return lines.join('\n') + SPEAKING_RULES_FOOTER;
 }
@@ -592,7 +592,7 @@ async function cmdJoinDaily(): Promise<void> {
 
   // Spawn the Python agent detached so this CLI can exit cleanly
   // while the meeting continues. Log stdout+stderr to a per-session
-  // file so Mark can tail it when debugging.
+  // file so the user can tail it when debugging.
   const logPath = path.join(DAILY_AGENT_LOG_DIR, `daily-agent-${room!.id}.log`);
   let logFd: number | null = null;
   try { logFd = fs.openSync(logPath, 'a'); } catch { /* non-fatal */ }

@@ -145,10 +145,10 @@ async function main() {
     if (memCtx) parts.push(memCtx);
 
     // Add voice-meeting context hint. Quick mode is stricter because
-    // Gemini Live will read the answer verbatim to Mark over voice —
+    // Gemini Live will read the answer verbatim over voice —
     // long responses break the meeting feel.
     if (quickMode) {
-      parts.push('[War Room auto-routing: Mark is in a voice meeting and this answer will be read aloud verbatim. Respond in 1-2 short sentences. No preamble, no caveats, no lists. If the question genuinely needs a long answer, say "I need to dig into this, want me to queue it" so Mark can choose to delegate the full task.]');
+      parts.push('[War Room auto-routing: the user is in a voice meeting and this answer will be read aloud verbatim. Respond in 1-2 short sentences. No preamble, no caveats, no lists. If the question genuinely needs a long answer, say "I need to dig into this, want me to queue it" so the user can choose to delegate the full task.]');
     } else {
       parts.push('[Voice meeting mode: Keep responses concise and conversational. Aim for 2-3 sentences unless asked for detail. Start with a brief acknowledgment.]');
     }

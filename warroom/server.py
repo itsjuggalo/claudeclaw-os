@@ -246,7 +246,7 @@ async def delegate_to_agent_handler(params):
 
     if agent not in VALID_AGENTS or not prompt:
         # Validation failures DO want a follow-up turn so Gemini can
-        # verbally report the error to Mark. Leave run_llm default.
+        # verbally report the error to the user. Leave run_llm default.
         await params.result_callback({
             "ok": False,
             "error": f"invalid args: agent must be one of {sorted(VALID_AGENTS)} and prompt is required",
@@ -271,7 +271,7 @@ async def delegate_to_agent_handler(params):
     code, out, err = await _run_subprocess(cmd, timeout=15.0)
     if code != 0:
         logger.error("delegate_to_agent failed: code=%d stderr=%s", code, err)
-        # Error path: let Gemini speak the error so Mark hears it.
+        # Error path: let Gemini speak the error so the user hears it.
         await params.result_callback({"ok": False, "error": err or "mission-cli failed"})
         return
 
@@ -356,7 +356,7 @@ async def answer_as_agent_handler(params):
     # Fire the hand-up signal to the browser BEFORE the expensive
     # subprocess call. The RTVIObserver in the pipeline picks this up
     # and wraps it into an RTVI "server-message" envelope that the JS
-    # client surfaces via onServerMessage. This is how Mark sees
+    # client surfaces via onServerMessage. This is how the user sees
     # "research has their hand up" a beat before hearing the answer.
     try:
         hand_up_frame = RTVIServerMessageFrame(

@@ -110,7 +110,7 @@ Keep this token handy for the next step.
 ### Step 3: Clone and install
 
 ```bash
-git clone https://github.com/earlyaidopters/claudeclaw.git
+git clone https://github.com/earlyaidopters/claudeclaw-os.git
 cd claudeclaw
 npm install
 ```
