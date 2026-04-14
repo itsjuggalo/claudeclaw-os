@@ -111,7 +111,7 @@ Keep this token handy for the next step.
 
 ```bash
 git clone https://github.com/earlyaidopters/claudeclaw-os.git
-cd claudeclaw
+cd claudeclaw-os
 npm install
 ```
 
@@ -126,13 +126,13 @@ npm run setup
 The wizard walks you through everything interactively:
 
 - Checks your environment (Node, Claude CLI, builds if needed)
-- Asks which features you want (voice input, voice output, video analysis, WhatsApp)
-- Sets up your Telegram bot token and chat ID
+- Asks which features you want (voice, video, War Room, WhatsApp)
+- Sets up your Telegram bot token and auto-detects your chat ID
 - **Configures security**: PIN lock, emergency kill phrase, idle auto-lock
-- Opens your editor to personalize `CLAUDE.md`
-- Lists the skills you'll want to install and where to get them
-- Prompts for API keys **only for the features you selected**
-- Installs a background service (launchd on macOS, systemd on Linux, PM2 on Windows)
+- Creates your `CLAUDE.md` personality file from a template
+- Collects API keys **only for the features you selected**
+- Optionally sets up specialist agents (custom or from templates)
+- Offers to start the bot immediately when done
 
 > **Prefer to let Claude handle it?** After cloning, `cd` into the repo, run `claude`, and paste:
 > ```
@@ -143,27 +143,17 @@ The wizard walks you through everything interactively:
 
 ---
 
-### Step 5: Get your Telegram chat ID
+### Step 5: Chat ID (automatic)
 
-Your chat ID locks the bot to you, no one else can use it.
+The setup wizard detects your chat ID automatically. When it asks you to message your bot on Telegram, just send any message and press Y. It picks up your chat ID via the Telegram API.
 
-1. Start the bot: `npm start`
-2. Open Telegram and message your bot
-3. Send `/chatid`
-4. The bot replies with a number. that's your chat ID
-5. Add it to `.env`:
-   ```
-   ALLOWED_CHAT_ID=your_number_here
-   ```
-6. Restart: stop the bot (Ctrl+C) and run `npm start` again
-
-> The setup wizard does this step automatically if you run `npm run setup` before starting.
+If you skipped this step during setup, the bot will auto-detect your chat ID the first time you message it and save it to `.env` for you.
 
 ---
 
 ### Step 6: Send your first message
 
-With the bot running, send any message. Try:
+The wizard offers to start the bot at the end. If you said yes, it's already running. Otherwise, run `npm start`. Then send any message. Try:
 
 ```
 What can you do?
@@ -232,7 +222,7 @@ Output looks like:
 When a new version is released, update in 5 commands:
 
 ```bash
-cd claudeclaw          # go to your ClaudeClaw directory
+cd claudeclaw-os       # go to your ClaudeClaw directory
 git pull               # pull the latest code
 npm install            # install any new dependencies
 npm run migrate        # apply any pending migrations
@@ -1480,7 +1470,7 @@ Video analysis via Google Gemini. It is **not** for Gmail or Google Calendar (th
 Recommended but not required. The video covers how Claude Code works under the hood, which helps you understand what ClaudeClaw is actually doing. But you can set up ClaudeClaw first and watch it later.
 
 **"How do I update when a new version drops?"**
-`cd claudeclaw && git pull && npm install && npm run migrate && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
+`cd claudeclaw-os && git pull && npm install && npm run migrate && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
 
 **"Telegram formatting looks broken / not formatting properly"**
 ClaudeClaw converts Claude's Markdown to Telegram-safe HTML (bold, italic, code blocks, links). Telegram's formatting support is limited compared to a full web page. If something looks off, it's usually Telegram's rendering, not a bug. For very long or complex responses, the formatting is intentionally kept simple to avoid Telegram parse errors.
