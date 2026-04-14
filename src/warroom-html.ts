@@ -758,6 +758,14 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
         <div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:6px;line-height:1.4">
           <span id="mode-hint">Direct: talk to the pinned agent. Hand Up: the team listens, best-fit answers.</span>
         </div>
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04)">
+          <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:rgba(255,255,255,0.4)">
+            <span>&#9835; Entrance music</span>
+            <input type="file" accept="audio/mpeg,audio/*" style="display:none" onchange="uploadMusic(this)">
+            <span style="text-decoration:underline;color:rgba(255,255,255,0.55)">replace</span>
+          </label>
+          <span id="musicStatus" style="font-size:10px;color:#10b981;margin-left:6px;display:none">saved</span>
+        </div>
       </div>
     </div>
 
@@ -924,6 +932,25 @@ function flyToSidebar() {
 }
 
 // ── Mode switching ──
+// Upload custom entrance music
+async function uploadMusic(input) {
+  if (!input.files || !input.files[0]) return;
+  var file = input.files[0];
+  if (file.size > 20 * 1024 * 1024) { alert('Max 20MB'); return; }
+  var form = new FormData();
+  form.append('file', file);
+  try {
+    var res = await fetch('/warroom-music-upload?token=' + TOKEN, { method: 'POST', body: form });
+    if (res.ok) {
+      var status = document.getElementById('musicStatus');
+      if (status) { status.style.display = 'inline'; setTimeout(function(){ status.style.display = 'none'; }, 3000); }
+      // Reload the audio element so next meeting uses the new track
+      var audio = document.getElementById('bgMusic');
+      if (audio) { audio.load(); }
+    }
+  } catch(e) { console.error('Music upload failed', e); }
+}
+
 // Flipping mode rewrites /tmp/warroom-pin.json on the server and then
 // kills the warroom subprocess. Main's auto-respawn brings up a fresh
 // one with the new persona + tool set. If a meeting is currently live,

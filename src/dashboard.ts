@@ -148,14 +148,27 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
   });
 
-  // Serve War Room background music
+  // Serve War Room background music (user's custom music.mp3 first, then bundled entrance.mp3)
   app.get('/warroom-music', (c) => {
-    const musicPath = path.join(PROJECT_ROOT, 'warroom', 'music.mp3');
+    const custom = path.join(PROJECT_ROOT, 'warroom', 'music.mp3');
+    const bundled = path.join(PROJECT_ROOT, 'warroom', 'entrance.mp3');
+    const musicPath = fs.existsSync(custom) ? custom : bundled;
     if (!fs.existsSync(musicPath)) return c.text('', 404);
     const data = fs.readFileSync(musicPath);
     return new Response(data, {
       headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'public, max-age=86400' },
     });
+  });
+
+  // Upload custom War Room entrance music from the dashboard
+  app.post('/warroom-music-upload', async (c) => {
+    const body = await c.req.parseBody();
+    const file = body['file'];
+    if (!file || typeof file === 'string') return c.json({ error: 'No file uploaded' }, 400);
+    const buf = Buffer.from(await file.arrayBuffer());
+    if (buf.length > 20 * 1024 * 1024) return c.json({ error: 'File too large (max 20MB)' }, 400);
+    fs.writeFileSync(path.join(PROJECT_ROOT, 'warroom', 'music.mp3'), buf);
+    return c.json({ ok: true });
   });
 
   // Serve War Room test audio for the browser-side autotest harness.
