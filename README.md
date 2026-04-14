@@ -1321,21 +1321,21 @@ npm run typecheck # Type-check without compiling
 
 ## Is this compliant with Anthropic's Terms of Service?
 
-**Yes.** On February 19, 2026, Anthropic published their [Legal and Compliance page](https://docs.anthropic.com/en/docs/legal-and-compliance) banning OAuth tokens in third-party tools. ClaudeClaw is not affected.
+**It's a grey area, but signs point to yes for personal use.** Anthropic's Agent SDK (`@anthropic-ai/claude-agent-sdk`) is a published, official package. Boris Cherny (Anthropic) has indicated the Agent SDK can be used for personal usage with a Claude subscription. ClaudeClaw uses this SDK exclusively.
 
-**What's banned:** Tools that extract your OAuth token and make API calls with it from third-party code. impersonating Claude Code without running it (e.g. the old OpenClaw).
-
-**Why ClaudeClaw is different:** `@anthropic-ai/claude-agent-sdk`'s `query()` spawns the `claude` binary as a child process. That subprocess manages its own OAuth from `~/.claude/`. ClaudeClaw never reads or transmits your token. It runs Claude Code and reads the output. identical to `claude -p "message"` in a terminal.
+**How ClaudeClaw works:** The Agent SDK's `query()` spawns the `claude` binary as a child process. That subprocess manages its own auth from `~/.claude/`. ClaudeClaw never reads or transmits your token. It runs Claude Code and reads the output, identical to typing `claude -p "message"` in a terminal.
 
 | | ClaudeClaw | Token-extraction tools |
 |---|---|---|
 | Runs the official `claude` CLI | ✅ | ❌ |
-| OAuth stays in `~/.claude/` | ✅ | ❌ |
+| Auth stays in `~/.claude/` | ✅ | ❌ |
 | Uses Anthropic-published SDK | ✅ | ❌ |
 | Single-user, personal machine | ✅ | ❌ |
 | Anthropic telemetry intact | ✅ | ❌ |
 
-For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-token billing.
+**What's clearly not OK:** Tools that extract your OAuth token and make API calls with it from third-party code, or impersonate Claude Code without running it.
+
+For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-token billing. This removes any ambiguity since you're paying directly for usage.
 
 ---
 
