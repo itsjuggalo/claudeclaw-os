@@ -218,12 +218,14 @@ async function main() {
     process.exit(1);
   }
 
-  // Claude auth
-  try {
-    execSync('claude --version', { stdio: 'pipe' });
+  // Claude auth — check if user has logged in via OAuth or API key
+  const claudeDir = path.join(os.homedir(), '.claude');
+  const hasClaudeDir = fs.existsSync(claudeDir);
+  if (hasClaudeDir && fs.readdirSync(claudeDir).length > 1) {
     ok('Claude auth — logged in');
-  } catch {
-    warn('Could not verify Claude auth. If you\'re not logged in, run: claude login');
+  } else {
+    warn('Not logged in. Run: claude login');
+    info('The bot needs Claude Code auth to work. Log in before starting.');
   }
 
   // Git config (user.name and user.email)
@@ -809,8 +811,9 @@ async function main() {
     '# ── Integrations ──────────────────────────────────────────────',
     `GOOGLE_API_KEY=${env.GOOGLE_API_KEY || ''}`,
     '',
-    '# ── War Room ──────────────────────────────────────────────────',
+    '# ── Features ──────────────────────────────────────────────────',
     (wantWarRoom && warRoomReady) ? 'WARROOM_ENABLED=true' : '# WARROOM_ENABLED=false',
+    wantWhatsApp ? 'WHATSAPP_ENABLED=true' : '# WHATSAPP_ENABLED=false',
     '',
     '# ── Dashboard ─────────────────────────────────────────────────',
     `DASHBOARD_TOKEN=${env.DASHBOARD_TOKEN || ''}`,
@@ -901,42 +904,76 @@ async function main() {
     ];
 
     console.log();
-    info('Each agent needs its own Telegram bot. You create these via @BotFather in Telegram.');
-    info('For each agent you want, we\'ll ask for a bot token and set it up for you.');
+    info('You can use the built-in templates or create custom agents.');
+    info('Each agent needs its own Telegram bot from @BotFather.');
+    info('Type "done" at any time to finish and move on.');
+    console.log();
+
+    console.log(`  ${c.bold}Available templates:${c.reset}`);
+    for (const t of templates) {
+      console.log(`  ${c.cyan}${t.label}${c.reset} ${c.gray}— ${t.desc}${c.reset}`);
+    }
+    console.log(`  ${c.cyan}custom${c.reset} ${c.gray}— create your own with a custom name${c.reset}`);
     console.log();
 
     const createdAgents: string[] = [];
-    for (const tmpl of templates) {
-      console.log(`  ${c.bold}${tmpl.label}${c.reset} ${c.gray}${tmpl.desc}${c.reset}`);
-      const want = await confirm(`  Add the ${tmpl.label} agent?`, false);
-      if (!want) continue;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const input = await ask('Add an agent (template name, "custom", or "done")');
+      if (!input || input.toLowerCase() === 'done') break;
+
+      let agentId: string;
+      let templateId: string;
+
+      if (input.toLowerCase() === 'custom') {
+        const customId = await ask('Agent ID (lowercase, no spaces, e.g. "finance")');
+        if (!customId || customId.toLowerCase() === 'done') break;
+        agentId = customId.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        if (!agentId || agentId.length < 2) {
+          warn('ID must be at least 2 lowercase characters. Try again.');
+          continue;
+        }
+        templateId = '_template';
+      } else {
+        const match = templates.find((t) => t.id === input.toLowerCase());
+        if (!match) {
+          warn(`Unknown template "${input}". Use one of: ${templates.map((t) => t.label).join(', ')}, custom, or done.`);
+          continue;
+        }
+        agentId = match.id;
+        templateId = match.id;
+      }
+
+      if (createdAgents.includes(agentId)) {
+        warn(`"${agentId}" already added. Try a different one.`);
+        continue;
+      }
 
       console.log();
-      info(`Create a Telegram bot for ${tmpl.label}:`);
+      info(`Create a Telegram bot for ${agentId}:`);
       console.log(`    1. Open Telegram, message ${c.bold}@BotFather${c.reset}`);
       console.log(`    2. Send ${c.bold}/newbot${c.reset}`);
-      console.log(`    3. Name it something like ${c.bold}ClaudeClaw ${tmpl.label.charAt(0).toUpperCase() + tmpl.label.slice(1)}${c.reset}`);
+      console.log(`    3. Name it whatever you like (e.g. "My ${agentId.charAt(0).toUpperCase() + agentId.slice(1)} Agent")`);
       console.log(`    4. Copy the token BotFather gives you`);
       console.log();
 
-      const envKey = `${tmpl.id.toUpperCase()}_BOT_TOKEN`;
+      const envKey = `${agentId.toUpperCase()}_BOT_TOKEN`;
       const existingToken = env[envKey];
       let token = '';
 
       if (existingToken) {
         ok(`${envKey} already set in .env`);
         const reuse = await confirm('Keep the existing token?', true);
-        if (reuse) {
-          token = existingToken;
-        }
+        if (reuse) token = existingToken;
       }
 
       if (!token) {
-        token = await ask(`Paste the bot token (Enter to skip ${tmpl.label})`);
+        token = await ask(`Paste the bot token (Enter to skip)`);
       }
 
       if (!token) {
-        info(`Skipped ${tmpl.label}. You can add it later with: npm run agent:create`);
+        info(`Skipped. You can add it later with: npm run agent:create`);
         console.log();
         continue;
       }
@@ -959,27 +996,30 @@ async function main() {
 
       // Create agent config directory
       const configDir = env.CLAUDECLAW_CONFIG || path.join(os.homedir(), '.claudeclaw');
-      const agentDir = path.join(configDir, 'agents', tmpl.id);
+      const agentDir = path.join(configDir, 'agents', agentId);
       fs.mkdirSync(agentDir, { recursive: true });
 
       // Copy template CLAUDE.md
-      const templateClaudeMd = path.join(PROJECT_ROOT, 'agents', tmpl.id, 'CLAUDE.md');
+      const templateClaudeMd = path.join(PROJECT_ROOT, 'agents', templateId, 'CLAUDE.md');
       const destClaudeMd = path.join(agentDir, 'CLAUDE.md');
       if (fs.existsSync(templateClaudeMd) && !fs.existsSync(destClaudeMd)) {
         fs.copyFileSync(templateClaudeMd, destClaudeMd);
       }
 
       // Create agent.yaml from example
-      const exampleYaml = path.join(PROJECT_ROOT, 'agents', tmpl.id, 'agent.yaml.example');
+      const exampleYaml = path.join(PROJECT_ROOT, 'agents', templateId, 'agent.yaml.example');
       const destYaml = path.join(agentDir, 'agent.yaml');
       if (fs.existsSync(exampleYaml)) {
         let yamlContent = fs.readFileSync(exampleYaml, 'utf-8');
         yamlContent = yamlContent.replace(/telegram_bot_token_env:.*/, `telegram_bot_token_env: ${envKey}`);
+        if (templateId === '_template') {
+          yamlContent = yamlContent.replace(/name:.*/, `name: ${agentId.charAt(0).toUpperCase() + agentId.slice(1)}`);
+        }
         fs.writeFileSync(destYaml, yamlContent, 'utf-8');
       }
 
-      ok(`Agent "${tmpl.id}" configured at ${agentDir}`);
-      createdAgents.push(tmpl.id);
+      ok(`Agent "${agentId}" configured at ${agentDir}`);
+      createdAgents.push(agentId);
       console.log();
     }
 
@@ -1000,6 +1040,18 @@ async function main() {
     } else {
       info('No agents created. You can add them later with:');
       console.log(`  ${c.cyan}npm run agent:create${c.reset}`);
+    }
+
+    // Re-write .env with agent tokens appended
+    if (createdAgents.length > 0) {
+      let envContent = fs.readFileSync(envPath, 'utf-8');
+      for (const id of createdAgents) {
+        const key = `${id.toUpperCase()}_BOT_TOKEN`;
+        if (env[key] && !envContent.includes(`${key}=`)) {
+          envContent += `\n# Agent: ${id}\n${key}=${env[key]}\n`;
+        }
+      }
+      fs.writeFileSync(envPath, envContent, 'utf-8');
     }
     console.log();
   }
