@@ -566,19 +566,44 @@ async function main() {
     ok(`Chat ID: ${env.ALLOWED_CHAT_ID}`);
   } else {
     info('Your chat ID locks the bot so only YOU can talk to it.');
-    info('To get it, you need to have a quick conversation with your bot:');
+    info('We\'ll detect it automatically. Just message your bot on Telegram:');
     console.log();
     bullet('Open Telegram on your phone or desktop');
     bullet(`Search for your bot: @${botUsername || 'your_bot_username'}`);
     bullet('Tap Start or send any message to it');
-    bullet('The bot will reply with your chat ID (a number like 123456789)');
-    bullet('Copy that number and paste it below');
     console.log();
-    info('Don\'t have it yet? Press Enter to skip. The bot will show your');
-    info('chat ID the first time you message it. Add it to .env and restart.');
-    console.log();
-    const chatId = await ask('Your Telegram chat ID (or Enter to skip)', 'skip');
-    if (chatId !== 'skip' && chatId) env.ALLOWED_CHAT_ID = chatId;
+
+    const wantAuto = await confirm('Ready? Send a message to your bot, then press Y');
+
+    if (wantAuto) {
+      const s = spinner('Waiting for your message...');
+      let detected = '';
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await sleep(2000);
+        try {
+          const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUpdates?limit=5&timeout=0`);
+          const data = (await res.json()) as { ok: boolean; result?: Array<{ message?: { chat?: { id?: number } } }> };
+          if (data.ok && data.result?.length) {
+            const chatId = data.result[data.result.length - 1]?.message?.chat?.id;
+            if (chatId) {
+              detected = String(chatId);
+              break;
+            }
+          }
+        } catch { /* retry */ }
+      }
+
+      if (detected) {
+        s.stop('ok', `Detected chat ID: ${detected}`);
+        env.ALLOWED_CHAT_ID = detected;
+      } else {
+        s.stop('warn', 'No message detected. You can add ALLOWED_CHAT_ID to .env later.');
+        info('The bot will show your chat ID the first time you message it.');
+      }
+    } else {
+      info('No problem. The bot will show your chat ID the first time you');
+      info('message it. Add it to .env and restart.');
+    }
   }
 
   // ── 9. Security ──────────────────────────────────────────────────────────
