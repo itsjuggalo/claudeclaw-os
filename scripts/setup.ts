@@ -57,9 +57,15 @@ async function ask(question: string, defaultVal?: string): Promise<string> {
 
 async function confirm(question: string, defaultYes = true): Promise<boolean> {
   const hint = defaultYes ? 'Y/n' : 'y/N';
-  const ans = await ask(`${question} [${hint}]`);
-  if (!ans) return defaultYes;
-  return ans.toLowerCase().startsWith('y');
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const ans = await ask(`${question} [${hint}]`);
+    if (!ans) return defaultYes;
+    const lower = ans.toLowerCase();
+    if (lower === 'y' || lower === 'yes') return true;
+    if (lower === 'n' || lower === 'no') return false;
+    console.log(`  ${c.gray}Please enter y or n.${c.reset}`);
+  }
 }
 
 function section(title: string) {
