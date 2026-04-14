@@ -176,6 +176,28 @@ async function main() {
   bullet('Optional WhatsApp bridge');
   console.log();
 
+  console.log(`  ${c.bold}FAQ${c.reset}`);
+  console.log();
+  console.log(`  ${c.cyan}Q:${c.reset} Does this cost anything?`);
+  info('ClaudeClaw itself is free. You need a Claude Code subscription (Max plan)');
+  info('or an Anthropic API key. Optional features (voice, video) have their own');
+  info('free tiers. Nothing is billed without your API keys.');
+  console.log();
+  console.log(`  ${c.cyan}Q:${c.reset} Does my computer need to stay on?`);
+  info('Yes. ClaudeClaw runs on your machine. When your computer sleeps or shuts');
+  info('down, the bot goes offline. Messages queue in Telegram and arrive when');
+  info('you restart.');
+  console.log();
+  console.log(`  ${c.cyan}Q:${c.reset} Is it safe? Can someone else use my bot?`);
+  info('Your bot is locked to your Telegram chat ID. No one else can use it.');
+  info('Optional PIN lock adds a second layer. An emergency kill phrase lets you');
+  info('shut everything down instantly from your phone.');
+  console.log();
+  console.log(`  ${c.cyan}Q:${c.reset} Can I run this on a server / VPS?`);
+  info('Yes. Set an ANTHROPIC_API_KEY instead of using claude login, and use');
+  info('the auto-start service option at the end of setup.');
+  console.log();
+
   const understood = await confirm('Ready to continue?');
   if (!understood) {
     console.log();
