@@ -349,13 +349,14 @@ async function main() {
         if (setupVenv) {
           let venvOk = !needsVenv;
           if (needsVenv) {
-            const s1 = spinner('Creating Python virtual environment...');
+            // spawnSync blocks the event loop, so use a static message instead of a spinner
+            info('Creating Python virtual environment...');
             const venvResult = spawnSync('python3', ['-m', 'venv', path.join(PROJECT_ROOT, 'warroom', '.venv')], { stdio: 'pipe' });
             if (venvResult.status === 0) {
-              s1.stop('ok', 'Virtual environment created');
+              ok('Virtual environment created');
               venvOk = true;
             } else {
-              s1.stop('warn', 'Could not create venv. You can set it up manually later:');
+              warn('Could not create venv. You can set it up manually later:');
               info('  python3 -m venv warroom/.venv');
               info('  source warroom/.venv/bin/activate');
               info('  pip install -r warroom/requirements.txt');
