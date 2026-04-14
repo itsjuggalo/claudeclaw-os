@@ -886,6 +886,8 @@ npm start
 
 **Voices:** Each agent has a distinct Gemini voice (configurable via the dashboard voice settings). The voice config lives in `warroom/voices.json`.
 
+**Entrance music:** The War Room can play background music during the cinematic intro. Upload any mp3 via the "upload" link in the War Room sidebar. The file saves to `warroom/music.mp3` (gitignored) and plays at low volume, fading out when the session connects. No music ships by default.
+
 **Legacy mode:** If you prefer the original stitched pipeline (Deepgram STT + Claude + Cartesia TTS), set `WARROOM_MODE=legacy` and provide `DEEPGRAM_API_KEY` + `CARTESIA_API_KEY`. This has higher latency (~10s per turn) but runs the full Claude Code stack per utterance.
 
 **Rebuilding the Pipecat client bundle:** If you modify `warroom/client.js`, rebuild with:
