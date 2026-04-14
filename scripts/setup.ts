@@ -362,17 +362,21 @@ async function main() {
             }
           }
           if (venvOk) {
-            const s2 = spinner('Installing War Room dependencies (this takes about 60 seconds)...');
+            // Use stdio: 'inherit' so the user sees pip output in real time.
+            // spawnSync blocks the event loop, so a spinner would never animate.
+            console.log();
+            info('Installing War Room dependencies (this may take ~60 seconds)...');
+            console.log();
             const pipResult = spawnSync(
               path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'pip'),
               ['install', '-r', path.join(PROJECT_ROOT, 'warroom', 'requirements.txt')],
-              { stdio: 'pipe', timeout: 300000 },
+              { stdio: 'inherit', timeout: 300000 },
             );
             if (pipResult.status === 0) {
-              s2.stop('ok', 'War Room dependencies installed');
+              ok('War Room dependencies installed');
               warRoomReady = true;
             } else {
-              s2.stop('warn', 'pip install failed. War Room will be disabled until deps are installed.');
+              warn('pip install failed. War Room will be disabled until deps are installed.');
               console.log();
               info('To fix, run these commands and then re-run npm run setup:');
               console.log();
@@ -469,16 +473,14 @@ async function main() {
   info('The more context you add, the better it performs without explaining things');
   info('in every message. Think of it as a system prompt that persists everywhere.');
   console.log();
-
-  const openClaude = await confirm('Open CLAUDE.md now to edit it?', true);
-  if (openClaude) {
-    const editor = process.env.EDITOR || (PLATFORM === 'win32' ? 'notepad' : 'nano');
-    try {
-      spawnSync(editor, [claudeMdDest], { stdio: 'inherit' });
-    } catch {
-      warn(`Could not open ${editor}. Edit manually: ${claudeMdDest}`);
-    }
-  }
+  console.log(`  ${c.bold}Your CLAUDE.md is here:${c.reset}`);
+  console.log();
+  console.log(`  ${c.cyan}${claudeMdDest}${c.reset}`);
+  console.log();
+  info('You can edit it in any text editor, or just start the bot and ask');
+  info('Claude to update your CLAUDE.md for you. It has full access to the file.');
+  console.log();
+  info('The bot works fine with the defaults. Personalize it whenever you\'re ready.');
 
   // ── 7. Skills to install ─────────────────────────────────────────────────
   section('Skills you might want');
