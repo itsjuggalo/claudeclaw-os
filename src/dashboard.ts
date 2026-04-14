@@ -150,9 +150,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   // Serve War Room background music (user's custom music.mp3 first, then bundled entrance.mp3)
   app.get('/warroom-music', (c) => {
-    const custom = path.join(PROJECT_ROOT, 'warroom', 'music.mp3');
-    const bundled = path.join(PROJECT_ROOT, 'warroom', 'entrance.mp3');
-    const musicPath = fs.existsSync(custom) ? custom : bundled;
+    const musicPath = path.join(PROJECT_ROOT, 'warroom', 'music.mp3');
     if (!fs.existsSync(musicPath)) return c.text('', 404);
     const data = fs.readFileSync(musicPath);
     return new Response(data, {

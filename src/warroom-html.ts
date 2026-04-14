@@ -762,7 +762,7 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
           <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:rgba(255,255,255,0.4)">
             <span>&#9835; Entrance music</span>
             <input type="file" accept="audio/mpeg,audio/*" style="display:none" onchange="uploadMusic(this)">
-            <span style="text-decoration:underline;color:rgba(255,255,255,0.55)">replace</span>
+            <span style="text-decoration:underline;color:rgba(255,255,255,0.55)">upload</span>
           </label>
           <span id="musicStatus" style="font-size:10px;color:#10b981;margin-left:6px;display:none">saved</span>
         </div>
