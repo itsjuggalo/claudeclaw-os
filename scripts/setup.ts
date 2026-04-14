@@ -323,14 +323,33 @@ async function main() {
     info('(Direct mode) or let Gemini route your questions to the best agent');
     info('automatically (Auto mode).');
     console.log();
-    info('It requires Python 3.10+ and a Google API key (free tier works).');
+    info('It requires Python 3.10-3.13 and a Google API key (free tier works).');
     console.log();
 
-    // Check if Python is available
-    const pyCheck = spawnSync('python3', ['--version'], { stdio: 'pipe' });
-    if (pyCheck.status === 0) {
-      const pyVer = pyCheck.stdout?.toString().trim() || pyCheck.stderr?.toString().trim() || '';
-      ok(`Python found: ${pyVer}`);
+    // Find a compatible Python (3.10-3.13). onnxruntime doesn't ship wheels for 3.14+.
+    const PYTHON_MAX_MINOR = 13;
+    const PYTHON_MIN_MINOR = 10;
+
+    function findCompatiblePython(): { bin: string; version: string } | null {
+      // Try specific versioned binaries first (most reliable), then generic python3
+      const candidates = ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3'];
+      for (const bin of candidates) {
+        const check = spawnSync(bin, ['--version'], { stdio: 'pipe' });
+        if (check.status !== 0) continue;
+        const ver = (check.stdout?.toString().trim() || check.stderr?.toString().trim() || '');
+        const match = ver.match(/Python\s+3\.(\d+)/);
+        if (!match) continue;
+        const minor = parseInt(match[1], 10);
+        if (minor >= PYTHON_MIN_MINOR && minor <= PYTHON_MAX_MINOR) {
+          return { bin, version: ver };
+        }
+      }
+      return null;
+    }
+
+    const pyResult = findCompatiblePython();
+    if (pyResult) {
+      ok(`${pyResult.version} (${pyResult.bin})`);
 
       // Check if venv already exists and deps are installed
       const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
@@ -351,13 +370,13 @@ async function main() {
           if (needsVenv) {
             // spawnSync blocks the event loop, so use a static message instead of a spinner
             info('Creating Python virtual environment...');
-            const venvResult = spawnSync('python3', ['-m', 'venv', path.join(PROJECT_ROOT, 'warroom', '.venv')], { stdio: 'pipe' });
+            const venvResult = spawnSync(pyResult.bin, ['-m', 'venv', path.join(PROJECT_ROOT, 'warroom', '.venv')], { stdio: 'pipe' });
             if (venvResult.status === 0) {
               ok('Virtual environment created');
               venvOk = true;
             } else {
               warn('Could not create venv. You can set it up manually later:');
-              info('  python3 -m venv warroom/.venv');
+              info(`  ${pyResult.bin} -m venv warroom/.venv`);
               info('  source warroom/.venv/bin/activate');
               info('  pip install -r warroom/requirements.txt');
             }
@@ -389,14 +408,22 @@ async function main() {
         }
       }
     } else {
-      warn('Python 3 not found. You need Python 3.10+ for the War Room.');
-      info('Install Python:');
-      bullet('Mac: brew install python  (or download from python.org)');
-      bullet('Linux: sudo apt install python3 python3-venv');
-      info('Then set up the War Room manually:');
-      info('  python3 -m venv warroom/.venv');
-      info('  source warroom/.venv/bin/activate');
-      info('  pip install -r warroom/requirements.txt');
+      // Check if they have Python but it's too new
+      const anyPy = spawnSync('python3', ['--version'], { stdio: 'pipe' });
+      if (anyPy.status === 0) {
+        const ver = anyPy.stdout?.toString().trim() || anyPy.stderr?.toString().trim() || '';
+        warn(`${ver} found, but War Room requires Python 3.10-3.13.`);
+        info('onnxruntime (used for voice activity detection) doesn\'t support 3.14+ yet.');
+        info('Install a compatible version:');
+        bullet('Mac: brew install python@3.13');
+        bullet('Linux: sudo apt install python3.13 python3.13-venv');
+      } else {
+        warn('Python 3 not found. You need Python 3.10-3.13 for the War Room.');
+        info('Install Python:');
+        bullet('Mac: brew install python@3.13');
+        bullet('Linux: sudo apt install python3.13 python3.13-venv');
+      }
+      info('Then re-run npm run setup to enable the War Room.');
     }
 
     if (!warRoomReady) {
