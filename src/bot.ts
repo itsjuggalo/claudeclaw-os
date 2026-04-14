@@ -1175,19 +1175,9 @@ export function createBot(): Bot {
     const base = DASHBOARD_URL || `http://localhost:${DASHBOARD_PORT}`;
     const url = `${base}/?token=${DASHBOARD_TOKEN}&chatId=${chatIdStr}`;
 
-    if (DASHBOARD_URL) {
-      // Public URL: use an inline keyboard button (tappable)
-      const { InlineKeyboard } = await import('grammy');
-      const keyboard = new InlineKeyboard().url('Open Dashboard', url);
-      await ctx.reply('Dashboard', { reply_markup: keyboard });
-    } else {
-      // Localhost: Telegram suppresses clickability on private IPs.
-      // Send as a code block so the user can long-press to copy.
-      await ctx.reply(
-        `Dashboard URL (copy and open in browser):\n\n<code>${url}</code>\n\nTip: set DASHBOARD_URL in .env for a tappable link.`,
-        { parse_mode: 'HTML' },
-      );
-    }
+    const { InlineKeyboard } = await import('grammy');
+    const keyboard = new InlineKeyboard().url('Open Dashboard', url);
+    await ctx.reply('Dashboard', { reply_markup: keyboard });
   });
 
   // /stop — interrupt the current agent query
