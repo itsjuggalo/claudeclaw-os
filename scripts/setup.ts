@@ -252,8 +252,8 @@ async function main() {
     if (fixNow) {
       const name = await ask('Your name');
       const email = await ask('Your email');
-      if (name) { try { execSync(`git config --global user.name "${name}"`, { stdio: 'pipe' }); } catch { } }
-      if (email) { try { execSync(`git config --global user.email "${email}"`, { stdio: 'pipe' }); } catch { } }
+      if (name) { try { spawnSync('git', ['config', '--global', 'user.name', name], { stdio: 'pipe' }); } catch { } }
+      if (email) { try { spawnSync('git', ['config', '--global', 'user.email', email], { stdio: 'pipe' }); } catch { } }
       if (name && email) ok(`Git identity set: ${name} <${email}>`);
     }
   }
@@ -984,6 +984,20 @@ async function main() {
         continue;
       }
 
+      // Check for duplicate token (same as main bot or another agent)
+      if (token === env.TELEGRAM_BOT_TOKEN) {
+        warn('This is the same token as your main bot. Each agent needs its own bot.');
+        info('Create a new bot from @BotFather and try again.');
+        console.log();
+        continue;
+      }
+      const dupeAgent = createdAgents.find((id) => env[`${id.toUpperCase()}_BOT_TOKEN`] === token);
+      if (dupeAgent) {
+        warn(`This token is already used by agent "${dupeAgent}". Each agent needs its own bot.`);
+        console.log();
+        continue;
+      }
+
       // Validate token
       try {
         const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`);
@@ -1087,17 +1101,25 @@ async function main() {
   const startNow = await confirm('Start the bot now?');
   if (startNow) {
     console.log();
-    info('Starting ClaudeClaw... (press Ctrl+C to stop)');
-    console.log();
-    // Close readline before handing off to the bot process
-    rl.close();
-    const { execSync } = await import('child_process');
-    try {
-      execSync('npm start', { stdio: 'inherit', cwd: PROJECT_ROOT });
-    } catch {
-      // User hit Ctrl+C or process exited
+    // Rebuild to ensure dist/ matches current source
+    info('Building...');
+    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'pipe' });
+    if (buildResult.status !== 0) {
+      warn('Build failed. Run npm run build to see errors, then npm start.');
+    } else {
+      ok('Build complete');
+      console.log();
+      info('Starting ClaudeClaw... (press Ctrl+C to stop)');
+      console.log();
+      // Close readline before handing off to the bot process
+      rl.close();
+      try {
+        execSync('npm start', { stdio: 'inherit', cwd: PROJECT_ROOT });
+      } catch {
+        // User hit Ctrl+C or process exited
+      }
+      return;
     }
-    return;
   }
 
   console.log();

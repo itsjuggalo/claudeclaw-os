@@ -1319,9 +1319,19 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json({ ok: aborted });
   });
 
-  const server = serve({ fetch: app.fetch, port: DASHBOARD_PORT }, () => {
-    logger.info({ port: DASHBOARD_PORT }, 'Dashboard server running');
-  });
+  let server: ReturnType<typeof serve>;
+  try {
+    server = serve({ fetch: app.fetch, port: DASHBOARD_PORT }, () => {
+      logger.info({ port: DASHBOARD_PORT }, 'Dashboard server running');
+    });
+  } catch (err: any) {
+    if (err?.code === 'EADDRINUSE') {
+      logger.error({ port: DASHBOARD_PORT }, 'Dashboard port already in use. Change DASHBOARD_PORT in .env or kill the process using port %d.', DASHBOARD_PORT);
+    } else {
+      logger.error({ err }, 'Dashboard server failed to start');
+    }
+    return;
+  }
 
   // ── WebSocket proxy: /ws/warroom → localhost:WARROOM_PORT ──────────
   // Allows the War Room to work through a single Cloudflare tunnel on

@@ -123,7 +123,15 @@ async function main(): Promise<void> {
 
   acquireLock();
 
-  initDatabase();
+  try {
+    initDatabase();
+  } catch (err: any) {
+    logger.error('Database initialization failed: %s', err?.message || err);
+    if (err?.message?.includes('DB_ENCRYPTION_KEY')) {
+      logger.error('Fix: add DB_ENCRYPTION_KEY to .env. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+    }
+    process.exit(1);
+  }
   logger.info('Database ready');
 
   // Initialize security (PIN lock, kill phrase, destructive confirmation, audit)
@@ -348,6 +356,14 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown());
 
   logger.info({ agentId: AGENT_ID }, 'Starting ClaudeClaw...');
+
+  // Clear any existing webhook so polling works cleanly (e.g., if token was
+  // previously used with a webhook-based bot or another ClaudeClaw instance).
+  try {
+    await bot.api.deleteWebhook({ drop_pending_updates: false });
+  } catch (err) {
+    logger.warn({ err }, 'Could not clear webhook (non-fatal)');
+  }
 
   await bot.start({
     onStart: (botInfo) => {
