@@ -17,6 +17,12 @@ export interface AgentConfig {
     folders: string[];
     readOnly?: string[];
   };
+  /** Pika voice id used when this agent joins a video meeting. Falls back
+   *  to the Pika preset English_radiant_girl if unset. */
+  meetVoiceId?: string;
+  /** Display name shown in the meeting ("Your Agent wants to join"). Falls
+   *  back to the agent's name or id with first letter capitalized. */
+  meetBotName?: string;
 }
 
 /**
@@ -89,8 +95,20 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   }
 
   const mcpServers = raw['mcp_servers'] as string[] | undefined;
+  const meetVoiceId = typeof raw['meet_voice_id'] === 'string' ? (raw['meet_voice_id'] as string) : undefined;
+  const meetBotName = typeof raw['meet_bot_name'] === 'string' ? (raw['meet_bot_name'] as string) : undefined;
 
-  return { name, description, botTokenEnv, botToken, model, mcpServers, obsidian };
+  return {
+    name,
+    description,
+    botTokenEnv,
+    botToken,
+    model,
+    mcpServers,
+    obsidian,
+    meetVoiceId,
+    meetBotName,
+  };
 }
 
 /** Update the model field in an agent's agent.yaml file. */

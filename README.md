@@ -22,7 +22,44 @@ ClaudeClaw is not a chatbot wrapper. It spawns the actual `claude` CLI on your M
 
 ---
 
-## Get started
+## What You Get
+
+ClaudeClaw has two tiers of features. The **core** features work out of the box with just a Telegram bot token. The **experimental** features are opt-in and require additional setup.
+
+### Core Features (zero to hero in 5 minutes)
+
+Everything below works with just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`. No extra API keys.
+
+| Feature | What it does |
+|---------|-------------|
+| **Text messaging** | Full Claude Code from your phone. All tools, all skills. |
+| **Photos and documents** | Send a photo or PDF, Claude reads and analyzes it |
+| **Session persistence** | Context carries across every message, even after restarts |
+| **Memory system** | SQLite-backed memory that learns about you over time |
+| **Scheduled tasks** | Ask Claude to run anything on a cron schedule |
+| **Web dashboard** | Live monitoring, task management, memory viewer |
+| **Mission Control** | Create tasks, assign to agents, track progress |
+| **Multi-agent** | Run specialist agents (research, comms, content, ops) in parallel |
+| **All your skills** | Every skill in `~/.claude/skills/` auto-loads |
+| **File sending** | Claude can create and send files back to you |
+| **Voice output (macOS)** | Uses `say` + ffmpeg locally, no API key needed |
+
+### Experimental Features (opt-in, additional setup)
+
+These are powerful but require extra API keys or services. Each one has its own setup section below.
+
+| Feature | What you need | Notes |
+|---------|-------------|-------|
+| **Voice input** | `GROQ_API_KEY` (free) | Transcribes your voice notes via Whisper |
+| **Voice output (cloud)** | ElevenLabs, Gradium, or Kokoro | Higher quality than macOS `say` |
+| **Video analysis** | `GOOGLE_API_KEY` | Gemini analyzes videos you send |
+| **Memory consolidation** | `GOOGLE_API_KEY` | Gemini detects patterns across conversations |
+| **War Room** | `GOOGLE_API_KEY` + Python venv | Live voice boardroom with your agent team via Gemini Live |
+| **WhatsApp bridge** | Puppeteer + QR scan | Highly experimental. Read/send WhatsApp from Telegram |
+
+---
+
+## Get Started
 
 ![ClaudeClaw setup flow](assets/setup-flow.jpeg)
 
@@ -216,32 +253,13 @@ Then restart the bot (Ctrl+C and `npm start`, or restart the background service)
 
 ## What's included
 
-### Zero extra API keys needed
-
-With just `TELEGRAM_BOT_TOKEN` and `ALLOWED_CHAT_ID`:
-
-| Feature | Works? | Notes |
-|---------|--------|-------|
-| Text messaging | ✅ | Full Claude Code, all tools |
-| Photos | ✅ | Claude reads and analyzes them |
-| Documents | ✅ | PDF, code, text. anything Claude Code can open |
-| SQLite memory | ✅ | Auto-initialized on first run, nothing to configure |
-| Session persistence | ✅ | Context carries across every message |
-| Scheduled tasks | ✅ | Ask Claude to run anything on a cron schedule |
-| Mission Control | ✅ | Dashboard task board with auto-assign. Needs `GOOGLE_API_KEY` for auto-assign |
-| Web dashboard | ✅ | Live monitoring via Cloudflare tunnel. Needs `DASHBOARD_TOKEN` |
-| Multi-agent | ✅ | Run multiple specialized agents in parallel |
-| All your skills | ✅ | Every skill in `~/.claude/skills/` auto-loads |
-| WhatsApp (`/wa`) | ✅ | No API key, but needs the wa-daemon running |
-| Voice input | ❌ | Needs `GROQ_API_KEY` |
-| Voice output (macOS) | ✅ | Uses `say` + ffmpeg locally, no API key needed |
-| Voice output (cloud) | ❌ | ElevenLabs or Gradium API key for higher quality |
-| Video analysis | ❌ | Needs `GOOGLE_API_KEY` + `gemini-api-dev` skill |
-| Memory consolidation | ❌ | Needs `GOOGLE_API_KEY` for Gemini-powered pattern detection |
+See the feature table at the top of this README. Core features work with zero extra API keys. Experimental features are opt-in.
 
 ---
 
-## API keys: what each does and alternatives
+## API Keys: What Each Does
+
+> **Most users only need a Telegram bot token.** Everything below the Telegram section is optional and only needed for experimental features.
 
 ### Telegram Bot Token (required)
 
@@ -380,7 +398,7 @@ Voice output uses a cascade of TTS providers. If the first one fails, it tries t
 
 If all TTS providers fail, it falls back to text automatically.
 
-### Voice pipeline
+### Voice pipeline (Telegram voice notes)
 
 ```
 Voice note sent
@@ -394,6 +412,8 @@ Check for voice-back trigger phrases
   │                         (ElevenLabs → Gradium → macOS say)
   └── not found → Claude runs → text reply
 ```
+
+> **Want full voice conversations?** The War Room (experimental) lets you have live voice meetings with your agent team using Gemini Live. No Deepgram or Cartesia needed. The recommended setup is just `GOOGLE_API_KEY`. See the War Room section below.
 
 ### Photos → analyzed immediately
 
@@ -831,7 +851,53 @@ node dist/slack-cli.js search "jane"     # Find conversations by name
 
 ---
 
-## WhatsApp (optional)
+## War Room (experimental)
+
+The War Room is a live voice boardroom where you talk to your agent team through the browser. You speak, Gemini Live processes your voice natively (speech-to-speech), and agents respond with their own voices. You can pin a specific agent for direct conversation, or use "hand-raise" mode where Gemini automatically routes your questions to the best agent.
+
+**What you need:**
+- `GOOGLE_API_KEY` (Google AI Studio, free tier works)
+- Python 3.13+ with a virtual environment
+- `WARROOM_ENABLED=true` in your `.env`
+
+**Recommended setup (Gemini Live mode):** This is the default. Gemini handles both speech recognition and voice synthesis natively with sub-second latency. No Deepgram, no Cartesia, no extra voice API keys. Just your Google API key.
+
+**Setup:**
+```bash
+# 1. Create the Python virtual environment
+python3 -m venv warroom/.venv
+source warroom/.venv/bin/activate
+pip install -r warroom/requirements.txt
+
+# 2. Add to your .env
+WARROOM_ENABLED=true
+GOOGLE_API_KEY=your-google-ai-studio-key
+
+# 3. Rebuild and restart
+npm run build
+npm start
+```
+
+**Access:** Open the dashboard and click "War Room" in the navigation. The interface has a cinematic intro, agent sidebar with click-to-pin, live mic waveform, and transcript view.
+
+**Modes:**
+- **Direct mode**: Talk to one pinned agent. Click a different agent card to switch.
+- **Auto mode (hand-raise)**: Gemini listens and routes each question to the best agent automatically. You'll see a hand-up animation on the agent card that's answering.
+
+**Voices:** Each agent has a distinct Gemini voice (configurable via the dashboard voice settings). The voice config lives in `warroom/voices.json`.
+
+**Legacy mode:** If you prefer the original stitched pipeline (Deepgram STT + Claude + Cartesia TTS), set `WARROOM_MODE=legacy` and provide `DEEPGRAM_API_KEY` + `CARTESIA_API_KEY`. This has higher latency (~10s per turn) but runs the full Claude Code stack per utterance.
+
+**Rebuilding the Pipecat client bundle:** If you modify `warroom/client.js`, rebuild with:
+```bash
+npm run build:warroom-client
+```
+
+---
+
+## WhatsApp (highly experimental)
+
+> **This feature is experimental.** It works, but it uses Puppeteer to drive a headless browser session with WhatsApp Web. It can break when WhatsApp updates their web client, requires a QR code scan to authenticate, and the session can expire. Use at your own risk.
 
 ![WhatsApp bridge](assets/whatsapp-bridge.jpeg)
 
@@ -1463,7 +1529,13 @@ Everything else runs without modification.
 
 ---
 
-## Creating a team of agents
+## Creating a Team of Agents
+
+This is a core feature, not experimental. Setting up multiple agents is straightforward and one of the most powerful things about ClaudeClaw.
+
+**What are agents?** Instead of one bot doing everything, you can spin up specialist bots. Each one is its own Telegram chat with its own personality, its own context window, and its own focus area. Think of it like having a small team of people, each in their own DM thread on your phone.
+
+**How it works in plain English:** Each agent is just another Telegram bot running the same ClaudeClaw code, but with a different personality file (CLAUDE.md) and a different Telegram token. They all share your machine, your database, and your skills. The main agent can delegate work to specialists, and they ping you back on Telegram when they're done.
 
 ClaudeClaw can run **specialist agents** alongside the main bot. Each agent is its own Telegram bot with its own personality, its own Claude Code session, and its own chat on your phone.
 

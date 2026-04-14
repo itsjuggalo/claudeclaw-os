@@ -234,6 +234,47 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_mission_status
       ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
 
+    CREATE TABLE IF NOT EXISTS meet_sessions (
+      id              TEXT PRIMARY KEY,         -- session id from the provider's join response
+      agent_id        TEXT NOT NULL,            -- which agent is in the meeting
+      meet_url        TEXT NOT NULL,
+      bot_name        TEXT NOT NULL,
+      platform        TEXT NOT NULL DEFAULT 'google_meet',
+      provider        TEXT NOT NULL DEFAULT 'pika',  -- pika (avatar) | recall (voice-only)
+      status          TEXT NOT NULL DEFAULT 'joining', -- joining | live | left | failed
+      voice_id        TEXT,
+      image_path      TEXT,                     -- avatar image used for this session (pika only)
+      brief_path      TEXT,                     -- path to the frozen system prompt file
+      created_at      INTEGER NOT NULL,
+      joined_at       INTEGER,
+      left_at         INTEGER,
+      post_notes      TEXT,                     -- post-meeting notes, fetched after leave
+      error           TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_meet_status ON meet_sessions(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_meet_agent ON meet_sessions(agent_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS warroom_meetings (
+      id          TEXT PRIMARY KEY,
+      started_at  INTEGER NOT NULL,
+      ended_at    INTEGER,
+      duration_s  INTEGER,
+      mode        TEXT NOT NULL DEFAULT 'direct',  -- direct | auto
+      pinned_agent TEXT DEFAULT 'main',
+      entry_count INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_warroom_meetings_time ON warroom_meetings(started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS warroom_transcript (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      meeting_id  TEXT NOT NULL,
+      speaker     TEXT NOT NULL,     -- 'user' | agent id | 'system'
+      text        TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      FOREIGN KEY (meeting_id) REFERENCES warroom_meetings(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_warroom_transcript_meeting ON warroom_transcript(meeting_id, created_at);
+
     CREATE TABLE IF NOT EXISTS audit_log (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       agent_id    TEXT NOT NULL DEFAULT 'main',
@@ -271,6 +312,49 @@ function createSchema(database: Database.Database): void {
       INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
         VALUES (new.id, new.summary, new.raw_text, new.entities, new.topics);
     END;
+
+    -- Phase 2.4: Compaction event tracking
+    CREATE TABLE IF NOT EXISTS compaction_events (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id  TEXT NOT NULL,
+      pre_tokens  INTEGER NOT NULL DEFAULT 0,
+      post_tokens INTEGER NOT NULL DEFAULT 0,
+      turn_count  INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_compaction_session ON compaction_events(session_id, created_at DESC);
+
+    -- Phase 4.2: Skill health checks
+    CREATE TABLE IF NOT EXISTS skill_health (
+      skill_id    TEXT PRIMARY KEY,
+      status      TEXT NOT NULL DEFAULT 'unchecked',
+      error_msg   TEXT NOT NULL DEFAULT '',
+      last_check  INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+
+    -- Phase 4.3: Skill usage analytics
+    CREATE TABLE IF NOT EXISTS skill_usage (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      skill_id    TEXT NOT NULL,
+      chat_id     TEXT NOT NULL DEFAULT '',
+      agent_id    TEXT NOT NULL DEFAULT 'main',
+      triggered_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      tokens_used INTEGER NOT NULL DEFAULT 0,
+      succeeded   INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage(skill_id, triggered_at DESC);
+
+    -- Phase 6.2: Session summaries
+    CREATE TABLE IF NOT EXISTS session_summaries (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id  TEXT NOT NULL UNIQUE,
+      summary     TEXT NOT NULL,
+      key_decisions TEXT NOT NULL DEFAULT '[]',
+      turn_count  INTEGER NOT NULL DEFAULT 0,
+      total_cost  REAL NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
   `);
 }
 
@@ -527,6 +611,15 @@ function runMigrations(database: Database.Database): void {
     `);
     logger.info('Migration: made mission_tasks.assigned_agent nullable');
   }
+
+  // Live Meetings: add provider column so we can track which platform
+  // each session used (pika avatar vs recall voice-only). Default 'pika'
+  // for existing rows so historical data keeps the right label.
+  const meetCols = database.prepare(`PRAGMA table_info(meet_sessions)`).all() as Array<{ name: string }>;
+  if (meetCols.length > 0 && !meetCols.some((c) => c.name === 'provider')) {
+    database.exec(`ALTER TABLE meet_sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'pika'`);
+    logger.info('Migration: added provider column to meet_sessions');
+  }
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -688,7 +781,12 @@ export function searchMemories(
   const keywords = extractKeywords(query);
   if (keywords.length === 0) return [];
 
-  const ftsQuery = keywords.map((w) => `"${w}"*`).join(' OR ');
+  // Strip double-quotes from each keyword before wrapping it as an FTS5
+  // phrase. Without this, a keyword like `"foo` would produce the
+  // malformed fragment `""foo"*` and FTS5 would either error out or, in
+  // the worst case, interpret attacker-controlled characters as query
+  // operators. Belt-and-braces on top of extractKeywords' own filtering.
+  const ftsQuery = keywords.map((w) => `"${w.replace(/"/g, '')}"*`).join(' OR ');
   let results = db
     .prepare(
       `SELECT memories.* FROM memories
@@ -725,6 +823,31 @@ export function searchMemories(
 
 export function saveMemoryEmbedding(memoryId: number, embedding: number[]): void {
   db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(embedding), memoryId);
+}
+
+/**
+ * Atomically save a structured memory and its embedding in a single transaction.
+ * If either step fails, both are rolled back.
+ */
+export function saveStructuredMemoryAtomic(
+  chatId: string,
+  rawText: string,
+  summary: string,
+  entities: string[],
+  topics: string[],
+  importance: number,
+  embedding: number[],
+  source = 'conversation',
+  agentId = 'main',
+): number {
+  const txn = db.transaction(() => {
+    const memoryId = saveStructuredMemory(chatId, rawText, summary, entities, topics, importance, source, agentId);
+    if (embedding.length > 0) {
+      saveMemoryEmbedding(memoryId, embedding);
+    }
+    return memoryId;
+  });
+  return txn();
 }
 
 export function getMemoriesWithEmbeddings(chatId: string): Array<{ id: number; embedding: number[]; summary: string; importance: number }> {
@@ -807,6 +930,12 @@ export function decayMemories(): void {
     END
     WHERE created_at < ? AND pinned = 0
   `).run(oneDayAgo);
+  // Clear superseded_by references pointing to memories we're about to delete,
+  // otherwise the FOREIGN KEY constraint on superseded_by -> memories(id) fails.
+  db.prepare(`
+    UPDATE memories SET superseded_by = NULL
+    WHERE superseded_by IN (SELECT id FROM memories WHERE salience < 0.05 AND pinned = 0)
+  `).run();
   db.prepare('DELETE FROM memories WHERE salience < 0.05 AND pinned = 0').run();
 }
 
@@ -880,6 +1009,40 @@ export function markMemoriesConsolidated(ids: number[]): void {
   if (ids.length === 0) return;
   const placeholders = ids.map(() => '?').join(',');
   db.prepare(`UPDATE memories SET consolidated = 1 WHERE id IN (${placeholders})`).run(...ids);
+}
+
+/**
+ * Atomically save a consolidation, wire connections, handle contradictions,
+ * and mark source memories as consolidated. If any step fails, all roll back.
+ */
+export function saveConsolidationAtomic(
+  chatId: string,
+  sourceIds: number[],
+  summary: string,
+  insight: string,
+  connections: Array<{ from_id: number; to_id: number; relationship: string }>,
+  contradictions: Array<{ stale_id: number; superseded_by: number }>,
+): number {
+  const txn = db.transaction(() => {
+    const consolidationId = saveConsolidation(chatId, sourceIds, summary, insight);
+
+    for (const conn of connections) {
+      updateMemoryConnections(conn.from_id, [
+        { linked_to: conn.to_id, relationship: conn.relationship },
+      ]);
+      updateMemoryConnections(conn.to_id, [
+        { linked_to: conn.from_id, relationship: conn.relationship },
+      ]);
+    }
+
+    for (const contra of contradictions) {
+      supersedeMemory(contra.stale_id, contra.superseded_by);
+    }
+
+    markMemoriesConsolidated(sourceIds);
+    return consolidationId;
+  });
+  return txn();
 }
 
 export function getRecentConsolidations(chatId: string, limit = 5): Consolidation[] {
@@ -1149,7 +1312,21 @@ export function logConversationTurn(
 export function getRecentConversation(
   chatId: string,
   limit = 20,
+  agentId?: string,
 ): ConversationTurn[] {
+  // IMPORTANT: filter by agent_id too. Without this, /respin in the main
+  // agent bleeds in turns from research/comms/content/ops that share the
+  // same chat_id, producing respins contaminated with other agents'
+  // conversations. Reported by Benjamin Elkrieff in April 2026.
+  if (agentId) {
+    return db
+      .prepare(
+        `SELECT * FROM conversation_log
+         WHERE chat_id = ? AND agent_id = ?
+         ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(chatId, agentId, limit) as ConversationTurn[];
+  }
   return db
     .prepare(
       `SELECT * FROM conversation_log WHERE chat_id = ?
@@ -1225,28 +1402,34 @@ export function getConversationPage(
 }
 
 /**
- * Prune old conversation_log entries, keeping only the most recent N rows per chat.
- * Called alongside memory decay to prevent unbounded disk growth.
+ * Prune old conversation_log entries, keeping only the most recent N rows
+ * per (chat_id, agent_id) pair. Scoping by agent matters because all five
+ * agents share the same chat_id in a typical install, and a chatty agent
+ * could otherwise evict a quieter agent's history under the shared cap.
+ * Wrapped in a transaction so a mid-loop crash can't leave the table in a
+ * half-pruned state.
  */
 export function pruneConversationLog(keepPerChat = 500): void {
-  // Get distinct chat IDs
-  const chats = db
-    .prepare('SELECT DISTINCT chat_id FROM conversation_log')
-    .all() as Array<{ chat_id: string }>;
+  const pairs = db
+    .prepare('SELECT DISTINCT chat_id, agent_id FROM conversation_log')
+    .all() as Array<{ chat_id: string; agent_id: string }>;
 
   const deleteStmt = db.prepare(`
     DELETE FROM conversation_log
-    WHERE chat_id = ? AND id NOT IN (
+    WHERE chat_id = ? AND agent_id = ? AND id NOT IN (
       SELECT id FROM conversation_log
-      WHERE chat_id = ?
+      WHERE chat_id = ? AND agent_id = ?
       ORDER BY created_at DESC
       LIMIT ?
     )
   `);
 
-  for (const chat of chats) {
-    deleteStmt.run(chat.chat_id, chat.chat_id, keepPerChat);
-  }
+  const runAll = db.transaction((rows: typeof pairs) => {
+    for (const row of rows) {
+      deleteStmt.run(row.chat_id, row.agent_id, row.chat_id, row.agent_id, keepPerChat);
+    }
+  });
+  runAll(pairs);
 }
 
 // ── WhatsApp messages ────────────────────────────────────────────────
@@ -1903,6 +2086,94 @@ export function resetStuckMissionTasks(agentId: string): number {
   return result.changes;
 }
 
+// ── Meet Sessions (Pika video meeting skill) ────────────────────────
+
+export type MeetProvider = 'pika' | 'recall' | 'daily';
+
+export interface MeetSession {
+  id: string;
+  agent_id: string;
+  meet_url: string;
+  bot_name: string;
+  platform: string;
+  provider: MeetProvider;
+  status: 'joining' | 'live' | 'left' | 'failed';
+  voice_id: string | null;
+  image_path: string | null;
+  brief_path: string | null;
+  created_at: number;
+  joined_at: number | null;
+  left_at: number | null;
+  post_notes: string | null;
+  error: string | null;
+}
+
+export function createMeetSession(session: {
+  id: string;
+  agentId: string;
+  meetUrl: string;
+  botName: string;
+  platform?: string;
+  provider?: MeetProvider;
+  voiceId?: string | null;
+  imagePath?: string | null;
+  briefPath?: string | null;
+}): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO meet_sessions (id, agent_id, meet_url, bot_name, platform, provider, status, voice_id, image_path, brief_path, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'joining', ?, ?, ?, ?)`,
+  ).run(
+    session.id,
+    session.agentId,
+    session.meetUrl,
+    session.botName,
+    session.platform ?? 'google_meet',
+    session.provider ?? 'pika',
+    session.voiceId ?? null,
+    session.imagePath ?? null,
+    session.briefPath ?? null,
+    now,
+  );
+}
+
+export function markMeetSessionLive(id: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE meet_sessions SET status = 'live', joined_at = ? WHERE id = ?`,
+  ).run(now, id);
+}
+
+export function markMeetSessionLeft(id: string, postNotes?: string | null): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE meet_sessions SET status = 'left', left_at = ?, post_notes = ? WHERE id = ?`,
+  ).run(now, postNotes ?? null, id);
+}
+
+export function markMeetSessionFailed(id: string, error: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE meet_sessions SET status = 'failed', left_at = ?, error = ? WHERE id = ?`,
+  ).run(now, error.slice(0, 2000), id);
+}
+
+export function getMeetSession(id: string): MeetSession | null {
+  return (db.prepare('SELECT * FROM meet_sessions WHERE id = ?').get(id) as MeetSession) ?? null;
+}
+
+export function listActiveMeetSessions(): MeetSession[] {
+  return db.prepare(
+    `SELECT * FROM meet_sessions WHERE status IN ('joining', 'live') ORDER BY created_at DESC`,
+  ).all() as MeetSession[];
+}
+
+export function listRecentMeetSessions(limit = 20): MeetSession[] {
+  return db.prepare(
+    `SELECT * FROM meet_sessions ORDER BY created_at DESC LIMIT ?`,
+  ).all(limit) as MeetSession[];
+}
+
 // ── Audit Log ────────────────────────────────────────────────────────
 
 export function insertAuditLog(
@@ -1949,4 +2220,199 @@ export function getRecentBlockedActions(limit = 10): AuditLogEntry[] {
   return db.prepare(
     `SELECT * FROM audit_log WHERE blocked = 1 ORDER BY created_at DESC LIMIT ?`,
   ).all(limit) as AuditLogEntry[];
+}
+
+// ── Phase 2: Compaction events ────────────────────────────────────────
+
+export function saveCompactionEvent(
+  sessionId: string,
+  preTokens: number,
+  postTokens: number,
+  turnCount: number,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO compaction_events (session_id, pre_tokens, post_tokens, turn_count, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(sessionId, preTokens, postTokens, turnCount, now);
+}
+
+export function getCompactionCount(sessionId: string): number {
+  return (db.prepare(
+    'SELECT COUNT(*) as c FROM compaction_events WHERE session_id = ?',
+  ).get(sessionId) as { c: number }).c;
+}
+
+export function getCompactionHistory(sessionId: string): Array<{
+  id: number; session_id: string; pre_tokens: number; post_tokens: number;
+  turn_count: number; created_at: number;
+}> {
+  return db.prepare(
+    'SELECT * FROM compaction_events WHERE session_id = ? ORDER BY created_at DESC',
+  ).all(sessionId) as Array<{
+    id: number; session_id: string; pre_tokens: number; post_tokens: number;
+    turn_count: number; created_at: number;
+  }>;
+}
+
+// ── Phase 2: Session stats for /convolife ──────────────────────────────
+
+export function getSessionStats(sessionId: string): {
+  turnCount: number;
+  totalCost: number;
+  compactionCount: number;
+  maxContextTokens: number;
+} {
+  const stats = db.prepare(`
+    SELECT
+      COUNT(*) as turnCount,
+      COALESCE(SUM(cost_usd), 0) as totalCost,
+      COALESCE(SUM(did_compact), 0) as compactionCount,
+      COALESCE(MAX(context_tokens), 0) as maxContextTokens
+    FROM token_usage WHERE session_id = ?
+  `).get(sessionId) as {
+    turnCount: number; totalCost: number;
+    compactionCount: number; maxContextTokens: number;
+  } | undefined;
+
+  return stats ?? { turnCount: 0, totalCost: 0, compactionCount: 0, maxContextTokens: 0 };
+}
+
+// ── Phase 2: Memory nudge support ──────────────────────────────────────
+
+export function getLastMemorySaveTime(chatId: string, agentId = 'main'): number | null {
+  const row = db.prepare(
+    'SELECT created_at FROM memories WHERE chat_id = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1',
+  ).get(chatId, agentId) as { created_at: number } | undefined;
+  return row?.created_at ?? null;
+}
+
+export function getTurnCountSinceTimestamp(chatId: string, sinceTimestamp: number, agentId = 'main'): number {
+  const row = db.prepare(
+    'SELECT COUNT(*) as c FROM conversation_log WHERE chat_id = ? AND agent_id = ? AND role = ? AND created_at > ?',
+  ).get(chatId, agentId, 'user', sinceTimestamp) as { c: number };
+  return row.c;
+}
+
+// ── Phase 4: Skill health & usage ────────────────────────────────────
+
+export function upsertSkillHealth(
+  skillId: string,
+  status: string,
+  errorMsg = '',
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(`
+    INSERT INTO skill_health (skill_id, status, error_msg, last_check, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(skill_id) DO UPDATE SET status = ?, error_msg = ?, last_check = ?
+  `).run(skillId, status, errorMsg, now, now, status, errorMsg, now);
+}
+
+export function getSkillHealth(skillId: string): { status: string; error_msg: string; last_check: number } | undefined {
+  return db.prepare('SELECT status, error_msg, last_check FROM skill_health WHERE skill_id = ?')
+    .get(skillId) as { status: string; error_msg: string; last_check: number } | undefined;
+}
+
+export function getAllSkillHealth(): Array<{ skill_id: string; status: string; error_msg: string; last_check: number }> {
+  return db.prepare('SELECT * FROM skill_health ORDER BY skill_id').all() as Array<{
+    skill_id: string; status: string; error_msg: string; last_check: number;
+  }>;
+}
+
+export function logSkillUsage(
+  skillId: string,
+  chatId: string,
+  agentId: string,
+  tokensUsed: number,
+  succeeded: boolean,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO skill_usage (skill_id, chat_id, agent_id, triggered_at, tokens_used, succeeded)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(skillId, chatId, agentId, now, tokensUsed, succeeded ? 1 : 0);
+}
+
+export function getSkillUsageStats(): Array<{
+  skill_id: string; count: number; last_used: number; total_tokens: number;
+}> {
+  return db.prepare(`
+    SELECT skill_id,
+           COUNT(*) as count,
+           MAX(triggered_at) as last_used,
+           SUM(tokens_used) as total_tokens
+    FROM skill_usage
+    GROUP BY skill_id
+    ORDER BY count DESC
+  `).all() as Array<{
+    skill_id: string; count: number; last_used: number; total_tokens: number;
+  }>;
+}
+
+// ── Phase 6: Session summaries ────────────────────────────────────────
+
+export function saveSessionSummary(
+  sessionId: string,
+  summary: string,
+  keyDecisions: string[],
+  turnCount: number,
+  totalCost: number,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(`
+    INSERT INTO session_summaries (session_id, summary, key_decisions, turn_count, total_cost, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET summary = ?, key_decisions = ?, turn_count = ?, total_cost = ?, created_at = ?
+  `).run(sessionId, summary, JSON.stringify(keyDecisions), turnCount, totalCost, now,
+    summary, JSON.stringify(keyDecisions), turnCount, totalCost, now);
+}
+
+export function getSessionSummary(sessionId: string): {
+  summary: string; key_decisions: string; turn_count: number; total_cost: number;
+} | undefined {
+  return db.prepare('SELECT summary, key_decisions, turn_count, total_cost FROM session_summaries WHERE session_id = ?')
+    .get(sessionId) as { summary: string; key_decisions: string; turn_count: number; total_cost: number } | undefined;
+}
+
+// ── War Room meeting history ─────────────────────────────────────────────
+
+export function createWarRoomMeeting(id: string, mode: string, pinnedAgent: string): void {
+  db.prepare(
+    'INSERT OR IGNORE INTO warroom_meetings (id, started_at, mode, pinned_agent) VALUES (?, ?, ?, ?)',
+  ).run(id, Math.floor(Date.now() / 1000), mode, pinnedAgent);
+}
+
+export function endWarRoomMeeting(id: string, entryCount: number): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    'UPDATE warroom_meetings SET ended_at = ?, duration_s = ended_at - started_at, entry_count = ? WHERE id = ?',
+  ).run(now, entryCount, id);
+  // Actually compute duration correctly
+  db.prepare(
+    'UPDATE warroom_meetings SET duration_s = ? - started_at WHERE id = ?',
+  ).run(now, id);
+}
+
+export function addWarRoomTranscript(meetingId: string, speaker: string, text: string): void {
+  db.prepare(
+    'INSERT INTO warroom_transcript (meeting_id, speaker, text, created_at) VALUES (?, ?, ?, ?)',
+  ).run(meetingId, speaker, text, Math.floor(Date.now() / 1000));
+}
+
+export function getWarRoomMeetings(limit = 20): Array<{
+  id: string; started_at: number; ended_at: number | null; duration_s: number | null;
+  mode: string; pinned_agent: string; entry_count: number;
+}> {
+  return db.prepare(
+    'SELECT * FROM warroom_meetings ORDER BY started_at DESC LIMIT ?',
+  ).all(limit) as any[];
+}
+
+export function getWarRoomTranscript(meetingId: string): Array<{
+  speaker: string; text: string; created_at: number;
+}> {
+  return db.prepare(
+    'SELECT speaker, text, created_at FROM warroom_transcript WHERE meeting_id = ? ORDER BY created_at',
+  ).all(meetingId) as any[];
 }

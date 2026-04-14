@@ -20,18 +20,27 @@ function getClient(): GoogleGenAI {
  */
 export async function generateContent(
   prompt: string,
-  model = 'gemini-3-flash-preview',
+  model = 'gemini-2.0-flash',
 ): Promise<string> {
   const ai = getClient();
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-    },
-  });
-  return response.text ?? '';
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    });
+    if (!response.text) {
+      logger.warn({ model }, 'Gemini returned empty response');
+      return '';
+    }
+    return response.text;
+  } catch (err) {
+    logger.error({ err, model }, 'Gemini generateContent failed');
+    throw err;
+  }
 }
 
 /**

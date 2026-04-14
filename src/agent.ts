@@ -5,6 +5,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
+import { classifyError, AgentError } from './errors.js';
 import { logger } from './logger.js';
 
 // ── MCP server loading ──────────────────────────────────────────────
@@ -12,17 +13,27 @@ import { logger } from './logger.js';
 // project/user settings, but does NOT load mcpServers from those files.
 // We read them ourselves and pass them via the `mcpServers` option.
 
-interface McpStdioConfig {
+export interface McpStdioConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
 
-function loadMcpServers(allowlist?: string[]): Record<string, McpStdioConfig> {
+/**
+ * Merge MCP server configs from user settings (~/.claude/settings.json) and
+ * project settings (.claude/settings.json in cwd), optionally filtered by
+ * an allowlist (e.g. from an agent's agent.yaml `mcp_servers` field).
+ *
+ * Exported so the voice bridge can reuse the exact same loader the text
+ * bot uses — keeping behavior consistent across channels.
+ */
+export function loadMcpServers(allowlist?: string[], projectCwd?: string): Record<string, McpStdioConfig> {
   const merged: Record<string, McpStdioConfig> = {};
 
-  // Load from project settings (.claude/settings.json in cwd)
-  const projectSettings = path.join(agentCwd ?? PROJECT_ROOT, '.claude', 'settings.json');
+  // Load from project settings (.claude/settings.json in cwd). `projectCwd`
+  // lets callers (e.g. the voice bridge) target a specific sub-agent's
+  // settings file without needing the module-level `agentCwd` to be set.
+  const projectSettings = path.join(projectCwd ?? agentCwd ?? PROJECT_ROOT, '.claude', 'settings.json');
   // Load from user settings (~/.claude/settings.json)
   const userSettings = path.join(
     process.env.HOME ?? '/tmp',
@@ -361,10 +372,95 @@ export async function runAgent(
       logger.info('Agent query aborted by user');
       return { text: null, newSessionId, usage, aborted: true };
     }
-    throw err;
+
+    // Classify the error and attach context-aware metadata
+    const contextTokens = lastCallInputTokens || lastCallCacheRead || 0;
+    const classified = classifyError(err, contextTokens || undefined);
+    logger.error(
+      { category: classified.category, recovery: classified.recovery, originalMsg: (err as Error)?.message },
+      'Agent query failed (classified)',
+    );
+    throw classified;
   } finally {
     clearInterval(typingInterval);
   }
 
   return { text: resultText, newSessionId, usage };
+}
+
+// ── Retry wrapper ─────────────────────────────────────────────────
+
+const MAX_RETRIES = 2;
+const BACKOFF_BASE_MS = 2000;
+const BACKOFF_MULTIPLIER = 4; // 2s, 8s
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Run the agent with automatic retry for transient errors.
+ * Only retries errors where recovery.shouldRetry is true.
+ * Calls onRetry before each retry so the caller can notify the user.
+ */
+export async function runAgentWithRetry(
+  message: string,
+  sessionId: string | undefined,
+  onTyping: () => void,
+  onProgress?: (event: AgentProgressEvent) => void,
+  model?: string,
+  abortController?: AbortController,
+  onStreamText?: (accumulatedText: string) => void,
+  onRetry?: (attempt: number, error: AgentError) => void,
+  fallbackModels?: string[],
+  mcpAllowlist?: string[],
+): Promise<AgentResult> {
+  let lastError: AgentError | undefined;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const currentModel =
+        attempt === 0 ? model
+        : lastError?.recovery.shouldSwitchModel && fallbackModels?.length
+          ? fallbackModels[Math.min(attempt - 1, fallbackModels.length - 1)]
+          : model;
+
+      return await runAgent(
+        message, sessionId, onTyping, onProgress,
+        currentModel, abortController, onStreamText,
+        mcpAllowlist,
+      );
+    } catch (err) {
+      if (!(err instanceof AgentError)) throw err;
+      lastError = err;
+
+      // Don't retry non-retryable errors or if aborted
+      if (!err.recovery.shouldRetry || abortController?.signal.aborted) {
+        throw err;
+      }
+
+      // Don't retry past the limit
+      if (attempt >= MAX_RETRIES) {
+        throw err;
+      }
+
+      const delayMs = Math.min(
+        BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, attempt),
+        60000,
+      );
+      // Add jitter (0-25% of delay)
+      const jitter = Math.random() * delayMs * 0.25;
+
+      logger.warn(
+        { attempt: attempt + 1, category: err.category, delayMs: Math.round(delayMs + jitter) },
+        'Retrying agent query',
+      );
+
+      onRetry?.(attempt + 1, err);
+      await sleep(delayMs + jitter);
+    }
+  }
+
+  // Should never reach here, but TypeScript needs it
+  throw lastError ?? new Error('Retry loop exhausted');
 }

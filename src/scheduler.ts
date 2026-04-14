@@ -16,7 +16,6 @@ import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
-import { emitChatEvent } from './state.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -160,7 +159,13 @@ async function runDueMissionTasks(): Promise<void> {
       if (result.aborted) {
         completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
         logger.warn({ missionId: mission.id }, 'Mission task timed out');
-        try { await sender('Mission task timed out: "' + mission.title + '"'); } catch {}
+        try {
+          await sender('Mission task timed out: "' + mission.title + '"');
+        } catch (sendErr) {
+          // Sender can fail for Telegram API blips or chat-not-found. We
+          // still want to see it so the user isn't silently unnotified.
+          logger.warn({ err: sendErr, missionId: mission.id }, 'Failed to send mission timeout notification');
+        }
       } else {
         const text = result.text?.trim() || 'Task completed with no output.';
         completeMissionTask(mission.id, text, 'completed');
@@ -178,16 +183,6 @@ async function runDueMissionTasks(): Promise<void> {
           logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
         }
       }
-
-      emitChatEvent({
-        type: 'mission_update' as 'progress',
-        chatId,
-        content: JSON.stringify({
-          id: mission.id,
-          status: result.aborted ? 'failed' : 'completed',
-          title: mission.title,
-        }),
-      });
     } catch (err) {
       clearTimeout(timeout);
       const errMsg = err instanceof Error ? err.message : String(err);

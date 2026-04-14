@@ -268,16 +268,17 @@ async function main() {
   // ── 4. What do you want to enable? ──────────────────────────────────────
   section('Choose your features');
 
-  info('ClaudeClaw has several optional features. Tell us what you want.');
+  info('ClaudeClaw OS has several optional features. Tell us what you want.');
   info('You can always add more later by editing .env and restarting.');
   console.log();
 
-  const wantVoiceIn = await confirm('Voice input? (send voice notes → transcribed by Groq Whisper, free)', true);
+  const wantVoiceIn = await confirm('Voice input? (send voice messages instead of typing, free)', true);
   const wantVoiceOut = wantVoiceIn
-    ? await confirm('Voice output? (Claude responds with audio via ElevenLabs — requires voice cloning)', false)
+    ? await confirm('Voice output? (the bot talks back to you in a custom voice, requires setup)', false)
     : false;
-  const wantVideo = await confirm('Video analysis? (send video clips → analyzed by Google Gemini)', false);
-  const wantWhatsApp = await confirm('WhatsApp bridge? (view and reply to WhatsApp from Telegram)', false);
+  const wantVideo = await confirm('Video analysis? (send video clips and ask questions about them)', false);
+  const wantWarRoom = await confirm('War Room? (live voice boardroom with your agent team, experimental)', false);
+  const wantWhatsApp = await confirm('WhatsApp bridge? (view and reply to WhatsApp from Telegram, highly experimental)', false);
 
   // WhatsApp explanation if they said yes
   if (wantWhatsApp) {
@@ -310,40 +311,97 @@ async function main() {
     console.log();
   }
 
-  // ── 5. Explore the ecosystem ─────────────────────────────────────────────
-  section('The Claw ecosystem');
-
-  info('ClaudeClaw is one of several "Claw" projects. You might want to');
-  info('look at others for inspiration or to use a different channel:');
-  console.log();
-  bullet(`${c.bold}NanoClaw${c.reset}  github.com/qwibitai/nanoclaw       — WhatsApp, isolated containers`);
-  bullet(`${c.bold}OpenClaw${c.reset}  github.com/openclaw/openclaw       — 10+ channels (Slack, Discord, iMessage...)`);
-  bullet(`${c.bold}TinyClaw${c.reset}  github.com/jlia0/tinyclaw          — ~400 lines shell, no Node`);
-  console.log();
-
-  const cloneInspiration = await confirm('Clone any of these repos to browse locally?', false);
-  if (cloneInspiration) {
+  // War Room explanation and Python venv setup
+  let warRoomReady = false;
+  if (wantWarRoom) {
     console.log();
-    info('Which ones? (space-separated: nanoclaw openclaw tinyclaw)');
-    const picks = await ask('Repos to clone', 'skip');
-    if (picks !== 'skip' && picks.trim()) {
-      const map: Record<string, string> = {
-        nanoclaw: 'https://github.com/qwibitai/nanoclaw.git',
-        openclaw: 'https://github.com/openclaw/openclaw.git',
-        tinyclaw: 'https://github.com/jlia0/tinyclaw.git',
+    console.log(`  ${c.bold}How the War Room works:${c.reset}`);
+    console.log();
+    info('The War Room is a live voice boardroom in your browser. You speak,');
+    info('Gemini Live processes your voice in real time, and your agents respond');
+    info('with their own distinct voices. You can talk to one agent at a time');
+    info('(Direct mode) or let Gemini route your questions to the best agent');
+    info('automatically (Auto mode).');
+    console.log();
+    info('It requires Python 3.10+ and a Google API key (free tier works).');
+    console.log();
+
+    // Check if Python is available
+    const pyCheck = spawnSync('python3', ['--version'], { stdio: 'pipe' });
+    if (pyCheck.status === 0) {
+      const pyVer = pyCheck.stdout?.toString().trim() || pyCheck.stderr?.toString().trim() || '';
+      ok(`Python found: ${pyVer}`);
+
+      // Check if venv already exists and deps are installed
+      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
+      const depsInstalled = (): boolean => {
+        if (!fs.existsSync(venvPython)) return false;
+        const check = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
+        return check.status === 0;
       };
-      const cloneDir = path.join(PROJECT_ROOT, '..', 'claw-inspiration');
-      fs.mkdirSync(cloneDir, { recursive: true });
-      for (const name of picks.toLowerCase().split(/\s+/)) {
-        const url = map[name];
-        if (url) {
-          const s = spinner(`Cloning ${name}...`);
-          const r = spawnSync('git', ['clone', url, path.join(cloneDir, name)], { stdio: 'pipe' });
-          r.status === 0 ? s.stop('ok', `Cloned ${name} → ${cloneDir}/${name}`) : s.stop('warn', `Could not clone ${name}`);
+
+      if (depsInstalled()) {
+        ok('War Room Python venv already set up.');
+        warRoomReady = true;
+      } else {
+        const needsVenv = !fs.existsSync(venvPython);
+        const setupVenv = await confirm('Set up the War Room Python environment now? (takes ~60 seconds)', true);
+        if (setupVenv) {
+          let venvOk = !needsVenv;
+          if (needsVenv) {
+            const s1 = spinner('Creating Python virtual environment...');
+            const venvResult = spawnSync('python3', ['-m', 'venv', path.join(PROJECT_ROOT, 'warroom', '.venv')], { stdio: 'pipe' });
+            if (venvResult.status === 0) {
+              s1.stop('ok', 'Virtual environment created');
+              venvOk = true;
+            } else {
+              s1.stop('warn', 'Could not create venv. You can set it up manually later:');
+              info('  python3 -m venv warroom/.venv');
+              info('  source warroom/.venv/bin/activate');
+              info('  pip install -r warroom/requirements.txt');
+            }
+          }
+          if (venvOk) {
+            const s2 = spinner('Installing War Room dependencies (this takes about 60 seconds)...');
+            const pipResult = spawnSync(
+              path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'pip'),
+              ['install', '-r', path.join(PROJECT_ROOT, 'warroom', 'requirements.txt')],
+              { stdio: 'pipe', timeout: 300000 },
+            );
+            if (pipResult.status === 0) {
+              s2.stop('ok', 'War Room dependencies installed');
+              warRoomReady = true;
+            } else {
+              s2.stop('warn', 'pip install failed. War Room will be disabled until deps are installed.');
+              console.log();
+              info('To fix, run these commands and then re-run npm run setup:');
+              console.log();
+              console.log(`  ${c.cyan}cd ${PROJECT_ROOT}${c.reset}`);
+              console.log(`  ${c.cyan}source warroom/.venv/bin/activate${c.reset}`);
+              console.log(`  ${c.cyan}pip install -r warroom/requirements.txt${c.reset}`);
+            }
+          }
         }
       }
+    } else {
+      warn('Python 3 not found. You need Python 3.10+ for the War Room.');
+      info('Install Python:');
+      bullet('Mac: brew install python  (or download from python.org)');
+      bullet('Linux: sudo apt install python3 python3-venv');
+      info('Then set up the War Room manually:');
+      info('  python3 -m venv warroom/.venv');
+      info('  source warroom/.venv/bin/activate');
+      info('  pip install -r warroom/requirements.txt');
     }
+
+    if (!warRoomReady) {
+      console.log();
+      warn('War Room will be disabled in .env. Re-run npm run setup after fixing the Python environment.');
+    }
+    console.log();
   }
+
+  // Ecosystem section removed — users can find alternatives in README "Other Channels".
 
   // ── 6. Config directory (CLAUDECLAW_CONFIG) ──────────────────────────────
   section('Config directory (CLAUDECLAW_CONFIG)');
@@ -632,16 +690,20 @@ async function main() {
     }
   }
 
-  // ── 10. Video / Gemini ────────────────────────────────────────────────────
-  if (wantVideo) {
-    section('Video analysis — Google Gemini');
+  // ── 10. Google API key (video analysis + War Room + memory consolidation) ──
+  if (wantVideo || wantWarRoom) {
+    section('Google API key');
+
+    const reasons: string[] = [];
+    if (wantVideo) reasons.push('video analysis');
+    if (wantWarRoom) reasons.push('War Room voice');
+    info(`Needed for: ${reasons.join(' and ')}. Also powers memory consolidation.`);
+    console.log();
 
     if (env.GOOGLE_API_KEY) {
       ok('Google API key already configured');
     } else {
-      info('Get a free Google API key at: aistudio.google.com → Get API key');
-      info('Then install the gemini-api-dev skill from:');
-      info('github.com/google-gemini/gemini-skills');
+      info('Get a free key at: aistudio.google.com → Get API key');
       console.log();
       const key = await ask('Google API key (Enter to skip)');
       if (key) env.GOOGLE_API_KEY = key;
@@ -692,6 +754,9 @@ async function main() {
     '# ── Integrations ──────────────────────────────────────────────',
     `GOOGLE_API_KEY=${env.GOOGLE_API_KEY || ''}`,
     '',
+    '# ── War Room ──────────────────────────────────────────────────',
+    (wantWarRoom && warRoomReady) ? 'WARROOM_ENABLED=true' : '# WARROOM_ENABLED=false',
+    '',
     '# ── Dashboard ─────────────────────────────────────────────────',
     `DASHBOARD_TOKEN=${env.DASHBOARD_TOKEN || ''}`,
     `DASHBOARD_PORT=${env.DASHBOARD_PORT || '3141'}`,
@@ -708,7 +773,7 @@ async function main() {
   ];
 
   // Preserve unknown keys
-  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','DB_ENCRYPTION_KEY','DASHBOARD_TOKEN','DASHBOARD_PORT','DASHBOARD_URL','SECURITY_PIN_HASH','IDLE_LOCK_MINUTES','EMERGENCY_KILL_PHRASE','DESTRUCTIVE_CONFIRM']);
+  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','WARROOM_ENABLED','DB_ENCRYPTION_KEY','DASHBOARD_TOKEN','DASHBOARD_PORT','DASHBOARD_URL','SECURITY_PIN_HASH','IDLE_LOCK_MINUTES','EMERGENCY_KILL_PHRASE','DESTRUCTIVE_CONFIRM']);
   for (const [k, v] of Object.entries(env)) {
     if (!known.has(k) && v) lines.push(`${k}=${v}`);
   }
@@ -773,31 +838,115 @@ async function main() {
 
   const wantAgents = await confirm('Set up specialist agents?', false);
   if (wantAgents) {
+    const templates: { id: string; label: string; desc: string }[] = [
+      { id: 'comms', label: 'comms', desc: 'email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn' },
+      { id: 'content', label: 'content', desc: 'YouTube scripts, LinkedIn posts, trend research' },
+      { id: 'ops', label: 'ops', desc: 'calendar, billing, Stripe, Gumroad, admin' },
+      { id: 'research', label: 'research', desc: 'deep web research, academic, competitive intel' },
+    ];
+
     console.log();
-    info('Available templates:');
-    console.log(`  1. ${c.bold}comms${c.reset}     — email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn`);
-    console.log(`  2. ${c.bold}content${c.reset}   — YouTube scripts, LinkedIn posts, trend research`);
-    console.log(`  3. ${c.bold}ops${c.reset}       — calendar, billing, Stripe, Gumroad, admin`);
-    console.log(`  4. ${c.bold}research${c.reset}  — deep web research, academic, competitive intel`);
+    info('Each agent needs its own Telegram bot. You create these via @BotFather in Telegram.');
+    info('For each agent you want, we\'ll ask for a bot token and set it up for you.');
     console.log();
-    info('For each agent, you\'ll need to create a Telegram bot via @BotFather.');
-    info('Open Telegram → @BotFather → /newbot → choose a name and username.');
+
+    const createdAgents: string[] = [];
+    for (const tmpl of templates) {
+      console.log(`  ${c.bold}${tmpl.label}${c.reset} ${c.gray}${tmpl.desc}${c.reset}`);
+      const want = await confirm(`  Add the ${tmpl.label} agent?`, false);
+      if (!want) continue;
+
+      console.log();
+      info(`Create a Telegram bot for ${tmpl.label}:`);
+      console.log(`    1. Open Telegram, message ${c.bold}@BotFather${c.reset}`);
+      console.log(`    2. Send ${c.bold}/newbot${c.reset}`);
+      console.log(`    3. Name it something like ${c.bold}ClaudeClaw ${tmpl.label.charAt(0).toUpperCase() + tmpl.label.slice(1)}${c.reset}`);
+      console.log(`    4. Copy the token BotFather gives you`);
+      console.log();
+
+      const envKey = `${tmpl.id.toUpperCase()}_BOT_TOKEN`;
+      const existingToken = env[envKey];
+      let token = '';
+
+      if (existingToken) {
+        ok(`${envKey} already set in .env`);
+        const reuse = await confirm('Keep the existing token?', true);
+        if (reuse) {
+          token = existingToken;
+        }
+      }
+
+      if (!token) {
+        token = await ask(`Paste the bot token (Enter to skip ${tmpl.label})`);
+      }
+
+      if (!token) {
+        info(`Skipped ${tmpl.label}. You can add it later with: npm run agent:create`);
+        console.log();
+        continue;
+      }
+
+      // Validate token
+      try {
+        const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+        const data = await resp.json() as { ok: boolean; result?: { username?: string } };
+        if (data.ok) {
+          ok(`Bot verified: @${data.result?.username}`);
+        } else {
+          warn('Token did not validate. Saving anyway (you can fix it in .env later).');
+        }
+      } catch {
+        warn('Could not verify token (no internet?). Saving anyway.');
+      }
+
+      // Save token to env
+      env[envKey] = token;
+
+      // Create agent config directory
+      const configDir = env.CLAUDECLAW_CONFIG || path.join(os.homedir(), '.claudeclaw');
+      const agentDir = path.join(configDir, 'agents', tmpl.id);
+      fs.mkdirSync(agentDir, { recursive: true });
+
+      // Copy template CLAUDE.md
+      const templateClaudeMd = path.join(PROJECT_ROOT, 'agents', tmpl.id, 'CLAUDE.md');
+      const destClaudeMd = path.join(agentDir, 'CLAUDE.md');
+      if (fs.existsSync(templateClaudeMd) && !fs.existsSync(destClaudeMd)) {
+        fs.copyFileSync(templateClaudeMd, destClaudeMd);
+      }
+
+      // Create agent.yaml from example
+      const exampleYaml = path.join(PROJECT_ROOT, 'agents', tmpl.id, 'agent.yaml.example');
+      const destYaml = path.join(agentDir, 'agent.yaml');
+      if (fs.existsSync(exampleYaml)) {
+        let yamlContent = fs.readFileSync(exampleYaml, 'utf-8');
+        yamlContent = yamlContent.replace(/telegram_bot_token_env:.*/, `telegram_bot_token_env: ${envKey}`);
+        fs.writeFileSync(destYaml, yamlContent, 'utf-8');
+      }
+
+      ok(`Agent "${tmpl.id}" configured at ${agentDir}`);
+      createdAgents.push(tmpl.id);
+      console.log();
+    }
+
+    if (createdAgents.length > 0) {
+      console.log();
+      ok(`${createdAgents.length} agent(s) configured: ${createdAgents.join(', ')}`);
+      console.log();
+      info('After setup finishes, start each agent in its own terminal:');
+      console.log();
+      for (const id of createdAgents) {
+        console.log(`  ${c.cyan}npm start -- --agent ${id}${c.reset}`);
+      }
+      console.log();
+      info('Or install as background services:');
+      for (const id of createdAgents) {
+        console.log(`  ${c.cyan}bash scripts/agent-service.sh install ${id}${c.reset}`);
+      }
+    } else {
+      info('No agents created. You can add them later with:');
+      console.log(`  ${c.cyan}npm run agent:create${c.reset}`);
+    }
     console.log();
-    info('Run the agent creation wizard after setup finishes:');
-    console.log();
-    console.log(`  ${c.cyan}npm run agent:create${c.reset}`);
-    console.log();
-    info('It walks you through template selection, bot creation, and configuration.');
-    info('Then start each agent in its own terminal:');
-    console.log();
-    console.log(`  ${c.cyan}npm start -- --agent comms${c.reset}      # Terminal 2`);
-    console.log(`  ${c.cyan}npm start -- --agent content${c.reset}    # Terminal 3`);
-    console.log(`  ${c.cyan}npm start -- --agent ops${c.reset}        # Terminal 4`);
-    console.log();
-    info('Or install as background services:');
-    console.log(`  ${c.cyan}bash scripts/agent-service.sh install comms${c.reset}`);
-    console.log();
-    info('Full guide: see "Creating a team of agents" in the README.');
   }
 
   // ── 16. Summary ───────────────────────────────────────────────────────────
@@ -813,6 +962,7 @@ async function main() {
   wantVoiceIn && env.GROQ_API_KEY ? ok('Voice input: Groq Whisper ✓') : wantVoiceIn ? warn('Voice input: GROQ_API_KEY not set') : info('Voice input: not enabled');
   wantVoiceOut && env.ELEVENLABS_API_KEY ? ok('Voice output: ElevenLabs ✓') : wantVoiceOut ? warn('Voice output: ElevenLabs keys not set') : info('Voice output: not enabled');
   wantVideo && env.GOOGLE_API_KEY ? ok('Video analysis: Gemini ✓') : wantVideo ? warn('Video analysis: GOOGLE_API_KEY not set') : info('Video analysis: not enabled');
+  (wantWarRoom && warRoomReady && env.GOOGLE_API_KEY) ? ok('War Room: enabled ✓') : wantWarRoom && !warRoomReady ? warn('War Room: Python deps not installed (disabled)') : wantWarRoom ? warn('War Room: GOOGLE_API_KEY not set') : info('War Room: not enabled');
   wantWhatsApp ? ok('WhatsApp: run npx tsx scripts/wa-daemon.ts to connect') : info('WhatsApp: not enabled');
 
   console.log();

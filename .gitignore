@@ -24,6 +24,15 @@ migrations/.applied.json
 *.log
 /tmp/claudeclaw.*
 
+# Python
+__pycache__/
+*.pyc
+.venv/
+warroom/.venv/
+
+# Generated outputs — personal diagrams, not for sharing
+outputs/
+
 # macOS
 .DS_Store
 
@@ -35,6 +44,16 @@ migrations/.applied.json
 
 # Personal scripts — not for sharing
 scripts/waste-reminder.sh
+start-main.sh
+WARROOM_TEST_PLAN.md
+
+# War Room dev/test artifacts
+warroom/test-audio*.wav
+warroom/test_harness.py
+warroom/TEST_REPORT.md
+warroom/music.mp3
+warroom/avatars/backup-*/
+warroom/avatars/photoreal-backup/
 
 # Personal config — lives in CLAUDECLAW_CONFIG (default ~/.claudeclaw)
 CLAUDE.md
