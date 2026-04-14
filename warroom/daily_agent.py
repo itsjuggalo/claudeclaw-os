@@ -200,9 +200,9 @@ async def run_agent(args: argparse.Namespace) -> None:
     delegate_schema = FunctionSchema(
         name="delegate_to_agent",
         description=(
-            "Delegate a unit of work to one of Mark's sub-agents. The sub-agent runs "
+            "Delegate a unit of work to one of the user's sub-agents. The sub-agent runs "
             "the task asynchronously through the full Claude Code environment and "
-            "pings Mark on Telegram when finished. After calling this, tell Mark "
+            "pings the user on Telegram when finished. After calling this, tell the user "
             "verbally that you've queued it. DO NOT wait for the result."
         ),
         properties={
@@ -219,12 +219,12 @@ async def run_agent(args: argparse.Namespace) -> None:
     )
     get_time_schema = FunctionSchema(
         name="get_time",
-        description="Get the current wall clock time in Mark's local timezone.",
+        description="Get the current wall clock time in the user's local timezone.",
         properties={}, required=[],
     )
     list_agents_schema = FunctionSchema(
         name="list_agents",
-        description="List Mark's sub-agents with one-line role descriptions.",
+        description="List the user's sub-agents with one-line role descriptions.",
         properties={}, required=[],
     )
     standard_tools = [delegate_schema, get_time_schema, list_agents_schema]
@@ -233,7 +233,7 @@ async def run_agent(args: argparse.Namespace) -> None:
         answer_schema = FunctionSchema(
             name="answer_as_agent",
             description=(
-                "Route Mark's question to the best-fit specialist and return their answer "
+                "Route the user's question to the best-fit specialist and return their answer "
                 "verbatim. Use this for every substantive question in auto mode."
             ),
             properties={
@@ -242,7 +242,7 @@ async def run_agent(args: argparse.Namespace) -> None:
                     "enum": sorted(VALID_AGENTS),
                     "description": "Which specialist should answer.",
                 },
-                "question": {"type": "string", "description": "Mark's full question."},
+                "question": {"type": "string", "description": "The user's full question."},
             },
             required=["agent", "question"],
         )

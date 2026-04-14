@@ -494,11 +494,11 @@ async def run_live_mode():
     delegate_schema = FunctionSchema(
         name="delegate_to_agent",
         description=(
-            "Delegate a unit of work to one of Mark's sub-agents. The sub-agent "
+            "Delegate a unit of work to one of the user's sub-agents. The sub-agent "
             "runs the task asynchronously through its full Claude Code environment "
-            "and pings Mark on Telegram when finished. Use this for anything that "
+            "and pings the user on Telegram when finished. Use this for anything that "
             "requires real execution: research, drafting messages, file operations, "
-            "scheduling, running code. After calling this, tell Mark verbally that "
+            "scheduling, running code. After calling this, tell the user verbally that "
             "you've queued it and they'll be notified when done. DO NOT wait."
         ),
         properties={
@@ -513,7 +513,7 @@ async def run_live_mode():
             },
             "prompt": {
                 "type": "string",
-                "description": "Full instructions for the sub-agent. Be specific about what Mark wants.",
+                "description": "Full instructions for the sub-agent. Be specific about what the user wants.",
             },
             "priority": {
                 "type": "integer",
@@ -525,14 +525,14 @@ async def run_live_mode():
 
     get_time_schema = FunctionSchema(
         name="get_time",
-        description="Get the current wall clock time in Mark's local timezone. Use when he asks what time it is.",
+        description="Get the current wall clock time in the user's local timezone. Use when they ask what time it is.",
         properties={},
         required=[],
     )
 
     list_agents_schema = FunctionSchema(
         name="list_agents",
-        description="List Mark's sub-agents with their one-line role descriptions. Use when he asks 'who's on my team' or 'who can I delegate to'.",
+        description="List the user's sub-agents with their one-line role descriptions. Use when they ask 'who's on my team' or 'who can I delegate to'.",
         properties={},
         required=[],
     )
@@ -545,7 +545,7 @@ async def run_live_mode():
         answer_schema = FunctionSchema(
             name="answer_as_agent",
             description=(
-                "Route Mark's question to the best-fit specialist and return their "
+                "Route the user's question to the best-fit specialist and return their "
                 "answer verbatim. Use this for EVERY substantive question in auto mode. "
                 "Pick the agent whose role matches the question. Speak a one-word "
                 "acknowledgment BEFORE calling this tool, then when it returns, read "
@@ -559,7 +559,7 @@ async def run_live_mode():
                 },
                 "question": {
                     "type": "string",
-                    "description": "Mark's full question, cleaned up grammatically if needed.",
+                    "description": "The user's full question, cleaned up grammatically if needed.",
                 },
             },
             required=["agent", "question"],
