@@ -450,21 +450,21 @@ async function main() {
   console.log();
 
   let claudeclawConfigDir = defaultConfigDir;
-  const changeConfigDir = await confirm('Change this path?', false);
-  if (changeConfigDir) {
-    const input = await ask('Config directory', '~/.claudeclaw');
-    claudeclawConfigDir = expandHome(input.trim() || '~/.claudeclaw');
+  const configInput = await ask('Config directory (Enter to keep default)', defaultConfigDir);
+  const trimmedConfig = configInput.trim();
+  if (trimmedConfig && trimmedConfig !== defaultConfigDir) {
+    // Guard against accidental single-letter paths (e.g. typing "y" to confirm)
+    if (trimmedConfig.length < 3 || (!trimmedConfig.startsWith('/') && !trimmedConfig.startsWith('~') && !trimmedConfig.startsWith('.'))) {
+      warn(`"${trimmedConfig}" doesn't look like a directory path. Using default: ${defaultConfigDir}`);
+    } else {
+      claudeclawConfigDir = expandHome(trimmedConfig);
+    }
   }
 
-  // If the chosen directory already exists, notify and let user decide
+  // If the chosen directory already exists, just confirm
   if (fs.existsSync(claudeclawConfigDir)) {
     const hasClaudeMd = fs.existsSync(path.join(claudeclawConfigDir, 'CLAUDE.md'));
-    ok(`Directory already exists${hasClaudeMd ? ' — CLAUDE.md found' : ' — no CLAUDE.md yet'}`);
-    const useExisting = await confirm('Use this directory as-is?', true);
-    if (!useExisting) {
-      const newPath = await ask('Enter a different path');
-      if (newPath.trim()) claudeclawConfigDir = expandHome(newPath.trim());
-    }
+    ok(`Using ${claudeclawConfigDir}${hasClaudeMd ? ' (CLAUDE.md found)' : ''}`);
   }
 
   // Create the directory if needed
@@ -655,27 +655,29 @@ async function main() {
   if (env.SECURITY_PIN_HASH) {
     ok('PIN lock already configured');
   } else {
-    const wantPin = await confirm('Set up a PIN lock?');
-    if (wantPin) {
-      let pinSet = false;
-      while (!pinSet) {
-        const pin = await ask('Choose a PIN (4+ characters)');
-        if (!pin || pin.length < 4) {
-          console.log(`  ${c.red}PIN must be at least 4 characters.${c.reset}`);
-          continue;
-        }
-        const pinConfirm = await ask('Confirm PIN');
-        if (pin !== pinConfirm) {
-          console.log(`  ${c.red}PINs don't match. Try again.${c.reset}`);
-          continue;
-        }
-        // Salted hash: "salt:hash"
-        const salt = crypto.randomBytes(16).toString('hex');
-        const hash = crypto.createHash('sha256').update(salt + pin).digest('hex');
-        env.SECURITY_PIN_HASH = `${salt}:${hash}`;
-        ok('PIN set. Bot will start locked, send the PIN to unlock.');
-        pinSet = true;
+    let pinSet = false;
+    // Single prompt: type a PIN to enable, or Enter to skip
+    while (!pinSet) {
+      const pin = await ask('Choose a PIN (4+ characters, or Enter to skip)');
+      if (!pin) {
+        info('No PIN set. Add SECURITY_PIN_HASH to .env later if you change your mind.');
+        break;
       }
+      if (pin.length < 4) {
+        console.log(`  ${c.red}PIN must be at least 4 characters.${c.reset}`);
+        continue;
+      }
+      const pinConfirm = await ask('Confirm PIN');
+      if (pin !== pinConfirm) {
+        console.log(`  ${c.red}PINs don't match. Try again.${c.reset}`);
+        continue;
+      }
+      // Salted hash: "salt:hash"
+      const salt = crypto.randomBytes(16).toString('hex');
+      const hash = crypto.createHash('sha256').update(salt + pin).digest('hex');
+      env.SECURITY_PIN_HASH = `${salt}:${hash}`;
+      ok('PIN set. Bot will start locked, send the PIN to unlock.');
+      pinSet = true;
 
       // Idle timeout (only ask when PIN is set)
       console.log();
@@ -686,8 +688,6 @@ async function main() {
         env.IDLE_LOCK_MINUTES = String(idleVal);
         ok(`Auto-lock after ${idleVal}m of inactivity`);
       }
-    } else {
-      info('Skipped. Add SECURITY_PIN_HASH to .env later if you change your mind.');
     }
   }
 
@@ -1021,6 +1021,28 @@ async function main() {
   wantWhatsApp ? ok('WhatsApp: run npx tsx scripts/wa-daemon.ts to connect') : info('WhatsApp: not enabled');
 
   console.log();
+  info('Edit CLAUDE.md any time to change personality, add context, or update skills.');
+  info('Re-run npm run setup to change API keys or service settings.');
+  console.log();
+
+  // Offer to start the bot right now
+  const startNow = await confirm('Start the bot now?');
+  if (startNow) {
+    console.log();
+    info('Starting ClaudeClaw... (press Ctrl+C to stop)');
+    console.log();
+    // Close readline before handing off to the bot process
+    rl.close();
+    const { execSync } = await import('child_process');
+    try {
+      execSync('npm start', { stdio: 'inherit', cwd: PROJECT_ROOT });
+    } catch {
+      // User hit Ctrl+C or process exited
+    }
+    return;
+  }
+
+  console.log();
   console.log(`  ${c.bold}Start the bot:${c.reset}`);
   console.log();
   console.log(`  ${c.cyan}npm start${c.reset}                    # production (compiled)`);
@@ -1034,9 +1056,6 @@ async function main() {
   } else if (PLATFORM === 'linux') {
     info('Logs: journalctl --user -u claudeclaw -f');
   }
-  console.log();
-  info('Edit CLAUDE.md any time to change personality, add context, or update skills.');
-  info('Re-run npm run setup to change API keys or service settings.');
   console.log();
 }
 
