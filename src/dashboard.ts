@@ -127,6 +127,27 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json({ error: 'Internal server error' }, 500);
   });
 
+  // Request logging middleware — logs method, path, IP, user agent, auth result
+  app.use('*', async (c, next) => {
+    const start = Date.now();
+    const ip = c.req.header('cf-connecting-ip')
+      || c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+      || 'unknown';
+    const ua = c.req.header('user-agent') || 'unknown';
+    const method = c.req.method;
+    const path = new URL(c.req.url).pathname;
+
+    await next();
+
+    const status = c.res.status;
+    const ms = Date.now() - start;
+    const level = status === 401 || status === 403 ? 'warn' : 'info';
+    logger[level](
+      { method, path, status, ip, ua, ms },
+      `Dashboard ${method} ${path} ${status}`
+    );
+  });
+
   // Token auth middleware
   app.use('*', async (c, next) => {
     const token = c.req.query('token');
