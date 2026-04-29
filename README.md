@@ -18,7 +18,7 @@
 
 > Your Claude Code CLI, delivered to your phone via Telegram.
 
-ClaudeClaw is not a chatbot wrapper. It spawns the actual `claude` CLI on your Mac or Linux machine and pipes the result back to your Telegram chat. Everything that works in your terminal (your skills, your tools, your context) works from your phone.
+ClaudeClaw is not a chatbot wrapper. It spawns the actual `claude` CLI on your Mac, Linux, or Windows machine and pipes the result back to your Telegram chat. Everything that works in your terminal (your skills, your tools, your context) works from your phone.
 
 ---
 
@@ -54,7 +54,8 @@ These are powerful but require extra API keys or services. Each one has its own 
 | **Voice output (cloud)** | ElevenLabs, Gradium, or Kokoro | Higher quality than macOS `say` |
 | **Video analysis** | `GOOGLE_API_KEY` | Gemini analyzes videos you send |
 | **Memory consolidation** | `GOOGLE_API_KEY` | Gemini detects patterns across conversations |
-| **War Room** | `GOOGLE_API_KEY` + Python venv | Live voice boardroom with your agent team via Gemini Live |
+| **War Room (voice)** | `GOOGLE_API_KEY` + Python venv | Live voice boardroom with your agent team via Gemini Live |
+| **War Room (text)** | none extra | Multi-agent text group chat in the dashboard with `/standup`, `/discuss`, sticky-addressee follow-ups, tool-call disclosure UI, per-agent tool allowlists. See `docs/warroom-mcp-policy.md` and `docs/incident-runbook.md`. |
 | **WhatsApp bridge** | Puppeteer + QR scan | Highly experimental. Read/send WhatsApp from Telegram |
 
 ---
@@ -186,12 +187,28 @@ systemctl --user status claudeclaw
 journalctl --user -u claudeclaw -f
 ```
 
-**Windows**: use WSL2 (recommended) and follow the Linux steps, or:
-```bash
-npm install -g pm2
-pm2 start dist/index.js --name claudeclaw
-pm2 save && pm2 startup
-```
+**Windows**: two supported paths. WSL2 is smoother, native works too.
+
+- **WSL2 (recommended)**: `wsl --install -d Ubuntu` in an elevated PowerShell, reboot, clone ClaudeClaw *inside* the Ubuntu filesystem (not `/mnt/c`), then follow the Linux steps above. Keep `~/.claude/` inside WSL2.
+- **Native Windows**: the setup wizard registers a per-user Scheduled Task that runs at logon (no admin rights required). Manage it with:
+  ```powershell
+  schtasks /Query /TN "com.claudeclaw.main"
+  schtasks /End   /TN "com.claudeclaw.main"
+  schtasks /Run   /TN "com.claudeclaw.main"
+  schtasks /Delete /TN "com.claudeclaw.main" /F
+  ```
+  Logs are in `logs\main.log`. Same for each agent at `logs\<agent-id>.log`.
+- **PM2 fallback (native Windows)** if the scheduled task route doesn't work:
+  ```powershell
+  npm install -g pm2
+  pm2 start dist/index.js --name claudeclaw
+  pm2 save && pm2 startup
+  ```
+
+Caveats on native Windows:
+- The War Room voice feature expects a POSIX Python venv. If you need voice, use WSL2.
+- `better-sqlite3` is a native module. If `npm install` fails, install **Visual Studio Build Tools** (C++ workload) and retry. WSL2 skips this.
+- macOS-only TTS (`say`) is off; use ElevenLabs for voice replies instead.
 
 ---
 
@@ -1461,7 +1478,7 @@ No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLA
 No. ClaudeClaw has nothing to do with Anthropic's Remote product. It runs the `claude` CLI locally on your own machine (Mac, Linux, or Windows via WSL2) and pipes results to Telegram. No cloud VMs, no remote sessions.
 
 **"Does this work on Windows?"**
-Yes, through WSL2. Install WSL2, clone ClaudeClaw inside the WSL filesystem, and follow the normal Linux setup steps. The setup wizard detects Windows and offers WSL2 or PM2 options.
+Yes, two ways. WSL2 is the smoothest (install WSL2, clone ClaudeClaw inside the WSL filesystem, run the normal Linux setup). Native Windows also works: the setup wizard registers a per-user Scheduled Task at logon (no admin rights), and agent activate/deactivate uses `schtasks` under the hood. War Room voice still needs WSL2 because the Python stack is POSIX-only.
 
 **"What is GOOGLE_API_KEY for?"**
 Video analysis via Google Gemini. It is **not** for Gmail or Google Calendar (those use separate OAuth credentials via the gmail and google-calendar skills). Get it free at [aistudio.google.com](https://aistudio.google.com).
