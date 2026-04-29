@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 
 import { GOOGLE_API_KEY } from './config.js';
 import { logger } from './logger.js';
+import { requireEnabled } from './kill-switches.js';
 
 let client: GoogleGenAI | null = null;
 
@@ -22,6 +23,10 @@ export async function generateContent(
   prompt: string,
   model = 'gemini-2.0-flash',
 ): Promise<string> {
+  // Kill-switch: refuse Gemini calls when LLM_SPAWN_ENABLED is off.
+  // Memory ingestion, classifier paths, and any other generateContent
+  // caller all flow through here.
+  requireEnabled('LLM_SPAWN_ENABLED');
   const ai = getClient();
   try {
     const response = await ai.models.generateContent({
