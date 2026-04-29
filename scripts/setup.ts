@@ -25,6 +25,31 @@ const PROJECT_ROOT = path.resolve(
   '..',
 );
 
+/**
+ * When a Windows step can't finish, print a copy-paste Claude Code prompt
+ * so the user can self-serve a fix without filing a GitHub issue or waiting.
+ * Inline to avoid a build-time dep on src/platform.ts.
+ */
+function printWindowsHandoff(what: string, err?: string, file?: string): void {
+  console.log();
+  console.log(`  ${c.yellow}We couldn't finish this step on your machine. Open Claude Code here${c.reset}`);
+  console.log(`  ${c.yellow}and let it patch the repo for you:${c.reset}`);
+  console.log();
+  console.log(`  ${c.bold}1.${c.reset} Install Claude Code: ${c.cyan}https://claude.ai/code${c.reset}`);
+  console.log(`  ${c.bold}2.${c.reset} Open a terminal in: ${c.cyan}${PROJECT_ROOT}${c.reset}`);
+  console.log(`  ${c.bold}3.${c.reset} Run: ${c.cyan}claude${c.reset}`);
+  console.log(`  ${c.bold}4.${c.reset} Paste this prompt:`);
+  console.log();
+  console.log(`  ${c.gray}─────────────────────────────────────────────${c.reset}`);
+  console.log(`  ${c.white}I'm running ClaudeClaw on Windows. ${what} failed.${c.reset}`);
+  if (err) console.log(`  ${c.white}The error was: ${err}${c.reset}`);
+  if (file) console.log(`  ${c.white}Start by reading ${file} and adapt it to my machine.${c.reset}`);
+  else console.log(`  ${c.white}Adapt the Windows paths in this repo to work on my machine.${c.reset}`);
+  console.log(`  ${c.white}Verify by running the failing step again.${c.reset}`);
+  console.log(`  ${c.gray}─────────────────────────────────────────────${c.reset}`);
+  console.log();
+}
+
 function expandHome(p: string): string {
   if (p.startsWith('~/') || p === '~') return path.join(os.homedir(), p.slice(1));
   return p;
@@ -146,6 +171,14 @@ async function validateBotToken(token: string): Promise<{ valid: boolean; userna
 
 const PLATFORM = process.platform;
 
+function isWSL(): boolean {
+  if (PLATFORM !== 'linux') return false;
+  try {
+    const rel = fs.readFileSync('/proc/sys/kernel/osrelease', 'utf-8');
+    return /microsoft/i.test(rel);
+  } catch { return false; }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
 
@@ -207,6 +240,30 @@ async function main() {
 
   // ── 3. System checks ─────────────────────────────────────────────────────
   section('System checks');
+
+  // Early Windows note. The user can still continue, but WSL2 is smoother.
+  if (PLATFORM === 'win32') {
+    warn('Native Windows detected.');
+    info('Native Windows is supported (Task Scheduler for auto-start), but WSL2');
+    info('is the smoother path: most community skills, launchd parity, and the');
+    info('Python voice stack assume a POSIX environment.');
+    console.log();
+    const continueNative = await confirm('Continue with native Windows? (say "n" to exit and switch to WSL2)', true);
+    if (!continueNative) {
+      console.log();
+      info('To switch to WSL2:');
+      info('  1. Open PowerShell as Administrator');
+      console.log(`  ${c.cyan}  wsl --install -d Ubuntu${c.reset}`);
+      info('  2. Reboot, open the Ubuntu terminal');
+      info('  3. Re-clone ClaudeClaw inside the Ubuntu filesystem (NOT /mnt/c)');
+      info('  4. Run "npm run setup" from the new clone');
+      process.exit(0);
+    }
+  }
+  if (isWSL()) {
+    ok('WSL2 detected. Treating as Linux; systemd services will be used for auto-start.');
+    console.log();
+  }
 
   // Node
   const nodeMajor = parseInt(process.version.slice(1).split('.')[0], 10);
@@ -874,9 +931,12 @@ async function main() {
   if (PLATFORM === 'darwin') {
     await setupMacOS();
   } else if (PLATFORM === 'linux') {
+    if (isWSL()) {
+      ok('WSL2 detected. Using systemd user services (keep the Ubuntu terminal open or enable WSL2 systemd).');
+    }
     await setupLinux();
   } else if (PLATFORM === 'win32') {
-    setupWindows();
+    await setupWindows();
   } else {
     section('Auto-start');
     info('Unknown platform. Start manually: npm start');
@@ -1261,20 +1321,79 @@ WantedBy=default.target
 }
 
 // ── Platform: Windows ────────────────────────────────────────────────────────
-function setupWindows() {
+async function setupWindows() {
   section('Auto-start (Windows)');
 
-  warn('Windows detected.');
+  warn('Windows detected. WSL2 is the smoother path, but native works too.');
   console.log();
-  info('Option A — WSL2 (recommended):');
-  info('  Install WSL2, clone ClaudeClaw inside the WSL2 filesystem,');
-  info('  and re-run setup. Keep ~/.claude/ inside WSL2, not the Windows mount.');
+  info('A: WSL2 (recommended if you haven\'t started yet).');
+  info('  Run "wsl --install -d Ubuntu" in an elevated PowerShell, reboot,');
+  info('  clone ClaudeClaw inside the Ubuntu filesystem (not /mnt/c), and');
+  info('  re-run this setup from inside WSL2. Keep ~/.claude/ inside WSL2.');
   console.log();
-  info('Option B — PM2 (native Windows):');
-  console.log(`  ${c.cyan}npm install -g pm2${c.reset}`);
-  console.log(`  ${c.cyan}pm2 start dist/index.js --name claudeclaw${c.reset}`);
-  console.log(`  ${c.cyan}pm2 save${c.reset}`);
-  console.log(`  ${c.cyan}pm2 startup${c.reset}  ${c.gray}# follow the instructions it prints${c.reset}`);
+  info('B: Native Windows (Task Scheduler).');
+  info('  Registers a per-user scheduled task that runs at logon.');
+  info('  No admin rights needed. Logs go to logs\\main.log.');
+  console.log();
+
+  const installNative = await confirm('Install the native Windows auto-start task now?', false);
+  if (!installNative) {
+    info('Skipped. You can start the bot manually with: npm start');
+    info('Or re-run "npm run setup" later to install the service.');
+    return;
+  }
+
+  const s = spinner('Registering Windows scheduled task...');
+  try {
+    const winDir = path.join(PROJECT_ROOT, 'win');
+    fs.mkdirSync(winDir, { recursive: true });
+
+    const label = 'com.claudeclaw.main';
+    const batPath = path.join(winDir, `${label}.bat`);
+    const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
+    const logsDir = path.join(PROJECT_ROOT, 'logs');
+    const logFile = path.join(logsDir, 'main.log');
+
+    const q = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const bat = `@echo off\r
+REM ClaudeClaw main bot wrapper\r
+set NODE_ENV=production\r
+cd /d ${q(PROJECT_ROOT)}\r
+if not exist ${q(logsDir)} mkdir ${q(logsDir)}\r
+${q(process.execPath)} ${q(entry)} >> ${q(logFile)} 2>&1\r
+`;
+    fs.writeFileSync(batPath, bat, 'utf-8');
+
+    // Delete any prior registration idempotently
+    try { execSync(`schtasks /Delete /TN "${label}" /F`, { stdio: 'ignore' }); } catch { /* not registered */ }
+
+    // Register the task (runs on logon, interactive user context)
+    execSync(
+      `schtasks /Create /SC ONLOGON /TN "${label}" /TR "\\"${batPath}\\"" /F /IT`,
+      { stdio: 'pipe' },
+    );
+    // Kick it off now so the bot comes online without a reboot.
+    execSync(`schtasks /Run /TN "${label}"`, { stdio: 'pipe' });
+    s.stop('ok', `Scheduled task installed: ${label}`);
+
+    console.log();
+    info(`Manage it from:`);
+    console.log(`  ${c.cyan}schtasks /Query /TN "${label}"${c.reset}`);
+    console.log(`  ${c.cyan}schtasks /End /TN "${label}"${c.reset}     ${c.gray}# stop${c.reset}`);
+    console.log(`  ${c.cyan}schtasks /Run /TN "${label}"${c.reset}     ${c.gray}# start${c.reset}`);
+    console.log(`  ${c.cyan}schtasks /Delete /TN "${label}" /F${c.reset}  ${c.gray}# uninstall${c.reset}`);
+    console.log();
+    info(`Logs: ${logFile}`);
+  } catch (err) {
+    s.stop('warn', 'Could not register scheduled task automatically');
+    const errMsg = err instanceof Error ? err.message : String(err);
+    printWindowsHandoff('Installing the ClaudeClaw auto-start scheduled task', errMsg, 'scripts/setup.ts (setupWindows function)');
+    info('Quick manual fallback if you prefer: start with "npm start" in a terminal,');
+    info('or use PM2:');
+    console.log(`  ${c.cyan}npm install -g pm2${c.reset}`);
+    console.log(`  ${c.cyan}pm2 start dist/index.js --name claudeclaw${c.reset}`);
+    console.log(`  ${c.cyan}pm2 save && pm2 startup${c.reset}`);
+  }
 }
 
 main()

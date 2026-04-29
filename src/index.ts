@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
+import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd, refreshWarRoomRoster } from './agent-config.js';
 import { createBot } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
@@ -16,6 +16,7 @@ import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
+import { getVenvPython, killProcess } from './platform.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -90,10 +91,8 @@ function acquireLock(): void {
     if (fs.existsSync(PID_FILE)) {
       const old = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
       if (!isNaN(old) && old !== process.pid) {
-        try {
-          process.kill(old, 'SIGTERM');
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
-        } catch { /* already dead */ }
+        killProcess(old);
+        try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); } catch { /* ok */ }
       }
     }
   } catch { /* ignore */ }
@@ -184,23 +183,12 @@ async function main(): Promise<void> {
     // War Room voice server (auto-start if enabled, with auto-respawn)
     if (WARROOM_ENABLED) {
       const { spawn } = await import('child_process');
-      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
+      const venvPython = getVenvPython(path.join(PROJECT_ROOT, 'warroom', '.venv'));
       const serverScript = path.join(PROJECT_ROOT, 'warroom', 'server.py');
 
-      // Write agent roster to /tmp so the Python server can discover agents dynamically
-      try {
-        const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
-        const roster = ids.map((id) => {
-          try {
-            if (id === 'main') return { id: 'main', name: 'Main', description: 'General ops and triage' };
-            const cfg = loadAgentConfig(id);
-            return { id, name: cfg.name || id, description: cfg.description || '' };
-          } catch { return { id, name: id, description: '' }; }
-        });
-        fs.writeFileSync('/tmp/warroom-agents.json', JSON.stringify(roster, null, 2));
-      } catch (err) {
-        logger.warn({ err }, 'Could not write warroom agent roster');
-      }
+      // Write agent roster so the Python voice stack can discover agents.
+      // Shared helper so agent-create can call it too on new/delete.
+      refreshWarRoomRoster();
 
       if (fs.existsSync(venvPython) && fs.existsSync(serverScript)) {
         // Pre-flight: verify Python dependencies are actually installed
@@ -226,6 +214,12 @@ async function main(): Promise<void> {
         }
 
         const MAX_CRASH_RESPAWNS = 3;
+        // Time a process must stay alive without crashing before we treat
+        // its crash counter as "recovered" and reset it. The python server
+        // prints "ready" before it actually binds the WS transport, so a
+        // bind-time failure could print ready then crash in the same
+        // second. Resetting on first stdout chunk let that loop forever.
+        const STABLE_UPTIME_MS = 20_000;
         let respawnAttempts = 0;
         let shuttingDown = false;
         let currentProc: ReturnType<typeof spawn> | null = null;
@@ -239,6 +233,13 @@ async function main(): Promise<void> {
           });
           currentProc = proc;
 
+          // Schedule the crash-counter reset based on *uptime*, not the
+          // readiness line. Cleared in the exit handler if the process
+          // dies before reaching STABLE_UPTIME_MS.
+          const stableResetHandle = setTimeout(() => {
+            respawnAttempts = 0;
+          }, STABLE_UPTIME_MS);
+
           proc.stdout.once('data', (data: Buffer) => {
             try {
               const info = JSON.parse(data.toString().trim());
@@ -246,7 +247,6 @@ async function main(): Promise<void> {
             } catch {
               logger.info({ port: WARROOM_PORT, pid: proc.pid }, 'War Room server started');
             }
-            respawnAttempts = 0; // reset backoff once we see a ready line
           });
 
           // Forward stdout+stderr into the dedicated log file.
@@ -257,6 +257,7 @@ async function main(): Promise<void> {
           }
 
           proc.on('exit', (code, signal) => {
+            clearTimeout(stableResetHandle);
             if (shuttingDown) return;
             const wasIntentional = signal === 'SIGTERM' || signal === 'SIGKILL' || signal === 'SIGINT';
             logger.warn({ code, signal, pid: proc.pid, intentional: wasIntentional }, 'War Room server exited');

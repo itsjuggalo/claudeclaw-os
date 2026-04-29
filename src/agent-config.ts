@@ -5,6 +5,12 @@ import yaml from 'js-yaml';
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT } from './config.js';
 import { readEnvFile } from './env.js';
 
+// Shared roster path. Written by Node on startup and any time the agent
+// roster changes (new agent, deleted agent). Read by the Python Pipecat
+// voice stack so new agents propagate into voice War Room without a
+// full bot restart.
+export const WARROOM_ROSTER_PATH = '/tmp/warroom-agents.json';
+
 export interface AgentConfig {
   name: string;
   description: string;
@@ -12,6 +18,11 @@ export interface AgentConfig {
   botToken: string;
   model?: string;
   mcpServers?: string[];
+  /** Per-agent war-room tool allowlist. Tokens are SDK tool names
+   *  ("Bash", "Write") or "mcp:<name>" entries to opt an MCP server in.
+   *  Overrides the defaults in warroom-tool-policy.ts. Unset = use
+   *  defaults. */
+  warroomTools?: string[];
   obsidian?: {
     vault: string;
     folders: string[];
@@ -95,6 +106,11 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   }
 
   const mcpServers = raw['mcp_servers'] as string[] | undefined;
+  // War-room tool policy override. If present in agent.yaml, this list
+  // overrides the per-agent default in warroom-tool-policy.ts. Tokens
+  // can be SDK tool names ("Bash", "Write") or "mcp:<name>" to opt that
+  // MCP server into the war-room session.
+  const warroomTools = raw['warroom_tools'] as string[] | undefined;
   const meetVoiceId = typeof raw['meet_voice_id'] === 'string' ? (raw['meet_voice_id'] as string) : undefined;
   const meetBotName = typeof raw['meet_bot_name'] === 'string' ? (raw['meet_bot_name'] as string) : undefined;
 
@@ -105,6 +121,7 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     botToken,
     model,
     mcpServers,
+    warroomTools,
     obsidian,
     meetVoiceId,
     meetBotName,
@@ -189,4 +206,34 @@ export function listAllAgents(): Array<{
   }
 
   return result;
+}
+
+/**
+ * Write the current agent roster to the path the Python Pipecat voice
+ * stack reads from. Call this:
+ *   - On main-bot startup (index.ts does this already)
+ *   - After creating or deleting an agent (agent-create flow)
+ *   - Before /warroom/text turns (orchestrator does this cheaply too)
+ *
+ * The file is read-only metadata: id, name, description. The voice
+ * server kills + respawns its subprocess when this changes if callers
+ * want the new roster to take effect immediately.
+ */
+export function refreshWarRoomRoster(): void {
+  try {
+    const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
+    const roster = ids.map((id) => {
+      try {
+        if (id === 'main') return { id: 'main', name: 'Main', description: 'General ops and triage' };
+        const cfg = loadAgentConfig(id);
+        return { id, name: cfg.name || id, description: cfg.description || '' };
+      } catch {
+        return { id, name: id, description: '' };
+      }
+    });
+    fs.writeFileSync(WARROOM_ROSTER_PATH, JSON.stringify(roster, null, 2));
+  } catch {
+    // Non-fatal. Voice stack falls back to the built-in default roster
+    // if the file is missing.
+  }
 }

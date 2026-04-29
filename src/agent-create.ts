@@ -1,12 +1,33 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import yaml from 'js-yaml';
 
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
-import { listAgentIds, loadAgentConfig, resolveAgentDir } from './agent-config.js';
+import { listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster } from './agent-config.js';
 import { logger } from './logger.js';
+import { IS_WINDOWS, IS_MACOS, IS_LINUX, killProcess, isProcessAlive, claudeCodeHandoff, findProcessesByPattern } from './platform.js';
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Kill the warroom Python subprocess so main's respawn logic brings up
+ * a fresh one with the updated /tmp/warroom-agents.json. Pipecat reads
+ * VALID_AGENTS at import time, so a new agent only becomes a legal
+ * voice-room target after respawn. Fire-and-forget.
+ */
+async function bounceVoiceWarRoom(reason: string): Promise<void> {
+  try {
+    const pids = await findProcessesByPattern('warroom/server.py');
+    for (const pid of pids) killProcess(pid);
+    if (pids.length > 0) {
+      logger.info({ pids, reason }, 'bounced voice warroom for roster change');
+    }
+  } catch (err) {
+    logger.warn({ err, reason }, 'bounceVoiceWarRoom failed');
+  }
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -221,6 +242,14 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
 
   logger.info({ agentId: id, agentDir, envKey, bot: tokenCheck.botInfo.username }, 'Agent created');
 
+  // Propagate the new agent into both War Rooms without a bot restart.
+  // Text War Room reads listAllAgents() live each turn, so it's already
+  // current. Voice War Room reads /tmp/warroom-agents.json at Pipecat
+  // startup — write the fresh roster AND bounce the Python subprocess
+  // so the new agent becomes a legal voice-room target within seconds.
+  refreshWarRoomRoster();
+  void bounceVoiceWarRoom('agent created: ' + id);
+
   return {
     agentId: id,
     agentDir,
@@ -285,11 +314,10 @@ function removeBotTokenFromEnv(envPath: string, envKey: string, agentId: string)
 // ── Service config generation ────────────────────────────────────────
 
 function generateServiceConfig(agentId: string): string | null {
-  if (os.platform() === 'darwin') {
-    return generateLaunchdPlist(agentId);
-  } else if (os.platform() === 'linux') {
-    return generateSystemdUnit(agentId);
-  }
+  if (IS_MACOS) return generateLaunchdPlist(agentId);
+  if (IS_LINUX) return generateSystemdUnit(agentId);
+  // Windows: no per-agent service config. Main bot spawns agents as
+  // detached child processes at activate time (see activateWindows).
   return null;
 }
 
@@ -393,10 +421,24 @@ export function activateAgent(agentId: string): ActivationResult {
     return { ok: false, error: `Invalid agent ID format: ${agentId}` };
   }
   try {
-    if (os.platform() === 'darwin') {
-      return activateLaunchd(agentId);
-    } else if (os.platform() === 'linux') {
-      return activateSystemd(agentId);
+    if (IS_MACOS) return activateLaunchd(agentId);
+    if (IS_LINUX) return activateSystemd(agentId);
+    if (IS_WINDOWS) {
+      const result = activateWindows(agentId);
+      if (!result.ok) {
+        return {
+          ok: false,
+          error:
+            `${result.error ?? 'Windows activation failed'}\n` +
+            claudeCodeHandoff({
+              projectRoot: PROJECT_ROOT,
+              what: `Activating agent "${agentId}"`,
+              error: result.error,
+              file: 'src/agent-create.ts (activateWindows function)',
+            }),
+        };
+      }
+      return result;
     }
     return { ok: false, error: `Unsupported platform: ${os.platform()}` };
   } catch (err) {
@@ -438,13 +480,7 @@ function activateLaunchd(agentId: string): ActivationResult {
     const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
     if (fs.existsSync(pidFile)) {
       const p = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-      if (!isNaN(p)) {
-        try {
-          process.kill(p, 0);
-          pid = p;
-          break;
-        } catch { /* not yet */ }
-      }
+      if (!isNaN(p) && isProcessAlive(p)) { pid = p; break; }
     }
     // Brief synchronous wait
     execSync('sleep 1', { stdio: 'ignore' });
@@ -467,19 +503,62 @@ function activateSystemd(agentId: string): ActivationResult {
   }
 }
 
+/**
+ * Activate an agent on Windows by spawning a detached child process.
+ * The main bot owns it; to deactivate we kill the PID. No schtasks,
+ * no service, no UAC. If the main bot exits the agent will exit too,
+ * which is fine since the user controls main bot lifecycle (terminal,
+ * PM2, or the scheduled task the wizard installed).
+ */
+function activateWindows(agentId: string): ActivationResult {
+  const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
+  if (!fs.existsSync(entry)) {
+    return { ok: false, error: `Build output missing: ${entry}. Run "npm run build" first.` };
+  }
+
+  const logsDir = path.join(PROJECT_ROOT, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const logFile = path.join(logsDir, `${agentId}.log`);
+  const out = fs.openSync(logFile, 'a');
+
+  try {
+    const child = spawn(process.execPath, [entry, '--agent', agentId], {
+      cwd: PROJECT_ROOT,
+      detached: true,
+      stdio: ['ignore', out, out],
+      env: { ...process.env, NODE_ENV: 'production' },
+      windowsHide: true,
+    });
+    child.unref();
+
+    if (!child.pid) {
+      return { ok: false, error: 'Failed to spawn agent child process' };
+    }
+
+    // Persist the PID so deactivate/restart can find it across restarts
+    // of the main bot.
+    fs.writeFileSync(path.join(STORE_DIR, `agent-${agentId}.pid`), String(child.pid), 'utf-8');
+
+    logger.info({ agentId, pid: child.pid }, 'Agent activated (Windows detached child)');
+    return { ok: true, pid: child.pid };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function deactivateAgent(agentId: string): { ok: boolean; error?: string } {
   if (!VALID_ID_RE.test(agentId)) {
     return { ok: false, error: `Invalid agent ID format: ${agentId}` };
   }
   try {
-    if (os.platform() === 'darwin') {
+    if (IS_MACOS) {
       const label = `com.claudeclaw.${agentId}`;
       const destPlist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
       if (fs.existsSync(destPlist)) {
         try { execSync(`launchctl unload "${destPlist}"`, { stdio: 'ignore' }); } catch { /* ok */ }
         fs.unlinkSync(destPlist);
       }
-    } else if (os.platform() === 'linux') {
+    } else if (IS_LINUX) {
       const serviceName = `com.claudeclaw.agent-${agentId}`;
       try {
         execSync(`systemctl --user stop "${serviceName}"`, { stdio: 'ignore' });
@@ -489,14 +568,14 @@ export function deactivateAgent(agentId: string): { ok: boolean; error?: string 
       if (fs.existsSync(unitPath)) fs.unlinkSync(unitPath);
       try { execSync('systemctl --user daemon-reload', { stdio: 'ignore' }); } catch { /* ok */ }
     }
+    // On Windows there's no service to unregister. The shared kill logic
+    // below handles stopping the detached child via its PID file.
 
-    // Kill the process if still running
+    // Kill the process if still running (cross-platform)
     const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
     if (fs.existsSync(pidFile)) {
       const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-      if (!isNaN(pid)) {
-        try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
-      }
+      if (!isNaN(pid)) killProcess(pid);
       try { fs.unlinkSync(pidFile); } catch { /* ok */ }
     }
 
@@ -530,7 +609,7 @@ export function deleteAgent(agentId: string): { ok: boolean; error?: string } {
       }
     }
 
-    // Remove launchd plist template
+    // Remove launchd plist template (macOS)
     const plistTemplate = path.join(PROJECT_ROOT, 'launchd', `com.claudeclaw.${agentId}.plist`);
     if (fs.existsSync(plistTemplate)) fs.unlinkSync(plistTemplate);
 
@@ -542,6 +621,11 @@ export function deleteAgent(agentId: string): { ok: boolean; error?: string } {
     if (fs.existsSync(logFile)) fs.unlinkSync(logFile);
 
     logger.info({ agentId }, 'Agent deleted');
+    // Keep both War Rooms in sync. Voice stack needs the subprocess
+    // bounce so the deleted agent stops appearing in its roster
+    // (VALID_AGENTS is imported once at module load).
+    refreshWarRoomRoster();
+    void bounceVoiceWarRoom('agent deleted: ' + agentId);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -575,7 +659,7 @@ export function restartAgent(agentId: string): { ok: boolean; error?: string } {
     return { ok: false, error: `Invalid agent ID format: ${agentId}` };
   }
   try {
-    if (os.platform() === 'darwin') {
+    if (IS_MACOS) {
       const label = `com.claudeclaw.${agentId}`;
       const destPlist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
       if (!fs.existsSync(destPlist)) {
@@ -590,10 +674,22 @@ export function restartAgent(agentId: string): { ok: boolean; error?: string } {
       }
       logger.info({ agentId }, 'Agent restarted (launchd)');
       return { ok: true };
-    } else if (os.platform() === 'linux') {
+    } else if (IS_LINUX) {
       const serviceName = `com.claudeclaw.agent-${agentId}`;
       execSync(`systemctl --user restart "${serviceName}"`, { stdio: 'ignore' });
       logger.info({ agentId }, 'Agent restarted (systemd)');
+      return { ok: true };
+    } else if (IS_WINDOWS) {
+      // Kill existing child (if any) then re-spawn.
+      const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
+      if (fs.existsSync(pidFile)) {
+        const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+        if (!isNaN(pid)) killProcess(pid, true);
+        try { fs.unlinkSync(pidFile); } catch { /* ok */ }
+      }
+      const result = activateWindows(agentId);
+      if (!result.ok) return { ok: false, error: result.error };
+      logger.info({ agentId, pid: result.pid }, 'Agent restarted (Windows detached child)');
       return { ok: true };
     }
     return { ok: false, error: `Unsupported platform: ${os.platform()}` };
@@ -607,8 +703,7 @@ export function isAgentRunning(agentId: string): boolean {
   if (!fs.existsSync(pidFile)) return false;
   try {
     const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-    process.kill(pid, 0);
-    return true;
+    return isProcessAlive(pid);
   } catch {
     return false;
   }

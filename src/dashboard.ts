@@ -68,9 +68,25 @@ import {
 import { processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
+import { getWarRoomPickerHtml } from './warroom-text-picker-html.js';
+import { getWarRoomTextHtml } from './warroom-text-html.js';
+import { handleTextTurn, cancelMeetingTurns, getRoster, warmupMeeting, isWarmupDone, getActiveTurnIds, waitForMeetingTurnsIdle } from './warroom-text-orchestrator.js';
+import { getChannel, closeChannel, startChannelSweeper } from './warroom-text-events.js';
+import {
+  createTextMeeting,
+  getTextMeeting,
+  setMeetingPin,
+  clearMeetingSessions,
+  getOpenTextMeetingIds,
+  getTextMeetings,
+} from './db.js';
+import { messageQueue } from './message-queue.js';
+import * as killSwitches from './kill-switches.js';
+import { getIngestionQuotaStatus } from './memory-ingest.js';
 import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
+import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
 
 async function classifyTaskAgent(prompt: string): Promise<string | null> {
   try {
@@ -104,6 +120,13 @@ Reply with JSON: {"agent": "agent_id"}`;
   }
 }
 
+// Meeting id format: wr_<timestampBase36>_<6-hex-random>. Regex also allows
+// the same shape without the hex suffix in case an id is created manually
+// in tests. Validated on every route that takes meetingId.
+const WARROOM_TEXT_ID_RE = /^wr_[a-z0-9_]{4,64}$/i;
+// Browser crypto.randomUUID() produces lowercase v4 UUIDs. Accept either case.
+const CLIENT_MSG_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export function startDashboard(botApi?: Api<RawApi>): void {
   if (!DASHBOARD_TOKEN) {
     logger.info('DASHBOARD_TOKEN not set, dashboard disabled');
@@ -119,6 +142,42 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     c.header('Access-Control-Allow-Headers', 'Content-Type');
     if (c.req.method === 'OPTIONS') return c.body(null, 204);
     await next();
+  });
+
+  // Security headers (defense-in-depth on top of token-in-URL auth).
+  //
+  //   Referrer-Policy: no-referrer
+  //     User clicks an external link from inside the dashboard or war
+  //     room — the browser must NOT send `?token=...` via the Referer
+  //     header to the destination. Without this header, that's a clear
+  //     leak vector for any agent reply that contains a hyperlink.
+  //
+  //   X-Content-Type-Options: nosniff
+  //     Stops MIME-sniff XSS on uploaded assets. Dashboard mostly
+  //     serves JSON + HTML, but the favicon and avatar routes return
+  //     binary; sniff-XSS is a real class.
+  //
+  //   X-Frame-Options: DENY
+  //     The dashboard should never be embedded in an iframe. Without
+  //     this, a phisher with the token-in-URL can embed the dashboard
+  //     in a frame and overlay clickjacking UI.
+  //
+  //   Cache-Control: no-store on authenticated API responses
+  //     Memory contents, transcript snippets, and conversation history
+  //     are sensitive. Default Hono caching can leak them via shared
+  //     proxy caches (Cloudflare, corp proxies). Set no-store on every
+  //     API response by default; static favicon already overrides.
+  app.use('*', async (c, next) => {
+    c.header('Referrer-Policy', 'no-referrer');
+    c.header('X-Content-Type-Options', 'nosniff');
+    c.header('X-Frame-Options', 'DENY');
+    await next();
+    const path = new URL(c.req.url).pathname;
+    if (path.startsWith('/api/')) {
+      // After next() so any handler-set Cache-Control would have run; we
+      // override here to enforce no-store on API JSON.
+      c.header('Cache-Control', 'no-store');
+    }
   });
 
   // Global error handler — prevents unhandled throws from killing the server
@@ -148,11 +207,94 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     );
   });
 
+  // Serve favicon BEFORE the token middleware so browsers don't spam
+  // 401 errors in the console. Returns a 1x1 transparent PNG.
+  const FAVICON_BYTES = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+    'base64',
+  );
+  app.get('/favicon.ico', (c) => new Response(FAVICON_BYTES, {
+    headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
+  }));
+
   // Token auth middleware
   app.use('*', async (c, next) => {
     const token = c.req.query('token');
     if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
       return c.json({ error: 'Unauthorized' }, 401);
+    }
+    await next();
+  });
+
+  // Mutation kill-switch middleware. When DASHBOARD_MUTATIONS_ENABLED is
+  // off, every non-GET request returns 503 — the runbook's promise is
+  // "flip this to put the dashboard in read-only mode during an incident."
+  // GET routes (including /api/health) keep working so an operator can
+  // diagnose. This MUST run before route handlers so the per-route checks
+  // I scattered earlier (now removed) can't be the only line of defense.
+  const mutationReadonlyExempt = new Set<string>([
+    // Add safe-recovery POST endpoints here if needed; none today.
+  ]);
+  app.use('*', async (c, next) => {
+    const method = c.req.method;
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+      await next();
+      return;
+    }
+    const path = new URL(c.req.url).pathname;
+    if (mutationReadonlyExempt.has(path)) {
+      await next();
+      return;
+    }
+    if (!killSwitches.isEnabled('DASHBOARD_MUTATIONS_ENABLED')) {
+      logger.warn({ method, path }, 'mutation refused: DASHBOARD_MUTATIONS_ENABLED off');
+      return c.json({ error: 'mutations disabled (incident kill switch)' }, 503);
+    }
+    await next();
+  });
+
+  // CSRF / origin enforcement on state-changing requests.
+  //
+  // Without this, a malicious page that captured the token (browser
+  // history, referer leak, share-link paste) can issue cross-origin
+  // POSTs and weaponize the session — wildcard CORS plus token-in-URL
+  // is a CSRF foundation. Browsers send `Origin` on cross-origin
+  // POST/PATCH/DELETE; we reject if it isn't on our allowlist.
+  //
+  // Allowlist:
+  //   - missing Origin (same-origin form posts, fetch from same page,
+  //     curl/CLI tools that don't set Origin) → allow
+  //   - localhost / 127.0.0.1 / loopback hostnames → always allow
+  //   - DASHBOARD_URL value (if set) → allow if request Origin's host
+  //     matches the configured URL's host
+  //
+  // Operators exposing via Cloudflare tunnel set DASHBOARD_URL to the
+  // tunnel URL; everything else is rejected.
+  const allowedOriginHost = (() => {
+    const raw = (process.env.DASHBOARD_URL || '').trim();
+    if (!raw) return '';
+    try { return new URL(raw).hostname; } catch { return ''; }
+  })();
+  app.use('*', async (c, next) => {
+    const method = c.req.method;
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+      await next();
+      return;
+    }
+    const origin = c.req.header('origin');
+    if (origin) {
+      let host = '';
+      try { host = new URL(origin).hostname; } catch { /* malformed */ }
+      const allowed =
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host === '[::1]' ||
+        host === '0.0.0.0' ||
+        (!!allowedOriginHost && host === allowedOriginHost);
+      if (!allowed) {
+        logger.warn({ origin, method, path: new URL(c.req.url).pathname }, 'CSRF: rejected cross-origin request');
+        return c.json({ error: 'cross-origin request rejected' }, 403);
+      }
     }
     await next();
   });
@@ -163,10 +305,58 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId, WARROOM_ENABLED));
   });
 
-  // War Room page
+  // War Room entry.
+  //   - ?mode=voice → serve the existing cinematic voice page (deep link).
+  //   - else → mode picker (Voice | Text) which then navigates to
+  //     /warroom?mode=voice for voice or /warroom/text for text.
   app.get('/warroom', (c) => {
     const chatId = c.req.query('chatId') || '';
-    return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
+    const mode = c.req.query('mode') || '';
+    if (mode === 'voice') {
+      return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
+    }
+    return c.html(getWarRoomPickerHtml(DASHBOARD_TOKEN, chatId));
+  });
+
+  // Text War Room page. Expects ?meetingId= (created via POST
+  // /api/warroom/text/new). Routing matrix:
+  //   - missing/invalid meetingId   → picker (refresh-becomes-fresh)
+  //   - meeting not found           → picker
+  //   - meeting ended, no ?archive  → picker (so a plain refresh of an
+  //                                   ended room starts a new meeting
+  //                                   instead of staring at "Meeting
+  //                                   ended." forever)
+  //   - meeting ended + ?archive=1  → serve read-only (used by the
+  //                                   "Recent meetings" list on the
+  //                                   picker)
+  //   - meeting open                → serve interactive war room
+  function pickerRedirect(chatId: string) {
+    const q = new URLSearchParams({ token: DASHBOARD_TOKEN });
+    if (chatId) q.set('chatId', chatId);
+    return '/warroom?' + q.toString();
+  }
+  app.get('/warroom/text', (c) => {
+    const chatId = c.req.query('chatId') || '';
+    const meetingId = (c.req.query('meetingId') || '').trim();
+    const archive = c.req.query('archive') === '1';
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) {
+      return c.redirect(pickerRedirect(chatId));
+    }
+    const existing = getTextMeeting(meetingId);
+    if (!existing) {
+      return c.redirect(pickerRedirect(chatId));
+    }
+    if (existing.ended_at !== null && !archive) {
+      return c.redirect(pickerRedirect(chatId));
+    }
+    // Chat-id mismatch: don't render the page (would let a stale meetingId
+    // from chat A render under chat B's session). Send them back to the
+    // picker for their actual chat. Legacy meetings with chat_id='' bypass
+    // this since they pre-date the migration.
+    if (existing.chat_id !== '' && existing.chat_id !== chatId) {
+      return c.redirect(pickerRedirect(chatId));
+    }
+    return c.html(getWarRoomTextHtml(DASHBOARD_TOKEN, chatId, meetingId));
   });
 
   // Serve War Room background music (user's custom music.mp3 first, then bundled entrance.mp3)
@@ -234,6 +424,11 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   app.post('/api/warroom/start', async (c) => {
     if (!WARROOM_ENABLED) {
       return c.json({ error: 'War Room not enabled. Set WARROOM_ENABLED=true in .env with GOOGLE_API_KEY (for live mode) or DEEPGRAM_API_KEY + CARTESIA_API_KEY (for legacy mode).' }, 400);
+    }
+    // DASHBOARD_MUTATIONS_ENABLED is enforced by the global mutation
+    // middleware above; no per-route check needed.
+    if (!killSwitches.isEnabled('WARROOM_VOICE_ENABLED')) {
+      return c.json({ error: 'voice war room disabled' }, 503);
     }
     // If the pin file was updated recently (agent switch while no meeting
     // was active), the running server has the wrong agent. Kill it so it
@@ -344,8 +539,11 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // file's mtime and reloads only when it changes. Spoken agent prefixes
   // (e.g. "research, find X") still take precedence over the pin.
   const WARROOM_PIN_PATH = '/tmp/warroom-pin.json';
-  const VALID_PIN_AGENTS = new Set(['main', ...listAgentIds()]);
   const VALID_PIN_MODES = new Set(['direct', 'auto']);
+  // Recompute on every call so newly-created agents become pinnable
+  // without a dashboard restart. listAgentIds() reads the agent-configs
+  // directory which the agent-create flow writes to synchronously.
+  const getValidPinAgents = (): Set<string> => new Set(['main', ...listAgentIds()]);
 
   // Read current pin state from disk. Returns normalized defaults for
   // missing fields so callers can rely on both agent and mode being set.
@@ -353,7 +551,8 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     try {
       if (fs.existsSync(WARROOM_PIN_PATH)) {
         const raw = JSON.parse(fs.readFileSync(WARROOM_PIN_PATH, 'utf-8'));
-        const agent = (raw && typeof raw.agent === 'string' && VALID_PIN_AGENTS.has(raw.agent)) ? raw.agent : null;
+        const valid = getValidPinAgents();
+        const agent = (raw && typeof raw.agent === 'string' && valid.has(raw.agent)) ? raw.agent : null;
         const mode = (raw && typeof raw.mode === 'string' && VALID_PIN_MODES.has(raw.mode)) ? raw.mode : 'direct';
         return { agent, mode };
       }
@@ -372,19 +571,8 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // so the HTTP response doesn't block on the respawn.
   async function killWarroomAsync(reason: string): Promise<number[]> {
     try {
-      const { spawn } = await import('child_process');
-      const pids: number[] = await new Promise((resolve) => {
-        const p = spawn('pgrep', ['-f', 'warroom/server.py']);
-        let out = '';
-        p.stdout.on('data', (chunk) => { out += chunk.toString(); });
-        p.on('close', () => {
-          resolve(out.trim().split(/\s+/).map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n)));
-        });
-        p.on('error', () => resolve([]));
-      });
-      for (const pid of pids) {
-        try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
-      }
+      const pids = await findProcessesByPattern('warroom/server.py');
+      for (const pid of pids) killProcess(pid);
       if (pids.length > 0) {
         logger.info({ pids, reason }, 'Killed warroom subprocess for respawn');
       }
@@ -406,7 +594,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const nextAgent = body.agent !== undefined ? body.agent : (current.agent ?? 'main');
     const nextMode = body.mode !== undefined ? body.mode : current.mode;
 
-    if (!VALID_PIN_AGENTS.has(nextAgent)) {
+    if (!getValidPinAgents().has(nextAgent)) {
       return c.json({ ok: false, error: 'invalid agent; must be one of main, research, comms, content, ops' }, 400);
     }
     if (!VALID_PIN_MODES.has(nextMode)) {
@@ -440,6 +628,473 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     } catch (err) {
       return c.json({ ok: false, error: String(err) }, 500);
     }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Text War Room
+  //
+  // Every route validates meetingId format before touching channels or
+  // the DB, so a malformed id can't grow an unbounded channel map.
+  // Dedup on clientMsgId happens inside handleTextTurn so retries from
+  // a flaky network don't double-process.
+  // ──────────────────────────────────────────────────────────────────
+
+  // Recent text meetings, newest first. Used by the picker to surface
+  // prior conversations so users can revisit them. Transcripts persist in
+  // SQLite (warroom_transcript), so opening an ended meeting re-renders
+  // the full conversation in read-only mode (composer disabled).
+  app.get('/api/warroom/text/list', (c) => {
+    const limit = Math.max(1, Math.min(100, parseInt(c.req.query('limit') || '20', 10) || 20));
+    // Optional chat-scope: if the picker passes its current chatId, return
+    // only meetings for that chat. Picker without chatId (admin/debug or
+    // legacy clients) sees everything.
+    const chatIdRaw = c.req.query('chatId');
+    const chatId = chatIdRaw !== undefined ? chatIdRaw : undefined;
+    return c.json({ ok: true, meetings: getTextMeetings(limit, chatId) });
+  });
+
+  app.post('/api/warroom/text/new', async (c) => {
+    let body: { chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const chatId = (body.chatId || '').trim();
+    const id = `wr_${Math.floor(Date.now() / 1000).toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
+    createTextMeeting(id, chatId);
+    // Prime the channel so the SSE emit for meeting_state has a target.
+    getChannel(id);
+    // Force-end any prior open text meetings IN THE SAME CHAT so a refresh
+    // / new visit starts clean WITHOUT clobbering meetings from other
+    // chats sharing the box. Fire-and-forget — DB update is synchronous,
+    // only the SSE-emit + cancel-turns wait is async, and the response
+    // shouldn't block on those.
+    const stale = getOpenTextMeetingIds(id, chatId);
+    if (stale.length > 0) {
+      logger.info({ closing: stale, newMeetingId: id, chatId }, 'auto-ending stale text meetings on /new');
+      for (const sid of stale) {
+        void endTextMeeting(sid).catch((err) => {
+          logger.warn({
+            err: err instanceof Error ? err.message : err,
+            staleMeetingId: sid,
+          }, 'auto-end of stale meeting failed (non-fatal)');
+        });
+      }
+    }
+    return c.json({ ok: true, meetingId: id, autoEnded: stale });
+  });
+
+  // Pre-warm the Claude Agent SDK path so the first user turn feels snappy.
+  // The client calls this on page load in parallel with the intro animation.
+  // Idempotent + fast: if warmup already ran, returns immediately.
+  app.post('/api/warroom/text/warmup', async (c) => {
+    if (isWarmupDone()) return c.json({ ok: true, already: true });
+    // Don't await — the client doesn't need the result, it just wants
+    // the server to have started. The promise resolves in the background.
+    void warmupMeeting();
+    return c.json({ ok: true, started: true });
+  });
+
+  app.get('/api/warroom/text/history', (c) => {
+    const meetingId = (c.req.query('meetingId') || '').trim();
+    const reqChatId = (c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    const limit = Math.max(1, Math.min(500, parseInt(c.req.query('limit') || '200', 10) || 200));
+    const beforeTsRaw = c.req.query('beforeTs');
+    const beforeIdRaw = c.req.query('beforeId');
+    const beforeTs = beforeTsRaw ? parseInt(beforeTsRaw, 10) : undefined;
+    const beforeId = beforeIdRaw ? parseInt(beforeIdRaw, 10) : undefined;
+    // Capture latestSeq BEFORE the transcript query. If a new row is
+    // persisted + emits between these two reads, the transcript query
+    // sees the row, and the client connects SSE from a seq that still
+    // covers the emit — seenSeqs dedup takes care of duplicates.
+    // Reverse order (seq-first, then rows) avoids the opposite race where
+    // a row emits after the transcript read but before the seq read,
+    // causing the client to advance past a row it never received.
+    const latestSeq = getChannel(meetingId).latestSeq();
+    const rows = getWarRoomTranscript(meetingId, { limit, beforeTs, beforeId }).reverse();
+    return c.json({
+      ok: true,
+      meetingId,
+      transcript: rows,
+      pinnedAgent: meeting.pinned_agent,
+      meetingStartedAt: meeting.started_at,
+      endedAt: meeting.ended_at,
+      agents: getRoster(),
+      latestSeq,
+    });
+  });
+
+  app.get('/api/warroom/text/stream', (c) => {
+    const meetingId = (c.req.query('meetingId') || '').trim();
+    const reqChatId = (c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    // Clients that reconnect to an already-ended meeting still get a
+    // stream — we emit a meeting_ended event immediately then close. This
+    // lets the UI show the ended state instead of silently hanging.
+    const sinceSeq = Math.max(0, parseInt(c.req.query('sinceSeq') || '0', 10) || 0);
+
+    return streamSSE(c, async (stream) => {
+      const channel = getChannel(meetingId);
+
+      // 1. Send meeting_state snapshot with the current roster + pin so
+      //    the client can render without waiting for the next real event.
+      const stateEvent = {
+        type: 'meeting_state' as const,
+        meetingId,
+        pinnedAgent: meeting.pinned_agent,
+        agents: getRoster(),
+        isFresh: meeting.ended_at === null && meeting.entry_count === 0,
+      };
+      await stream.writeSSE({
+        event: 'message',
+        data: JSON.stringify({ seq: 0, event: stateEvent }),
+      });
+
+      // If the meeting already ended when the client connects, tell them
+      // immediately so they can render the ended state instead of hanging.
+      if (meeting.ended_at !== null) {
+        await stream.writeSSE({
+          event: 'message',
+          data: JSON.stringify({ seq: 0, event: { type: 'meeting_ended', meetingId, at: meeting.ended_at } }),
+        });
+        return;
+      }
+
+      // 2. Subscribe FIRST so events emitted concurrently with the replay
+      //    drain aren't lost in the gap between since() and subscribe().
+      //    Writes are serialized through a tiny async queue so rapid
+      //    chunks can't reorder (EventEmitter.emit doesn't await our
+      //    async handler otherwise).
+      const seenSeqs = new Set<number>();
+      let writeChain: Promise<void> = Promise.resolve();
+      const writeOrdered = (seq: number, event: unknown) => {
+        if (seenSeqs.has(seq)) return;
+        seenSeqs.add(seq);
+        writeChain = writeChain.then(async () => {
+          try {
+            await stream.writeSSE({
+              event: 'message',
+              data: JSON.stringify({ seq, event }),
+            });
+          } catch { /* client disconnected */ }
+        });
+      };
+
+      const unsub = channel.subscribe((entry) => {
+        writeOrdered(entry.seq, entry.event);
+      });
+
+      // 3. Detect replay gaps. If the client's sinceSeq is older than the
+      //    oldest event we still have in the ring buffer, the replay
+      //    would silently drop everything between (sinceSeq, oldestSeq).
+      //    Tell the client so it can hard-reload the transcript via
+      //    /history instead of rendering an inconsistent stream.
+      const oldest = channel.oldestSeq();
+      const latest = channel.latestSeq();
+      if (sinceSeq > 0 && oldest > 0 && sinceSeq < oldest - 1) {
+        await stream.writeSSE({
+          event: 'message',
+          data: JSON.stringify({
+            seq: 0,
+            event: { type: 'replay_gap', sinceSeq, oldestSeq: oldest, latestSeq: latest },
+          }),
+        });
+      }
+
+      // 4. Drain the replay window AFTER subscribing. The seenSeqs dedup
+      //    set guarantees we never duplicate an event that the live
+      //    subscription also caught.
+      const missed = channel.since(sinceSeq);
+      for (const entry of missed) {
+        writeOrdered(entry.seq, entry.event);
+      }
+
+      const ping = setInterval(async () => {
+        try { await stream.writeSSE({ event: 'ping', data: '' }); }
+        catch { clearInterval(ping); }
+      }, 30_000);
+
+      try {
+        await new Promise<void>((_, reject) => {
+          stream.onAbort(() => reject(new Error('aborted')));
+        });
+      } catch {
+        // expected: client disconnected
+      } finally {
+        clearInterval(ping);
+        unsub();
+      }
+    });
+  });
+
+  // Shared guard: 404 on unknown, 410 on ended. Returns the meeting row if OK.
+  function requireOpenMeeting(meetingId: string) {
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return { error: 'meeting_not_found' as const, status: 404 as const };
+    if (meeting.ended_at !== null) return { error: 'meeting_ended' as const, status: 410 as const };
+    return { meeting };
+  }
+
+  // Strict chat-id guard. Every text-war-room endpoint validates that
+  // the request's chatId matches the meeting's chat_id. Without this,
+  // a stale or copied meetingId from chat A used in a session running
+  // as chat B would happily proceed and leak across chat scopes.
+  // Legacy meetings (chat_id === '') accept any chatId so existing
+  // pre-migration meetings stay openable; new meetings always have a
+  // populated chat_id.
+  function requireChatMatches(
+    meeting: { chat_id: string },
+    requestChatId: string,
+  ): { ok: true } | { ok: false; error: string; status: 403 } {
+    if (meeting.chat_id === '') return { ok: true };
+    if (meeting.chat_id === requestChatId) return { ok: true };
+    return { ok: false, error: 'chat_mismatch', status: 403 };
+  }
+
+  app.post('/api/warroom/text/send', async (c) => {
+    let body: { meetingId?: string; text?: string; clientMsgId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const text = (body.text || '').trim();
+    const clientMsgId = (body.clientMsgId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    // DASHBOARD_MUTATIONS_ENABLED + LLM_SPAWN_ENABLED are enforced by
+    // global middlewares (mutation middleware above; LLM-spawn refusal
+    // happens inside runAgentTurn). Only WARROOM_TEXT_ENABLED is
+    // feature-specific and remains here.
+    if (!killSwitches.isEnabled('WARROOM_TEXT_ENABLED')) {
+      return c.json({ error: 'text war room disabled' }, 503);
+    }
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    if (!text) return c.json({ error: 'empty text' }, 400);
+    if (text.length > 8000) return c.json({ error: 'text too long (max 8000 chars)' }, 400);
+    if (!CLIENT_MSG_ID_RE.test(clientMsgId)) return c.json({ error: 'invalid clientMsgId' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+
+    // Fire-and-forget through the per-meeting queue. The client learns
+    // about progress via SSE. The handleTextTurn call is wrapped in a
+    // hard watchdog: if the whole turn takes longer than TURN_BUDGET_MS,
+    // we force the queue to unblock so subsequent sends aren't held
+    // hostage by a single hung SDK subprocess. The watchdog fires at
+    // the queue level (not inside the orchestrator) so even if the
+    // orchestrator never returns, the FIFO drains.
+    //
+    // Budget derivation:
+    //   router (20s) + primary (75s)
+    //   + 2 × ( intervention gate (25s) + intervener (45s) )
+    //   = 235s of agent work,
+    //   + ~30s for SDK cold-start + transcript I/O + queue overhead
+    //   = ~265s realistic worst case for a healthy long turn.
+    // Set TURN_BUDGET_MS to 300_000 so the budget actually clears the
+    // worst case by a comfortable margin. The previous 240s was 5s over
+    // the bare math, which meant healthy long turns were getting cut
+    // off as "took too long".
+    const TURN_BUDGET_MS = 300_000;
+    messageQueue.enqueue(`warroom-text:${meetingId}`, async () => {
+      let finished = false;
+      const turnPromise = handleTextTurn(meetingId, text, clientMsgId).finally(() => { finished = true; });
+      await Promise.race([
+        turnPromise,
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            if (finished) return;
+            // Timed out. Emit a user-visible error via the channel so the
+            // UI unfreezes. Use turn_aborted scoped to the actual active
+            // turnId(s) — turn_complete with a synthetic 'watchdog' id
+            // can't drive turnId-scoped UI cleanup correctly.
+            const ch = getChannel(meetingId);
+            ch.emit({
+              type: 'system_note',
+              text: 'That turn took too long to complete and was interrupted. Send again, or end and restart the meeting if this keeps happening.',
+              tone: 'warn',
+              dismissable: true,
+            });
+            const activeTurns = getActiveTurnIds(meetingId);
+            for (const tid of activeTurns) {
+              ch.emit({ type: 'turn_aborted', turnId: tid, clearedAgents: [] });
+              // Mark finalized AFTER emitting turn_aborted so the abort
+              // event itself reaches the client. From here on, late SDK
+              // chunks/agent_done/transcript writes for this turnId are
+              // dropped by the channel — they can't leak into the next
+              // queued turn's bubbles.
+              ch.markTurnFinalized(tid);
+            }
+            cancelMeetingTurns(meetingId);
+            resolve();
+          }, TURN_BUDGET_MS);
+        }),
+      ]);
+      // After the race settles (whether the turn finished cleanly or the
+      // watchdog fired), give the orchestrator a brief grace window to
+      // finish its async cleanup before we let the next queued turn run.
+      // This prevents a half-aborted turn's late agent_done from racing
+      // with a freshly-started turn's bubbles.
+      if (!finished) {
+        await Promise.race([
+          turnPromise,
+          new Promise<void>((r) => setTimeout(r, 2000)),
+        ]);
+      }
+    });
+    return c.json({ ok: true, queued: true });
+  });
+
+  app.post('/api/warroom/text/abort', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    const count = cancelMeetingTurns(meetingId);
+    return c.json({ ok: true, cancelled: count });
+  });
+
+  app.post('/api/warroom/text/pin', async (c) => {
+    let body: { meetingId?: string; agentId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const agentId = (body.agentId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const rosterIds = new Set(getRoster().map((a) => a.id));
+    if (!rosterIds.has(agentId)) return c.json({ error: 'unknown agent' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    setMeetingPin(meetingId, agentId);
+    // Tell every connected tab so the pin indicator stays in sync
+    // without a reload. Without this, tabs that didn't initiate the
+    // pin click rendered the wrong roster state until they reconnected.
+    getChannel(meetingId).emit({ type: 'meeting_state_update', pinnedAgent: agentId });
+    return c.json({ ok: true, meetingId, pinnedAgent: agentId });
+  });
+
+  app.post('/api/warroom/text/unpin', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    setMeetingPin(meetingId, null);
+    getChannel(meetingId).emit({ type: 'meeting_state_update', pinnedAgent: null });
+    return c.json({ ok: true, meetingId, pinnedAgent: null });
+  });
+
+  app.post('/api/warroom/text/clear', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    // Cancel any in-flight turn FIRST and wait for it to exit before we
+    // wipe sessions. Otherwise runAgentTurn's setSession() can land after
+    // clearMeetingSessions() and resurrect the cleared session id, leaving
+    // the user with "memory cleared" UX but the agent still resuming the
+    // prior thread.
+    if (getActiveTurnIds(meetingId).length > 0) {
+      cancelMeetingTurns(meetingId);
+      await waitForMeetingTurnsIdle(meetingId, 5000);
+    }
+    const agents = getRoster().map((a) => a.id);
+    const cleared = clearMeetingSessions(meetingId, agents);
+    // Persist the divider so reload still shows the marker. Speaker
+    // __divider__ is handled client-side to render as a dashed divider.
+    addWarRoomTranscript(meetingId, '__divider__', 'Memory cleared — agents start fresh from here');
+    const channel = getChannel(meetingId);
+    channel.emit({
+      type: 'divider',
+      kind: 'memory_cleared',
+      text: 'Memory cleared — agents start fresh from here',
+    });
+    channel.emit({
+      type: 'system_note',
+      text: 'Sessions cleared. Next message starts fresh.',
+      tone: 'info',
+      dismissable: true,
+    });
+    return c.json({ ok: true, cleared });
+  });
+
+  // Internal helper: terminate a single text meeting (DB + SSE + channel
+  // teardown). Used both by the /end endpoint and by /new when force-
+  // ending stale meetings so a refresh becomes a clean slate.
+  async function endTextMeeting(meetingId: string): Promise<{ alreadyEnded: boolean; entryCount: number }> {
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting || meeting.ended_at !== null) {
+      const rows = meeting ? getWarRoomTranscript(meetingId) : [];
+      return { alreadyEnded: true, entryCount: rows.length };
+    }
+    const rows = getWarRoomTranscript(meetingId);
+    endWarRoomMeeting(meetingId, rows.length);
+    if (getActiveTurnIds(meetingId).length > 0) {
+      cancelMeetingTurns(meetingId);
+      await waitForMeetingTurnsIdle(meetingId, 3000);
+    }
+    // Clear the SDK sessions tied to this meeting. Without this, every
+    // meeting leaves orphan rows in the `sessions` table keyed on
+    // warroom-text:<meetingId>:<agentId>; the rows can't be looked up
+    // again (UUID-fresh meetingIds) but they accumulate forever. Mirror
+    // the /clear endpoint's behavior so /end is a true cleanup.
+    try {
+      const agents = getRoster().map((a) => a.id);
+      clearMeetingSessions(meetingId, agents);
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : err, meetingId },
+        'clearMeetingSessions failed during endTextMeeting (non-fatal)',
+      );
+    }
+    // Notify every connected tab BEFORE we close the channel so they can
+    // disable their composers and show the "meeting ended" state.
+    const channel = getChannel(meetingId);
+    channel.emit({
+      type: 'meeting_ended',
+      meetingId,
+      at: Math.floor(Date.now() / 1000),
+    });
+    // Close the channel after a short grace period so in-flight SSE
+    // writes finish draining to clients.
+    setTimeout(() => closeChannel(meetingId), 1500);
+    return { alreadyEnded: false, entryCount: rows.length };
+  }
+
+  app.post('/api/warroom/text/end', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    const result = await endTextMeeting(meetingId);
+    if (result.alreadyEnded) {
+      return c.json({ ok: true, meetingId, alreadyEnded: true });
+    }
+    return c.json({ ok: true, meetingId, entryCount: result.entryCount });
   });
 
   // ── War Room voice configuration ──
@@ -601,31 +1256,31 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     }
   });
 
+  // Cooldown guard so rapid /apply hits can't pile up respawns. Each
+  // apply kills the Python subprocess; main's respawner kicks in within
+  // 300ms. Without a cooldown, three clicks in 400ms queue three
+  // sequential SIGTERMs and reset the crash counter spuriously.
+  let _lastVoicesApplyMs = 0;
   app.post('/api/warroom/voices/apply', async (c) => {
+    const now = Date.now();
+    if (now - _lastVoicesApplyMs < 3000) {
+      return c.json({
+        ok: false,
+        error: 'voice config apply cooldown — wait 3s between reloads',
+      }, 429);
+    }
+    _lastVoicesApplyMs = now;
     // Kill the warroom Python subprocess so main's respawn logic in
     // src/index.ts picks up a fresh one that re-reads voices.json.
     // IMPORTANT: we do NOT kickstart the main launchd service here,
     // because that would kill the dashboard process we're currently
     // running inside — the HTTP response would never be delivered.
     try {
-      const { spawn } = await import('child_process');
-      // pgrep is simpler than parsing ps. Matches any python process
-      // whose command line includes "warroom/server.py".
-      const pids: number[] = await new Promise((resolve) => {
-        const p = spawn('pgrep', ['-f', 'warroom/server.py']);
-        let out = '';
-        p.stdout.on('data', (chunk) => { out += chunk.toString(); });
-        p.on('close', () => {
-          resolve(out.trim().split(/\s+/).map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n)));
-        });
-        p.on('error', () => resolve([]));
-      });
+      const pids = await findProcessesByPattern('warroom/server.py');
       if (pids.length === 0) {
         return c.json({ ok: false, error: 'no warroom server process found' }, 500);
       }
-      for (const pid of pids) {
-        try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
-      }
+      for (const pid of pids) killProcess(pid);
       logger.info({ pids }, 'Killed warroom subprocess for voice config reload');
       return c.json({
         ok: true,
@@ -856,34 +1511,6 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json(result.data, result.ok ? 200 : 500);
   });
 
-  app.post('/api/meet/join-voice', async (c) => {
-    let body: { agent?: string; meet_url?: string; auto_brief?: boolean; context?: string } = {};
-    try { body = await c.req.json(); } catch { /* empty body */ }
-
-    const agent = body.agent?.trim();
-    const meetUrl = body.meet_url?.trim();
-    const autoBrief = body.auto_brief !== false; // default true
-    const context = body.context?.trim();
-
-    if (!agent) return c.json({ ok: false, error: 'agent required' }, 400);
-    if (!meetUrl || !MEET_URL_RE.test(meetUrl)) {
-      return c.json({ ok: false, error: 'invalid meet_url (must match https://meet.google.com/...)' }, 400);
-    }
-    const validAgents = new Set(['main', ...listAgentIds()]);
-    if (!validAgents.has(agent)) {
-      return c.json({ ok: false, error: `unknown agent: ${agent}` }, 400);
-    }
-
-    const args = ['join-voice', '--agent', agent, '--meet-url', meetUrl];
-    if (autoBrief) args.push('--auto-brief');
-    if (context) args.push('--context', context);
-
-    // Shorter budget than the avatar path since voice-only skips the
-    // Pika upload + worker warmup. Still allows auto-brief to run.
-    const result = await runMeetCli(args, 120_000);
-    return c.json(result.data, result.ok ? 200 : 500);
-  });
-
   app.post('/api/meet/join-daily', async (c) => {
     let body: { agent?: string; mode?: string; auto_brief?: boolean; context?: string; ttl_sec?: number } = {};
     try { body = await c.req.json(); } catch { /* empty body */ }
@@ -975,6 +1602,17 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       }
     }
 
+    // War-room visibility: surface counters an operator needs to spot a
+    // degraded system without using the dashboard. Cheap reads only —
+    // /api/health gets hit on a polling interval from the UI.
+    let warroomTextOpenMeetings = 0;
+    try {
+      warroomTextOpenMeetings = getOpenTextMeetingIds(undefined, undefined).length;
+    } catch { /* DB read failure is non-fatal for health */ }
+    // Voice subprocess liveness — best-effort process check. Not exposed
+    // as a primary health metric until the subprocess module exports a
+    // proper accessor.
+
     return c.json({
       contextPct,
       turns,
@@ -984,6 +1622,21 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       telegramConnected: getTelegramConnected(),
       waConnected: WHATSAPP_ENABLED,
       slackConnected: !!SLACK_USER_TOKEN,
+      // Surface kill-switch state so an operator who just flipped a flag
+      // in .env can verify from outside the process that it took effect.
+      killSwitches: killSwitches.snapshot(),
+      // Counter of refusals since boot. Bumps every time a switch
+      // intercepted an LLM spawn or a mutation — visible proof the gates
+      // are actually firing during an incident.
+      killSwitchRefusals: killSwitches.refusalCounts(),
+      // War-room counters for incident triage.
+      warroom: {
+        textOpenMeetings: warroomTextOpenMeetings,
+      },
+      // Memory ingestion can pause itself when Gemini returns 429. Without
+      // this surfaced, ingestion is silently dead and conversations stop
+      // generating long-term memories with no visible signal.
+      memoryIngestion: getIngestionQuotaStatus(),
     });
   });
 
@@ -1022,8 +1675,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         if (fs.existsSync(pidFile)) {
           try {
             const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-            process.kill(pid, 0); // signal 0 = check if alive
-            running = true;
+            running = isProcessAlive(pid);
           } catch { /* process not running */ }
         }
         const stats = getAgentTokenStats(id);
@@ -1047,8 +1699,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     if (fs.existsSync(mainPidFile)) {
       try {
         const pid = parseInt(fs.readFileSync(mainPidFile, 'utf-8').trim(), 10);
-        process.kill(pid, 0);
-        mainRunning = true;
+        mainRunning = isProcessAlive(pid);
       } catch { /* not running */ }
     }
     const mainStats = getAgentTokenStats('main');
@@ -1340,11 +1991,25 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json({ ok: aborted });
   });
 
+  // Default to loopback. Anyone on the same LAN is otherwise one
+  // dashboard-token leak away from full mutation access. Operators who
+  // want Cloudflare-tunneled or LAN access opt in via DASHBOARD_BIND in
+  // .env (e.g. `DASHBOARD_BIND=0.0.0.0`).
+  const bindHost = (process.env.DASHBOARD_BIND || '127.0.0.1').trim() || '127.0.0.1';
+  if (bindHost !== '127.0.0.1' && bindHost !== 'localhost') {
+    logger.warn(
+      { bindHost, port: DASHBOARD_PORT },
+      'Dashboard binding to a non-loopback address — every host that can reach this port can hit the dashboard if the token leaks. Confirm DASHBOARD_BIND is intentional.',
+    );
+  }
   let server: ReturnType<typeof serve>;
   try {
-    server = serve({ fetch: app.fetch, port: DASHBOARD_PORT }, () => {
-      logger.info({ port: DASHBOARD_PORT }, 'Dashboard server running');
+    server = serve({ fetch: app.fetch, port: DASHBOARD_PORT, hostname: bindHost }, () => {
+      logger.info({ port: DASHBOARD_PORT, host: bindHost }, 'Dashboard server running');
     });
+    // Start the text War Room channel sweeper so abandoned meetings
+    // don't accumulate MeetingChannel instances in memory.
+    startChannelSweeper();
   } catch (err: any) {
     if (err?.code === 'EADDRINUSE') {
       logger.error({ port: DASHBOARD_PORT }, 'Dashboard port already in use. Change DASHBOARD_PORT in .env or kill the process using port %d.', DASHBOARD_PORT);
@@ -1366,6 +2031,14 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     if (WSServer) {
       const wss = new WSServer({ noServer: true });
 
+      // Bound on the buffered queue used while the backend WS is still
+      // opening. Without these, an unauthenticated or slow client could
+      // flood the proxy and grow node memory unbounded. Numbers are
+      // generous for real audio bursts (16kHz PCM16 @ ~50fps) during the
+      // <1s backend open window but small enough to reject abuse.
+      const MAX_BUFFERED_MESSAGES = 256;
+      const MAX_BUFFERED_BYTES = 2 * 1024 * 1024;
+
       (server as unknown as import('http').Server).on('upgrade', (
         req: import('http').IncomingMessage,
         socket: import('stream').Duplex,
@@ -1374,15 +2047,27 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         if (url.pathname !== '/ws/warroom') return;
 
+        // Enforce the same token gate Hono enforces on every other route.
+        // Without this, anyone who can reach the dashboard port could
+        // proxy into the local Pipecat War Room socket with no auth.
+        const token = url.searchParams.get('token');
+        if (!DASHBOARD_TOKEN || token !== DASHBOARD_TOKEN) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
         wss.handleUpgrade(req, socket, head, (clientWs: any) => {
           const remote = new WS(`ws://127.0.0.1:${WARROOM_PORT}`);
           let remoteReady = false;
           const buffered: (Buffer | ArrayBuffer | string)[] = [];
+          let bufferedBytes = 0;
 
           remote.on('open', () => {
             remoteReady = true;
             for (const msg of buffered) remote.send(msg);
             buffered.length = 0;
+            bufferedBytes = 0;
           });
           remote.on('message', (data: Buffer | ArrayBuffer | string) => {
             if (clientWs.readyState === 1) clientWs.send(data);
@@ -1394,8 +2079,18 @@ export function startDashboard(botApi?: Api<RawApi>): void {
           });
 
           clientWs.on('message', (data: Buffer | ArrayBuffer | string) => {
-            if (remoteReady) remote.send(data);
-            else buffered.push(data);
+            if (remoteReady) { remote.send(data); return; }
+            const size = typeof data === 'string'
+              ? Buffer.byteLength(data)
+              : (data as Buffer | ArrayBuffer).byteLength ?? 0;
+            if (buffered.length >= MAX_BUFFERED_MESSAGES || bufferedBytes + size > MAX_BUFFERED_BYTES) {
+              logger.warn({ buffered: buffered.length, bufferedBytes }, 'War Room WS proxy: buffer overflow, closing client');
+              try { clientWs.close(1013, 'backend not ready'); } catch { /* ok */ }
+              try { remote.close(); } catch { /* ok */ }
+              return;
+            }
+            buffered.push(data);
+            bufferedBytes += size;
           });
           clientWs.on('close', () => {
             if (remote.readyState <= 1) remote.close();

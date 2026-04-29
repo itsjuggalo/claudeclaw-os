@@ -242,7 +242,7 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
     <div>
       <div style="font-size:14px;font-weight:600;color:#a5b4fc">Live Meetings</div>
-      <div style="font-size:11px;color:#6b7280;margin-top:2px">Send an agent into a Google Meet. Pick avatar or voice-only below.</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:2px">Send an agent into a Google Meet (avatar mode) or spin up a Daily.co room.</div>
     </div>
     <button onclick="openNewMeet()" style="background:#1a1a1a;color:#60a5fa;border:1px solid #1e3a5f;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer">New Meet &#8599;</button>
   </div>
@@ -268,28 +268,7 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
     <div id="meet-status" style="font-size:11px;color:#6b7280;min-height:14px;margin-top:6px"></div>
   </div>
 
-  <!-- Mode 2: Voice-only via Recall.ai (new) -->
-  <div style="padding:10px 12px;background:#0f0b1a;border:1px solid #2b1e3b;border-radius:8px;margin-bottom:10px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <div style="font-size:12px;font-weight:600;color:#a78bfa">Voice-only mode &middot; Recall.ai</div>
-      <div style="font-size:10px;color:#6b7280">Joins an existing Google Meet URL, audio only, ~$0.01/min</div>
-    </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <select id="meet-voice-agent-select" style="background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;font-size:12px;min-width:110px">
-        <option value="main">Main</option>
-      </select>
-      <input type="text" id="meet-voice-url-input" placeholder="Paste Meet URL, or leave empty to auto-read clipboard"
-        style="flex:1;min-width:220px;background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;font-size:12px;font-family:ui-monospace,monospace">
-      <label style="display:flex;gap:5px;align-items:center;color:#9ca3af;font-size:11px;cursor:pointer;user-select:none">
-        <input type="checkbox" id="meet-voice-auto-brief" checked style="margin:0;accent-color:#a78bfa"> Auto-brief
-      </label>
-      <button onclick="sendVoiceAgentToMeet()" id="meet-voice-send-btn"
-        style="background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer">Send</button>
-    </div>
-    <div id="meet-voice-status" style="font-size:11px;color:#6b7280;min-height:14px;margin-top:6px"></div>
-  </div>
-
-  <!-- Mode 3: Daily.co Pipecat pipeline -->
+  <!-- Mode 2: Daily.co Pipecat pipeline -->
   <div style="padding:10px 12px;background:#0a1410;border:1px solid #1a3b2b;border-radius:8px;margin-bottom:10px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <div style="font-size:12px;font-weight:600;color:#34d399">Daily.co mode &middot; Pipecat + Gemini Live</div>
@@ -1231,12 +1210,11 @@ function openNewMeet() {
 }
 
 async function loadMeetAgentOptions() {
-  // Populates ALL THREE mode dropdowns (avatar, voice, daily) from the
-  // /api/agents endpoint. Always includes 'main' at the top.
+  // Populates the avatar + daily mode dropdowns from the /api/agents
+  // endpoint. Always includes 'main' at the top.
   const selAvatar = document.getElementById('meet-agent-select');
-  const selVoice = document.getElementById('meet-voice-agent-select');
   const selDaily = document.getElementById('meet-daily-agent-select');
-  if (!selAvatar && !selVoice && !selDaily) return;
+  if (!selAvatar && !selDaily) return;
   try {
     const data = await api('/api/agents');
     const ids = new Set(['main']);
@@ -1249,7 +1227,6 @@ async function loadMeetAgentOptions() {
       return '<option value="' + id + '">' + label + '</option>';
     }).join('');
     if (selAvatar) selAvatar.innerHTML = optionsHtml;
-    if (selVoice) selVoice.innerHTML = optionsHtml;
     if (selDaily) selDaily.innerHTML = optionsHtml;
   } catch (e) { /* keep the default "Main" only option */ }
 }
@@ -1317,81 +1294,6 @@ async function sendAgentToMeet() {
         errMsg += ' (top up at ' + data.checkout_url + ')';
       }
       status.textContent = 'Failed: ' + errMsg;
-    }
-  } catch (err) {
-    status.style.color = '#ef4444';
-    status.textContent = 'Failed: ' + (err && err.message ? err.message : err);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Send';
-  }
-}
-
-async function sendVoiceAgentToMeet() {
-  // Voice-only mode via Recall.ai. Same flow as sendAgentToMeet() but
-  // hits /api/meet/join-voice and uses the voice-mode DOM elements.
-  // Until RECALL_API_KEY is set and the audio pipeline is wired, the
-  // server returns a "needs setup" or "needs implementation" error
-  // which we surface clearly so the user knows what to do.
-  const agentSel = document.getElementById('meet-voice-agent-select');
-  const urlInput = document.getElementById('meet-voice-url-input');
-  const autoBrief = document.getElementById('meet-voice-auto-brief').checked;
-  const btn = document.getElementById('meet-voice-send-btn');
-  const status = document.getElementById('meet-voice-status');
-
-  let meetUrl = (urlInput.value || '').trim();
-
-  if (!meetUrl) {
-    try {
-      const clipText = await navigator.clipboard.readText();
-      const extracted = extractMeetUrl(clipText);
-      if (extracted) {
-        meetUrl = extracted;
-        urlInput.value = meetUrl;
-      }
-    } catch (e) { /* clipboard unavailable */ }
-  }
-
-  if (!meetUrl) {
-    status.style.color = '#f59e0b';
-    status.textContent = 'No Meet URL found. Paste one above, or grant clipboard permission and click Send again.';
-    return;
-  }
-  if (!isMeetUrl(meetUrl)) {
-    status.style.color = '#f59e0b';
-    status.textContent = 'That URL does not look like a Google Meet link.';
-    return;
-  }
-
-  const agent = agentSel.value;
-  btn.disabled = true;
-  btn.textContent = 'Dispatching...';
-  status.style.color = '#a78bfa';
-  status.textContent = autoBrief
-    ? 'Briefing ' + agent + ' and joining voice-only...'
-    : 'Joining ' + agent + ' voice-only...';
-
-  try {
-    const res = await fetch(BASE + '/api/meet/join-voice?token=' + TOKEN, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent: agent, meet_url: meetUrl, auto_brief: autoBrief }),
-    });
-    const data = await res.json();
-    if (data && data.ok) {
-      status.style.color = '#10b981';
-      status.textContent = agent + ' is in the meeting (voice-only). Admit them in the Meet tab.';
-      urlInput.value = '';
-      refreshMeetSessions();
-    } else {
-      status.style.color = '#ef4444';
-      let errMsg = (data && (data.error || data.message)) || ('HTTP ' + res.status);
-      if (data && data.needs_setup) {
-        errMsg = 'Setup needed: ' + errMsg;
-      } else if (data && data.needs_implementation) {
-        errMsg = 'Scaffolded only (not wired yet): ' + errMsg;
-      }
-      status.textContent = errMsg;
     }
   } catch (err) {
     status.style.color = '#ef4444';

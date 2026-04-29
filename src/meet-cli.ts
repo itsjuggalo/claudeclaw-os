@@ -26,9 +26,12 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
+
+import { getVenvPython, killProcess } from './platform.js';
 
 import {
   initDatabase,
@@ -58,10 +61,10 @@ const PIKA_SCRIPT = path.join(
   'scripts',
   'pikastreaming_videomeeting.py',
 );
-const WARROOM_VENV_PY = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
+const WARROOM_VENV_PY = getVenvPython(path.join(PROJECT_ROOT, 'warroom', '.venv'));
 const VOICE_BRIDGE_JS = path.join(PROJECT_ROOT, 'dist', 'agent-voice-bridge.js');
 const DAILY_AGENT_PY = path.join(PROJECT_ROOT, 'warroom', 'daily_agent.py');
-const DAILY_AGENT_LOG_DIR = '/tmp';
+const DAILY_AGENT_LOG_DIR = os.tmpdir();
 const AVATARS_DIR = path.join(PROJECT_ROOT, 'warroom', 'avatars');
 const DEFAULT_VOICE_ID = 'English_radiant_girl'; // Pika preset, per SKILL.md
 
@@ -573,8 +576,11 @@ async function cmdJoinDaily(): Promise<void> {
 
   process.stderr.write(`[meet-cli] Created Daily room: ${room!.url}\n`);
 
-  // Insert the session row BEFORE spawning the agent. The id is
-  // Daily's room id so we can cross-reference.
+  // Insert the session row BEFORE spawning the agent so the dashboard
+  // has a record to reference. The session status stays `pending` until
+  // the daily_agent emits a `joined` handshake on stdout below — we do
+  // NOT mark it live pre-join, or a crash in the agent would leave a
+  // ghost "live" row pointing at a room with no bot.
   try {
     createMeetSession({
       id: room!.id,
@@ -585,14 +591,15 @@ async function cmdJoinDaily(): Promise<void> {
       provider: 'daily',
       briefPath: briefPath ?? null,
     });
-    markMeetSessionLive(room!.id);
   } catch (err) {
     process.stderr.write(`[meet-cli] db insert failed: ${err}\n`);
   }
 
-  // Spawn the Python agent detached so this CLI can exit cleanly
-  // while the meeting continues. Log stdout+stderr to a per-session
-  // file so the user can tail it when debugging.
+  // Spawn the Python agent. We keep stdout piped back to this process
+  // until we read the readiness handshake ({"event":"joined",...}), then
+  // redirect stdout+stderr to the per-session log file and detach. This
+  // way the CLI can mark the session `live` only AFTER the bot has
+  // actually joined the Daily room.
   const logPath = path.join(DAILY_AGENT_LOG_DIR, `daily-agent-${room!.id}.log`);
   let logFd: number | null = null;
   try { logFd = fs.openSync(logPath, 'a'); } catch { /* non-fatal */ }
@@ -603,6 +610,7 @@ async function cmdJoinDaily(): Promise<void> {
     '--agent', agentId,
     '--mode', mode,
     '--bot-name', botName,
+    '--session-id', room!.id,
   ];
   if (briefPath) agentArgs.push('--brief', briefPath);
 
@@ -625,11 +633,98 @@ async function cmdJoinDaily(): Promise<void> {
     cwd: PROJECT_ROOT,
     env: subEnv as NodeJS.ProcessEnv,
     detached: true,
-    stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
+    stdio: ['ignore', 'pipe', logFd ?? 'ignore'],
   });
-  child.unref();
 
   process.stderr.write(`[meet-cli] Spawned daily_agent pid=${child.pid}, log=${logPath}\n`);
+
+  // Wait up to ~45s for the on_joined handshake. Gemini Live init + the
+  // Daily handshake usually resolves in under 5s on a warm machine but
+  // can take longer on a cold one.
+  const JOIN_TIMEOUT_MS = 45_000;
+  const stdoutStream = child.stdout!;
+  // Define the readiness listener so we can remove it once the handshake
+  // fires. Leaving stale 'data' listeners on the pipe contributed to the
+  // post-join hang — the old code attached a second listener for logging
+  // and Node kept the pipe referenced in the event loop forever.
+  let readinessListener: ((chunk: Buffer) => void) | null = null;
+  const joined = await new Promise<boolean>((resolve) => {
+    let settled = false;
+    let stdoutBuf = '';
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(false);
+    }, JOIN_TIMEOUT_MS);
+
+    readinessListener = (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      if (logFd !== null) { try { fs.writeSync(logFd, chunk); } catch { /* ok */ } }
+      stdoutBuf += text;
+      let idx: number;
+      while ((idx = stdoutBuf.indexOf('\n')) !== -1) {
+        const line = stdoutBuf.slice(0, idx).trim();
+        stdoutBuf = stdoutBuf.slice(idx + 1);
+        if (!line) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg && msg.event === 'joined') {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(true);
+            return;
+          }
+        } catch { /* non-JSON log line, ignore */ }
+      }
+    };
+    stdoutStream.on('data', readinessListener);
+
+    child.once('exit', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+  // Always remove the readiness listener — it's done its job either way.
+  if (readinessListener) stdoutStream.removeListener('data', readinessListener);
+
+  if (!joined) {
+    // Kill the child if it's still alive, tear down the Daily room, and
+    // mark the session failed. Do not return `status: 'live'`.
+    try { process.kill(child.pid!, 'SIGTERM'); } catch { /* ok */ }
+    try { await dailyDeleteRoom(room!.id); } catch { /* best-effort */ }
+    try { markMeetSessionFailed(room!.id, 'daily_agent join handshake timed out'); } catch { /* ok */ }
+    fail({ error: 'daily_agent failed to join Daily room within timeout', log_path: logPath });
+  }
+
+  try {
+    markMeetSessionLive(room!.id);
+  } catch (err) {
+    process.stderr.write(`[meet-cli] markMeetSessionLive failed: ${err}\n`);
+  }
+
+  // Now that we've captured readiness, hand the child's stdout off to
+  // the log file and unref EVERYTHING so the parent CLI can exit. The
+  // piped stdout is a net.Socket under the hood — keeping it attached
+  // (even via a plain 'data' listener) holds the event loop open and
+  // meet-cli hangs until the long-running daily_agent exits, which is
+  // minutes to hours. The dashboard wrapper waits for meet-cli to close
+  // before parsing its JSON, so this blocked the HTTP handler too.
+  if (logFd !== null) {
+    const loggingListener = (chunk: Buffer) => {
+      try { fs.writeSync(logFd!, chunk); } catch { /* ok */ }
+    };
+    child.stdout!.on('data', loggingListener);
+  }
+  // Detach the stdout pipe + the child from the event loop. Child keeps
+  // running (detached: true), and anything still written to its stdout
+  // is either captured by the logging listener above or swallowed by
+  // the kernel buffer; either way, meet-cli can now exit cleanly.
+  try { (child.stdout as any).unref?.(); } catch { /* ok */ }
+  try { (child.stderr as any)?.unref?.(); } catch { /* ok */ }
+  child.unref();
 
   ok({
     session_id: room!.id,
