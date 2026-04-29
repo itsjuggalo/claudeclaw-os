@@ -11,6 +11,7 @@ import {
   claimNextMissionTask,
   completeMissionTask,
   resetStuckMissionTasks,
+  getMissionTask,
 } from './db.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
@@ -152,19 +153,37 @@ async function runDueMissionTasks(): Promise<void> {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
+    // Cross-process cancel signal: dashboard flips status to 'cancelled' in
+    // SQLite, this poll picks it up within 5s and aborts the runAgent call.
+    let cancelledByUser = false;
+    const cancelPoll = setInterval(() => {
+      const current = getMissionTask(mission.id);
+      if (current?.status === 'cancelled') {
+        cancelledByUser = true;
+        abortController.abort();
+        clearInterval(cancelPoll);
+      }
+    }, 5_000);
+
     try {
       const result = await runAgent(mission.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
       clearTimeout(timeout);
+      clearInterval(cancelPoll);
 
       if (result.aborted) {
-        completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
-        logger.warn({ missionId: mission.id }, 'Mission task timed out');
-        try {
-          await sender('Mission task timed out: "' + mission.title + '"');
-        } catch (sendErr) {
-          // Sender can fail for Telegram API blips or chat-not-found. We
-          // still want to see it so the user isn't silently unnotified.
-          logger.warn({ err: sendErr, missionId: mission.id }, 'Failed to send mission timeout notification');
+        if (cancelledByUser) {
+          // Status is already 'cancelled' from the dashboard write — leave it.
+          logger.info({ missionId: mission.id }, 'Mission task cancelled by user');
+        } else {
+          completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
+          logger.warn({ missionId: mission.id }, 'Mission task timed out');
+          try {
+            await sender('Mission task timed out: "' + mission.title + '"');
+          } catch (sendErr) {
+            // Sender can fail for Telegram API blips or chat-not-found. We
+            // still want to see it so the user isn't silently unnotified.
+            logger.warn({ err: sendErr, missionId: mission.id }, 'Failed to send mission timeout notification');
+          }
         }
       } else {
         const text = result.text?.trim() || 'Task completed with no output.';
@@ -185,10 +204,16 @@ async function runDueMissionTasks(): Promise<void> {
       }
     } catch (err) {
       clearTimeout(timeout);
+      clearInterval(cancelPoll);
       const errMsg = err instanceof Error ? err.message : String(err);
-      completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
-      logger.error({ err, missionId: mission.id }, 'Mission task failed');
+      if (cancelledByUser) {
+        logger.info({ missionId: mission.id }, 'Mission task cancelled by user (threw on abort)');
+      } else {
+        completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
+        logger.error({ err, missionId: mission.id }, 'Mission task failed');
+      }
     } finally {
+      clearInterval(cancelPoll);
       runningTaskIds.delete(missionKey);
     }
   });

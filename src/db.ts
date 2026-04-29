@@ -2526,12 +2526,8 @@ export function createWarRoomMeeting(id: string, mode: string, pinnedAgent: stri
 export function endWarRoomMeeting(id: string, entryCount: number): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    'UPDATE warroom_meetings SET ended_at = ?, duration_s = ended_at - started_at, entry_count = ? WHERE id = ?',
-  ).run(now, entryCount, id);
-  // Actually compute duration correctly
-  db.prepare(
-    'UPDATE warroom_meetings SET duration_s = ? - started_at WHERE id = ?',
-  ).run(now, id);
+    'UPDATE warroom_meetings SET ended_at = ?, duration_s = ? - started_at, entry_count = ? WHERE id = ?',
+  ).run(now, now, entryCount, id);
 }
 
 export function addWarRoomTranscript(

@@ -1,11 +1,13 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { execSync, spawn } from 'child_process';
 import yaml from 'js-yaml';
 
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
 import { listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster } from './agent-config.js';
+import { refreshAgentRegistry } from './orchestrator.js';
 import { logger } from './logger.js';
 import { IS_WINDOWS, IS_MACOS, IS_LINUX, killProcess, isProcessAlive, claudeCodeHandoff, findProcessesByPattern } from './platform.js';
 
@@ -25,7 +27,10 @@ async function bounceVoiceWarRoom(reason: string): Promise<void> {
       logger.info({ pids, reason }, 'bounced voice warroom for roster change');
     }
   } catch (err) {
-    logger.warn({ err, reason }, 'bounceVoiceWarRoom failed');
+    // Promote to error: a swallowed bounce failure leaves voice VALID_AGENTS
+    // stale (frozen at last successful Pipecat startup) while text War Room
+    // sees the new roster live. The two surfaces silently diverge.
+    logger.error({ err, reason }, 'bounceVoiceWarRoom FAILED — voice roster may be stale until manual respawn');
   }
 }
 
@@ -242,12 +247,15 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
 
   logger.info({ agentId: id, agentDir, envKey, bot: tokenCheck.botInfo.username }, 'Agent created');
 
-  // Propagate the new agent into both War Rooms without a bot restart.
-  // Text War Room reads listAllAgents() live each turn, so it's already
-  // current. Voice War Room reads /tmp/warroom-agents.json at Pipecat
-  // startup — write the fresh roster AND bounce the Python subprocess
-  // so the new agent becomes a legal voice-room target within seconds.
+  // Propagate the new agent into all delegation surfaces without a bot
+  // restart:
+  //   - Text War Room reads listAllAgents() live each turn — already current.
+  //   - Voice War Room snapshots /tmp/warroom-agents.json at Pipecat startup
+  //     — we rewrite it and SIGKILL Pipecat so respawn picks up the change.
+  //   - Orchestrator agentRegistry is cached at main startup — refresh it
+  //     so @delegate: syntax sees the new agent immediately.
   refreshWarRoomRoster();
+  refreshAgentRegistry();
   void bounceVoiceWarRoom('agent created: ' + id);
 
   return {
@@ -260,6 +268,21 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
 }
 
 // ── .env management ──────────────────────────────────────────────────
+
+// Write contents to envPath atomically via temp-file + rename so concurrent
+// reads (kill-switches re-reads .env every 1.5s) never see a torn file.
+// File mode is forced to 0600 because it carries bot tokens.
+function atomicEnvWrite(envPath: string, contents: string): void {
+  const tmp = `${envPath}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeSync(fd, contents);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, envPath);
+}
 
 function writeBotTokenToEnv(envPath: string, envKey: string, token: string, agentId: string): void {
   let content = '';
@@ -287,7 +310,7 @@ function writeBotTokenToEnv(envPath: string, envKey: string, token: string, agen
     lines.push(`${envKey}=${token}`);
   }
 
-  fs.writeFileSync(envPath, lines.join('\n'), 'utf-8');
+  atomicEnvWrite(envPath, lines.join('\n'));
 }
 
 function removeBotTokenFromEnv(envPath: string, envKey: string, agentId: string): void {
@@ -308,7 +331,7 @@ function removeBotTokenFromEnv(envPath: string, envKey: string, agentId: string)
     filtered.push(lines[i]);
   }
 
-  fs.writeFileSync(envPath, filtered.join('\n'), 'utf-8');
+  atomicEnvWrite(envPath, filtered.join('\n'));
 }
 
 // ── Service config generation ────────────────────────────────────────
@@ -368,9 +391,9 @@ function generateLaunchdPlist(agentId: string): string {
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>
-  <string>__PROJECT_DIR__/logs/${agentId}.log</string>
+  <string>__LOG_DIR__/${agentId}.log</string>
   <key>StandardErrorPath</key>
-  <string>__PROJECT_DIR__/logs/${agentId}.log</string>
+  <string>__LOG_DIR__/${agentId}.log</string>
 </dict>
 </plist>
 `;
@@ -455,13 +478,22 @@ function activateLaunchd(agentId: string): ActivationResult {
     return { ok: false, error: `Plist not found: ${templatePlist}` };
   }
 
-  // Ensure logs directory exists
-  fs.mkdirSync(path.join(PROJECT_ROOT, 'logs'), { recursive: true });
+  // launchd silently exits with code 78 (EX_CONFIG) when StandardOutPath /
+  // StandardErrorPath contain spaces. PROJECT_ROOT can contain spaces if
+  // the user installed under a folder name with whitespace. Route logs
+  // through ~/Library/Logs/claudeclaw/<agent>.log instead, which lives
+  // under the macOS home directory (space-free for any normal username).
+  const logDir = path.join(os.homedir(), 'Library', 'Logs', 'claudeclaw');
+  fs.mkdirSync(logDir, { recursive: true });
+  if (logDir.includes(' ')) {
+    return { ok: false, error: `Log directory contains spaces (launchd exit 78 risk): ${logDir}` };
+  }
 
   // Substitute placeholders
   let content = fs.readFileSync(templatePlist, 'utf-8');
   content = content.replace(/__PROJECT_DIR__/g, PROJECT_ROOT);
   content = content.replace(/__HOME__/g, os.homedir());
+  content = content.replace(/__LOG_DIR__/g, logDir);
 
   // Ensure LaunchAgents directory exists
   fs.mkdirSync(path.dirname(destPlist), { recursive: true });
@@ -616,15 +648,19 @@ export function deleteAgent(agentId: string): { ok: boolean; error?: string } {
     // Remove token from .env
     removeBotTokenFromEnv(path.join(PROJECT_ROOT, '.env'), envKey, agentId);
 
-    // Remove log files
-    const logFile = path.join(PROJECT_ROOT, 'logs', `${agentId}.log`);
-    if (fs.existsSync(logFile)) fs.unlinkSync(logFile);
+    // Remove log files (both the legacy in-project location and the new
+    // ~/Library/Logs/claudeclaw location written by activateLaunchd).
+    const legacyLog = path.join(PROJECT_ROOT, 'logs', `${agentId}.log`);
+    if (fs.existsSync(legacyLog)) fs.unlinkSync(legacyLog);
+    const macLog = path.join(os.homedir(), 'Library', 'Logs', 'claudeclaw', `${agentId}.log`);
+    if (fs.existsSync(macLog)) fs.unlinkSync(macLog);
 
     logger.info({ agentId }, 'Agent deleted');
-    // Keep both War Rooms in sync. Voice stack needs the subprocess
-    // bounce so the deleted agent stops appearing in its roster
-    // (VALID_AGENTS is imported once at module load).
+    // Keep all delegation surfaces in sync. Voice stack needs the
+    // subprocess bounce so the deleted agent stops appearing in its
+    // roster (VALID_AGENTS is imported once at module load).
     refreshWarRoomRoster();
+    refreshAgentRegistry();
     void bounceVoiceWarRoom('agent deleted: ' + agentId);
     return { ok: true };
   } catch (err) {

@@ -34,9 +34,21 @@ logger = logging.getLogger("warroom.router")
 # dashboard are separate processes, so we use this tiny file as IPC.
 PIN_PATH = Path("/tmp/warroom-pin.json")
 
+# Live roster snapshot written by Node-side refreshWarRoomRoster(). Pipecat
+# used to hardcode AGENT_NAMES which silently broke name-prefix routing for
+# user-created agents. We now mtime-cache the roster file and rebuild the
+# regex when the roster changes, so a new agent in the dashboard immediately
+# becomes addressable by voice prefix ("hey analytics, ...").
+ROSTER_PATH = Path("/tmp/warroom-agents.json")
 
-# Agent identifiers that match the agents/ directory names
-AGENT_NAMES = {"main", "research", "comms", "content", "ops"}
+# Default fallback if the roster file is missing/unreadable. Matches the
+# bundled built-in agents so a fresh install still routes correctly.
+_DEFAULT_AGENT_NAMES = frozenset({"main", "research", "comms", "content", "ops"})
+
+# Module-level mutable set, kept for back-compat with agent_bridge.py which
+# imports AGENT_NAMES directly. _refresh_agent_names_from_roster mutates
+# this set in place so importers see the live roster.
+AGENT_NAMES: set = set(_DEFAULT_AGENT_NAMES)
 
 # Phrases that trigger a broadcast to all agents
 BROADCAST_TRIGGERS = {
@@ -47,17 +59,73 @@ BROADCAST_TRIGGERS = {
 # Common casual prefixes people use before an agent name
 _GREETING_PREFIXES = r"(?:hey|yo|ok|okay|alright)?\s*"
 
-# Build a compiled pattern: optional greeting + agent name + separator
-_agent_pattern = re.compile(
-    rf"^\s*{_GREETING_PREFIXES}({'|'.join(AGENT_NAMES)})[,:\s]+(.+)",
-    re.IGNORECASE | re.DOTALL,
-)
-
-# Build a pattern for broadcast triggers
+# Build a pattern for broadcast triggers (the trigger words are stable, no
+# need to make this dynamic).
 _broadcast_pattern = re.compile(
     rf"\b({'|'.join(BROADCAST_TRIGGERS)})\b",
     re.IGNORECASE,
 )
+
+# Roster mtime cache + lazily-rebuilt agent-prefix regex.
+_roster_mtime: float = 0.0
+_agent_pattern: Optional[re.Pattern] = None
+
+
+def _build_agent_pattern(names: set) -> re.Pattern:
+    safe = sorted((re.escape(n) for n in names if n), key=len, reverse=True)
+    return re.compile(
+        rf"^\s*{_GREETING_PREFIXES}({'|'.join(safe)})[,:\s]+(.+)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+
+def _refresh_agent_names_from_roster() -> None:
+    """Re-read /tmp/warroom-agents.json if the file's mtime changed.
+    Updates AGENT_NAMES in place and invalidates the compiled regex.
+    Falls back to last-good values on any error."""
+    global _roster_mtime, _agent_pattern
+    try:
+        st = os.stat(ROSTER_PATH)
+    except (FileNotFoundError, OSError):
+        return
+    if st.st_mtime == _roster_mtime:
+        return
+    try:
+        with open(ROSTER_PATH, "r") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning("roster read failed, keeping cached AGENT_NAMES: %s", exc)
+        return
+    if not isinstance(data, list):
+        logger.warning("roster JSON is not a list; ignoring")
+        return
+    new_names = {
+        entry["id"] for entry in data
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry["id"]
+    }
+    if not new_names:
+        return
+    # Always include "main" — it's the implicit default route target.
+    new_names.add("main")
+    if new_names != AGENT_NAMES:
+        AGENT_NAMES.clear()
+        AGENT_NAMES.update(new_names)
+        _agent_pattern = None  # force rebuild on next access
+        logger.info("agent roster refreshed: %s", sorted(AGENT_NAMES))
+    _roster_mtime = st.st_mtime
+
+
+def _get_agent_pattern() -> re.Pattern:
+    global _agent_pattern
+    _refresh_agent_names_from_roster()
+    if _agent_pattern is None:
+        _agent_pattern = _build_agent_pattern(AGENT_NAMES)
+    return _agent_pattern
+
+
+# Initialize once at import so AGENT_NAMES reflects the on-disk roster
+# even before the first utterance arrives.
+_refresh_agent_names_from_roster()
 
 
 @dataclass
@@ -109,6 +177,7 @@ class AgentRouter(FrameProcessor):
                 # into /tmp/warroom-pin.json. Defend against non-dict
                 # top-level values (strings, lists, numbers) that would
                 # otherwise crash .get() with AttributeError.
+                _refresh_agent_names_from_roster()
                 agent = data.get("agent") if isinstance(data, dict) else None
                 if isinstance(agent, str) and agent in AGENT_NAMES:
                     if agent != self._pin_agent:
@@ -161,8 +230,9 @@ class AgentRouter(FrameProcessor):
             await self.push_frame(route)
             return
 
-        # Check for agent name prefix
-        match = _agent_pattern.match(text)
+        # Check for agent name prefix (regex rebuilt lazily when the
+        # /tmp/warroom-agents.json roster file changes)
+        match = _get_agent_pattern().match(text)
         if match:
             agent_id = match.group(1).lower()
             message = match.group(2).strip()

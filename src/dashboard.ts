@@ -376,6 +376,12 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     if (!file || typeof file === 'string') return c.json({ error: 'No file uploaded' }, 400);
     const buf = Buffer.from(await file.arrayBuffer());
     if (buf.length > 20 * 1024 * 1024) return c.json({ error: 'File too large (max 20MB)' }, 400);
+    if (buf.length < 3) return c.json({ error: 'File too short to be MP3' }, 400);
+    // Magic-byte check: ID3v2 header ("ID3") OR MPEG audio frame sync
+    // (0xFF 0xFB / 0xFA / 0xF3 / 0xF2 — the common MP3 layer-3 variants).
+    const isId3 = buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33;
+    const isMpegFrame = buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0;
+    if (!isId3 && !isMpegFrame) return c.json({ error: 'Not a valid MP3 file' }, 400);
     fs.writeFileSync(path.join(PROJECT_ROOT, 'warroom', 'music.mp3'), buf);
     return c.json({ ok: true });
   });
@@ -1373,6 +1379,28 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json({ ok });
   });
 
+  // Auto-assign all unassigned tasks. MUST register before /:id/auto-assign
+  // so the static path is not captured by the parameterized route.
+  app.post('/api/mission/tasks/auto-assign-all', async (c) => {
+    const tasks = getUnassignedMissionTasks();
+    if (tasks.length === 0) return c.json({ assigned: 0, results: [] });
+
+    const CONCURRENCY = 5;
+    const results: Array<{ id: string; agent: string }> = [];
+    for (let i = 0; i < tasks.length; i += CONCURRENCY) {
+      const batch = tasks.slice(i, i + CONCURRENCY);
+      const settled = await Promise.all(batch.map(async (task) => {
+        const agent = await classifyTaskAgent(task.prompt);
+        if (agent && assignMissionTask(task.id, agent)) {
+          return { id: task.id, agent };
+        }
+        return null;
+      }));
+      for (const r of settled) if (r) results.push(r);
+    }
+    return c.json({ assigned: results.length, results });
+  });
+
   // Auto-assign a single task via Gemini classification
   app.post('/api/mission/tasks/:id/auto-assign', async (c) => {
     const id = c.req.param('id');
@@ -1385,21 +1413,6 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
     assignMissionTask(id, agent);
     return c.json({ ok: true, assigned_agent: agent });
-  });
-
-  // Auto-assign all unassigned tasks
-  app.post('/api/mission/tasks/auto-assign-all', async (c) => {
-    const tasks = getUnassignedMissionTasks();
-    if (tasks.length === 0) return c.json({ assigned: 0 });
-
-    const results: Array<{ id: string; agent: string }> = [];
-    for (const task of tasks) {
-      const agent = await classifyTaskAgent(task.prompt);
-      if (agent && assignMissionTask(task.id, agent)) {
-        results.push({ id: task.id, agent });
-      }
-    }
-    return c.json({ assigned: results.length, results });
   });
 
   app.patch('/api/mission/tasks/:id', async (c) => {
@@ -1749,10 +1762,17 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
     const agentIds = listAgentIds();
     const updated: string[] = [];
+    const restartRequired: string[] = [];
     for (const id of agentIds) {
-      try { setAgentModel(id, model); updated.push(id); } catch {}
+      try {
+        setAgentModel(id, model);
+        updated.push(id);
+        // Yaml is now updated, but a sub-agent's already-running process
+        // froze its model at startup. Flag for the UI to offer a restart.
+        if (id !== 'main') restartRequired.push(id);
+      } catch {}
     }
-    return c.json({ ok: true, model, updated });
+    return c.json({ ok: true, model, updated, restartRequired });
   });
 
   // Update agent model
@@ -1767,13 +1787,18 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
     try {
       if (agentId === 'main') {
-        // Main agent uses in-memory override (same as /model command)
+        // Main applies in-memory immediately — no restart needed.
         const { setMainModelOverride } = await import('./bot.js');
         setMainModelOverride(model);
-      } else {
-        setAgentModel(agentId, model);
+        return c.json({ ok: true, agent: agentId, model, restartRequired: false });
       }
-      return c.json({ ok: true, agent: agentId, model });
+      // Sub-agents read agentDefaultModel into config.ts module state once
+      // at process startup. Yaml change takes effect only after the agent
+      // process restarts. We don't auto-restart because that would kill any
+      // in-flight mission task or Telegram turn — surface the requirement
+      // so the UI can prompt deliberately.
+      setAgentModel(agentId, model);
+      return c.json({ ok: true, agent: agentId, model, restartRequired: true });
     } catch (err) {
       return c.json({ error: 'Failed to update model' }, 500);
     }
@@ -1977,6 +2002,13 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const body = await c.req.json<{ message?: string }>();
     const message = body?.message?.trim();
     if (!message) return c.json({ error: 'message required' }, 400);
+
+    // Reject if a turn is already in flight. Without this guard, rapid
+    // clicks (or a scripted token holder) can stack N agent invocations,
+    // each consuming context and Anthropic budget.
+    if (getIsProcessing().processing) {
+      return c.json({ error: 'busy', reason: 'already_processing' }, 429);
+    }
 
     // Fire-and-forget: response comes via SSE
     void processMessageFromDashboard(botApi, message);
