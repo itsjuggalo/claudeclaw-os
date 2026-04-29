@@ -16,6 +16,10 @@ workspace/
 *.db-shm
 *.sqlite
 *.sqlite3
+# Pre-migration backups produced by scripts/migrate.ts. Belt-and-suspenders
+# even though store/ above already covers the canonical location.
+*.db.pre-*.bak
+*.db.pre-*.bak-wal
 
 # Migration state — local only
 migrations/.applied.json
@@ -45,7 +49,13 @@ outputs/
 # Personal scripts — not for sharing
 scripts/waste-reminder.sh
 start-main.sh
+start-main.bat
 WARROOM_TEST_PLAN.md
+
+# Generated Windows service wrappers (contain hardcoded paths).
+# Note: launchd/ plists are committed with __PROJECT_DIR__ / __HOME__
+# placeholders, so they stay tracked.
+win/
 
 # War Room dev/test artifacts
 warroom/test-audio*.wav
@@ -59,3 +69,14 @@ warroom/avatars/photoreal-backup/
 CLAUDE.md
 agents/*/agent.yaml
 agents/*/CLAUDE.md
+
+# Local Claude Code skills — these are user-specific workflow configs
+# (absolute paths, private repo refs). Keep them out of the shared repo.
+.claude/skills/
+
+# Claudex (codex review loop) state and logs. Per-machine artifacts:
+# state files reference local PIDs and absolute paths; log files stream
+# every reviewer invocation. Both at the project root AND inside per-agent
+# CWDs (sub-agents start with cwd=agents/<id>).
+.claude/claudex/
+agents/*/.claude/claudex/

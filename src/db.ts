@@ -367,6 +367,10 @@ export function initDatabase(): void {
 
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  // Wait up to 5s on write locks. Multiple agent processes (main + research +
+  // comms + content + ops) run initDatabase() at startup; without this a
+  // concurrent ALTER can throw SQLITE_BUSY on whichever process loses the race.
+  db.pragma('busy_timeout = 5000');
   createSchema(db);
   runMigrations(db);
 
@@ -378,6 +382,28 @@ export function initDatabase(): void {
     }
     fs.chmodSync(STORE_DIR, 0o700);
   } catch { /* non-fatal on platforms that don't support chmod */ }
+}
+
+/**
+ * Add a column to a table if it doesn't already exist. Tolerates the
+ * concurrent-startup race where two agent processes both observe the column
+ * as missing and both attempt the ALTER; whichever loses sees "duplicate
+ * column" and treats it as a no-op.
+ */
+function addColumnIfMissing(
+  database: Database.Database,
+  table: string,
+  column: string,
+  typeAndDefault: string,
+): void {
+  const cols = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === column)) return;
+  try {
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${typeAndDefault}`);
+  } catch (err: any) {
+    if (/duplicate column/i.test(err?.message ?? '')) return;
+    throw err;
+  }
 }
 
 /** Add columns that may not exist in older databases. */
@@ -620,6 +646,41 @@ function runMigrations(database: Database.Database): void {
     database.exec(`ALTER TABLE meet_sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'pika'`);
     logger.info('Migration: added provider column to meet_sessions');
   }
+
+  // Text War Room: tag each meeting as voice or text so existing voice rows
+  // stay untouched and the dashboard can filter. The existing `mode` column
+  // on warroom_meetings is voice-only semantics (direct|auto) and can't
+  // double as meeting-type.
+  addColumnIfMissing(database, 'warroom_meetings', 'meeting_type', `TEXT NOT NULL DEFAULT 'voice'`);
+
+  // Text War Room hive-mind: chat_id on warroom_meetings so a text meeting
+  // knows which Telegram chat owns it, separately from the synthetic
+  // SDK session key (`warroom-text:${meetingId}`). Memory/missions/conv-log
+  // calls inside runAgentTurn use this real chat_id; legacy rows default
+  // to '' and the bridge no-ops for them.
+  addColumnIfMissing(database, 'warroom_meetings', 'chat_id', `TEXT NOT NULL DEFAULT ''`);
+
+  // Text War Room hive-mind: tag conversation_log rows that originated from
+  // the war room so they can be deduped on retry and so memory ingestion
+  // can scope by source if needed. Existing Telegram rows default to
+  // 'telegram'. source_meeting_id + source_turn_id back the partial unique
+  // indexes below, which guard against double-persistence on retries.
+  addColumnIfMissing(database, 'conversation_log', 'source', `TEXT NOT NULL DEFAULT 'telegram'`);
+  addColumnIfMissing(database, 'conversation_log', 'source_meeting_id', `TEXT`);
+  addColumnIfMissing(database, 'conversation_log', 'source_turn_id', `TEXT`);
+
+  // Two partial unique indexes so a multi-agent slash turn (which produces
+  // ONE user prompt + N assistant rows under one source_turn_id) doesn't
+  // collide on retry. User row keyed without agent_id (singleton per turn);
+  // assistant rows keyed WITH agent_id (one per speaking agent).
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_convlog_warroom_user
+      ON conversation_log(source, source_meeting_id, source_turn_id)
+      WHERE source != 'telegram' AND role = 'user';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_convlog_warroom_assistant
+      ON conversation_log(source, source_meeting_id, source_turn_id, agent_id)
+      WHERE source != 'telegram' AND role = 'assistant';
+  `);
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -630,6 +691,16 @@ export function _initTestDatabase(): void {
   db.pragma('journal_mode = WAL');
   createSchema(db);
   runMigrations(db);
+}
+
+/**
+ * Test-only: backdate a war-room meeting's `ended_at` so retention sweep
+ * tests don't have to wait real wall-clock time. Marked with the `_test`
+ * prefix consistent with other test-only exports.
+ */
+export function _testBackdateMeetingEnd(meetingId: string, endedAtSec: number): void {
+  db.prepare('UPDATE warroom_meetings SET ended_at = ? WHERE id = ?')
+    .run(endedAtSec, meetingId);
 }
 
 export function getSession(chatId: string, agentId = 'main'): string | undefined {
@@ -747,16 +818,19 @@ function extractKeywords(query: string): string[] {
  * Search memories using embedding similarity (primary) with FTS5/LIKE fallback.
  * The queryEmbedding parameter is optional; if provided, vector search is used first.
  * If not provided (or no embeddings in DB), falls back to keyword search.
+ * When `agentId` is supplied, results are strictly scoped to that agent so
+ * one agent never sees another agent's private memories.
  */
 export function searchMemories(
   chatId: string,
   query: string,
   limit = 5,
   queryEmbedding?: number[],
+  agentId?: string,
 ): Memory[] {
   // Strategy 1: Vector similarity search (if embedding provided)
   if (queryEmbedding && queryEmbedding.length > 0) {
-    const candidates = getMemoriesWithEmbeddings(chatId);
+    const candidates = getMemoriesWithEmbeddings(chatId, agentId);
     if (candidates.length > 0) {
       const scored = candidates
         .map((c) => ({ id: c.id, score: cosineSimilarity(queryEmbedding, c.embedding) }))
@@ -787,15 +861,19 @@ export function searchMemories(
   // the worst case, interpret attacker-controlled characters as query
   // operators. Belt-and-braces on top of extractKeywords' own filtering.
   const ftsQuery = keywords.map((w) => `"${w.replace(/"/g, '')}"*`).join(' OR ');
+  const ftsAgentClause = agentId ? ' AND memories.agent_id = ?' : '';
+  const ftsParams: unknown[] = [ftsQuery, chatId];
+  if (agentId) ftsParams.push(agentId);
+  ftsParams.push(limit);
   let results = db
     .prepare(
       `SELECT memories.* FROM memories
        JOIN memories_fts ON memories.id = memories_fts.rowid
-       WHERE memories_fts MATCH ? AND memories.chat_id = ? AND memories.superseded_by IS NULL
+       WHERE memories_fts MATCH ? AND memories.chat_id = ? AND memories.superseded_by IS NULL${ftsAgentClause}
        ORDER BY rank
        LIMIT ?`,
     )
-    .all(ftsQuery, chatId, limit) as Memory[];
+    .all(...ftsParams) as Memory[];
 
   if (results.length > 0) return results;
 
@@ -809,14 +887,18 @@ export function searchMemories(
     likeParams.push(pattern, pattern, pattern, pattern);
   }
 
+  const likeAgentClause = agentId ? ' AND agent_id = ?' : '';
+  const likeAllParams: unknown[] = [chatId, ...likeParams];
+  if (agentId) likeAllParams.push(agentId);
+  likeAllParams.push(limit);
   results = db
     .prepare(
       `SELECT * FROM memories
-       WHERE chat_id = ? AND superseded_by IS NULL AND (${likeConditions})
+       WHERE chat_id = ? AND superseded_by IS NULL AND (${likeConditions})${likeAgentClause}
        ORDER BY importance DESC, accessed_at DESC
        LIMIT ?`,
     )
-    .all(chatId, ...likeParams, limit) as Memory[];
+    .all(...likeAllParams) as Memory[];
 
   return results;
 }
@@ -850,10 +932,17 @@ export function saveStructuredMemoryAtomic(
   return txn();
 }
 
-export function getMemoriesWithEmbeddings(chatId: string): Array<{ id: number; embedding: number[]; summary: string; importance: number }> {
+export function getMemoriesWithEmbeddings(
+  chatId: string,
+  agentId?: string,
+): Array<{ id: number; embedding: number[]; summary: string; importance: number }> {
+  const sql = agentId
+    ? 'SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND agent_id = ? AND embedding IS NOT NULL AND superseded_by IS NULL'
+    : 'SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND embedding IS NOT NULL AND superseded_by IS NULL';
+  const params = agentId ? [chatId, agentId] : [chatId];
   const rows = db
-    .prepare('SELECT id, embedding, summary, importance FROM memories WHERE chat_id = ? AND embedding IS NOT NULL AND superseded_by IS NULL')
-    .all(chatId) as Array<{ id: number; embedding: string; summary: string; importance: number }>;
+    .prepare(sql)
+    .all(...params) as Array<{ id: number; embedding: string; summary: string; importance: number }>;
   return rows.map((r) => ({
     id: r.id,
     embedding: JSON.parse(r.embedding) as number[],
@@ -862,7 +951,19 @@ export function getMemoriesWithEmbeddings(chatId: string): Array<{ id: number; e
   }));
 }
 
-export function getRecentHighImportanceMemories(chatId: string, limit = 5): Memory[] {
+export function getRecentHighImportanceMemories(
+  chatId: string,
+  limit = 5,
+  agentId?: string,
+): Memory[] {
+  if (agentId) {
+    return db
+      .prepare(
+        `SELECT * FROM memories WHERE chat_id = ? AND agent_id = ? AND importance >= 0.5
+         ORDER BY accessed_at DESC LIMIT ?`,
+      )
+      .all(chatId, agentId, limit) as Memory[];
+  }
   return db
     .prepare(
       `SELECT * FROM memories WHERE chat_id = ? AND importance >= 0.5
@@ -1430,6 +1531,45 @@ export function pruneConversationLog(keepPerChat = 500): void {
     }
   });
   runAll(pairs);
+}
+
+/**
+ * Retention sweep for ended war-room meetings + their transcripts.
+ *
+ * Why this exists: warroom_meetings + warroom_transcript were not touched
+ * by the original decay sweep. Long-running installs accumulate every
+ * meeting indefinitely; transcripts can be hundreds of rows each. Cap at
+ * `retentionDays` since `ended_at` (default 90). Active meetings (no
+ * `ended_at`) are never pruned.
+ *
+ * Cascading: deleting a `warroom_meetings` row removes its
+ * `warroom_transcript` rows via the FK ON DELETE CASCADE. We also clear
+ * matching `conversation_log` rows tagged with the meeting's ID so the
+ * "delete a meeting actually deletes its content" promise holds.
+ */
+export function pruneWarRoomMeetings(retentionDays = 90): { meetings: number; convLog: number } {
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400;
+  return db.transaction(() => {
+    const expired = db
+      .prepare(`SELECT id FROM warroom_meetings WHERE ended_at IS NOT NULL AND ended_at < ?`)
+      .all(cutoff) as Array<{ id: string }>;
+    if (expired.length === 0) return { meetings: 0, convLog: 0 };
+    const ids = expired.map((r) => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+
+    const convDel = db
+      .prepare(`DELETE FROM conversation_log WHERE source_meeting_id IN (${placeholders})`)
+      .run(...ids);
+    // warroom_transcript rows go via the FK cascade on warroom_meetings.
+    const meetDel = db
+      .prepare(`DELETE FROM warroom_meetings WHERE id IN (${placeholders})`)
+      .run(...ids);
+
+    return {
+      meetings: Number(meetDel.changes),
+      convLog: Number(convDel.changes),
+    };
+  })();
 }
 
 // ── WhatsApp messages ────────────────────────────────────────────────
@@ -2394,25 +2534,291 @@ export function endWarRoomMeeting(id: string, entryCount: number): void {
   ).run(now, id);
 }
 
-export function addWarRoomTranscript(meetingId: string, speaker: string, text: string): void {
-  db.prepare(
+export function addWarRoomTranscript(
+  meetingId: string,
+  speaker: string,
+  text: string,
+): { id: number; created_at: number } {
+  const created_at = Math.floor(Date.now() / 1000);
+  const info = db.prepare(
     'INSERT INTO warroom_transcript (meeting_id, speaker, text, created_at) VALUES (?, ?, ?, ?)',
-  ).run(meetingId, speaker, text, Math.floor(Date.now() / 1000));
+  ).run(meetingId, speaker, text, created_at);
+  return { id: Number(info.lastInsertRowid), created_at };
 }
 
+// Voice-only history. Text meetings live in the same table (with
+// meeting_type = 'text') and have their own /warroom/text picker — they
+// must not leak into the voice meeting list.
 export function getWarRoomMeetings(limit = 20): Array<{
   id: string; started_at: number; ended_at: number | null; duration_s: number | null;
   mode: string; pinned_agent: string; entry_count: number;
 }> {
   return db.prepare(
-    'SELECT * FROM warroom_meetings ORDER BY started_at DESC LIMIT ?',
+    `SELECT * FROM warroom_meetings
+      WHERE meeting_type IS NULL OR meeting_type = 'voice'
+      ORDER BY started_at DESC LIMIT ?`,
   ).all(limit) as any[];
 }
 
-export function getWarRoomTranscript(meetingId: string): Array<{
-  speaker: string; text: string; created_at: number;
+export function getWarRoomTranscript(
+  meetingId: string,
+  opts: { limit?: number; beforeTs?: number; beforeId?: number } = {},
+): Array<{
+  id: number; speaker: string; text: string; created_at: number;
 }> {
+  const { limit, beforeTs, beforeId } = opts;
+  // When limit is omitted, preserve the legacy "return everything ASC"
+  // behavior for the voice War Room caller in dashboard.ts.
+  if (limit === undefined && beforeTs === undefined && beforeId === undefined) {
+    return db.prepare(
+      'SELECT id, speaker, text, created_at FROM warroom_transcript WHERE meeting_id = ? ORDER BY created_at, id',
+    ).all(meetingId) as any[];
+  }
+  // Paginated path: composite cursor on (created_at, id) so multiple rows
+  // with the same created_at second don't get skipped. Callers pass
+  // beforeTs+beforeId (the oldest already-loaded row's values); we return
+  // rows strictly older than that cursor, newest-first, and the caller
+  // reverses for display order.
+  const cap = Math.max(1, Math.min(1000, limit ?? 200));
+  if (beforeTs !== undefined) {
+    const bId = beforeId ?? Number.MAX_SAFE_INTEGER;
+    return db.prepare(
+      `SELECT id, speaker, text, created_at
+         FROM warroom_transcript
+        WHERE meeting_id = ?
+          AND (created_at < ? OR (created_at = ? AND id < ?))
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?`,
+    ).all(meetingId, beforeTs, beforeTs, bId, cap) as any[];
+  }
   return db.prepare(
-    'SELECT speaker, text, created_at FROM warroom_transcript WHERE meeting_id = ? ORDER BY created_at',
-  ).all(meetingId) as any[];
+    'SELECT id, speaker, text, created_at FROM warroom_transcript WHERE meeting_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+  ).all(meetingId, cap) as any[];
+}
+
+// ── War Room hive-mind bridges ───────────────────────────────────────
+
+/** Persist a war-room turn to conversation_log atomically and idempotently.
+ *  - User row written ONCE per turn (singleton via partial unique index).
+ *  - One assistant row per agent (per-agent unique via index).
+ *  - On retry, INSERT OR IGNORE detects existing rows; only fresh inserts
+ *    are reported back, so the caller can gate memory ingestion on the
+ *    assistant row being NEW (not a no-op replay).
+ *  - chatId === '' (legacy meetings) → caller should skip this entirely.
+ */
+export function saveWarRoomConversationTurn(args: {
+  chatId: string;
+  agentId: string;
+  originalUserText: string;
+  agentReply: string;
+  meetingId: string;
+  turnId: string;
+}): { userInserted: boolean; assistantInserted: boolean } {
+  const { chatId, agentId, originalUserText, agentReply, meetingId, turnId } = args;
+  if (!meetingId || !turnId) {
+    throw new Error('saveWarRoomConversationTurn: meetingId and turnId required');
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const userStmt = db.prepare(
+    `INSERT OR IGNORE INTO conversation_log
+       (chat_id, session_id, role, content, created_at, agent_id, source, source_meeting_id, source_turn_id)
+     VALUES (?, NULL, 'user', ?, ?, ?, 'warroom-text', ?, ?)`,
+  );
+  const asstStmt = db.prepare(
+    `INSERT OR IGNORE INTO conversation_log
+       (chat_id, session_id, role, content, created_at, agent_id, source, source_meeting_id, source_turn_id)
+     VALUES (?, NULL, 'assistant', ?, ?, ?, 'warroom-text', ?, ?)`,
+  );
+  const txn = db.transaction(() => {
+    const u = userStmt.run(chatId, originalUserText, now, agentId, meetingId, turnId);
+    const a = asstStmt.run(chatId, agentReply, now, agentId, meetingId, turnId);
+    return {
+      userInserted: u.changes > 0,
+      assistantInserted: a.changes > 0,
+    };
+  });
+  return txn();
+}
+
+/** Bounded mission lookup. Existing getMissionTasks is unbounded; this
+ *  variant takes a sinceTs cutoff and a hard limit so /standup never
+ *  pulls a runaway result set. */
+export function getRecentMissionTasks(
+  agentId: string,
+  status: string | undefined,
+  sinceTs: number,
+  limit = 10,
+): MissionTask[] {
+  const conds: string[] = ['assigned_agent = ?', 'created_at >= ?'];
+  const params: unknown[] = [agentId, sinceTs];
+  if (status) { conds.push('status = ?'); params.push(status); }
+  params.push(limit);
+  return db
+    .prepare(
+      `SELECT * FROM mission_tasks WHERE ${conds.join(' AND ')}
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(...params) as MissionTask[];
+}
+
+/** Last N war-room transcript rows for a chat across all its meetings,
+ *  optionally excluding the meeting that's currently building context.
+ *  Used by buildMemoryContext to bridge war room → Telegram so a Telegram
+ *  follow-up can cite what was said earlier in a war room. */
+export function getRecentWarRoomTranscriptForChat(
+  chatId: string,
+  opts: { limit?: number; sinceTs?: number; excludeMeetingId?: string } = {},
+): Array<{ id: number; meeting_id: string; speaker: string; text: string; created_at: number }> {
+  const { limit = 10, sinceTs, excludeMeetingId } = opts;
+  const conds: string[] = ['m.meeting_type = ?', 'm.chat_id = ?'];
+  const params: unknown[] = ['text', chatId];
+  if (sinceTs !== undefined) { conds.push('t.created_at >= ?'); params.push(sinceTs); }
+  if (excludeMeetingId) { conds.push('t.meeting_id != ?'); params.push(excludeMeetingId); }
+  params.push(limit);
+  return db
+    .prepare(
+      `SELECT t.id, t.meeting_id, t.speaker, t.text, t.created_at
+         FROM warroom_transcript t
+         JOIN warroom_meetings m ON m.id = t.meeting_id
+        WHERE ${conds.join(' AND ')}
+        ORDER BY t.created_at DESC, t.id DESC
+        LIMIT ?`,
+    )
+    .all(...params) as Array<{ id: number; meeting_id: string; speaker: string; text: string; created_at: number }>;
+}
+
+// ── Text War Room helpers ────────────────────────────────────────────
+// Kept separate from createWarRoomMeeting so the text path can't accidentally
+// inherit the voice default of pinned_agent='main'. A text meeting starts
+// with NO pinned agent so the router is allowed to pick primary.
+
+export function createTextMeeting(id: string, chatId = ''): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO warroom_meetings
+       (id, started_at, mode, pinned_agent, meeting_type, chat_id)
+     VALUES (?, ?, 'direct', NULL, 'text', ?)`,
+  ).run(id, Math.floor(Date.now() / 1000), chatId);
+}
+
+export function getTextMeeting(id: string): {
+  id: string; started_at: number; ended_at: number | null; duration_s: number | null;
+  mode: string; pinned_agent: string | null; entry_count: number; meeting_type: string;
+  chat_id: string;
+} | null {
+  const row = db.prepare(
+    `SELECT id, started_at, ended_at, duration_s, mode, pinned_agent, entry_count, meeting_type, chat_id
+       FROM warroom_meetings WHERE id = ? AND meeting_type = 'text'`,
+  ).get(id) as any;
+  return row ?? null;
+}
+
+export function setMeetingPin(meetingId: string, agentId: string | null): void {
+  db.prepare(
+    `UPDATE warroom_meetings SET pinned_agent = ? WHERE id = ? AND meeting_type = 'text'`,
+  ).run(agentId, meetingId);
+}
+
+/** Returns ids of every still-open text meeting except the optional
+ *  exclusion. Optionally scope by chat_id so creating a new meeting in
+ *  chat A does not auto-end open meetings belonging to chat B. The
+ *  dashboard uses this to force-end stale meetings when the user creates
+ *  a new one (refresh = clean slate within the same chat). */
+export function getOpenTextMeetingIds(exceptId?: string, chatId?: string): string[] {
+  const conds: string[] = [`meeting_type = 'text'`, `ended_at IS NULL`];
+  const params: unknown[] = [];
+  if (exceptId) { conds.push('id != ?'); params.push(exceptId); }
+  if (chatId !== undefined) { conds.push('chat_id = ?'); params.push(chatId); }
+  const rows = db.prepare(
+    `SELECT id FROM warroom_meetings WHERE ${conds.join(' AND ')}`,
+  ).all(...params) as Array<{ id: string }>;
+  return rows.map((r) => r.id);
+}
+
+/** Recent text meetings, newest first. Includes a short preview of the
+ *  first user message so the picker can show a recognizable label.
+ *  Optionally scope by chat_id so the picker only shows meetings for the
+ *  current chat. Pass chatId='' to see legacy/unscoped meetings; omit
+ *  to include everything (admin/debug). */
+export function getTextMeetings(limit = 20, chatId?: string): Array<{
+  id: string;
+  started_at: number;
+  ended_at: number | null;
+  entry_count: number;
+  preview: string;
+}> {
+  const params: unknown[] = [];
+  let where = `meeting_type = 'text'`;
+  if (chatId !== undefined) { where += ` AND chat_id = ?`; params.push(chatId); }
+  params.push(limit);
+  const rows = db.prepare(
+    `SELECT id, started_at, ended_at, entry_count
+       FROM warroom_meetings
+      WHERE ${where}
+      ORDER BY started_at DESC
+      LIMIT ?`,
+  ).all(...params) as Array<{ id: string; started_at: number; ended_at: number | null; entry_count: number }>;
+  if (rows.length === 0) return [];
+  const previewStmt = db.prepare(
+    `SELECT text FROM warroom_transcript
+      WHERE meeting_id = ? AND speaker = 'user'
+      ORDER BY created_at, id LIMIT 1`,
+  );
+  return rows.map((r) => {
+    const p = previewStmt.get(r.id) as { text: string } | undefined;
+    const preview = (p?.text ?? '').slice(0, 140);
+    return { ...r, preview };
+  });
+}
+
+export function clearMeetingSessions(meetingId: string, agentIds: string[]): number {
+  if (agentIds.length === 0) return 0;
+  const chatId = `warroom-text:${meetingId}`;
+  const placeholders = agentIds.map(() => '?').join(',');
+  const info = db.prepare(
+    `DELETE FROM sessions WHERE chat_id = ? AND agent_id IN (${placeholders})`,
+  ).run(chatId, ...agentIds);
+  return info.changes;
+}
+
+// ── Client message dedup (in-memory LRU) ─────────────────────────────
+// Sized for 10k concurrent conversations with rapid resends. 24h TTL means
+// a user that retries a message a day later gets re-processed (acceptable).
+// Not persisted across bot restarts — worst case a retry after restart
+// double-processes; acceptable tradeoff vs a DB table for something this
+// ephemeral.
+
+const CLIENT_MSG_TTL_MS = 24 * 60 * 60 * 1000;
+const CLIENT_MSG_MAX_ENTRIES = 10_000;
+const _clientMsgSeen = new Map<string, number>(); // id -> expires_at
+
+export function rememberClientMsgId(id: string, ttlMs = CLIENT_MSG_TTL_MS): boolean {
+  const now = Date.now();
+  // Reject anything that isn't a v4 UUID. Malformed IDs would otherwise
+  // cache unbounded and become a DoS vector.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    return false;
+  }
+  const existing = _clientMsgSeen.get(id);
+  if (existing !== undefined && existing > now) return false; // duplicate
+  _clientMsgSeen.set(id, now + ttlMs);
+  // Opportunistic eviction: evict expired entries whenever we cross the cap.
+  if (_clientMsgSeen.size > CLIENT_MSG_MAX_ENTRIES) {
+    for (const [k, exp] of _clientMsgSeen) {
+      if (exp <= now) _clientMsgSeen.delete(k);
+      if (_clientMsgSeen.size <= CLIENT_MSG_MAX_ENTRIES) break;
+    }
+    // If still over cap after evicting expired entries, drop oldest-inserted
+    // (Map iteration order is insertion order in ES2015+).
+    while (_clientMsgSeen.size > CLIENT_MSG_MAX_ENTRIES) {
+      const oldest = _clientMsgSeen.keys().next().value;
+      if (oldest === undefined) break;
+      _clientMsgSeen.delete(oldest);
+    }
+  }
+  return true;
+}
+
+/** @internal for tests — clear the dedup cache. */
+export function _resetClientMsgCache(): void {
+  _clientMsgSeen.clear();
 }
