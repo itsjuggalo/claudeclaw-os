@@ -1,12 +1,16 @@
 import { useState } from 'preact/hooks';
-import { Check } from 'lucide-preact';
+import { Check, Pipette, RotateCcw } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Toggle } from '@/components/Toggle';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
-import { theme, themeMeta, setTheme, type ThemeName } from '@/lib/theme';
+import {
+  theme, themeMeta, setTheme, type ThemeName,
+  customAccent, setCustomAccent,
+  uiScale, setUiScale,
+} from '@/lib/theme';
 import {
   workspaceName,
   setWorkspaceName,
@@ -80,6 +84,21 @@ export function Settings() {
               <Divider />
               <Row label="Theme" hint="Switches CSS variables across the app.">
                 <ThemePicker />
+              </Row>
+              <Divider />
+              <Row label="Custom accent" hint="Override the theme's accent with any hex. Reset clears it.">
+                <AccentPicker />
+              </Row>
+            </Card>
+          </Section>
+
+          <Section
+            title="Display"
+            subtitle="UI scale is per-browser (stored in localStorage), not per-workspace."
+          >
+            <Card>
+              <Row label="UI scale" hint="Zooms the whole app proportionally so layout stays correct.">
+                <ScalePicker />
               </Row>
             </Card>
           </Section>
@@ -188,6 +207,95 @@ function ThemePicker() {
               style={{ background: meta.swatch, border: '1px solid var(--color-border)' }}
             />
             {meta.label}
+            {active && <Check size={12} class="text-[var(--color-accent)]" />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Accent picker ─────────────────────────────────────────────────────
+
+function AccentPicker() {
+  const current = customAccent.value;
+  const [draft, setDraft] = useState(current ?? '#');
+  function commit(next: string) {
+    if (/^#[0-9a-fA-F]{6}$/.test(next)) setCustomAccent(next);
+  }
+  return (
+    <div class="flex items-center gap-2">
+      <label
+        class="relative inline-flex items-center justify-center w-8 h-8 rounded border border-[var(--color-border)] cursor-pointer overflow-hidden"
+        style={{ backgroundColor: current || 'var(--color-elevated)' }}
+        title="Pick a color"
+      >
+        <Pipette size={13} class={current ? 'text-white mix-blend-difference' : 'text-[var(--color-text-faint)]'} />
+        <input
+          type="color"
+          value={current || '#8b8af0'}
+          onInput={(e) => {
+            const v = (e.target as HTMLInputElement).value.toLowerCase();
+            setDraft(v); commit(v);
+          }}
+          class="absolute inset-0 opacity-0 cursor-pointer"
+        />
+      </label>
+      <input
+        type="text"
+        value={draft}
+        onInput={(e) => {
+          const v = (e.target as HTMLInputElement).value;
+          setDraft(v);
+          if (/^#[0-9a-fA-F]{6}$/.test(v)) setCustomAccent(v);
+        }}
+        placeholder="#8b8af0"
+        maxLength={7}
+        class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[110px]"
+      />
+      {current && (
+        <button
+          type="button"
+          onClick={() => { setCustomAccent(null); setDraft('#'); }}
+          class="inline-flex items-center gap-1 px-2 py-1.5 rounded text-[11.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors"
+          title="Restore theme accent"
+        >
+          <RotateCcw size={11} /> Reset
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── UI scale picker ───────────────────────────────────────────────────
+
+const SCALE_PRESETS: Array<{ value: number; label: string }> = [
+  { value: 0.95, label: '95%' },
+  { value: 1.00, label: '100%' },
+  { value: 1.10, label: '110%' },
+  { value: 1.25, label: '125%' },
+  { value: 1.50, label: '150%' },
+];
+
+function ScalePicker() {
+  const current = uiScale.value;
+  return (
+    <div class="flex flex-wrap items-center gap-1.5">
+      {SCALE_PRESETS.map((p) => {
+        const active = Math.abs(current - p.value) < 0.001;
+        return (
+          <button
+            key={p.value}
+            type="button"
+            onClick={() => setUiScale(p.value)}
+            class={[
+              'inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12.5px] border transition-colors tabular-nums',
+              active
+                ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-text)]'
+                : 'bg-[var(--color-card)] border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)]',
+            ].join(' ')}
+          >
+            {p.label}
             {active && <Check size={12} class="text-[var(--color-accent)]" />}
           </button>
         );
