@@ -5,9 +5,21 @@ import { PageState } from '@/components/PageState';
 import { StatusDot } from '@/components/Pill';
 import { useFetch } from '@/lib/useFetch';
 import { apiGet, apiPost, tokenizedSseUrl, chatId } from '@/lib/api';
+import { renderMarkdown } from '@/lib/markdown';
+import { formatCost, formatNumber } from '@/lib/format';
 
 interface Turn { role: 'user' | 'assistant'; content: string; source?: string; created_at?: number; }
 interface Agent { id: string; name: string; running: boolean; }
+
+interface AgentTokens { todayCost: number; todayTurns: number; allTimeCost: number; }
+interface Health { contextPct: number; turns: number; model: string; }
+
+const QUICK_ACTIONS = [
+  { label: 'Status update', prompt: "Quick status update: what are you working on right now?" },
+  { label: "What's next", prompt: 'What should I focus on next based on context?' },
+  { label: 'Plan today', prompt: 'What does my day look like today? What are the priorities?' },
+  { label: 'Recent wins', prompt: 'What did I accomplish in the last 24 hours?' },
+];
 
 export function Chat() {
   const agents = useFetch<{ agents: Agent[] }>('/api/agents', 60_000);
@@ -21,6 +33,14 @@ export function Chat() {
   const [error, setError] = useState<string | null>(null);
   const [streamConnected, setStreamConnected] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Live session info for the bar.
+  const health = useFetch<Health>(`/api/health?chatId=${encodeURIComponent(chatId)}`, 30_000);
+  const agentTokens = useFetch<AgentTokens>(
+    activeAgent === 'all' ? null : `/api/agents/${activeAgent}/tokens`,
+    30_000,
+  );
 
   // Load conversation history when active agent changes.
   useEffect(() => {
@@ -34,12 +54,11 @@ export function Chat() {
       .finally(() => setLoading(false));
   }, [activeAgent]);
 
-  // Auto-scroll on new messages.
   useEffect(() => {
     if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
   }, [turns, processing]);
 
-  // Open SSE stream once for the lifetime of the page.
+  // SSE — single connection for the page.
   useEffect(() => {
     const url = tokenizedSseUrl('/api/chat/stream');
     const es = new EventSource(url);
@@ -57,6 +76,9 @@ export function Chat() {
         const data = JSON.parse(ev.data);
         setTurns((prev) => [...prev, { role: 'assistant', content: data.content, source: data.source }]);
         setProcessing(false); setProgressLabel(null);
+        // Refresh health/tokens after a turn settles so the bar reflects new cost.
+        health.refresh();
+        if (activeAgent !== 'all') agentTokens.refresh();
       } catch {}
     };
     const onProcessing = (ev: MessageEvent) => {
@@ -94,17 +116,17 @@ export function Chat() {
       es.removeEventListener('error', onErr as any);
       es.close();
     };
-  }, []);
+  }, []); // SSE survives the page; activeAgent change just reloads history.
 
-  async function send() {
-    const message = draft.trim();
+  async function send(textOverride?: string) {
+    const message = (textOverride ?? draft).trim();
     if (!message) return;
     setSending(true); setError(null);
     try {
       const res = await apiPost<{ ok?: boolean; error?: string }>('/api/chat/send', { message });
       if (!res.ok && res.error) {
         setError(res.error === 'busy' ? 'A turn is already in flight. Wait for it to finish.' : res.error);
-      } else {
+      } else if (!textOverride) {
         setDraft('');
       }
     } catch (err: any) {
@@ -116,7 +138,19 @@ export function Chat() {
     try { await apiPost('/api/chat/abort'); } catch {}
   }
 
+  function quick(prompt: string) {
+    void send(prompt);
+    inputRef.current?.focus();
+  }
+
   const agentList = agents.data?.agents ?? [];
+  const activeAgentObj = agentList.find((a) => a.id === activeAgent);
+  const todayCost = activeAgent === 'all'
+    ? agentList.reduce((sum, a: any) => sum + (a.todayCost || 0), 0)
+    : agentTokens.data?.todayCost ?? 0;
+  const todayTurns = activeAgent === 'all'
+    ? agentList.reduce((sum, a: any) => sum + (a.todayTurns || 0), 0)
+    : agentTokens.data?.todayTurns ?? 0;
 
   return (
     <div class="flex flex-col h-full">
@@ -138,6 +172,14 @@ export function Chat() {
         }
       />
 
+      <SessionBar
+        contextPct={health.data?.contextPct}
+        turnsToday={todayTurns}
+        costToday={todayCost}
+        model={activeAgent === 'all' ? health.data?.model : undefined}
+        agentLabel={activeAgentObj ? activeAgentObj.name || activeAgentObj.id : undefined}
+      />
+
       <div ref={messagesRef} class="flex-1 overflow-y-auto px-6 py-4 space-y-2">
         {error && <div class="text-[var(--color-status-failed)] text-[11.5px]">{error}</div>}
         {loading && <PageState loading />}
@@ -148,41 +190,79 @@ export function Chat() {
         {processing && <ProcessingBubble label={progressLabel} />}
       </div>
 
-      <div class="border-t border-[var(--color-border)] p-4">
-        <div class="flex items-end gap-2 max-w-4xl mx-auto">
-          <textarea
-            value={draft}
-            onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                if (draft.trim()) void send();
-              }
-            }}
-            placeholder="Type a message. Shift+Enter for newline."
-            rows={1}
-            class="flex-1 bg-[var(--color-elevated)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[13px] outline-none focus:border-[var(--color-accent)] resize-none max-h-32"
-          />
-          {processing ? (
-            <button
-              type="button"
-              onClick={abort}
-              class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-[12px] font-medium bg-[var(--color-status-failed)] text-white hover:opacity-90 transition-opacity"
-            >
-              <Square size={12} fill="currentColor" /> Stop
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void send()}
-              disabled={!draft.trim() || sending}
-              class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <Send size={12} /> {sending ? 'Sending…' : 'Send'}
-            </button>
-          )}
+      <div class="border-t border-[var(--color-border)] px-4 pt-2 pb-3">
+        <div class="max-w-4xl mx-auto">
+          <div class="flex items-center gap-1 mb-2 flex-wrap">
+            {QUICK_ACTIONS.map((qa) => (
+              <button
+                key={qa.label}
+                type="button"
+                onClick={() => quick(qa.prompt)}
+                disabled={processing || sending}
+                class="px-2 py-0.5 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {qa.label}
+              </button>
+            ))}
+          </div>
+          <div class="flex items-end gap-2">
+            <textarea
+              ref={inputRef}
+              value={draft}
+              onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (draft.trim()) void send();
+                }
+              }}
+              placeholder="Type a message. Shift+Enter for newline."
+              rows={1}
+              class="flex-1 bg-[var(--color-elevated)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[13px] outline-none focus:border-[var(--color-accent)] resize-none max-h-32"
+            />
+            {processing ? (
+              <button
+                type="button"
+                onClick={abort}
+                class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-[12px] font-medium bg-[var(--color-status-failed)] text-white hover:opacity-90 transition-opacity"
+              >
+                <Square size={12} fill="currentColor" /> Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void send()}
+                disabled={!draft.trim() || sending}
+                class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <Send size={12} /> {sending ? 'Sending…' : 'Send'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function SessionBar({
+  contextPct, turnsToday, costToday, model, agentLabel,
+}: {
+  contextPct?: number; turnsToday: number; costToday: number; model?: string; agentLabel?: string;
+}) {
+  return (
+    <div class="flex items-center gap-4 px-6 py-1.5 border-b border-[var(--color-border)] text-[10.5px] text-[var(--color-text-faint)] tabular-nums">
+      {agentLabel && (
+        <span><span class="uppercase tracking-wider">Agent</span> <span class="text-[var(--color-text-muted)] normal-case tracking-normal">{agentLabel}</span></span>
+      )}
+      {typeof contextPct === 'number' && (
+        <span><span class="uppercase tracking-wider">Ctx</span> <span class="text-[var(--color-text-muted)]">{contextPct}%</span></span>
+      )}
+      <span><span class="uppercase tracking-wider">Turns today</span> <span class="text-[var(--color-text-muted)]">{formatNumber(turnsToday)}</span></span>
+      <span><span class="uppercase tracking-wider">Cost today</span> <span class="text-[var(--color-text-muted)]">{formatCost(costToday)}</span></span>
+      {model && (
+        <span class="ml-auto"><span class="uppercase tracking-wider">Model</span> <span class="text-[var(--color-text-muted)] normal-case font-mono">{model.replace('claude-', '')}</span></span>
+      )}
     </div>
   );
 }
@@ -207,17 +287,20 @@ function TabBtn({ label, active, onClick, live }: { label: string; active: boole
 
 function Bubble({ turn }: { turn: Turn }) {
   const isUser = turn.role === 'user';
+  const html = isUser ? null : renderMarkdown(turn.content);
   return (
     <div class={'flex ' + (isUser ? 'justify-end' : 'justify-start')}>
       <div
         class={[
-          'max-w-[75%] rounded-lg px-3 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap',
+          'max-w-[75%] rounded-lg px-3 py-2 text-[12.5px] leading-relaxed',
           isUser
-            ? 'bg-[var(--color-accent)] text-white rounded-br-sm'
-            : 'bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text)] rounded-bl-sm',
+            ? 'bg-[var(--color-accent)] text-white rounded-br-sm whitespace-pre-wrap'
+            : 'bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text)] rounded-bl-sm chat-md',
         ].join(' ')}
       >
-        {turn.content}
+        {isUser
+          ? turn.content
+          : <div dangerouslySetInnerHTML={{ __html: html || '' }} />}
         {turn.source === 'dashboard' && (
           <div class="text-[9.5px] opacity-60 mt-1 uppercase tracking-wider">via dashboard</div>
         )}
