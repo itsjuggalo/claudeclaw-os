@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 
 import fs from 'fs';
 import path from 'path';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
 import crypto from 'crypto';
 import {
   getAllScheduledTasks,
@@ -1891,7 +1891,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const yamlPath = path.join(agentDir, 'agent.yaml');
     const claudeMd = fs.existsSync(claudePath) ? fs.readFileSync(claudePath, 'utf-8') : '';
     const agentYaml = fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf-8') : '';
-    // Redact bot_token line so the dashboard never displays it.
+    // Redact bot_token line so the dashboard never displays it. Most
+    // agent.yaml files use telegram_bot_token_env to reference an env
+    // var by name (not a literal token), so this is defense-in-depth
+    // for any older agent.yaml that still inlines the token.
     const agentYamlRedacted = agentYaml.replace(
       /^(\s*bot_token\s*:\s*)([^\n#]+?)(\s*(?:#.*)?)$/m,
       '$1"***REDACTED***"$3',
@@ -1899,9 +1902,38 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return { claudeMd, agentYaml, agentYamlRedacted };
   }
 
+  // Main is the host process — it has no agents/main/ directory and no
+  // agent.yaml (its config lives in .env). Its CLAUDE.md is loaded from
+  // CLAUDECLAW_CONFIG/CLAUDE.md (preferred) or PROJECT_ROOT/CLAUDE.md
+  // (legacy fallback). The editor exposes only the persona for main.
+  function resolveMainClaudeMdPath(): string {
+    const external = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
+    if (fs.existsSync(external)) return external;
+    const repo = path.join(PROJECT_ROOT, 'CLAUDE.md');
+    if (fs.existsSync(repo)) return repo;
+    // Neither exists — write goes to the external path (the canonical
+    // location). Read returns empty.
+    return external;
+  }
+
   app.get('/api/agents/:id/files', (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+
+    if (agentId === 'main') {
+      const mainClaude = resolveMainClaudeMdPath();
+      const claudeMd = fs.existsSync(mainClaude) ? fs.readFileSync(mainClaude, 'utf-8') : '';
+      return c.json({
+        agent_id: 'main',
+        claude_md: claudeMd,
+        agent_yaml: '',
+        bot_token_redacted: false,
+        // Tells the UI to hide the Config tab — main has no agent.yaml.
+        config_editable: false,
+        claude_md_path: mainClaude,
+      });
+    }
+
     let agentDir: string;
     try { agentDir = resolveAgentDir(agentId); }
     catch { return c.json({ error: 'agent not found' }, 404); }
@@ -1911,6 +1943,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       claude_md: files.claudeMd,
       agent_yaml: files.agentYamlRedacted,
       bot_token_redacted: files.agentYaml !== files.agentYamlRedacted,
+      config_editable: true,
     });
   });
 
@@ -1924,10 +1957,22 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (body.content.length > 200_000) {
       return c.json({ error: 'CLAUDE.md exceeds 200KB' }, 400);
     }
-    let agentDir: string;
-    try { agentDir = resolveAgentDir(agentId); }
-    catch { return c.json({ error: 'agent not found' }, 404); }
-    const target = path.join(agentDir, 'CLAUDE.md');
+
+    // Resolve target path — main's CLAUDE.md lives outside the agents/
+    // tree. For sub-agents, the file goes into the agent's resolved dir
+    // (which respects CLAUDECLAW_CONFIG override).
+    let target: string;
+    if (agentId === 'main') {
+      target = resolveMainClaudeMdPath();
+      // Make sure the parent dir exists — fresh installs may not have
+      // created CLAUDECLAW_CONFIG yet.
+      try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
+    } else {
+      let agentDir: string;
+      try { agentDir = resolveAgentDir(agentId); }
+      catch { return c.json({ error: 'agent not found' }, 404); }
+      target = path.join(agentDir, 'CLAUDE.md');
+    }
     const backup = target + '.backup';
     try {
       if (fs.existsSync(target)) fs.copyFileSync(target, backup);
@@ -1948,6 +1993,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.put('/api/agents/:id/files/agent-yaml', async (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    if (agentId === 'main') {
+      // Main is the host process — its config lives in .env, not yaml.
+      return c.json({ error: 'main agent has no agent.yaml; edit .env directly' }, 400);
+    }
     const body = await c.req.json().catch(() => null) as { content?: string } | null;
     if (!body || typeof body.content !== 'string') {
       return c.json({ error: 'expected { content: string }' }, 400);

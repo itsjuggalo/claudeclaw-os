@@ -18,6 +18,10 @@ interface FilesResponse {
   claude_md: string;
   agent_yaml: string;
   bot_token_redacted: boolean;
+  // false for main (no agent.yaml) — UI hides the Config tab and the
+  // Restart button. Backend rejects PUT /agent-yaml for main with 400.
+  config_editable?: boolean;
+  claude_md_path?: string;
 }
 
 type TabKey = 'persona' | 'config';
@@ -41,6 +45,14 @@ export function AgentFiles() {
 
   // Load files once, then again whenever the agent id changes.
   useEffect(() => { void load(); }, [agentId]);
+
+  // If we're on main and on the Config tab when files load, snap back
+  // to Persona — main has no agent.yaml.
+  useEffect(() => {
+    if (files && files.config_editable === false && tab === 'config') {
+      setTab('persona');
+    }
+  }, [files, tab]);
 
   async function load() {
     if (!agentId) return;
@@ -133,7 +145,9 @@ export function AgentFiles() {
               <ArrowLeft size={12} /> Back
             </button>
             <Tab label="Persona (CLAUDE.md)" active={tab === 'persona'} onClick={() => setTab('persona')} />
-            <Tab label="Config (agent.yaml)" active={tab === 'config'} onClick={() => setTab('config')} />
+            {files?.config_editable !== false && (
+              <Tab label="Config (agent.yaml)" active={tab === 'config'} onClick={() => setTab('config')} />
+            )}
           </>
         }
         actions={
@@ -163,7 +177,7 @@ export function AgentFiles() {
             >
               <Save size={13} /> {saving === tab ? 'Saving…' : 'Save'}
             </button>
-            {tab === 'config' && (
+            {tab === 'config' && files?.config_editable !== false && (
               <button
                 type="button"
                 onClick={restart}
