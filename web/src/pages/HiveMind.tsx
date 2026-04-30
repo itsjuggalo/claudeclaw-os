@@ -1,4 +1,5 @@
-import { PageHeader } from '@/components/PageHeader';
+import { useState } from 'preact/hooks';
+import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime } from '@/lib/format';
@@ -21,15 +22,31 @@ const AGENT_HUE: Record<string, string> = {
   ops: '#a78bfa',
 };
 
+const KNOWN_AGENTS = ['main', 'research', 'comms', 'content', 'ops'];
+
 export function HiveMind() {
-  const { data, loading, error } = useFetch<{ entries: HiveEntry[] }>('/api/hive-mind?limit=100', 30_000);
+  const [filter, setFilter] = useState<string>('all');
+  const agentList = useFetch<{ agents: { id: string }[] }>('/api/agents');
+  const path = filter === 'all'
+    ? '/api/hive-mind?limit=200'
+    : `/api/hive-mind?agent=${encodeURIComponent(filter)}&limit=200`;
+  const { data, loading, error } = useFetch<{ entries: HiveEntry[] }>(path, 30_000);
   const entries = data?.entries ?? [];
+  const allAgents = agentList.data?.agents?.map((a) => a.id) ?? KNOWN_AGENTS;
 
   return (
     <div class="flex flex-col h-full">
       <PageHeader
         title="Hive Mind"
         actions={<span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">{entries.length} entries</span>}
+        tabs={
+          <>
+            <Tab label="All" active={filter === 'all'} onClick={() => setFilter('all')} />
+            {allAgents.map((id) => (
+              <Tab key={id} label={id} active={filter === id} onClick={() => setFilter(id)} />
+            ))}
+          </>
+        }
       />
       {error && <PageState error={error} />}
       {loading && !data && <PageState loading />}

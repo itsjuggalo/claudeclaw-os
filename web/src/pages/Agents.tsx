@@ -6,6 +6,7 @@ import { PageState } from '@/components/PageState';
 import { Modal } from '@/components/Modal';
 import { ModelPicker } from '@/components/ModelPicker';
 import { AgentAvatar } from '@/components/AgentAvatar';
+import { AgentDetail } from '@/components/AgentDetail';
 import { useFetch } from '@/lib/useFetch';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { apiPost, apiPatch, apiDelete } from '@/lib/api';
@@ -28,6 +29,7 @@ export function Agents() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [bulkModel, setBulkModel] = useState<string>('');
+  const [detailAgent, setDetailAgent] = useState<Agent | null>(null);
   const agents = data?.agents ?? [];
 
   async function setAllModels(model: string) {
@@ -82,17 +84,25 @@ export function Agents() {
       {agents.length > 0 && (
         <div class="flex-1 overflow-y-auto p-6">
           <div class="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
-            {agents.map((a) => <AgentCard key={a.id} agent={a} onChange={refresh} />)}
+            {agents.map((a) => (
+              <AgentCard
+                key={a.id}
+                agent={a}
+                onChange={refresh}
+                onOpen={() => setDetailAgent(a)}
+              />
+            ))}
           </div>
         </div>
       )}
 
       <CreateAgentWizard open={wizardOpen} onClose={() => setWizardOpen(false)} onCreated={refresh} />
+      <AgentDetail agent={detailAgent} onClose={() => setDetailAgent(null)} />
     </div>
   );
 }
 
-function AgentCard({ agent, onChange }: { agent: Agent; onChange: () => void }) {
+function AgentCard({ agent, onChange, onOpen }: { agent: Agent; onChange: () => void; onOpen: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
 
   async function run(action: 'restart' | 'stop' | 'start' | 'delete') {
@@ -129,7 +139,10 @@ function AgentCard({ agent, onChange }: { agent: Agent; onChange: () => void }) 
   const isMain = agent.id === 'main';
 
   return (
-    <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 hover:border-[var(--color-border-strong)] transition-colors">
+    <div
+      class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 hover:border-[var(--color-border-strong)] transition-colors cursor-pointer"
+      onClick={onOpen}
+    >
       <div class="flex items-start gap-3 mb-3">
         <AgentAvatar agentId={agent.id} name={agent.name} running={agent.running} size={36} />
         <div class="flex-1 min-w-0">
@@ -151,7 +164,7 @@ function AgentCard({ agent, onChange }: { agent: Agent; onChange: () => void }) 
         </div>
       )}
 
-      <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <div class="flex items-center gap-2 mb-3 flex-wrap" onClick={(e) => e.stopPropagation()}>
         <ModelPicker value={agent.model} onSelect={setModel} disabled={busy === 'model'} />
         {agent.running ? <Pill tone="done">running</Pill> : <Pill tone="cancelled">offline</Pill>}
       </div>
@@ -167,7 +180,7 @@ function AgentCard({ agent, onChange }: { agent: Agent; onChange: () => void }) 
         </div>
       </div>
 
-      <div class="flex items-center gap-1">
+      <div class="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
         {agent.running ? (
           <button
             type="button"

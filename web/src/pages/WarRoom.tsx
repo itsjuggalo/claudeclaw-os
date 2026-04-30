@@ -311,6 +311,8 @@ function MeetPane() {
 
   return (
     <div class="p-6 space-y-5">
+      <DispatchForm onChange={sessions.refresh} />
+
       <section>
         <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-2">Active sessions</div>
         {sessions.loading && active.length === 0 && <PageState loading />}
@@ -318,7 +320,7 @@ function MeetPane() {
           <div class="text-[11.5px] text-[var(--color-text-faint)]">No active video meetings.</div>
         )}
         <div class="space-y-1.5">
-          {active.map((s) => <MeetRow key={s.id} session={s} live />)}
+          {active.map((s) => <MeetRow key={s.id} session={s} live onChange={sessions.refresh} />)}
         </div>
       </section>
 
@@ -328,18 +330,179 @@ function MeetPane() {
           <div class="text-[11.5px] text-[var(--color-text-faint)]">None.</div>
         )}
         <div class="space-y-1.5">
-          {recent.map((s) => <MeetRow key={s.id} session={s} live={false} />)}
+          {recent.map((s) => <MeetRow key={s.id} session={s} live={false} onChange={sessions.refresh} />)}
         </div>
-      </section>
-
-      <section class="text-[11px] text-[var(--color-text-faint)] leading-relaxed">
-        Sending an agent into a Meet (Pika) or creating a Daily.co room is currently driven from Telegram or via the legacy dashboard's Live Meetings card. The dedicated launcher UI lands in a follow-up.
       </section>
     </div>
   );
 }
 
-function MeetRow({ session, live }: { session: MeetSession; live: boolean }) {
+function DispatchForm({ onChange }: { onChange: () => void }) {
+  const agents = useFetch<{ agents: { id: string; name: string; running: boolean }[] }>('/api/agents', 60_000);
+  const list = agents.data?.agents ?? [];
+  const [tab, setTab] = useState<'meet' | 'daily'>('meet');
+  const [agent, setAgent] = useState<string>('');
+  const [meetUrl, setMeetUrl] = useState('');
+  const [autoBrief, setAutoBrief] = useState(true);
+  const [dailyMode, setDailyMode] = useState<'direct' | 'auto'>('direct');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  // Default to first agent once loaded.
+  if (!agent && list.length > 0) setTimeout(() => setAgent(list[0].id), 0);
+
+  async function dispatchMeet() {
+    if (!agent || !meetUrl) return;
+    if (!/^https:\/\/meet\.google\.com\//.test(meetUrl)) {
+      setStatus({ kind: 'err', text: 'meet_url must start with https://meet.google.com/' });
+      return;
+    }
+    setBusy(true); setStatus(null);
+    try {
+      const res = await apiPost<{ ok: boolean; error?: string; message?: string }>('/api/meet/join', {
+        agent, meet_url: meetUrl, auto_brief: autoBrief,
+      });
+      if (!res.ok) throw new Error(res.error || 'Join failed');
+      setStatus({ kind: 'ok', text: res.message || 'Agent dispatched.' });
+      setMeetUrl('');
+      onChange();
+    } catch (err: any) {
+      setStatus({ kind: 'err', text: err?.message || String(err) });
+    } finally { setBusy(false); }
+  }
+
+  async function dispatchDaily() {
+    if (!agent) return;
+    setBusy(true); setStatus(null);
+    try {
+      const res = await apiPost<{ ok: boolean; room_url?: string; error?: string; message?: string }>('/api/meet/join-daily', {
+        agent, mode: dailyMode, auto_brief: autoBrief,
+      });
+      if (!res.ok) throw new Error(res.error || 'Create failed');
+      const tail = res.room_url ? ' Room: ' + res.room_url : '';
+      setStatus({ kind: 'ok', text: (res.message || 'Daily room ready.') + tail });
+      onChange();
+    } catch (err: any) {
+      setStatus({ kind: 'err', text: err?.message || String(err) });
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <section>
+      <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-2">Dispatch an agent</div>
+      <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg overflow-hidden">
+        <div class="flex border-b border-[var(--color-border)]">
+          <DispatchTab label="Google Meet (Pika)" active={tab === 'meet'} onClick={() => setTab('meet')} />
+          <DispatchTab label="Daily.co (Pipecat + Gemini)" active={tab === 'daily'} onClick={() => setTab('daily')} />
+        </div>
+        <div class="p-4 space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <Field label="Agent">
+              <select
+                value={agent}
+                onChange={(e) => setAgent((e.target as HTMLSelectElement).value)}
+                disabled={busy || list.length === 0}
+                class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[var(--color-accent)]"
+              >
+                {list.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name || a.id}{a.running ? '' : ' (offline)'}</option>
+                ))}
+              </select>
+            </Field>
+            {tab === 'daily' && (
+              <Field label="Mode">
+                <select
+                  value={dailyMode}
+                  onChange={(e) => setDailyMode((e.target as HTMLSelectElement).value as any)}
+                  disabled={busy}
+                  class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[var(--color-accent)]"
+                >
+                  <option value="direct">Direct (one agent)</option>
+                  <option value="auto">Auto (router decides)</option>
+                </select>
+              </Field>
+            )}
+          </div>
+
+          {tab === 'meet' && (
+            <Field label="Google Meet URL">
+              <input
+                type="text"
+                value={meetUrl}
+                onInput={(e) => setMeetUrl((e.target as HTMLInputElement).value.trim())}
+                placeholder="https://meet.google.com/abc-defg-hij"
+                disabled={busy}
+                class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono outline-none focus:border-[var(--color-accent)]"
+              />
+            </Field>
+          )}
+
+          <label class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoBrief}
+              onChange={(e) => setAutoBrief((e.target as HTMLInputElement).checked)}
+              disabled={busy}
+            />
+            Auto-brief the agent with chat context before joining
+          </label>
+
+          {status && (
+            <div class={'text-[11px] ' + (status.kind === 'err' ? 'text-[var(--color-status-failed)]' : 'text-[var(--color-status-done)]')}>
+              {status.text}
+            </div>
+          )}
+
+          <div class="flex justify-end">
+            <button
+              type="button"
+              onClick={tab === 'meet' ? dispatchMeet : dispatchDaily}
+              disabled={busy || !agent || (tab === 'meet' && !meetUrl)}
+              class="inline-flex items-center gap-1 px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Video size={12} /> {busy ? 'Dispatching…' : tab === 'meet' ? 'Send agent to Meet' : 'Create Daily room'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DispatchTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      class={[
+        'flex-1 px-4 py-2 text-[12px] transition-colors',
+        active
+          ? 'bg-[var(--color-elevated)] text-[var(--color-text)]'
+          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
+      ].join(' ')}
+    >
+      {label}
+    </button>
+  );
+}
+
+function Field({ label, children }: { label: string; children: any }) {
+  return (
+    <div>
+      <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function MeetRow({ session, live, onChange }: { session: MeetSession; live: boolean; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  async function leave() {
+    setBusy(true);
+    try { await apiPost('/api/meet/leave', { session_id: session.id }); onChange(); }
+    catch (err: any) { alert('Leave failed: ' + (err?.message || err)); }
+    finally { setBusy(false); }
+  }
   return (
     <div class="flex items-center gap-3 bg-[var(--color-card)] border border-[var(--color-border)] rounded p-3 text-[11.5px]">
       <AgentAvatar agentId={session.agent_id} size={24} running={live} />
@@ -347,6 +510,16 @@ function MeetRow({ session, live }: { session: MeetSession; live: boolean }) {
         <div class="text-[12px] text-[var(--color-text)] truncate">{session.meet_url}</div>
         <div class="text-[10px] text-[var(--color-text-faint)]">{session.provider} · {session.status} · {formatRelativeTime(session.created_at)}</div>
       </div>
+      {live && (
+        <button
+          type="button"
+          onClick={leave}
+          disabled={busy}
+          class="px-2 py-1 rounded text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-status-failed)] border border-[var(--color-border)] hover:border-[var(--color-status-failed)] transition-colors disabled:opacity-40"
+        >
+          {busy ? 'Leaving…' : 'Leave'}
+        </button>
+      )}
     </div>
   );
 }
