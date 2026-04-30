@@ -82,23 +82,23 @@ import {
 } from './db.js';
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
-import { getIngestionQuotaStatus } from './memory-ingest.js';
+import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
 import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
 
 async function classifyTaskAgent(prompt: string): Promise<string | null> {
-  try {
-    const agentIds = listAgentIds();
-    const agentDescriptions = agentIds.map((id) => {
-      try {
-        const config = loadAgentConfig(id);
-        return `- ${id}: ${config.description}`;
-      } catch { return `- ${id}: (no description)`; }
-    });
+  const agentIds = listAgentIds();
+  const validAgents = ['main', ...agentIds];
+  const agentDescriptions = agentIds.map((id) => {
+    try {
+      const config = loadAgentConfig(id);
+      return `- ${id}: ${config.description}`;
+    } catch { return `- ${id}: (no description)`; }
+  });
 
-    const classificationPrompt = `Given these agents and their roles:
+  const classificationPrompt = `Given these agents and their roles:
 - main: Primary assistant, general tasks, anything that doesn't clearly fit another agent
 ${agentDescriptions.join('\n')}
 
@@ -107,17 +107,27 @@ Task: "${prompt.slice(0, 500)}"
 
 Reply with JSON: {"agent": "agent_id"}`;
 
+  // Primary path: Claude Haiku via OAuth — same auth the agents use, no
+  // free-tier quota wall. Gemini classification used to 429 here and
+  // surface a 500 to the dashboard, blocking the auto-assign UI.
+  try {
+    const raw = await extractViaClaude(classificationPrompt);
+    const parsed = parseJsonResponse<{ agent: string }>(raw);
+    if (parsed?.agent && validAgents.includes(parsed.agent)) return parsed.agent;
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : err }, 'Haiku classify failed, falling back to Gemini');
+  }
+
+  // Fallback: Gemini. Wrapped so a 429 doesn't bubble up — we'd rather
+  // assign to 'main' than fail the request.
+  try {
     const response = await generateContent(classificationPrompt);
     const parsed = parseJsonResponse<{ agent: string }>(response);
-    if (parsed?.agent) {
-      const validAgents = ['main', ...agentIds];
-      if (validAgents.includes(parsed.agent)) return parsed.agent;
-    }
-    return 'main'; // fallback
+    if (parsed?.agent && validAgents.includes(parsed.agent)) return parsed.agent;
   } catch (err) {
-    logger.error({ err }, 'Auto-assign classification failed');
-    return null;
+    logger.warn({ err: err instanceof Error ? err.message : err }, 'Gemini classify failed, defaulting to main');
   }
+  return 'main';
 }
 
 // Meeting id format: wr_<timestampBase36>_<6-hex-random>. Regex also allows

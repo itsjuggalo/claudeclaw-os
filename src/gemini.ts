@@ -53,15 +53,28 @@ export async function generateContent(
  * Returns null if parsing fails.
  */
 export function parseJsonResponse<T>(text: string): T | null {
-  try {
-    // Strip markdown code fences if present
-    const cleaned = text
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-    return JSON.parse(cleaned) as T;
-  } catch (err) {
-    logger.warn({ err, text: text.slice(0, 200) }, 'Failed to parse Gemini JSON response');
-    return null;
+  // Try four extraction strategies in order, most permissive last:
+  //   1. Bare JSON (Gemini's responseMimeType=application/json case)
+  //   2. JSON inside ```json ... ``` fences (Haiku tends to wrap)
+  //   3. JSON inside generic ``` ... ``` fences
+  //   4. First {...} block in the text (Haiku also tends to add prose
+  //      AFTER the fence, which broke the previous regex anchor).
+  const candidates: string[] = [];
+  const trimmed = text.trim();
+  candidates.push(trimmed);
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced) candidates.push(fenced[1].trim());
+  const firstObj = trimmed.match(/\{[\s\S]*\}/);
+  if (firstObj) candidates.push(firstObj[0]);
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // try next
+    }
   }
+  logger.warn({ text: text.slice(0, 200) }, 'Failed to parse JSON response');
+  return null;
 }
