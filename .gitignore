@@ -69,6 +69,8 @@ warroom/avatars/photoreal-backup/
 CLAUDE.md
 agents/*/agent.yaml
 agents/*/CLAUDE.md
+agents/*/avatar.png
+agents/*/.no-avatar
 
 # Local Claude Code skills — these are user-specific workflow configs
 # (absolute paths, private repo refs). Keep them out of the shared repo.

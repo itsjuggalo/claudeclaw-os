@@ -2005,11 +2005,19 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' },
       });
     }
-    // Telegram said no photo previously. Fall back to warroom asset
-    // before returning 204 so we still render something pretty.
+    // Telegram said no photo previously. The flag has a 24h TTL so that
+    // a user who uploads a profile picture in BotFather later doesn't
+    // stay stuck on initials forever. If we're inside the TTL, fall
+    // back to the warroom asset (pretty placeholder) or 204.
+    const NO_AVATAR_TTL_MS = 24 * 60 * 60 * 1000;
     if (fs.existsSync(noAvatarFlag)) {
-      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-      return c.body(null, 204);
+      const age = Date.now() - fs.statSync(noAvatarFlag).mtimeMs;
+      if (age < NO_AVATAR_TTL_MS) {
+        if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
+        return c.body(null, 204);
+      }
+      // TTL elapsed — drop the flag and re-check Telegram below.
+      try { fs.unlinkSync(noAvatarFlag); } catch {}
     }
     if (!botToken) {
       if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();

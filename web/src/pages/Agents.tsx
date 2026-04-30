@@ -489,6 +489,9 @@ function CreateAgentWizard({ open, onClose, onCreated }: { open: boolean; onClos
                 Username: <CopyButton text={suggestedBotUsername} />
               </li>
               <li>Copy the token BotFather returns</li>
+              <li>
+                Set a profile photo: send <span class="font-mono text-[var(--color-accent)]">/setuserpic</span> to BotFather, pick this bot, then upload an image. Skipping this is fine; the dashboard will fall back to initials.
+              </li>
             </ol>
           </div>
 
