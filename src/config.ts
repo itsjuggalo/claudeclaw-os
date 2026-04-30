@@ -68,6 +68,15 @@ export function setAgentOverrides(opts: {
   agentMcpAllowlist = opts.mcpServers;
 }
 
+/** Update just the system prompt (CLAUDE.md content). Used by the
+ *  dashboard's agent-files PUT endpoint after editing main's CLAUDE.md
+ *  so the next NEW session in the bot picks up the change without
+ *  requiring a process restart. Sub-agents don't need this — the SDK
+ *  re-reads CLAUDE.md from cwd via settingSources on every turn. */
+export function updateAgentSystemPrompt(next: string | undefined): void {
+  agentSystemPrompt = next;
+}
+
 export const TELEGRAM_BOT_TOKEN =
   process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
 

@@ -53,6 +53,11 @@ import {
   getDashboardSetting,
   setDashboardSetting,
   insertAuditLog,
+  appendAgentFileHistory,
+  listAgentFileHistory,
+  getAgentFileHistory,
+  pruneAgentFileHistory,
+  type AgentFileKind,
 } from './db.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
@@ -1886,6 +1891,33 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return atomicEnvWrite;
   }
 
+  // Snapshot the current on-disk content into agent_file_history BEFORE
+  // overwriting. Result: every save leaves a versioned trail in SQLite
+  // the user can browse and restore from. Pruned to 100 versions per
+  // (agent, kind) so the table stays bounded.
+  function snapshotPriorVersion(
+    agentId: string,
+    kind: AgentFileKind,
+    diskPath: string,
+  ): void {
+    if (!fs.existsSync(diskPath)) return;
+    try {
+      const prior = fs.readFileSync(diskPath, 'utf-8');
+      if (!prior) return;
+      const sha = crypto.createHash('sha256').update(prior).digest('hex');
+      // Skip if the most recent history row already matches this content
+      // (prevents duplicate rows when the user clicks Save without making
+      // any changes — which Monaco's onChange wouldn't catch if they
+      // typed-and-deleted).
+      const recent = listAgentFileHistory(agentId, kind, 1);
+      if (recent.length > 0 && recent[0].sha256 === sha) return;
+      appendAgentFileHistory(agentId, kind, prior, sha);
+      pruneAgentFileHistory(agentId, kind, 100);
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : err, agentId, kind }, 'failed to snapshot prior file version');
+    }
+  }
+
   function loadAgentFiles(agentDir: string): { claudeMd: string; agentYaml: string; agentYamlRedacted: string } {
     const claudePath = path.join(agentDir, 'CLAUDE.md');
     const yamlPath = path.join(agentDir, 'agent.yaml');
@@ -1973,15 +2005,28 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       catch { return c.json({ error: 'agent not found' }, 404); }
       target = path.join(agentDir, 'CLAUDE.md');
     }
-    const backup = target + '.backup';
     try {
-      if (fs.existsSync(target)) fs.copyFileSync(target, backup);
+      snapshotPriorVersion(agentId, 'claudemd', target);
       const atomicEnvWrite = await getAtomicWriter();
       atomicEnvWrite(target, body.content);
       // Loosen perms — CLAUDE.md is not sensitive (no tokens), and 0600
       // would prevent an editor running as a different user from reading
       // it locally.
       try { fs.chmodSync(target, 0o644); } catch {}
+      // For main, the persona is injected into NEW sessions via the
+      // bot's agentSystemPrompt module variable (src/bot.ts). It's
+      // captured at startup, so a CLAUDE.md edit wouldn't reach the
+      // bot without this in-memory update. Sub-agents don't need this:
+      // the Agent SDK re-reads CLAUDE.md from cwd via settingSources on
+      // every turn, so saves are hot-loaded automatically.
+      if (agentId === 'main') {
+        try {
+          const { updateAgentSystemPrompt } = await import('./config.js');
+          updateAgentSystemPrompt(body.content);
+        } catch (err) {
+          logger.warn({ err: err instanceof Error ? err.message : err }, 'failed to refresh main agentSystemPrompt');
+        }
+      }
       insertAuditLog(agentId, '', 'edit_claudemd', `${body.content.length} bytes`, false);
       return c.json({ ok: true, takes_effect: 'next-turn' });
     } catch (err) {
@@ -2043,9 +2088,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
 
     const target = path.join(agentDir, 'agent.yaml');
-    const backup = target + '.backup';
     try {
-      if (fs.existsSync(target)) fs.copyFileSync(target, backup);
+      snapshotPriorVersion(agentId, 'agent-yaml', target);
       const atomicEnvWrite = await getAtomicWriter();
       atomicEnvWrite(target, content);
       // Keep restrictive perms — file holds the bot token.
@@ -2055,6 +2099,86 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     } catch (err) {
       logger.error({ err, agentId }, 'Failed to write agent.yaml');
       return c.json({ error: 'Failed to write file' }, 500);
+    }
+  });
+
+  // List versioned history for an agent file. Newest-first, no content
+  // (callers fetch full content via the next endpoint to keep this list
+  // payload small).
+  app.get('/api/agents/:id/files/history', (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    const kindParam = c.req.query('kind');
+    if (kindParam !== 'claudemd' && kindParam !== 'agent-yaml') {
+      return c.json({ error: 'kind must be "claudemd" or "agent-yaml"' }, 400);
+    }
+    const limit = Math.min(200, Math.max(1, parseInt(c.req.query('limit') || '50', 10) || 50));
+    const versions = listAgentFileHistory(agentId, kindParam as AgentFileKind, limit);
+    return c.json({ versions });
+  });
+
+  // Fetch a specific version's full content. Used by the editor when the
+  // user clicks a version in the history drawer to preview/restore.
+  app.get('/api/agents/:id/files/history/:versionId', (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    const versionId = parseInt(c.req.param('versionId'), 10);
+    if (!Number.isFinite(versionId)) return c.json({ error: 'invalid version id' }, 400);
+    const row = getAgentFileHistory(versionId);
+    if (!row || row.agent_id !== agentId) return c.json({ error: 'version not found' }, 404);
+    return c.json({ version: row });
+  });
+
+  // Restore a specific version: snapshots the current on-disk content
+  // (so a restore is itself a versioned change), then writes the chosen
+  // version back to disk. The user can always undo by restoring the
+  // version that was just snapshotted.
+  app.post('/api/agents/:id/files/history/:versionId/restore', async (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    const versionId = parseInt(c.req.param('versionId'), 10);
+    if (!Number.isFinite(versionId)) return c.json({ error: 'invalid version id' }, 400);
+    const row = getAgentFileHistory(versionId);
+    if (!row || row.agent_id !== agentId) return c.json({ error: 'version not found' }, 404);
+
+    // Resolve target path with the same rules the GET/PUT endpoints use.
+    let target: string;
+    if (agentId === 'main') {
+      if (row.file_kind !== 'claudemd') return c.json({ error: 'main has no agent.yaml' }, 400);
+      target = resolveMainClaudeMdPath();
+      try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
+    } else {
+      let agentDir: string;
+      try { agentDir = resolveAgentDir(agentId); }
+      catch { return c.json({ error: 'agent not found' }, 404); }
+      target = path.join(agentDir, row.file_kind === 'claudemd' ? 'CLAUDE.md' : 'agent.yaml');
+    }
+
+    try {
+      snapshotPriorVersion(agentId, row.file_kind as AgentFileKind, target);
+      const atomicEnvWrite = await getAtomicWriter();
+      atomicEnvWrite(target, row.content);
+      try { fs.chmodSync(target, row.file_kind === 'agent-yaml' ? 0o600 : 0o644); } catch {}
+      // Same in-memory refresh as the PUT path — main's bot caches the
+      // CLAUDE.md content at startup and only sees disk changes via this
+      // setter.
+      if (agentId === 'main' && row.file_kind === 'claudemd') {
+        try {
+          const { updateAgentSystemPrompt } = await import('./config.js');
+          updateAgentSystemPrompt(row.content);
+        } catch (err) {
+          logger.warn({ err: err instanceof Error ? err.message : err }, 'failed to refresh main agentSystemPrompt');
+        }
+      }
+      insertAuditLog(agentId, '', 'restore_' + row.file_kind, `version ${versionId} (${row.byte_size} bytes)`, false);
+      return c.json({
+        ok: true,
+        takes_effect: row.file_kind === 'claudemd' ? 'next-turn' : 'restart',
+        restored_version: versionId,
+      });
+    } catch (err) {
+      logger.error({ err, agentId, versionId }, 'Failed to restore agent file');
+      return c.json({ error: 'restore failed' }, 500);
     }
   });
 

@@ -296,6 +296,25 @@ function createSchema(database: Database.Database): void {
       updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
 
+    -- Append-only version history for agent files edited from the
+    -- dashboard (CLAUDE.md, agent.yaml). Replaces the single-file .backup
+    -- approach so the user can browse prior versions and restore any.
+    -- file_kind is the editor's tab key ('claudemd' | 'agent-yaml').
+    -- Content stored inline; size cap is enforced at the API layer
+    -- (200KB for CLAUDE.md, 64KB for agent.yaml).
+    CREATE TABLE IF NOT EXISTS agent_file_history (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id    TEXT NOT NULL,
+      file_kind   TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      byte_size   INTEGER NOT NULL,
+      sha256      TEXT NOT NULL,
+      author      TEXT NOT NULL DEFAULT 'dashboard',
+      created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_file_history_lookup
+      ON agent_file_history(agent_id, file_kind, created_at DESC);
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       summary,
       raw_text,
@@ -2847,4 +2866,75 @@ export function getAllDashboardSettings(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const row of rows) out[row.key] = row.value;
   return out;
+}
+
+// ── Agent file history (versioned backups in SQLite) ────────────────
+
+export type AgentFileKind = 'claudemd' | 'agent-yaml';
+
+export interface AgentFileHistoryRow {
+  id: number;
+  agent_id: string;
+  file_kind: AgentFileKind;
+  content: string;
+  byte_size: number;
+  sha256: string;
+  author: string;
+  created_at: number;
+}
+
+export function appendAgentFileHistory(
+  agentId: string,
+  fileKind: AgentFileKind,
+  content: string,
+  sha256: string,
+  author = 'dashboard',
+): number {
+  const result = db.prepare(
+    `INSERT INTO agent_file_history (agent_id, file_kind, content, byte_size, sha256, author)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(agentId, fileKind, content, Buffer.byteLength(content, 'utf8'), sha256, author);
+  return Number(result.lastInsertRowid);
+}
+
+/** List versions newest-first. Excludes content by default to keep the
+ *  payload small; callers fetch full content via getAgentFileHistory(id). */
+export function listAgentFileHistory(
+  agentId: string,
+  fileKind: AgentFileKind,
+  limit = 50,
+): Array<Omit<AgentFileHistoryRow, 'content'>> {
+  return db.prepare(
+    `SELECT id, agent_id, file_kind, byte_size, sha256, author, created_at
+     FROM agent_file_history
+     WHERE agent_id = ? AND file_kind = ?
+     ORDER BY created_at DESC, id DESC
+     LIMIT ?`,
+  ).all(agentId, fileKind, limit) as Array<Omit<AgentFileHistoryRow, 'content'>>;
+}
+
+export function getAgentFileHistory(id: number): AgentFileHistoryRow | null {
+  const row = db.prepare(
+    `SELECT * FROM agent_file_history WHERE id = ?`,
+  ).get(id) as AgentFileHistoryRow | undefined;
+  return row ?? null;
+}
+
+/** Hard cap on retained versions per (agent, kind) so the table doesn't
+ *  grow unboundedly. Called after each insert. */
+export function pruneAgentFileHistory(
+  agentId: string,
+  fileKind: AgentFileKind,
+  keep = 100,
+): number {
+  const result = db.prepare(
+    `DELETE FROM agent_file_history
+     WHERE id IN (
+       SELECT id FROM agent_file_history
+       WHERE agent_id = ? AND file_kind = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT -1 OFFSET ?
+     )`,
+  ).run(agentId, fileKind, keep);
+  return result.changes;
 }

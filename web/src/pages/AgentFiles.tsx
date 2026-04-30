@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'preact/hooks';
 import { lazy, Suspense } from 'preact/compat';
 import { useLocation, useRoute } from 'wouter-preact';
-import { Save, RotateCcw, ArrowLeft, AlertTriangle, RefreshCw, Power } from 'lucide-preact';
+import { Save, RotateCcw, ArrowLeft, AlertTriangle, RefreshCw, Power, History as HistoryIcon, Eye, Undo2 } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { Drawer } from '@/components/Modal';
 import { apiGet, apiPost, apiPut } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { theme } from '@/lib/theme';
+import { formatRelativeTime } from '@/lib/format';
 
 // Monaco is ~400KB gzipped — lazy-load it so the dashboard's main bundle
 // stays small. The editor page is rarely visited; users who never edit
@@ -42,6 +44,7 @@ export function AgentFiles() {
   const [configDirty, setConfigDirty] = useState(false);
   const [saving, setSaving] = useState<TabKey | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Load files once, then again whenever the agent id changes.
   useEffect(() => { void load(); }, [agentId]);
@@ -163,6 +166,14 @@ export function AgentFiles() {
             </span>
             <button
               type="button"
+              onClick={() => setHistoryOpen(true)}
+              class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors"
+              title="View prior versions of this file (stored in SQLite)"
+            >
+              <HistoryIcon size={12} /> History
+            </button>
+            <button
+              type="button"
               onClick={() => reset(tab)}
               disabled={!dirty || saving !== null}
               class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -242,6 +253,173 @@ export function AgentFiles() {
           </div>
         </>
       )}
+
+      <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title={`History · ${agentId} · ${tab === 'persona' ? 'CLAUDE.md' : 'agent.yaml'}`}>
+        {/* Remount on each open so the version list is fresh — and so a
+            previous error doesn't leave the drawer stuck on stale data. */}
+        {historyOpen && (
+          <FileHistoryList
+            agentId={agentId}
+            kind={tab === 'persona' ? 'claudemd' : 'agent-yaml'}
+            onRestored={() => { setHistoryOpen(false); void load(); }}
+          />
+        )}
+      </Drawer>
+    </div>
+  );
+}
+
+interface VersionRow {
+  id: number;
+  agent_id: string;
+  file_kind: string;
+  byte_size: number;
+  sha256: string;
+  author: string;
+  created_at: number;
+}
+
+function FileHistoryList({
+  agentId, kind, onRestored,
+}: {
+  agentId: string;
+  kind: 'claudemd' | 'agent-yaml';
+  onRestored: () => void;
+}) {
+  const [versions, setVersions] = useState<VersionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [previewId, setPreviewId] = useState<number | null>(null);
+  const [previewContent, setPreviewContent] = useState<string>('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [restoringId, setRestoringId] = useState<number | null>(null);
+
+  useEffect(() => { void load(); }, [agentId, kind]);
+
+  async function load() {
+    setLoading(true); setError(null);
+    try {
+      const data = await apiGet<{ versions: VersionRow[] }>(
+        `/api/agents/${encodeURIComponent(agentId)}/files/history?kind=${kind}&limit=100`,
+      );
+      setVersions(data.versions);
+    } catch (err: any) {
+      setError(err?.message || String(err));
+    } finally { setLoading(false); }
+  }
+
+  async function preview(id: number) {
+    setPreviewId(id); setPreviewLoading(true); setPreviewContent('');
+    try {
+      const data = await apiGet<{ version: VersionRow & { content: string } }>(
+        `/api/agents/${encodeURIComponent(agentId)}/files/history/${id}`,
+      );
+      setPreviewContent(data.version.content);
+    } catch (err: any) {
+      setPreviewContent('// Failed to load: ' + (err?.message || err));
+    } finally { setPreviewLoading(false); }
+  }
+
+  async function restore(id: number) {
+    if (!confirm('Restore this version? The current on-disk content will be saved as a new version first, so you can undo by restoring the snapshot that was just taken.')) return;
+    setRestoringId(id);
+    try {
+      const res = await apiPost<{ ok: boolean; takes_effect: string }>(
+        `/api/agents/${encodeURIComponent(agentId)}/files/history/${id}/restore`,
+      );
+      pushToast({
+        tone: 'success',
+        title: 'Version restored',
+        description: res.takes_effect === 'next-turn' ? 'Takes effect on next message.' : 'Restart agent to apply.',
+        durationMs: 6000,
+      });
+      onRestored();
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Restore failed', description: err?.message || String(err), durationMs: 7000 });
+    } finally { setRestoringId(null); }
+  }
+
+  if (error) {
+    return (
+      <div class="px-6 py-4">
+        <div class="bg-[var(--color-card)] border border-[var(--color-status-failed)] rounded p-3">
+          <div class="text-[12px] text-[var(--color-status-failed)] font-medium mb-1">Failed to load history</div>
+          <div class="text-[11.5px] text-[var(--color-text-muted)] font-mono break-all">{error}</div>
+          <button type="button" onClick={() => load()} class="mt-2 text-[11.5px] text-[var(--color-accent)] hover:underline">Try again</button>
+        </div>
+      </div>
+    );
+  }
+  if (loading) return <div class="px-6 py-8 text-[12px] text-[var(--color-text-faint)]">Loading…</div>;
+  if (versions.length === 0) {
+    return (
+      <div class="px-6 py-12 text-center">
+        <div class="text-[13px] text-[var(--color-text-muted)] mb-1">No prior versions yet</div>
+        <div class="text-[11.5px] text-[var(--color-text-faint)]">Versions are saved automatically every time you Save the file.</div>
+      </div>
+    );
+  }
+  return (
+    <div class="flex h-full">
+      <div class="w-[360px] shrink-0 overflow-y-auto border-r border-[var(--color-border)]">
+        <div class="px-4 py-2.5 text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] border-b border-[var(--color-border)]">
+          {versions.length} version{versions.length === 1 ? '' : 's'}
+        </div>
+        {versions.map((v) => {
+          const active = previewId === v.id;
+          return (
+            <button
+              key={v.id}
+              type="button"
+              onClick={() => void preview(v.id)}
+              class={[
+                'w-full text-left px-4 py-3 border-b border-[var(--color-border)] transition-colors',
+                active ? 'bg-[var(--color-accent-soft)]' : 'hover:bg-[var(--color-elevated)]',
+              ].join(' ')}
+            >
+              <div class="flex items-center gap-2 mb-1">
+                <span class="text-[12.5px] text-[var(--color-text)] font-medium">{formatRelativeTime(v.created_at)}</span>
+                <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)] tabular-nums">v{v.id}</span>
+              </div>
+              <div class="flex items-center gap-2 text-[11px] text-[var(--color-text-muted)] tabular-nums">
+                <span>{v.byte_size.toLocaleString()} bytes</span>
+                <span class="text-[var(--color-text-faint)]">·</span>
+                <span class="font-mono text-[10.5px]">{v.sha256.slice(0, 7)}</span>
+                <span class="ml-auto text-[10.5px]">{v.author}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div class="flex-1 min-w-0 flex flex-col">
+        {previewId === null ? (
+          <div class="flex-1 flex items-center justify-center text-[12px] text-[var(--color-text-faint)]">
+            Pick a version to preview
+          </div>
+        ) : (
+          <>
+            <div class="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--color-border)]">
+              <Eye size={13} class="text-[var(--color-text-muted)]" />
+              <span class="text-[12.5px] text-[var(--color-text)]">Preview · v{previewId}</span>
+              <button
+                type="button"
+                onClick={() => void restore(previewId)}
+                disabled={restoringId !== null}
+                class="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
+              >
+                <Undo2 size={12} /> {restoringId === previewId ? 'Restoring…' : 'Restore this version'}
+              </button>
+            </div>
+            <div class="flex-1 min-h-0 overflow-auto">
+              {previewLoading ? (
+                <div class="p-4 text-[12px] text-[var(--color-text-faint)]">Loading…</div>
+              ) : (
+                <pre class="p-4 text-[12px] font-mono whitespace-pre-wrap text-[var(--color-text)] leading-relaxed">{previewContent}</pre>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
