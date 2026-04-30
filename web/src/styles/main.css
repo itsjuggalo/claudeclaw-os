@@ -204,6 +204,25 @@ input, textarea, select {
 }
 .animate-toast-in { animation: toast-in 160ms ease-out; }
 
+/* Privacy blur — used on Memories + Hive Mind summaries when the user
+   wants the page screenshot-safe. Click-to-reveal per row, hover lightens
+   so you can preview without committing. The .revealed class trumps the
+   blur — applied per-row in a session map. */
+.privacy-blur {
+  filter: blur(6px);
+  cursor: pointer;
+  transition: filter 0.15s;
+  user-select: none;
+}
+.privacy-blur:hover {
+  filter: blur(3px);
+}
+.privacy-blur.revealed {
+  filter: none;
+  cursor: default;
+  user-select: text;
+}
+
 /* Scrollbar polish (WebKit only — fine on macOS) */
 ::-webkit-scrollbar {
   width: 8px;

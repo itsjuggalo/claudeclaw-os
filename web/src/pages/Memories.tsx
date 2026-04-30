@@ -3,10 +3,12 @@ import { ChevronRight, Search, Pin, Sparkles, X } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Drawer } from '@/components/Modal';
+import { PrivacyToggle } from '@/components/PrivacyToggle';
 import { useFetch } from '@/lib/useFetch';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { formatRelativeTime, safeJsonArray } from '@/lib/format';
 import { chatId, apiGet } from '@/lib/api';
+import { privacyBlur } from '@/lib/privacy';
 
 type SortMode = 'importance' | 'salience' | 'recent';
 
@@ -108,6 +110,7 @@ export function Memories() {
             >
               <Sparkles size={13} /> Insights
             </button>
+            <PrivacyToggle section="memories" />
           </>
         }
         tabs={
@@ -240,6 +243,14 @@ function MemoryRow({ memory, expanded, onToggle }: { memory: Memory; expanded: b
     memory.importance >= 0.8 ? 'var(--color-priority-high)'
     : memory.importance >= 0.5 ? 'var(--color-priority-medium)'
     : 'var(--color-text-muted)';
+  const blurOn = privacyBlur('memories').value;
+  const [revealed, setRevealed] = useState(false);
+  const blurClass = blurOn && !revealed ? 'privacy-blur' : (blurOn && revealed ? 'privacy-blur revealed' : '');
+  function clickBlurSpan(ev: MouseEvent) {
+    if (!blurOn) return; // let the row click bubble through to expand
+    ev.stopPropagation();
+    setRevealed((v) => !v);
+  }
 
   return (
     <div
@@ -256,11 +267,11 @@ function MemoryRow({ memory, expanded, onToggle }: { memory: Memory; expanded: b
         />
         <div class="flex-1 min-w-0">
           <div class={'text-[13px] text-[var(--color-text)] leading-snug ' + (expanded ? '' : 'truncate')}>
-            {memory.summary}
+            <span class={blurClass} onClick={clickBlurSpan}>{memory.summary}</span>
             {memory.pinned === 1 && <Pin size={11} class="inline ml-1.5 text-[var(--color-accent)]" />}
           </div>
           {topics.length > 0 && (
-            <div class="flex flex-wrap items-center gap-1 mt-1.5">
+            <div class={'flex flex-wrap items-center gap-1 mt-1.5 ' + blurClass} onClick={clickBlurSpan}>
               {topics.slice(0, expanded ? 99 : 5).map((t, i) => (
                 <span key={i} class="font-mono text-[10px] text-[var(--color-text-muted)] bg-[var(--color-elevated)] border border-[var(--color-border)] px-1.5 py-0.5 rounded">
                   {t}
@@ -269,7 +280,10 @@ function MemoryRow({ memory, expanded, onToggle }: { memory: Memory; expanded: b
             </div>
           )}
           {expanded && memory.raw_text && memory.raw_text !== memory.summary && (
-            <div class="mt-3 text-[12px] text-[var(--color-text-muted)] leading-relaxed whitespace-pre-wrap font-mono">
+            <div
+              class={'mt-3 text-[12px] text-[var(--color-text-muted)] leading-relaxed whitespace-pre-wrap font-mono ' + blurClass}
+              onClick={clickBlurSpan}
+            >
               {memory.raw_text}
             </div>
           )}

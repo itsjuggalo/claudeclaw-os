@@ -1,8 +1,10 @@
 import { useState } from 'preact/hooks';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { PrivacyToggle } from '@/components/PrivacyToggle';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime } from '@/lib/format';
+import { privacyBlur } from '@/lib/privacy';
 
 interface HiveEntry {
   id: number;
@@ -26,6 +28,9 @@ const KNOWN_AGENTS = ['main', 'research', 'comms', 'content', 'ops'];
 
 export function HiveMind() {
   const [filter, setFilter] = useState<string>('all');
+  // Per-row reveal overrides — session only, not persisted. Clicking a
+  // blurred summary unblurs that row until the page closes.
+  const [revealed, setRevealed] = useState<Set<number>>(new Set());
   const agentList = useFetch<{ agents: { id: string }[] }>('/api/agents');
   const path = filter === 'all'
     ? '/api/hive-mind?limit=200'
@@ -33,12 +38,25 @@ export function HiveMind() {
   const { data, loading, error } = useFetch<{ entries: HiveEntry[] }>(path, 30_000);
   const entries = data?.entries ?? [];
   const allAgents = agentList.data?.agents?.map((a) => a.id) ?? KNOWN_AGENTS;
+  const blurOn = privacyBlur('hive').value;
+
+  function toggleRow(id: number) {
+    if (!blurOn) return;
+    const next = new Set(revealed);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setRevealed(next);
+  }
 
   return (
     <div class="flex flex-col h-full">
       <PageHeader
         title="Hive Mind"
-        actions={<span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">{entries.length} entries</span>}
+        actions={
+          <>
+            <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">{entries.length} entries</span>
+            <PrivacyToggle section="hive" />
+          </>
+        }
         tabs={
           <>
             <Tab label="All" active={filter === 'all'} onClick={() => setFilter('all')} />
@@ -88,7 +106,15 @@ export function HiveMind() {
                     {e.action}
                   </td>
                   <td class="px-3 py-2 text-[var(--color-text)] truncate max-w-0">
-                    {e.summary}
+                    <span
+                      class={[
+                        blurOn ? 'privacy-blur' : '',
+                        revealed.has(e.id) ? 'revealed' : '',
+                      ].filter(Boolean).join(' ')}
+                      onClick={(ev) => { ev.stopPropagation(); toggleRow(e.id); }}
+                    >
+                      {e.summary}
+                    </span>
                   </td>
                 </tr>
               ))}
