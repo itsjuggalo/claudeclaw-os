@@ -174,7 +174,30 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     color: var(--text-mute);
     letter-spacing: 1.2px;
     text-transform: uppercase;
+    display: flex; align-items: center; justify-content: space-between;
   }
+  .roster-layout-pick {
+    display: inline-flex; gap: 2px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px;
+  }
+  .roster-layout-pick button {
+    background: transparent;
+    border: 0;
+    padding: 3px 6px;
+    border-radius: 4px;
+    color: var(--text-mute);
+    cursor: pointer;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .roster-layout-pick button:hover { color: var(--text); }
+  .roster-layout-pick button.active { background: var(--indigo); color: #fff; }
   /* Agent rail — vertical card layout. Big round avatar on top, name +
      status stacked underneath. Closer to an MSN/Discord profile card
      than the old horizontal row. The status line uses hive_mind to
@@ -253,6 +276,57 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
   .agent-row.selected .agent-status-dot { background: var(--amber); }
   .agent-row.speaking .agent-status-dot { background: var(--green); animation: pulse 1.2s ease infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  /* Layout presets — modifier classes on .team. Compact = horizontal
+     row (the original layout). Comfortable = vertical card (default).
+     Spacious = bigger card with bigger avatar and a 3-line status. */
+  .team.layout-compact .agent-row {
+    flex-direction: row; align-items: center; text-align: left;
+    gap: 12px; padding: 10px 12px; border-radius: 999px 14px 14px 999px;
+  }
+  .team.layout-compact .agent-avatar { width: 38px; height: 38px; font-size: 13px; }
+  .team.layout-compact .agent-meta { align-items: stretch; gap: 2px; }
+  .team.layout-compact .agent-name { justify-content: flex-start; font-size: 13px; }
+  .team.layout-compact .agent-status-line { -webkit-line-clamp: 1; line-clamp: 1; font-size: 11px; text-align: left; }
+  .team.layout-compact .agent-status-time { display: none; }
+
+  .team.layout-spacious .agent-row {
+    padding: 18px 12px 14px;
+    gap: 10px;
+  }
+  .team.layout-spacious .agent-avatar { width: 72px; height: 72px; font-size: 22px; }
+  .team.layout-spacious .agent-name { font-size: 15px; }
+  .team.layout-spacious .agent-status-line { -webkit-line-clamp: 3; line-clamp: 3; font-size: 12px; }
+
+  /* Newscast-style ticker. The summary text scrolls horizontally if it
+     overflows (set a CSS variable --ticker-distance from JS), and we
+     rotate through the agent's last few hive_mind entries with a fade
+     between them. The container clips overflow; the inner span carries
+     the animation so we can pause on hover. */
+  .agent-ticker {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    position: relative;
+    height: 1.35em; /* one line; line-clamp on parent handles multi-line variants */
+  }
+  .team.layout-spacious .agent-ticker { height: calc(1.35em * 3); }
+  .agent-ticker.multiline { white-space: normal; height: auto; }
+  .agent-ticker-text {
+    display: inline-block;
+    white-space: nowrap;
+    will-change: transform;
+  }
+  .agent-ticker.scrolling .agent-ticker-text {
+    animation: ticker-scroll var(--ticker-duration, 14s) linear infinite;
+  }
+  .agent-row:hover .agent-ticker-text { animation-play-state: paused; }
+  @keyframes ticker-scroll {
+    0%   { transform: translateX(0); }
+    8%   { transform: translateX(0); }                          /* hold at start */
+    92%  { transform: translateX(var(--ticker-distance, 0px)); } /* scroll across */
+    100% { transform: translateX(var(--ticker-distance, 0px)); } /* hold at end */
+  }
 
   /* ── Main pane ───────────────────────────────────────────────────── */
   .main {
@@ -928,8 +1002,15 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     </div>
   </header>
 
-  <nav class="roster" aria-label="Agents" id="roster">
-    <div class="roster-header" role="heading" aria-level="2">Team</div>
+  <nav class="roster team" aria-label="Agents" id="roster">
+    <div class="roster-header">
+      <span role="heading" aria-level="2">Team</span>
+      <div class="roster-layout-pick" role="group" aria-label="Agent rail layout">
+        <button type="button" data-layout="compact"     title="Compact (row)">S</button>
+        <button type="button" data-layout="comfortable" title="Comfortable (card)">M</button>
+        <button type="button" data-layout="spacious"    title="Spacious (large card)">L</button>
+      </div>
+    </div>
     <div role="list" id="roster-list"></div>
   </nav>
 
@@ -1088,20 +1169,27 @@ function renderRoster() {
     nm.appendChild(dot);
 
     // The cascading "what they last did" line. The hive_mind fetcher
-    // overwrites this with summary text via setAgentStatus; the
-    // description acts as the placeholder so the rail isn't empty on
-    // first paint.
-    const status = document.createElement('div');
-    status.className = 'agent-status-line empty';
-    status.id = 'agent-status-' + esc(a.id);
-    status.textContent = a.description || 'Quiet today.';
+    // populates this via setAgentStatus, which both updates the text
+    // and (if the text overflows) starts a marquee scroll inside the
+    // ticker. The description acts as a placeholder until the first
+    // hive_mind fetch completes.
+    const statusLine = document.createElement('div');
+    statusLine.className = 'agent-status-line empty';
+    statusLine.id = 'agent-status-' + esc(a.id);
+    const ticker = document.createElement('div');
+    ticker.className = 'agent-ticker';
+    const tickerText = document.createElement('span');
+    tickerText.className = 'agent-ticker-text';
+    tickerText.textContent = a.description || 'Quiet today.';
+    ticker.appendChild(tickerText);
+    statusLine.appendChild(ticker);
 
     const time = document.createElement('div');
     time.className = 'agent-status-time';
     time.id = 'agent-status-time-' + esc(a.id);
 
     meta.appendChild(nm);
-    meta.appendChild(status);
+    meta.appendChild(statusLine);
     meta.appendChild(time);
 
     row.appendChild(av);
@@ -1116,8 +1204,11 @@ function renderRoster() {
   void refreshAgentStatuses();
 }
 
-/** Update one agent's status line with a 200ms cross-fade. Idempotent —
- *  if the new summary equals the current text, do nothing. */
+/** Update one agent's status line with a 200ms cross-fade, then start
+ *  the marquee scroll if the new text overflows the container. Newscast-
+ *  style: text holds at the start, scrolls right-to-left, holds at the
+ *  end, repeats. Idempotent — if the new summary equals the current
+ *  text, just leave the existing marquee alone. */
 function setAgentStatus(id, summary, ts) {
   const el = document.getElementById('agent-status-' + id);
   const tEl = document.getElementById('agent-status-time-' + id);
@@ -1126,10 +1217,26 @@ function setAgentStatus(id, summary, ts) {
   el.dataset.summary = summary;
   el.classList.add('fade-out');
   setTimeout(() => {
-    el.textContent = summary || 'Quiet today.';
+    const ticker = el.querySelector('.agent-ticker');
+    const tickerText = el.querySelector('.agent-ticker-text');
+    if (tickerText) tickerText.textContent = summary || 'Quiet today.';
     el.classList.toggle('empty', !summary);
     el.classList.remove('fade-out');
     if (tEl) tEl.textContent = ts ? formatStatusTime(ts) : '';
+    // Start marquee if text doesn't fit. Compute distance after layout
+    // settles. Speed: ~32 chars per second feels readable.
+    if (ticker && tickerText) {
+      ticker.classList.remove('scrolling');
+      requestAnimationFrame(() => {
+        const overflow = tickerText.scrollWidth - ticker.clientWidth;
+        if (overflow > 8) {
+          const seconds = Math.max(8, Math.round(tickerText.scrollWidth / 32));
+          ticker.style.setProperty('--ticker-distance', '-' + overflow + 'px');
+          ticker.style.setProperty('--ticker-duration', seconds + 's');
+          ticker.classList.add('scrolling');
+        }
+      });
+    }
   }, 200);
 }
 
@@ -1145,32 +1252,110 @@ function formatStatusTime(unixSecs) {
   return Math.floor(d / 86400) + 'd ago';
 }
 
-/** Pull the latest hive_mind entries and patch each agent's status line.
- *  We fetch in bulk (limit=50) and reduce client-side to "latest per
+/** Per-agent buffer of recent hive_mind entries. We keep the last 3 so
+ *  the rotation tick can cycle through them — newscast style — instead
+ *  of just hammering the latest. */
+const agentHistory = {};   // { [agent_id]: [{summary, created_at}, ...] }
+const agentCursor = {};    // { [agent_id]: index into history }
+
+/** Pull the latest hive_mind entries and patch each agent's buffer.
+ *  We fetch in bulk (limit=120) and reduce client-side to "last 3 per
  *  agent" — one round-trip per refresh regardless of roster size. */
 async function refreshAgentStatuses() {
   try {
-    const res = await fetch(API + '/api/hive-mind?limit=50' + Q.replace(/^\\?/, '&'));
+    const res = await fetch(API + '/api/hive-mind?limit=120' + Q.replace(/^\\?/, '&'));
     if (!res.ok) return;
     const data = await res.json();
     const entries = (data && data.entries) ? data.entries : [];
-    const latest = {};
+    // entries are returned newest-first
+    const buf = {};
     for (const e of entries) {
-      // entries are returned newest-first; first hit per agent wins
-      if (!latest[e.agent_id]) latest[e.agent_id] = e;
+      if (!buf[e.agent_id]) buf[e.agent_id] = [];
+      if (buf[e.agent_id].length < 3) buf[e.agent_id].push(e);
     }
     for (const a of roster) {
-      const e = latest[a.id];
-      if (e && e.summary) setAgentStatus(a.id, e.summary, e.created_at);
+      const list = buf[a.id] || [];
+      agentHistory[a.id] = list;
+      // If the cursor is now past the end, reset it. Otherwise leave
+      // the user-visible position alone so the rotation feels smooth.
+      if ((agentCursor[a.id] || 0) >= list.length) agentCursor[a.id] = 0;
+      const cur = list[agentCursor[a.id] || 0];
+      if (cur && cur.summary) setAgentStatus(a.id, cur.summary, cur.created_at);
     }
   } catch (err) {
     // Best effort — leave the existing line in place on network blip.
   }
 }
 
-// Poll every 30s. The first refresh is kicked off by renderRoster()
-// once the roster is in place.
+/** Advance every agent's status to the next entry in their history.
+ *  Skips agents with only one entry (no cycling needed). Wraps around
+ *  at the end. */
+function rotateAgentStatuses() {
+  for (const a of roster) {
+    const list = agentHistory[a.id];
+    if (!list || list.length <= 1) continue;
+    const next = ((agentCursor[a.id] || 0) + 1) % list.length;
+    agentCursor[a.id] = next;
+    const e = list[next];
+    if (e && e.summary) setAgentStatus(a.id, e.summary, e.created_at);
+  }
+}
+
+// Refresh from the server every 30s, rotate through each agent's
+// recent entries every 6s. The first refresh is kicked off by
+// renderRoster() once the roster is in place.
 setInterval(refreshAgentStatuses, 30_000);
+setInterval(rotateAgentStatuses, 6_000);
+
+// ── Roster layout picker ──
+// Three presets (compact / comfortable / spacious) modify the .team
+// container class. Persisted in localStorage so the choice sticks
+// across reloads — same per-browser pattern as the other privacy /
+// scale prefs in the v2 dashboard.
+const LAYOUT_KEY = 'claudeclaw.warroom.rosterLayout';
+const VALID_LAYOUTS = ['compact', 'comfortable', 'spacious'];
+
+function applyRosterLayout(name) {
+  const next = VALID_LAYOUTS.indexOf(name) >= 0 ? name : 'comfortable';
+  const team = document.getElementById('roster');
+  if (!team) return;
+  for (const v of VALID_LAYOUTS) team.classList.remove('layout-' + v);
+  team.classList.add('layout-' + next);
+  // Reflect on the picker buttons.
+  document.querySelectorAll('.roster-layout-pick button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.layout === next);
+  });
+  try { localStorage.setItem(LAYOUT_KEY, next); } catch {}
+  // Marquee distance changes with the new layout — recompute on each
+  // visible status line so the scroll matches the new container width.
+  setTimeout(() => {
+    for (const a of roster) {
+      const list = agentHistory[a.id];
+      if (!list) continue;
+      const cur = list[agentCursor[a.id] || 0];
+      if (!cur) continue;
+      // Force re-evaluation by clearing the dataset cache and re-applying.
+      const el = document.getElementById('agent-status-' + a.id);
+      if (el) el.dataset.summary = '__forced__';
+      setAgentStatus(a.id, cur.summary, cur.created_at);
+    }
+  }, 50);
+}
+
+function initRosterLayoutPicker() {
+  let initial = 'comfortable';
+  try {
+    const v = localStorage.getItem(LAYOUT_KEY);
+    if (v && VALID_LAYOUTS.indexOf(v) >= 0) initial = v;
+  } catch {}
+  applyRosterLayout(initial);
+  document.querySelectorAll('.roster-layout-pick button').forEach((b) => {
+    b.addEventListener('click', () => applyRosterLayout(b.dataset.layout));
+  });
+}
+// Attach as soon as the DOM is parsed. The script lives at the end of
+// <body> so the picker buttons are guaranteed to exist by now.
+initRosterLayoutPicker();
 
 function applyRosterState() {
   // The row classes (pinned/selected/speaking) drive the avatar ring,
