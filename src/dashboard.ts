@@ -49,6 +49,10 @@ import {
   addWarRoomTranscript,
   getWarRoomMeetings,
   getWarRoomTranscript,
+  getAllDashboardSettings,
+  getDashboardSetting,
+  setDashboardSetting,
+  insertAuditLog,
 } from './db.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
@@ -1860,6 +1864,146 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
+  // ── Agent file editor (CLAUDE.md + agent.yaml) ──────────────────────
+  // Lets the dashboard edit each agent's persona (CLAUDE.md) and config
+  // (agent.yaml) directly. CLAUDE.md hot-reloads per turn (the Agent SDK
+  // re-reads it via settingSources: ['project']) so a save takes effect
+  // on the very next turn without a restart. agent.yaml is loaded once
+  // at process startup, so editing it returns restartRequired=true and
+  // the UI surfaces a one-click restart.
+  //
+  // Sensitive fields in agent.yaml (notably the bot token) are redacted
+  // to `***REDACTED***` on GET and restored from disk on PUT if the
+  // client echoes the redacted value back. Means the UI can never leak
+  // tokens to a screenshot, and editing other fields doesn't accidentally
+  // wipe the token.
+
+  // Lazily-imported to keep the module free of heavyweight YAML parsing
+  // unless someone actually edits a file. Same lazy import pattern as the
+  // setEnvKey usage at the bottom of this file.
+  async function getAtomicWriter() {
+    const { atomicEnvWrite } = await import('./env-write.js');
+    return atomicEnvWrite;
+  }
+
+  function loadAgentFiles(agentDir: string): { claudeMd: string; agentYaml: string; agentYamlRedacted: string } {
+    const claudePath = path.join(agentDir, 'CLAUDE.md');
+    const yamlPath = path.join(agentDir, 'agent.yaml');
+    const claudeMd = fs.existsSync(claudePath) ? fs.readFileSync(claudePath, 'utf-8') : '';
+    const agentYaml = fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf-8') : '';
+    // Redact bot_token line so the dashboard never displays it.
+    const agentYamlRedacted = agentYaml.replace(
+      /^(\s*bot_token\s*:\s*)([^\n#]+?)(\s*(?:#.*)?)$/m,
+      '$1"***REDACTED***"$3',
+    );
+    return { claudeMd, agentYaml, agentYamlRedacted };
+  }
+
+  app.get('/api/agents/:id/files', (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    let agentDir: string;
+    try { agentDir = resolveAgentDir(agentId); }
+    catch { return c.json({ error: 'agent not found' }, 404); }
+    const files = loadAgentFiles(agentDir);
+    return c.json({
+      agent_id: agentId,
+      claude_md: files.claudeMd,
+      agent_yaml: files.agentYamlRedacted,
+      bot_token_redacted: files.agentYaml !== files.agentYamlRedacted,
+    });
+  });
+
+  app.put('/api/agents/:id/files/claudemd', async (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    const body = await c.req.json().catch(() => null) as { content?: string } | null;
+    if (!body || typeof body.content !== 'string') {
+      return c.json({ error: 'expected { content: string }' }, 400);
+    }
+    if (body.content.length > 200_000) {
+      return c.json({ error: 'CLAUDE.md exceeds 200KB' }, 400);
+    }
+    let agentDir: string;
+    try { agentDir = resolveAgentDir(agentId); }
+    catch { return c.json({ error: 'agent not found' }, 404); }
+    const target = path.join(agentDir, 'CLAUDE.md');
+    const backup = target + '.backup';
+    try {
+      if (fs.existsSync(target)) fs.copyFileSync(target, backup);
+      const atomicEnvWrite = await getAtomicWriter();
+      atomicEnvWrite(target, body.content);
+      // Loosen perms — CLAUDE.md is not sensitive (no tokens), and 0600
+      // would prevent an editor running as a different user from reading
+      // it locally.
+      try { fs.chmodSync(target, 0o644); } catch {}
+      insertAuditLog(agentId, '', 'edit_claudemd', `${body.content.length} bytes`, false);
+      return c.json({ ok: true, takes_effect: 'next-turn' });
+    } catch (err) {
+      logger.error({ err, agentId }, 'Failed to write CLAUDE.md');
+      return c.json({ error: 'Failed to write file' }, 500);
+    }
+  });
+
+  app.put('/api/agents/:id/files/agent-yaml', async (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    const body = await c.req.json().catch(() => null) as { content?: string } | null;
+    if (!body || typeof body.content !== 'string') {
+      return c.json({ error: 'expected { content: string }' }, 400);
+    }
+    if (body.content.length > 64 * 1024) {
+      return c.json({ error: 'agent.yaml exceeds 64KB' }, 400);
+    }
+    let agentDir: string;
+    try { agentDir = resolveAgentDir(agentId); }
+    catch { return c.json({ error: 'agent not found' }, 404); }
+
+    // Validate as YAML before writing — no point poisoning the file.
+    let parsed: any;
+    try {
+      const yaml = await import('js-yaml');
+      parsed = yaml.load(body.content);
+    } catch (err: any) {
+      return c.json({ error: 'YAML parse error: ' + (err?.message || err) }, 400);
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return c.json({ error: 'agent.yaml must be a YAML object' }, 400);
+    }
+    if (!parsed.id || !parsed.description || !parsed.model) {
+      return c.json({ error: 'agent.yaml requires id, description, and model fields' }, 400);
+    }
+
+    // If the client posted back the redacted token, splice in the real
+    // value from the file currently on disk. Means partial edits don't
+    // require the user to know the real token.
+    let content = body.content;
+    if (/bot_token\s*:\s*"?\*\*\*REDACTED\*\*\*"?/.test(content)) {
+      const yamlPath = path.join(agentDir, 'agent.yaml');
+      const onDisk = fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf-8') : '';
+      const tokenMatch = onDisk.match(/^\s*bot_token\s*:\s*([^\n#]+?)\s*(?:#.*)?$/m);
+      const realToken = tokenMatch ? tokenMatch[1] : '';
+      if (realToken && realToken !== '"***REDACTED***"') {
+        content = content.replace(/^(\s*bot_token\s*:\s*)"?\*\*\*REDACTED\*\*\*"?(\s*(?:#.*)?)$/m, `$1${realToken}$2`);
+      }
+    }
+
+    const target = path.join(agentDir, 'agent.yaml');
+    const backup = target + '.backup';
+    try {
+      if (fs.existsSync(target)) fs.copyFileSync(target, backup);
+      const atomicEnvWrite = await getAtomicWriter();
+      atomicEnvWrite(target, content);
+      // Keep restrictive perms — file holds the bot token.
+      try { fs.chmodSync(target, 0o600); } catch {}
+      insertAuditLog(agentId, '', 'edit_agent_yaml', `${content.length} bytes`, false);
+      return c.json({ ok: true, takes_effect: 'restart' });
+    } catch (err) {
+      logger.error({ err, agentId }, 'Failed to write agent.yaml');
+      return c.json({ error: 'Failed to write file' }, 500);
+    }
+  });
+
   // ── Agent Creation & Management ──────────────────────────────────────
 
   // List available agent templates
@@ -2068,6 +2212,51 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
       return c.body(null, 204);
     }
+  });
+
+  // ── Dashboard personalization ────────────────────────────────────────
+  // Tiny key/value store backed by the dashboard_settings table. Used by
+  // the workspace name, hotkey mod choice, mission column order/widths,
+  // and any future per-workspace personalization. Values are arbitrary
+  // strings (the client encodes JSON for non-string payloads).
+  //
+  // Allowed keys are explicit so a typo on the client doesn't quietly
+  // create a junk row, and so future migrations have a finite list to
+  // reason about.
+  const ALLOWED_SETTING_KEYS = new Set([
+    'workspace_name',
+    'hotkey_mod', // 'meta' | 'ctrl' | 'auto'
+    'sidebar_collapsed_sections', // JSON array of section ids
+    'mission_column_order', // JSON array of agent ids
+    'mission_column_widths', // JSON object { id: px }
+  ]);
+  const SETTING_VALUE_MAX_BYTES = 4 * 1024;
+
+  app.get('/api/dashboard/settings', (c) => {
+    return c.json(getAllDashboardSettings());
+  });
+
+  app.patch('/api/dashboard/settings', async (c) => {
+    const body = await c.req.json().catch(() => null) as { key?: string; value?: string } | null;
+    if (!body || typeof body.key !== 'string' || typeof body.value !== 'string') {
+      return c.json({ error: 'expected { key: string, value: string }' }, 400);
+    }
+    if (!ALLOWED_SETTING_KEYS.has(body.key)) {
+      return c.json({ error: `unknown setting key: ${body.key}` }, 400);
+    }
+    if (Buffer.byteLength(body.value, 'utf8') > SETTING_VALUE_MAX_BYTES) {
+      return c.json({ error: `value exceeds ${SETTING_VALUE_MAX_BYTES} bytes` }, 400);
+    }
+    // Workspace name has its own length cap so the sidebar layout stays
+    // sane. Strip control chars + zero-width joiners; trim whitespace.
+    let value = body.value;
+    if (body.key === 'workspace_name') {
+      value = value.replace(/[\u0000-\u001f\u200b-\u200d\ufeff]/g, '').trim();
+      if (value.length > 32) value = value.slice(0, 32);
+    }
+    setDashboardSetting(body.key, value);
+    insertAuditLog('main', '', 'dashboard_setting_change', `${body.key}=${value.slice(0, 80)}`, false);
+    return c.json({ ok: true, key: body.key, value });
   });
 
   // ── Security & Audit ─────────────────────────────────────────────────

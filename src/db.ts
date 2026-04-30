@@ -287,6 +287,15 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id, created_at DESC);
 
+    -- Per-workspace personalization (workspace name, hotkey mod, mission
+    -- column order/widths, etc). Simple key/value with last-write-wins;
+    -- no auth scoping because the dashboard token is the auth boundary.
+    CREATE TABLE IF NOT EXISTS dashboard_settings (
+      key         TEXT PRIMARY KEY,
+      value       TEXT NOT NULL,
+      updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       summary,
       raw_text,
@@ -2817,4 +2826,25 @@ export function rememberClientMsgId(id: string, ttlMs = CLIENT_MSG_TTL_MS): bool
 /** @internal for tests — clear the dedup cache. */
 export function _resetClientMsgCache(): void {
   _clientMsgSeen.clear();
+}
+
+// ── Dashboard settings (personalization KV) ─────────────────────────
+
+export function getDashboardSetting(key: string): string | null {
+  const row = db.prepare(`SELECT value FROM dashboard_settings WHERE key = ?`).get(key) as { value: string } | undefined;
+  return row ? row.value : null;
+}
+
+export function setDashboardSetting(key: string, value: string): void {
+  db.prepare(
+    `INSERT INTO dashboard_settings (key, value, updated_at) VALUES (?, ?, strftime('%s','now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).run(key, value);
+}
+
+export function getAllDashboardSettings(): Record<string, string> {
+  const rows = db.prepare(`SELECT key, value FROM dashboard_settings`).all() as { key: string; value: string }[];
+  const out: Record<string, string> = {};
+  for (const row of rows) out[row.key] = row.value;
+  return out;
 }

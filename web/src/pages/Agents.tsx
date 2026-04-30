@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
-import { Plus, Power, RotateCcw, Trash2, Copy, Check } from 'lucide-preact';
+import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText } from 'lucide-preact';
+import { Link } from 'wouter-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
@@ -228,6 +229,13 @@ function AgentCard({ agent, onChange, onOpen }: { agent: Agent; onChange: () => 
             <Power size={11} /> {busy === 'start' ? 'Starting…' : 'Start'}
           </button>
         )}
+        <Link
+          href={`/agents/${agent.id}/files`}
+          class="inline-flex items-center justify-center px-2 py-1.5 rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors"
+          title="Edit persona + config"
+        >
+          <FileText size={11} />
+        </Link>
         <button
           type="button"
           onClick={() => run('restart')}

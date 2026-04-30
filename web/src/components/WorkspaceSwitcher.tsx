@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import { ChevronDown, Check } from 'lucide-preact';
 import { theme, themeMeta, setTheme, type ThemeName } from '@/lib/theme';
+import { workspaceName } from '@/lib/personalization';
 
 const THEME_ORDER: ThemeName[] = ['graphite', 'midnight', 'crimson'];
 
@@ -25,23 +26,24 @@ export function WorkspaceSwitcher() {
   }, [open]);
 
   const current = themeMeta[theme.value];
+  const name = workspaceName.value;
 
   return (
     <div ref={ref} class="relative px-3 pt-3 pb-1">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[var(--color-elevated)] transition-colors"
+        class="w-full flex items-center gap-2 px-2 py-2 rounded-md hover:bg-[var(--color-elevated)] transition-colors"
       >
         <div
-          class="w-5 h-5 rounded shrink-0"
+          class="w-6 h-6 rounded shrink-0"
           style={{
             background: `linear-gradient(135deg, ${current.swatch} 0%, var(--color-elevated) 100%)`,
             border: '1px solid var(--color-border)',
           }}
         />
-        <span class="text-[13px] font-semibold text-[var(--color-text)] truncate">ClaudeClaw</span>
-        <ChevronDown size={14} class="ml-auto text-[var(--color-text-faint)]" />
+        <span class="text-[14px] font-semibold text-[var(--color-text)] truncate">{name}</span>
+        <ChevronDown size={15} class="ml-auto text-[var(--color-text-faint)]" />
       </button>
 
       {open && (

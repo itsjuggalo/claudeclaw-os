@@ -7,6 +7,7 @@ import {
   filterActions,
   type PaletteAction,
 } from '@/lib/command-palette';
+import { matchesModKey } from '@/lib/personalization';
 
 export function CommandPalette() {
   const open = commandPaletteOpen.value;
@@ -30,8 +31,7 @@ export function CommandPalette() {
   // Global Cmd/Ctrl+K to open, Escape to close, plus arrow navigation while open.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const isMod = e.metaKey || e.ctrlKey;
-      if (isMod && e.key.toLowerCase() === 'k') {
+      if (matchesModKey(e) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         commandPaletteOpen.value = !commandPaletteOpen.value;
         return;

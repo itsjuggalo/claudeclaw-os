@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
-import { Plus, Wand2, Trash2, X, History, Inbox } from 'lucide-preact';
+import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2 } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
@@ -9,6 +9,13 @@ import { AgentAvatar } from '@/components/AgentAvatar';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost, apiPatch, apiDelete, apiGet } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
+import {
+  workspaceName,
+  missionColumnOrder,
+  missionColumnWidths,
+  setMissionColumnOrder,
+  setMissionColumnWidth,
+} from '@/lib/personalization';
 
 interface MissionTask {
   id: string;
@@ -84,11 +91,42 @@ export function MissionControl() {
 
   const loading = (tasks.loading || agents.loading) && !tasks.data;
   const error = tasks.error || agents.error;
+  const wsName = workspaceName.value;
+  const headerTitle = wsName && wsName !== 'ClaudeClaw' ? `${wsName} · Tasks` : 'Mission Control';
+
+  // Apply user-saved column order on top of API agent order. Any agents
+  // not in the saved order keep their API position; saved agents that no
+  // longer exist are skipped.
+  const orderedAgents = useMemo(() => {
+    const live = agents.data?.agents ?? [];
+    const saved = missionColumnOrder.value;
+    if (saved.length === 0) return live;
+    const byId = new Map(live.map((a) => [a.id, a]));
+    const out: Agent[] = [];
+    for (const id of saved) {
+      const a = byId.get(id);
+      if (a) { out.push(a); byId.delete(id); }
+    }
+    for (const a of live) if (byId.has(a.id)) out.push(a);
+    return out;
+  }, [agents.data, missionColumnOrder.value]);
+
+  function handleColumnDrop(targetId: string, draggedId: string) {
+    if (targetId === draggedId) return;
+    const ids = orderedAgents.map((a) => a.id);
+    const from = ids.indexOf(draggedId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    const next = [...ids];
+    next.splice(from, 1);
+    next.splice(to, 0, draggedId);
+    setMissionColumnOrder(next);
+  }
 
   return (
     <div class="flex flex-col h-full">
       <PageHeader
-        title="Mission Control"
+        title={headerTitle}
         actions={
           <>
             <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
@@ -128,13 +166,14 @@ export function MissionControl() {
       {!loading && !error && (
         <div class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
           <div class="flex gap-3 p-4 h-full min-w-max">
-            <InboxColumn tasks={inbox} onChange={tasks.refresh} agents={agents.data?.agents ?? []} />
-            {(agents.data?.agents ?? []).map((a) => (
+            <InboxColumn tasks={inbox} onChange={tasks.refresh} agents={orderedAgents} />
+            {orderedAgents.map((a) => (
               <AgentColumn
                 key={a.id}
                 agent={a}
                 tasks={byAgent[a.id] ?? []}
                 onChange={tasks.refresh}
+                onColumnDrop={handleColumnDrop}
               />
             ))}
           </div>
@@ -149,7 +188,9 @@ export function MissionControl() {
       />
 
       <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title="Task history">
-        <HistoryList />
+        {/* Remount on each open so the fetch fires fresh and a previous
+            error doesn't leave the drawer stuck on an empty state. */}
+        {historyOpen && <HistoryList />}
       </Drawer>
     </div>
   );
@@ -157,25 +198,28 @@ export function MissionControl() {
 
 // ── Columns ─────────────────────────────────────────────────────────
 
+// Inbox is pinned leftmost and not draggable/resizable — it's a fixed
+// landing zone for unassigned tasks. Width chosen to match the default
+// agent column width but slightly narrower since inbox cards are simpler.
 function InboxColumn({ tasks, agents, onChange }: { tasks: MissionTask[]; agents: Agent[]; onChange: () => void }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   return (
     <div
-      class="w-[280px] shrink-0 flex flex-col bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg overflow-hidden"
+      class="w-[300px] shrink-0 flex flex-col bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg overflow-hidden"
       onDragOver={(e) => e.preventDefault()}
     >
-      <div class="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center gap-2">
-        <Inbox size={14} class="text-[var(--color-text-muted)]" />
+      <div class="px-3 py-3 border-b border-[var(--color-border)] flex items-center gap-2">
+        <Inbox size={15} class="text-[var(--color-text-muted)]" />
         <div class="flex-1 min-w-0">
-          <div class="text-[12.5px] font-medium text-[var(--color-text)]">Inbox</div>
-          <div class="text-[10px] text-[var(--color-text-faint)] uppercase tracking-wider">Unassigned</div>
+          <div class="text-[13.5px] font-medium text-[var(--color-text)]">Inbox</div>
+          <div class="text-[10.5px] text-[var(--color-text-faint)] uppercase tracking-wider">Unassigned</div>
         </div>
-        <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">{tasks.length}</span>
+        <span class="text-[11.5px] text-[var(--color-text-muted)] tabular-nums">{tasks.length}</span>
       </div>
 
       <div class="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5">
         {tasks.length === 0 && (
-          <div class="text-[11px] text-[var(--color-text-faint)] text-center py-6">
+          <div class="text-[11.5px] text-[var(--color-text-faint)] text-center py-6">
             All tasks are assigned
           </div>
         )}
@@ -195,16 +239,43 @@ function InboxColumn({ tasks, agents, onChange }: { tasks: MissionTask[]; agents
   );
 }
 
-function AgentColumn({ agent, tasks, onChange }: { agent: Agent; tasks: MissionTask[]; onChange: () => void }) {
-  const [dragOver, setDragOver] = useState(false);
+// Width presets cycled by the maximize/minimize buttons in the header.
+// Tracks the resize handle's clamping range from personalization.ts
+// (240–640). Three quick stops give keyboard-free "compact / normal /
+// wide" behavior without needing the mouse.
+const WIDTH_PRESETS = [260, 320, 480];
+const DEFAULT_WIDTH = 320;
+const COLUMN_DRAG_MIME = 'application/x-mission-column';
+
+function AgentColumn({
+  agent, tasks, onChange, onColumnDrop,
+}: {
+  agent: Agent;
+  tasks: MissionTask[];
+  onChange: () => void;
+  onColumnDrop: (targetId: string, draggedId: string) => void;
+}) {
+  const [taskDragOver, setTaskDragOver] = useState(false);
+  const [columnDragOver, setColumnDragOver] = useState(false);
   const queued = tasks.filter((t) => t.status === 'queued');
   const running = tasks.filter((t) => t.status === 'running');
   const terminal = tasks.filter((t) => TERMINAL.includes(t.status));
 
-  async function handleDrop(e: DragEvent) {
-    e.preventDefault(); setDragOver(false);
-    const taskId = e.dataTransfer?.getData('text/plain');
-    if (!taskId) return;
+  const widths = missionColumnWidths.value;
+  const width = widths[agent.id] ?? DEFAULT_WIDTH;
+
+  function cyclePreset(direction: 'up' | 'down') {
+    const stops = WIDTH_PRESETS;
+    const i = stops.findIndex((px) => px >= width);
+    const idx = i < 0 ? stops.length - 1 : i;
+    const next = direction === 'up'
+      ? Math.min(stops.length - 1, idx + 1)
+      : Math.max(0, idx - 1);
+    setMissionColumnWidth(agent.id, stops[next]);
+  }
+
+  // Card dropped from inbox or another column.
+  async function handleTaskDrop(taskId: string) {
     try {
       await apiPatch(`/api/mission/tasks/${taskId}`, { assigned_agent: agent.id });
       onChange();
@@ -213,35 +284,92 @@ function AgentColumn({ agent, tasks, onChange }: { agent: Agent; tasks: MissionT
     }
   }
 
+  // Top-level drop handler discriminates between a card drop (text/plain
+  // is a task id) and a column reorder (custom MIME type).
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    setTaskDragOver(false); setColumnDragOver(false);
+    const draggedColumnId = e.dataTransfer?.getData(COLUMN_DRAG_MIME);
+    if (draggedColumnId) {
+      onColumnDrop(agent.id, draggedColumnId);
+      return;
+    }
+    const taskId = e.dataTransfer?.getData('text/plain');
+    if (taskId) void handleTaskDrop(taskId);
+  }
+
   return (
     <div
       class={[
-        'w-[280px] shrink-0 flex flex-col bg-[var(--color-card)] border rounded-lg overflow-hidden transition-colors',
-        dragOver ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft)]' : 'border-[var(--color-border)]',
+        'shrink-0 flex flex-col bg-[var(--color-card)] border rounded-lg overflow-hidden relative transition-colors',
+        taskDragOver
+          ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft)]'
+          : columnDragOver
+          ? 'border-[var(--color-accent)]'
+          : 'border-[var(--color-border)]',
       ].join(' ')}
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      style={{ width: width + 'px' }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        const isColumn = Array.from(e.dataTransfer?.types ?? []).includes(COLUMN_DRAG_MIME);
+        if (isColumn) setColumnDragOver(true); else setTaskDragOver(true);
+      }}
       onDragLeave={(e) => {
         const rel = e.relatedTarget as Node | null;
         if (rel && (e.currentTarget as Node).contains(rel)) return;
-        setDragOver(false);
+        setTaskDragOver(false); setColumnDragOver(false);
       }}
       onDrop={handleDrop}
     >
-      <div class="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center gap-2">
-        <AgentAvatar agentId={agent.id} name={agent.name} running={agent.running} size={24} />
+      <div
+        class="px-3 py-3 border-b border-[var(--color-border)] flex items-center gap-2"
+      >
+        <button
+          type="button"
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer?.setData(COLUMN_DRAG_MIME, agent.id);
+            e.dataTransfer!.effectAllowed = 'move';
+          }}
+          class="cursor-grab active:cursor-grabbing text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)] -ml-1"
+          title="Drag to reorder"
+        >
+          <GripVertical size={14} />
+        </button>
+        <AgentAvatar agentId={agent.id} name={agent.name} running={agent.running} size={28} />
         <div class="flex-1 min-w-0">
-          <div class="text-[12.5px] font-medium text-[var(--color-text)] truncate">{agent.name || agent.id}</div>
-          <div class="text-[10px] text-[var(--color-text-faint)] uppercase tracking-wider flex items-center gap-1">
+          <div class="text-[13.5px] font-medium text-[var(--color-text)] truncate">{agent.name || agent.id}</div>
+          <div class="text-[10.5px] text-[var(--color-text-faint)] uppercase tracking-wider flex items-center gap-1">
             <StatusDot tone={agent.running ? 'done' : 'cancelled'} />
             {agent.running ? 'Live' : 'Offline'}
           </div>
         </div>
-        <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">{tasks.length}</span>
+        <span class="text-[11.5px] text-[var(--color-text-muted)] tabular-nums">{tasks.length}</span>
+        <div class="flex items-center">
+          <button
+            type="button"
+            onClick={() => cyclePreset('down')}
+            disabled={width <= WIDTH_PRESETS[0]}
+            class="p-1 rounded text-[var(--color-text-faint)] hover:text-[var(--color-text)] disabled:opacity-30 transition-colors"
+            title="Narrower"
+          >
+            <Minimize2 size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={() => cyclePreset('up')}
+            disabled={width >= WIDTH_PRESETS[WIDTH_PRESETS.length - 1]}
+            class="p-1 rounded text-[var(--color-text-faint)] hover:text-[var(--color-text)] disabled:opacity-30 transition-colors"
+            title="Wider"
+          >
+            <Maximize2 size={12} />
+          </button>
+        </div>
       </div>
 
       <div class="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5">
         {tasks.length === 0 && (
-          <div class="text-[11px] text-[var(--color-text-faint)] text-center py-6">
+          <div class="text-[11.5px] text-[var(--color-text-faint)] text-center py-6">
             No tasks
           </div>
         )}
@@ -249,7 +377,44 @@ function AgentColumn({ agent, tasks, onChange }: { agent: Agent; tasks: MissionT
           <TaskCard key={t.id} task={t} onChange={onChange} />
         ))}
       </div>
+
+      <ResizeHandle agentId={agent.id} currentWidth={width} />
     </div>
+  );
+}
+
+// Drag the right edge to resize. Mousemove updates the width signal
+// optimistically; mouseup commits. We bind listeners on document so
+// the user can drag past the column edge without losing the drag.
+function ResizeHandle({ agentId, currentWidth }: { agentId: string; currentWidth: number }) {
+  const startX = useRef(0);
+  const startWidth = useRef(0);
+  const dragging = useRef(false);
+
+  function onPointerDown(e: PointerEvent) {
+    e.preventDefault();
+    dragging.current = true;
+    startX.current = e.clientX;
+    startWidth.current = currentWidth;
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp, { once: true });
+  }
+  function onMove(e: PointerEvent) {
+    if (!dragging.current) return;
+    const dx = e.clientX - startX.current;
+    setMissionColumnWidth(agentId, startWidth.current + dx);
+  }
+  function onUp() {
+    dragging.current = false;
+    document.removeEventListener('pointermove', onMove);
+  }
+
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-[var(--color-accent)] active:bg-[var(--color-accent)] opacity-0 hover:opacity-50 transition-opacity"
+      title="Drag to resize"
+    />
   );
 }
 
@@ -545,45 +710,76 @@ function CreateTaskModal({
 
 // ── History drawer ─────────────────────────────────────────────────
 
+// Mounted fresh on every drawer open via the `historyOpen` guard in
+// MissionControl. That means the fetch always retries on open — fixes
+// the "drawer empty forever" symptom where a transient backend hiccup
+// at first paint left the list permanently blank with no error visible.
 function HistoryList() {
   const [items, setItems] = useState<MissionTask[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const PAGE = 20;
 
   useEffect(() => { void load(0, true); }, []);
 
   async function load(off: number, reset = false) {
-    setLoading(true);
+    setLoading(true); setError(null);
     try {
       const data = await apiGet<{ tasks: MissionTask[]; total: number }>(`/api/mission/history?limit=${PAGE}&offset=${off}`);
       setTotal(data.total);
       setItems(reset ? data.tasks : [...items, ...data.tasks]);
       setOffset(off + data.tasks.length);
+    } catch (err: any) {
+      setError(err?.message || String(err));
     } finally { setLoading(false); }
   }
 
   return (
     <div class="px-6 py-4">
-      <div class="text-[11px] text-[var(--color-text-muted)] mb-3 tabular-nums">{total} historical tasks</div>
+      <div class="flex items-center gap-3 mb-3">
+        <div class="text-[12px] text-[var(--color-text-muted)] tabular-nums">{total} historical tasks</div>
+        {!loading && (
+          <button
+            type="button"
+            onClick={() => load(0, true)}
+            class="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
+          >
+            ↻ Refresh
+          </button>
+        )}
+      </div>
+      {error && (
+        <div class="bg-[var(--color-card)] border border-[var(--color-status-failed)] rounded p-3 mb-3">
+          <div class="text-[12px] text-[var(--color-status-failed)] font-medium mb-1">Failed to load history</div>
+          <div class="text-[11.5px] text-[var(--color-text-muted)] font-mono break-all">{error}</div>
+          <button
+            type="button"
+            onClick={() => load(0, true)}
+            class="mt-2 text-[11.5px] text-[var(--color-accent)] hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      )}
       <div class="space-y-1.5">
         {items.map((t) => (
           <div key={t.id} class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded p-3">
             <div class="flex items-center gap-2 mb-1">
               <Pill tone={t.status as any}>{t.status}</Pill>
-              <span class="text-[10px] text-[var(--color-text-faint)] tabular-nums uppercase tracking-wider">{t.id.slice(0, 6)}</span>
-              {t.assigned_agent && <span class="text-[10px] text-[var(--color-text-muted)]">@{t.assigned_agent}</span>}
-              <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">
+              <span class="text-[10.5px] text-[var(--color-text-faint)] tabular-nums uppercase tracking-wider">{t.id.slice(0, 6)}</span>
+              {t.assigned_agent && <span class="text-[11px] text-[var(--color-text-muted)]">@{t.assigned_agent}</span>}
+              <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">
                 {formatRelativeTime(t.completed_at || t.created_at)}
               </span>
             </div>
-            <div class="text-[12.5px] text-[var(--color-text)] mb-1">{t.title}</div>
+            <div class="text-[13px] text-[var(--color-text)] mb-1">{t.title}</div>
             {t.result && (
-              <div class="text-[11px] text-[var(--color-text-muted)] whitespace-pre-wrap line-clamp-3 leading-relaxed">{t.result}</div>
+              <div class="text-[11.5px] text-[var(--color-text-muted)] whitespace-pre-wrap line-clamp-3 leading-relaxed">{t.result}</div>
             )}
             {t.error && (
-              <div class="text-[11px] text-[var(--color-status-failed)] whitespace-pre-wrap line-clamp-2 font-mono">{t.error}</div>
+              <div class="text-[11.5px] text-[var(--color-status-failed)] whitespace-pre-wrap line-clamp-2 font-mono">{t.error}</div>
             )}
           </div>
         ))}
@@ -593,13 +789,13 @@ function HistoryList() {
           type="button"
           onClick={() => load(offset)}
           disabled={loading}
-          class="w-full mt-3 px-3 py-2 rounded border border-[var(--color-border)] text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors disabled:opacity-40"
+          class="w-full mt-3 px-3 py-2 rounded border border-[var(--color-border)] text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors disabled:opacity-40"
         >
           {loading ? 'Loading…' : `Load more (${total - offset} remaining)`}
         </button>
       )}
-      {items.length === 0 && !loading && (
-        <div class="text-center text-[11px] text-[var(--color-text-faint)] py-12">No completed tasks yet</div>
+      {items.length === 0 && !loading && !error && (
+        <div class="text-center text-[11.5px] text-[var(--color-text-faint)] py-12">No completed tasks yet</div>
       )}
     </div>
   );

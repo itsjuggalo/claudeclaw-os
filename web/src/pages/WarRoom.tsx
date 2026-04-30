@@ -1,14 +1,20 @@
-import { useState } from 'preact/hooks';
-import { Mic, MessageSquare, Video, ExternalLink, Pin, PinOff } from 'lucide-preact';
+import { useState, useEffect } from 'preact/hooks';
+import { useLocation } from 'wouter-preact';
+import { Mic, MessageSquare, Video, ExternalLink, Pin, PinOff, Sliders } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { AgentAvatar } from '@/components/AgentAvatar';
 import { Pill } from '@/components/Pill';
+import { VoicesPane } from '@/pages/Voices';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost, dashboardToken, chatId, legacyUrl } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
-type Mode = 'picker' | 'voice' | 'text' | 'meet';
+// 'voices' is the embedded voice configuration tab — used to be its own
+// page at /voices, now folded under War Room since it conceptually
+// belongs there. Direct navigation to /voices still works (App.tsx
+// renders the standalone Voices page) for back-compat.
+type Mode = 'picker' | 'voice' | 'text' | 'meet' | 'voices';
 
 interface PinState { ok: boolean; agent: string | null; mode: 'direct' | 'auto'; }
 interface RosterAgent { id: string; name: string; description: string; }
@@ -17,7 +23,22 @@ interface VoiceMeeting { id: string; started_at: number; ended_at: number | null
 interface MeetSession { id: string; agent_id: string; provider: string; status: string; meet_url: string; created_at: number; }
 
 export function WarRoom() {
-  const [mode, setMode] = useState<Mode>('picker');
+  // Allow ?mode=voices (or any other Mode) on the URL so links from the
+  // command palette and the legacy /voices route can deep-link directly
+  // to a tab without going through the picker.
+  const [, setLocation] = useLocation();
+  const initialMode = readModeFromUrl();
+  const [mode, setMode] = useState<Mode>(initialMode);
+  useEffect(() => {
+    if (mode === 'picker') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mode') !== mode) {
+      params.set('mode', mode);
+      // Replace, don't push, so back-button doesn't re-cycle through tabs.
+      window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
+    }
+    void setLocation;
+  }, [mode]);
 
   if (mode === 'picker') {
     return (
@@ -25,31 +46,37 @@ export function WarRoom() {
         <PageHeader title="War Room" />
         <div class="flex-1 overflow-y-auto p-8">
           <div class="max-w-3xl mx-auto">
-            <p class="text-[12.5px] text-[var(--color-text-muted)] mb-6 leading-relaxed">
+            <p class="text-[13px] text-[var(--color-text-muted)] mb-6 leading-relaxed">
               Pull all agents into one conversation. Voice rooms speak in real-time via Pipecat + Gemini Live.
               Text rooms work async with full transcript and per-agent pinning.
             </p>
             <div class="grid grid-cols-2 gap-4">
               <ModeCard
-                icon={<Mic size={20} />}
+                icon={<Mic size={22} />}
                 title="Voice"
                 description="Live voice meeting with all agents in the same Gemini Live session. Pin one agent for direct mode, or use auto-routing."
                 onClick={() => setMode('voice')}
               />
               <ModeCard
-                icon={<MessageSquare size={20} />}
+                icon={<MessageSquare size={22} />}
                 title="Text"
                 description="Threaded text meeting with full transcript, agent intervener routing, and SSE streaming. Async-friendly."
                 onClick={() => setMode('text')}
               />
               <ModeCard
-                icon={<Video size={20} />}
+                icon={<Video size={22} />}
                 title="Live Meetings"
                 description="Send an agent into a Google Meet via Pika, or create a Daily.co room. Active sessions and history."
                 onClick={() => setMode('meet')}
               />
+              <ModeCard
+                icon={<Sliders size={22} />}
+                title="Voice config"
+                description="Per-agent Gemini Live voice picker. Used to be its own tab; now lives here under War Room."
+                onClick={() => setMode('voices')}
+              />
               <ExternalCard
-                icon={<ExternalLink size={20} />}
+                icon={<ExternalLink size={22} />}
                 title="Open in classic"
                 description="Voice and text War Room pages from the legacy dashboard, served by the same backend."
                 href={legacyUrl(`/warroom?mode=picker&token=${encodeURIComponent(dashboardToken)}&chatId=${encodeURIComponent(chatId)}`)}
@@ -71,23 +98,33 @@ export function WarRoom() {
             <Tab label="Voice" active={mode === 'voice'} onClick={() => setMode('voice')} />
             <Tab label="Text" active={mode === 'text'} onClick={() => setMode('text')} />
             <Tab label="Live Meetings" active={mode === 'meet'} onClick={() => setMode('meet')} />
+            <Tab label="Voice config" active={mode === 'voices'} onClick={() => setMode('voices')} />
             <button
               type="button"
               onClick={() => setMode('picker')}
-              class="ml-auto text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
+              class="ml-auto text-[11.5px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
             >
               ← Back to picker
             </button>
           </>
         }
       />
-      <div class="flex-1 overflow-y-auto">
+      <div class="flex-1 overflow-y-auto flex flex-col">
         {mode === 'voice' && <VoicePane />}
         {mode === 'text' && <TextPane />}
         {mode === 'meet' && <MeetPane />}
+        {mode === 'voices' && <VoicesPane embedded />}
       </div>
     </div>
   );
+}
+
+function readModeFromUrl(): Mode {
+  try {
+    const m = new URLSearchParams(window.location.search).get('mode');
+    if (m === 'voice' || m === 'text' || m === 'meet' || m === 'voices' || m === 'picker') return m;
+  } catch {}
+  return 'picker';
 }
 
 function ModeCard({ icon, title, description, onClick }: any) {
