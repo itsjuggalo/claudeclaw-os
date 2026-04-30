@@ -9,6 +9,7 @@ import { AgentAvatar } from '@/components/AgentAvatar';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost, apiPatch, apiDelete, apiGet } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
+import { pushToast } from '@/lib/toasts';
 import {
   workspaceName,
   missionColumnOrder,
@@ -571,24 +572,40 @@ function InboxCard({
 
   async function autoAssign() {
     setBusy('assign');
-    try { await apiPost(`/api/mission/tasks/${task.id}/auto-assign`); onChange(); }
-    catch (err: any) { alert('Auto-assign failed: ' + (err?.message || err)); }
-    finally { setBusy(null); }
+    try {
+      const res = await apiPost<{ ok: boolean; assigned_agent?: string }>(`/api/mission/tasks/${task.id}/auto-assign`);
+      onChange();
+      pushToast({
+        tone: 'success',
+        title: 'Auto-assigned',
+        description: res.assigned_agent ? `Routed to @${res.assigned_agent}.` : 'Routed.',
+      });
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Auto-assign failed', description: err?.message || String(err), durationMs: 6000 });
+    } finally { setBusy(null); }
   }
 
   async function manualAssign(agentId: string) {
     setBusy('manual');
-    try { await apiPatch(`/api/mission/tasks/${task.id}`, { assigned_agent: agentId }); onChange(); }
-    catch (err: any) { alert('Assign failed: ' + (err?.message || err)); }
-    finally { setBusy(null); }
+    try {
+      await apiPatch(`/api/mission/tasks/${task.id}`, { assigned_agent: agentId });
+      onChange();
+      pushToast({ tone: 'success', title: 'Assigned', description: `Routed to @${agentId}.` });
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Assign failed', description: err?.message || String(err), durationMs: 6000 });
+    } finally { setBusy(null); }
   }
 
   async function remove() {
     if (!confirm('Delete this task?')) return;
     setBusy('delete');
-    try { await apiDelete(`/api/mission/tasks/${task.id}`); onChange(); }
-    catch (err: any) { alert('Delete failed: ' + (err?.message || err)); }
-    finally { setBusy(null); }
+    try {
+      await apiDelete(`/api/mission/tasks/${task.id}`);
+      onChange();
+      pushToast({ tone: 'warn', title: 'Task deleted' });
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Delete failed', description: err?.message || String(err), durationMs: 6000 });
+    } finally { setBusy(null); }
   }
 
   return (
@@ -610,7 +627,16 @@ function InboxCard({
       <div class="text-[12.5px] text-[var(--color-text)] leading-snug mb-1.5 line-clamp-2">
         {task.title}
       </div>
-      <div class="flex items-center gap-1">
+      {/* draggable=false on the action row stops the parent's HTML5 drag
+          from swallowing button clicks. Without it, mousedown on Auto /
+          select / Trash gets intercepted as drag-prep and onClick never
+          fires. The card body above stays draggable so reassign-by-drag
+          still works. */}
+      <div
+        class="flex items-center gap-1"
+        draggable={false}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <button
           type="button"
           onClick={autoAssign}
