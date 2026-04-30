@@ -66,6 +66,26 @@ describe('auth gate', () => {
     const res = await app.request('/api/health', { method: 'OPTIONS' });
     expect(res.status).toBe(204);
   });
+
+  // Regression: the SPA shell (`<script src="/assets/...">`) has no
+  // token in the URL. If the auth middleware ever gates /assets/* the
+  // bundle 401s and the dashboard goes blank — the symptom Mark hit
+  // when the dashboard "wouldn't load" after a previous refactor.
+  // Static assets must always be reachable without a token.
+  it('serves /assets/* without a token (SPA bundle would 401 otherwise)', async () => {
+    // Hit a path we know won't exist on disk, just to prove the auth
+    // middleware ALLOWS the request through. Whether the file exists is
+    // a separate concern handled by the /assets/* handler.
+    const res = await app.request('/assets/some-bundle-that-doesnt-exist.js');
+    // Acceptable outcomes: 200/204 (file served), 404 (handler ran and
+    // didn't find it). NOT acceptable: 401 (middleware blocked it).
+    expect(res.status).not.toBe(401);
+  });
+
+  it('serves /favicon.svg without a token', async () => {
+    const res = await app.request('/favicon.svg');
+    expect(res.status).not.toBe(401);
+  });
 });
 
 describe('GET /api/health', () => {

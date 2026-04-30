@@ -237,8 +237,20 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
   }));
 
-  // Token auth middleware
+  // Token auth middleware. Static assets (the Vite bundle and favicon)
+  // are exempted because the SPA shell HTML includes `<script src=...>`
+  // tags without query parameters — gating those would 401 the bundle
+  // and the SPA never executes. Bundles are public code (no secrets;
+  // every secret-bearing call goes through /api/* which IS gated), so
+  // serving them unauthenticated is fine. The dashboard token still
+  // protects every API route, every SSE stream, and every legacy HTML
+  // page (which IS rendered with the token interpolated server-side).
+  const STATIC_PREFIXES = ['/assets/', '/favicon'];
   app.use('*', async (c, next) => {
+    const path = new URL(c.req.url).pathname;
+    for (const p of STATIC_PREFIXES) {
+      if (path.startsWith(p)) { await next(); return; }
+    }
     const token = c.req.query('token');
     if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
       return c.json({ error: 'Unauthorized' }, 401);
