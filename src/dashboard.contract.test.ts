@@ -86,6 +86,35 @@ describe('auth gate', () => {
     const res = await app.request('/favicon.svg');
     expect(res.status).not.toBe(401);
   });
+
+  // Regression: SPA shell paths must be reachable without a token so a
+  // hard-refresh of a token-stripped URL still loads the frontend, which
+  // can recover the token from sessionStorage. If these 401, the user
+  // sees raw JSON {"error":"Unauthorized"} on every refresh — exactly
+  // the bug Mark hit. The HTML these serve has no embedded secret; the
+  // frontend reads token from query string then falls back to storage.
+  it('serves SPA shell at / without a token', async () => {
+    const res = await app.request('/');
+    expect(res.status).not.toBe(401);
+  });
+
+  it('serves SPA shell at /warroom without a token', async () => {
+    const res = await app.request('/warroom');
+    expect(res.status).not.toBe(401);
+  });
+
+  // Legacy mode HTML embeds DASHBOARD_TOKEN, so those variants MUST stay
+  // gated even though the path is exempt at the middleware. The handler
+  // does an inline check.
+  it('blocks legacy /warroom?mode=picker without a token (HTML embeds token)', async () => {
+    const res = await app.request('/warroom?mode=picker');
+    expect(res.status).toBe(401);
+  });
+
+  it('blocks legacy /warroom?mode=voice without a token (HTML embeds token)', async () => {
+    const res = await app.request('/warroom?mode=voice');
+    expect(res.status).toBe(401);
+  });
 });
 
 describe('GET /api/health', () => {

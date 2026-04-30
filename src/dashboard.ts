@@ -237,26 +237,49 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
   }));
 
-  // Token auth middleware. Static assets (the Vite bundle and favicon)
-  // are exempted because the SPA shell HTML includes `<script src=...>`
-  // tags without query parameters — gating those would 401 the bundle
-  // and the SPA never executes. Bundles are public code (no secrets;
-  // every secret-bearing call goes through /api/* which IS gated), so
-  // serving them unauthenticated is fine. The dashboard token still
-  // protects every API route, every SSE stream, and every legacy HTML
-  // page (which IS rendered with the token interpolated server-side).
-  const STATIC_PREFIXES = ['/assets/', '/favicon'];
+  // Token auth middleware. Three categories of request:
+  //
+  //   1. PUBLIC — static assets (Vite bundle, favicon) and the v2 SPA
+  //      shell HTML. Bundle has no secrets (it reads the token from
+  //      window.location at runtime). SPA shell has no embedded token.
+  //      Letting these through means a hard-refresh of a token-stripped
+  //      URL still loads the SPA, which can recover the token from
+  //      sessionStorage instead of showing raw 401 JSON.
+  //   2. LEGACY HTML — getDashboardHtml / getWarRoomHtml /
+  //      getWarRoomPickerHtml etc. interpolate DASHBOARD_TOKEN into
+  //      the page source, so they MUST stay token-gated. Those handlers
+  //      do their own token check inline when they're in legacy mode.
+  //   3. EVERYTHING ELSE — /api/*, SSE streams, legacy text room, etc.
+  //      Standard token gate runs here.
+  const PUBLIC_PREFIXES = ['/assets/', '/favicon'];
+  // SPA shell paths — index.html for these is harmless to serve to an
+  // unauthenticated caller. Inside the handlers we still gate the
+  // legacy fallbacks (which DO embed the token) by checking the token
+  // explicitly there.
+  const SPA_SHELL_PATHS = new Set(['/', '/warroom']);
   app.use('*', async (c, next) => {
     const path = new URL(c.req.url).pathname;
-    for (const p of STATIC_PREFIXES) {
+    for (const p of PUBLIC_PREFIXES) {
       if (path.startsWith(p)) { await next(); return; }
     }
+    if (SPA_SHELL_PATHS.has(path)) { await next(); return; }
     const token = c.req.query('token');
     if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     await next();
   });
+
+  // Inline token check for handlers that USED to rely on the global
+  // middleware but now serve a public SPA shell on the same path. Used
+  // by legacy fallbacks that DO embed the token in the page source.
+  function requireToken(c: any): Response | null {
+    const token = c.req.query('token');
+    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
+      return c.json({ error: 'Unauthorized' }, 401) as Response;
+    }
+    return null;
+  }
 
   // Mutation kill-switch middleware. When DASHBOARD_MUTATIONS_ENABLED is
   // off, every non-GET request returns 503 — the runbook's promise is
@@ -341,11 +364,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
     if (legacyMode || !fs.existsSync(newDashboardIndex)) {
+      // Legacy path interpolates DASHBOARD_TOKEN into the HTML, so it
+      // MUST require the token. SPA path doesn't.
+      const denied = requireToken(c); if (denied) return denied;
       return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId, WARROOM_ENABLED));
     }
-    // Read fresh on each request so dev rebuilds appear without restart.
-    // The new frontend reads ?token= and ?chatId= from window.location, so
-    // no server-side templating is needed; we ship the static HTML as-is.
+    // SPA shell. Read fresh on each request so dev rebuilds appear
+    // without restart. The frontend reads ?token= and ?chatId= from
+    // window.location, falling back to sessionStorage. Serving this
+    // unauthenticated means a token-stripped URL still loads the app
+    // instead of showing raw 401 JSON.
     const html = fs.readFileSync(newDashboardIndex, 'utf-8');
     return c.html(html);
   });
@@ -384,14 +412,18 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.get('/warroom', (c) => {
     const chatId = c.req.query('chatId') || '';
     const mode = c.req.query('mode') || '';
+    // Legacy variants interpolate DASHBOARD_TOKEN into the HTML so they
+    // MUST require a token. The v2 SPA path doesn't.
     if (mode === 'voice') {
+      const denied = requireToken(c); if (denied) return denied;
       return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
     }
     if (mode === 'picker' || legacyMode || !fs.existsSync(newDashboardIndex)) {
+      const denied = requireToken(c); if (denied) return denied;
       return c.html(getWarRoomPickerHtml(DASHBOARD_TOKEN, chatId));
     }
-    // v2 SPA: same-origin token already injected by the new frontend at
-    // mount time. The new War Room page handles its own routing.
+    // v2 SPA shell — no embedded token, safe to serve unauth so a
+    // hard-refresh of a token-stripped URL still loads the app.
     return c.html(fs.readFileSync(newDashboardIndex, 'utf-8'));
   });
 
