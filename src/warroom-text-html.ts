@@ -175,46 +175,76 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     letter-spacing: 1.2px;
     text-transform: uppercase;
   }
+  /* Agent rail — MSN-style pill cards. Each row is a rounded card with
+     a round avatar, name, status dot, and a "what they last did" line
+     fed by the hive_mind table. New status fades in to avoid jarring
+     swaps when the polling loop merges in fresh data. */
   .agent-row {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 10px;
-    border-radius: 10px;
-    border: 1px solid transparent;
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px;
+    border-radius: 999px 18px 18px 999px; /* pill on the avatar side, gentle rounding on the right */
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
     cursor: pointer;
-    transition: background 120ms ease, border-color 120ms ease;
+    transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
     text-align: left;
-    background: transparent;
     color: inherit;
     font: inherit;
     width: 100%;
   }
-  .agent-row:hover { background: rgba(255,255,255,0.03); }
-  .agent-row:focus-visible { outline: none; border-color: var(--indigo); }
+  .agent-row:hover { background: var(--bg-elev-2); border-color: var(--border-strong); transform: translateX(1px); }
+  .agent-row:focus-visible { outline: none; border-color: var(--indigo); box-shadow: 0 0 0 2px rgba(99,102,241,0.25); }
   .agent-row.pinned { border-color: var(--indigo); background: var(--indigo-soft); }
   .agent-row.selected { border-color: rgba(245,158,11,0.5); background: rgba(245,158,11,0.08); }
-  .agent-row.speaking { border-color: rgba(34,197,94,0.6); background: rgba(34,197,94,0.1); }
+  .agent-row.speaking { border-color: rgba(34,197,94,0.6); background: rgba(34,197,94,0.10); }
   .agent-avatar {
-    width: 34px; height: 34px; border-radius: 50%;
+    width: 40px; height: 40px; border-radius: 50%;
     background: #1a1a25;
     display: flex; align-items: center; justify-content: center;
-    font-size: 13px; font-weight: 700;
+    font-size: 14px; font-weight: 700;
     flex-shrink: 0;
-    border: 1px solid var(--border);
+    border: 2px solid var(--border-strong);
     overflow: hidden;
+    transition: border-color 200ms ease, box-shadow 200ms ease;
   }
+  .agent-row.speaking .agent-avatar { border-color: rgba(34,197,94,0.8); box-shadow: 0 0 0 3px rgba(34,197,94,0.15); }
+  .agent-row.pinned .agent-avatar { border-color: var(--indigo); }
   .agent-avatar img { width: 100%; height: 100%; object-fit: cover; }
   .agent-meta { flex: 1; min-width: 0; }
-  .agent-name { font-size: 13px; font-weight: 600; line-height: 1.2; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
-  .agent-role { font-size: 11px; color: var(--text-mute); line-height: 1.2; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; margin-top: 2px; }
-  .agent-status { font-size: 10px; font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text-mute); letter-spacing: 0.5px; text-transform: uppercase; margin-top: 3px; display: none; }
-  .agent-status.show { display: flex; align-items: center; gap: 4px; }
-  .agent-status .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-  .agent-row.pinned .agent-status { display: flex; color: #a5b4fc; }
-  .agent-row.pinned .agent-status .dot { background: var(--indigo); }
-  .agent-row.selected .agent-status { display: flex; color: #fcd34d; }
-  .agent-row.selected .agent-status .dot { background: var(--amber); }
-  .agent-row.speaking .agent-status { display: flex; color: #86efac; }
-  .agent-row.speaking .agent-status .dot { background: var(--green); animation: pulse 1.2s ease infinite; }
+  .agent-name {
+    font-size: 13.5px; font-weight: 600; line-height: 1.2;
+    white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
+    display: flex; align-items: center; gap: 6px;
+  }
+  /* MSN-style "what they last did" line. Old text fades out upward as
+     the new text fades in — a single line, fixed height, ellipsised. */
+  .agent-status-line {
+    font-size: 11.5px;
+    color: var(--text-mute);
+    line-height: 1.3;
+    white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
+    margin-top: 3px;
+    transition: opacity 200ms ease, transform 200ms ease;
+    opacity: 1;
+    font-style: italic;
+  }
+  .agent-status-line.fade-out { opacity: 0; transform: translateY(-4px); }
+  .agent-status-line.empty { font-style: italic; opacity: 0.55; }
+  .agent-status-time {
+    font-size: 10px; color: var(--text-mute); opacity: 0.7;
+    margin-top: 2px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  /* Inline status dot next to the name (idle / typing / pinned). */
+  .agent-status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-mute);
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+  .agent-row.pinned .agent-status-dot { background: var(--indigo); }
+  .agent-row.selected .agent-status-dot { background: var(--amber); }
+  .agent-row.speaking .agent-status-dot { background: var(--green); animation: pulse 1.2s ease infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 
   /* ── Main pane ───────────────────────────────────────────────────── */
@@ -654,6 +684,66 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     padding: 6px 10px 3px;
   }
 
+  /* Slash command popup — same chrome as the mention popup so the
+     visual vocabulary stays consistent. The slash item shows the
+     command name in mono, a short label, and a placeholder hint for
+     commands that take an argument. */
+  .slash-popup {
+    position: absolute;
+    left: 16px;
+    bottom: 100%;
+    margin-bottom: 6px;
+    min-width: 320px;
+    max-width: 420px;
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 14px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,0,0,0.2);
+    z-index: 50;
+    padding: 4px;
+  }
+  .slash-popup[hidden] { display: none; }
+  .slash-item {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .slash-item:hover, .slash-item.active { background: var(--indigo-soft); }
+  .slash-item .s-cmd {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 13px; font-weight: 600; color: var(--text);
+    flex-shrink: 0;
+  }
+  .slash-item .s-cmd .s-arg {
+    color: var(--text-mute);
+    font-weight: 400;
+    margin-left: 4px;
+  }
+  .slash-item .s-label { font-size: 12px; color: var(--text-mute); line-height: 1.3; min-width: 0; }
+  .slash-item.local .s-cmd { color: #a5b4fc; }
+
+  /* "Commands" button next to Send — discoverability for users who
+     don't know slash commands exist. Clicking pops the same list as
+     the autocomplete but as a persistent popover. */
+  .composer .commands-btn {
+    padding: 10px 12px;
+    background: var(--bg-elev-2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-weight: 500;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .composer .commands-btn:hover { background: var(--indigo-soft); color: var(--text); border-color: var(--indigo); }
+  .composer .commands-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(99,102,241,0.5); }
+  .composer .commands-btn[aria-expanded="true"] { background: var(--indigo-soft); color: var(--text); border-color: var(--indigo); }
+
   /* ── Dialog ──────────────────────────────────────────────────────── */
   .dialog-backdrop {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
@@ -846,15 +936,17 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     </div>
     <form class="composer" id="composerForm">
       <div class="mention-popup" id="mention-popup" role="listbox" aria-label="Agent suggestions" hidden></div>
+      <div class="slash-popup" id="slash-popup" role="listbox" aria-label="Slash commands" hidden></div>
       <textarea
         id="composer"
-        placeholder="Message the team…"
+        placeholder="Message the team — try /standup or @agent"
         rows="1"
         aria-label="Message composer"
         aria-autocomplete="list"
-        aria-controls="mention-popup"
+        aria-controls="mention-popup slash-popup"
         autofocus></textarea>
       <div class="actions">
+        <button type="button" class="commands-btn" id="btn-commands" aria-haspopup="listbox" aria-controls="slash-popup" aria-expanded="false" title="Show slash commands">/ Commands</button>
         <button type="button" class="stop" id="btn-stop" aria-label="Stop current turn">Stop</button>
         <button type="submit" class="send" id="btn-send" disabled>Send</button>
       </div>
@@ -952,9 +1044,10 @@ function agentInitials(name) {
 }
 
 function renderRoster() {
-  // Render into the inner role="list" container so the outer <nav> keeps
-  // the "Team" heading and the listitem children are under a proper
-  // list ancestor (keeps screen readers happy).
+  // MSN-style pill layout: round avatar | name + status line | dot.
+  // The status line is fed by the hive_mind polling loop below; until
+  // that fires, fall back to the agent's description so the row never
+  // looks half-empty.
   const el = document.getElementById('roster-list');
   if (!el) return;
   el.innerHTML = '';
@@ -976,24 +1069,33 @@ function renderRoster() {
 
     const meta = document.createElement('div');
     meta.className = 'agent-meta';
+
     const nm = document.createElement('div');
     nm.className = 'agent-name';
-    nm.textContent = a.name;
-    const rl = document.createElement('div');
-    rl.className = 'agent-role';
-    rl.textContent = a.description;
-    const st = document.createElement('div');
-    st.className = 'agent-status';
+    const nameText = document.createElement('span');
+    nameText.textContent = a.name;
     const dot = document.createElement('span');
-    dot.className = 'dot';
+    dot.className = 'agent-status-dot';
     dot.setAttribute('aria-hidden', 'true');
-    const stLabel = document.createElement('span');
-    stLabel.className = 'agent-status-label';
-    st.appendChild(dot);
-    st.appendChild(stLabel);
+    nm.appendChild(nameText);
+    nm.appendChild(dot);
+
+    // The cascading "what they last did" line. The hive_mind fetcher
+    // overwrites this with summary text via setAgentStatus; the
+    // description acts as the placeholder so the rail isn't empty on
+    // first paint.
+    const status = document.createElement('div');
+    status.className = 'agent-status-line empty';
+    status.id = 'agent-status-' + esc(a.id);
+    status.textContent = a.description || 'Quiet today.';
+
+    const time = document.createElement('div');
+    time.className = 'agent-status-time';
+    time.id = 'agent-status-time-' + esc(a.id);
+
     meta.appendChild(nm);
-    meta.appendChild(rl);
-    meta.appendChild(st);
+    meta.appendChild(status);
+    meta.appendChild(time);
 
     row.appendChild(av);
     row.appendChild(meta);
@@ -1002,32 +1104,84 @@ function renderRoster() {
     el.appendChild(row);
   }
   applyRosterState();
+  // Kick off the hive-mind backfill so the rail fills in without
+  // waiting for the next 30-second tick.
+  void refreshAgentStatuses();
 }
 
+/** Update one agent's status line with a 200ms cross-fade. Idempotent —
+ *  if the new summary equals the current text, do nothing. */
+function setAgentStatus(id, summary, ts) {
+  const el = document.getElementById('agent-status-' + id);
+  const tEl = document.getElementById('agent-status-time-' + id);
+  if (!el) return;
+  if (el.dataset.summary === summary) return; // no change → no fade
+  el.dataset.summary = summary;
+  el.classList.add('fade-out');
+  setTimeout(() => {
+    el.textContent = summary || 'Quiet today.';
+    el.classList.toggle('empty', !summary);
+    el.classList.remove('fade-out');
+    if (tEl) tEl.textContent = ts ? formatStatusTime(ts) : '';
+  }, 200);
+}
+
+/** Compact relative time for status timestamps. "12s ago" / "5m ago" /
+ *  "3h ago" / "2d ago". Mirrors the format helper in the v2 dashboard so
+ *  the look is consistent across surfaces. */
+function formatStatusTime(unixSecs) {
+  const now = Math.floor(Date.now() / 1000);
+  const d = Math.max(0, now - unixSecs);
+  if (d < 60) return d + 's ago';
+  if (d < 3600) return Math.floor(d / 60) + 'm ago';
+  if (d < 86400) return Math.floor(d / 3600) + 'h ago';
+  return Math.floor(d / 86400) + 'd ago';
+}
+
+/** Pull the latest hive_mind entries and patch each agent's status line.
+ *  We fetch in bulk (limit=50) and reduce client-side to "latest per
+ *  agent" — one round-trip per refresh regardless of roster size. */
+async function refreshAgentStatuses() {
+  try {
+    const res = await fetch(API + '/api/hive-mind?limit=50' + Q.replace(/^\\?/, '&'));
+    if (!res.ok) return;
+    const data = await res.json();
+    const entries = (data && data.entries) ? data.entries : [];
+    const latest = {};
+    for (const e of entries) {
+      // entries are returned newest-first; first hit per agent wins
+      if (!latest[e.agent_id]) latest[e.agent_id] = e;
+    }
+    for (const a of roster) {
+      const e = latest[a.id];
+      if (e && e.summary) setAgentStatus(a.id, e.summary, e.created_at);
+    }
+  } catch (err) {
+    // Best effort — leave the existing line in place on network blip.
+  }
+}
+
+// Poll every 30s. The first refresh is kicked off by renderRoster()
+// once the roster is in place.
+setInterval(refreshAgentStatuses, 30_000);
+
 function applyRosterState() {
-  // Apply pinned state
+  // The row classes (pinned/selected/speaking) drive the avatar ring,
+  // border, background, and the status dot's color via CSS — no need to
+  // touch a label element. Just keep aria-label fresh for screen readers.
   for (const a of roster) {
     const row = document.getElementById('agent-row-' + a.id);
     if (!row) continue;
-    const label = row.querySelector('.agent-status-label');
-    const st = row.querySelector('.agent-status');
     // Priority: speaking > selected > pinned > idle
     row.classList.remove('pinned', 'selected', 'speaking');
-    st.classList.remove('show');
     if (speakingAgents.has(a.id)) {
       row.classList.add('speaking');
-      if (label) label.textContent = 'Typing…';
-      st.classList.add('show');
       row.setAttribute('aria-label', a.name + ', typing');
     } else if (selectedAgents.has(a.id)) {
       row.classList.add('selected');
-      if (label) label.textContent = 'Selected';
-      st.classList.add('show');
       row.setAttribute('aria-label', a.name + ', selected this turn');
     } else if (pinnedAgent === a.id) {
       row.classList.add('pinned');
-      if (label) label.textContent = 'Pinned';
-      st.classList.add('show');
       row.setAttribute('aria-label', a.name + ', pinned as primary');
     } else {
       row.setAttribute('aria-label', a.name + ', ' + a.description);
@@ -2117,6 +2271,125 @@ let mentionMatches = [];
 let mentionIndex = 0;
 let mentionToken = '';  // the @query text we're matching against
 
+// ── Slash command metadata ──
+// Single source of truth for both the inline autocomplete popup and the
+// persistent Commands-button popover. Server-side commands (standup,
+// discuss) round-trip to the orchestrator. Local commands (pin, unpin,
+// clear, end) are intercepted client-side in handleSlashCommand().
+const SLASH_COMMANDS = [
+  { name: 'standup', arg: false, label: 'Each agent reports what they\\'re working on' },
+  { name: 'discuss', arg: true,  placeholder: '<topic>', label: 'Open discussion on a topic — every agent weighs in' },
+  { name: 'pin',     arg: true,  placeholder: '<agent>', label: 'Pin one agent so they lead every reply', local: true },
+  { name: 'unpin',   arg: false, label: 'Release the pinned agent', local: true },
+  { name: 'clear',   arg: false, label: 'Reset agents\\' sessions for this meeting', local: true },
+  { name: 'end',     arg: false, label: 'End the meeting', local: true },
+];
+
+const slashPopupEl = document.getElementById('slash-popup');
+const commandsBtnEl = document.getElementById('btn-commands');
+let slashMatches = [];
+let slashIndex = 0;
+let slashPersistent = false; // true when opened by the Commands button (no auto-close on input change)
+
+function slashFilter(query) {
+  const q = (query || '').toLowerCase();
+  return SLASH_COMMANDS.filter((c) => !q || c.name.startsWith(q));
+}
+
+function renderSlashPopup() {
+  slashPopupEl.innerHTML = '';
+  const hint = document.createElement('div');
+  hint.className = 'mention-hint';
+  hint.textContent = slashPersistent ? 'slash commands' : 'matching /';
+  slashPopupEl.appendChild(hint);
+  slashMatches.forEach((c, i) => {
+    const row = document.createElement('div');
+    row.className = 'slash-item' + (c.local ? ' local' : '') + (i === slashIndex ? ' active' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', i === slashIndex ? 'true' : 'false');
+    row.dataset.idx = String(i);
+    const cmd = document.createElement('div');
+    cmd.className = 's-cmd';
+    cmd.textContent = '/' + c.name;
+    if (c.arg) {
+      const arg = document.createElement('span');
+      arg.className = 's-arg';
+      arg.textContent = ' ' + (c.placeholder || '<arg>');
+      cmd.appendChild(arg);
+    }
+    const label = document.createElement('div');
+    label.className = 's-label';
+    label.textContent = c.label;
+    row.appendChild(cmd);
+    row.appendChild(label);
+    row.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      selectSlash(i);
+    });
+    slashPopupEl.appendChild(row);
+  });
+  slashPopupEl.hidden = false;
+  if (commandsBtnEl) commandsBtnEl.setAttribute('aria-expanded', 'true');
+}
+
+function updateSlashPopup() {
+  // Inline (typed) trigger: only when the composer is exactly /token at
+  // the start of the input. Once the user types a space it's a real
+  // command line — close.
+  const value = composerEl.value;
+  const m = value.match(/^\\/([a-z]*)$/i);
+  if (!m) { closeSlashPopup(); return; }
+  slashPersistent = false;
+  const matches = slashFilter(m[1]);
+  if (matches.length === 0) { closeSlashPopup(); return; }
+  slashMatches = matches;
+  slashIndex = 0;
+  renderSlashPopup();
+}
+
+function openSlashPopupPersistent() {
+  slashPersistent = true;
+  slashMatches = SLASH_COMMANDS.slice();
+  slashIndex = 0;
+  renderSlashPopup();
+}
+
+function closeSlashPopup() {
+  slashPopupEl.hidden = true;
+  slashMatches = [];
+  slashIndex = 0;
+  slashPersistent = false;
+  if (commandsBtnEl) commandsBtnEl.setAttribute('aria-expanded', 'false');
+}
+
+function selectSlash(idx) {
+  const c = slashMatches[idx];
+  if (!c) { closeSlashPopup(); return; }
+  // Replace the whole composer value when triggered persistently OR
+  // when typed inline (which is also at the start of the string). In
+  // both cases the user is at the slash, so set the composer to the
+  // command + (trailing space if it takes an argument).
+  const next = '/' + c.name + (c.arg ? ' ' : '');
+  composerEl.value = next;
+  composerEl.focus();
+  composerEl.selectionStart = composerEl.selectionEnd = next.length;
+  composerEl.dispatchEvent(new Event('input', { bubbles: true }));
+  closeSlashPopup();
+}
+
+if (commandsBtnEl) {
+  commandsBtnEl.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (!slashPopupEl.hidden && slashPersistent) {
+      closeSlashPopup();
+      composerEl.focus();
+    } else {
+      openSlashPopupPersistent();
+      composerEl.focus();
+    }
+  });
+}
+
 // Detect an @mention in progress at the caret and update the suggestion
 // popup. The query is whatever letters follow the @ up to the caret.
 function updateMentionPopup() {
@@ -2219,8 +2492,36 @@ composerEl.addEventListener('input', () => {
   composerEl.style.height = 'auto';
   composerEl.style.height = Math.min(180, composerEl.scrollHeight) + 'px';
   updateMentionPopup();
+  // Only re-trigger the typed slash popup if we're not in a persistent
+  // (button-opened) state — that one stays open across keystrokes.
+  if (!slashPersistent) updateSlashPopup();
 });
 composerEl.addEventListener('keydown', (e) => {
+  // Slash popup keys take priority when it's open
+  if (!slashPopupEl.hidden) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      slashIndex = Math.min(slashMatches.length - 1, slashIndex + 1);
+      renderSlashPopup();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      slashIndex = Math.max(0, slashIndex - 1);
+      renderSlashPopup();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      selectSlash(slashIndex);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSlashPopup();
+      return;
+    }
+  }
   // Mention popup keys take priority when it's open
   if (!mentionPopupEl.hidden) {
     if (e.key === 'ArrowDown') {
@@ -2254,10 +2555,14 @@ composerEl.addEventListener('keydown', (e) => {
     abortTurn();
   }
 });
-// Close popup if user clicks outside
+// Close popups if user clicks outside. Commands button has its own
+// click handler so don't auto-close when the user clicks it.
 document.addEventListener('mousedown', (e) => {
   if (!mentionPopupEl.hidden && !mentionPopupEl.contains(e.target) && e.target !== composerEl) {
     closeMentionPopup();
+  }
+  if (!slashPopupEl.hidden && !slashPopupEl.contains(e.target) && e.target !== composerEl && e.target !== commandsBtnEl) {
+    closeSlashPopup();
   }
 });
 window.addEventListener('keydown', (e) => {
