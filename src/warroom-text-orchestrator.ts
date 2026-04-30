@@ -748,7 +748,12 @@ function parseSlashCommand(text: string): SlashCommand | null {
 // watchdog (300s) doesn't fire mid-sequence.
 const SLASH_CANONICAL_ORDER = ['research', 'ops', 'comms', 'content', 'main'];
 const SLASH_MAX_SPEAKERS = 5;
-const SLASH_AGENT_BUDGET_MS = 45_000;
+// Per-agent budget inside /standup and /discuss. Was 45s, but SDK cold
+// start + memory build + first few tokens routinely costs ~30-40s, leaving
+// only 5-15s for actual generation — agents would silently time out with
+// no content. 55s gives headroom while staying under the 300s queue
+// watchdog (5 speakers × 55s = 275s, with 25s buffer).
+const SLASH_AGENT_BUDGET_MS = 55_000;
 
 function pickSlashRoster(roster: RosterAgent[]): { speakers: string[]; skipped: string[] } {
   const rosterIds = new Set(roster.map((r) => r.id));
@@ -1453,6 +1458,8 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         meetingId,
         role,
         timedOut,
+        budgetMs: agentBudgetMs,
+        userTextPreview: (args.originalUserText || args.userText || '').slice(0, 80),
       }, 'runAgentTurn error');
     }
   } finally {
