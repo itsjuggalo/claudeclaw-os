@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 
 import fs from 'fs';
 import path from 'path';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
 import crypto from 'crypto';
 import {
   getAllScheduledTasks,
@@ -325,8 +325,14 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   //
   // Operators exposing via Cloudflare tunnel set DASHBOARD_URL to the
   // tunnel URL; everything else is rejected.
+  // Read from the config constant (which checks process.env AND the
+  // .env file via readEnvFile), not process.env directly. launchd
+  // doesn't populate process.env from .env, so process.env.DASHBOARD_URL
+  // is empty under the production daemon — meaning every cross-origin
+  // POST 403'd from the Cloudflare tunnel even though .env had the
+  // right URL.
   const allowedOriginHost = (() => {
-    const raw = (process.env.DASHBOARD_URL || '').trim();
+    const raw = (DASHBOARD_URL || '').trim();
     if (!raw) return '';
     try { return new URL(raw).hostname; } catch { return ''; }
   })();

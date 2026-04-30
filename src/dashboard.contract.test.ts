@@ -115,6 +115,33 @@ describe('auth gate', () => {
     const res = await app.request('/warroom?mode=voice');
     expect(res.status).toBe(401);
   });
+
+  // Regression: the CSRF middleware reads its allowed-origin host from
+  // the DASHBOARD_URL env var. If it reads from process.env directly
+  // (instead of the config helper that also consults the .env file),
+  // the production daemon — which doesn't have process.env populated
+  // from .env — 403s every cross-origin POST from the Cloudflare tunnel.
+  // src/test-env-setup.ts sets DASHBOARD_URL=https://dash.test.example
+  // so this test exercises the right code path.
+  it('allows POSTs with Origin matching DASHBOARD_URL', async () => {
+    const res = await app.request('/api/mission/tasks?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'origin': 'https://dash.test.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'csrf test', prompt: 'csrf test' }),
+    });
+    // 200 (created) or 400 (validation) — anything but 403 means the
+    // CSRF middleware let it through, which is what we're testing.
+    expect(res.status).not.toBe(403);
+  });
+
+  it('blocks POSTs from disallowed origin', async () => {
+    const res = await app.request('/api/mission/tasks?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'origin': 'https://evil.example.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'csrf test', prompt: 'csrf test' }),
+    });
+    expect(res.status).toBe(403);
+  });
 });
 
 describe('GET /api/health', () => {
