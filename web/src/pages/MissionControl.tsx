@@ -569,6 +569,7 @@ function InboxCard({
   onDragStart: () => void; onDragEnd: () => void; isDragging: boolean;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   async function autoAssign() {
     setBusy('assign');
@@ -609,6 +610,7 @@ function InboxCard({
   }
 
   return (
+    <>
     <div
       draggable
       onDragStart={(e) => { e.dataTransfer?.setData('text/plain', task.id); onDragStart(); }}
@@ -618,14 +620,20 @@ function InboxCard({
         isDragging ? 'opacity-40' : 'hover:border-[var(--color-border-strong)] cursor-grab',
       ].join(' ')}
     >
-      <div class="flex items-center gap-1.5 mb-1">
-        <Pill tone="neutral">unassigned</Pill>
-        <span class="ml-auto text-[10px] text-[var(--color-text-faint)] tabular-nums">
-          {formatRelativeTime(task.created_at)}
-        </span>
-      </div>
-      <div class="text-[12.5px] text-[var(--color-text)] leading-snug mb-1.5 line-clamp-2">
-        {task.title}
+      <div
+        class="cursor-pointer"
+        onClick={() => setDetailsOpen(true)}
+        title="Open task details"
+      >
+        <div class="flex items-center gap-1.5 mb-1">
+          <Pill tone="neutral">unassigned</Pill>
+          <span class="ml-auto text-[10px] text-[var(--color-text-faint)] tabular-nums">
+            {formatRelativeTime(task.created_at)}
+          </span>
+        </div>
+        <div class="text-[12.5px] text-[var(--color-text)] leading-snug mb-1.5 line-clamp-2">
+          {task.title}
+        </div>
       </div>
       {/* draggable=false on the action row stops the parent's HTML5 drag
           from swallowing button clicks. Without it, mousedown on Auto /
@@ -664,6 +672,113 @@ function InboxCard({
           <Trash2 size={11} />
         </button>
       </div>
+    </div>
+
+    <TaskDetailsModal
+      open={detailsOpen}
+      onClose={() => setDetailsOpen(false)}
+      task={task}
+      agents={agents}
+      busy={busy}
+      onAutoAssign={async () => { await autoAssign(); setDetailsOpen(false); }}
+      onManualAssign={async (agentId) => { await manualAssign(agentId); setDetailsOpen(false); }}
+      onDelete={async () => { await remove(); setDetailsOpen(false); }}
+    />
+    </>
+  );
+}
+
+// Modal preview for an unassigned inbox task. Opened when the user
+// clicks the card body. Lets them see the full prompt + assign or
+// delete in a focused view rather than fighting the cramped action
+// row in the card.
+function TaskDetailsModal({
+  open, onClose, task, agents, busy, onAutoAssign, onManualAssign, onDelete,
+}: {
+  open: boolean;
+  onClose: () => void;
+  task: MissionTask;
+  agents: Agent[];
+  busy: string | null;
+  onAutoAssign: () => Promise<void> | void;
+  onManualAssign: (agentId: string) => Promise<void> | void;
+  onDelete: () => Promise<void> | void;
+}) {
+  const [pickerAgent, setPickerAgent] = useState('');
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={'Task · ' + task.id.slice(0, 8)}
+      width={560}
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={() => onDelete()}
+            disabled={busy !== null}
+            class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-status-failed)] border border-[var(--color-border)] hover:border-[var(--color-status-failed)] transition-colors disabled:opacity-40"
+          >
+            <Trash2 size={12} /> {busy === 'delete' ? 'Deleting…' : 'Delete'}
+          </button>
+          <div class="ml-auto flex items-center gap-2">
+            <select
+              value={pickerAgent}
+              onChange={(e) => setPickerAgent((e.target as HTMLSelectElement).value)}
+              disabled={busy !== null}
+              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2 py-1 text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+            >
+              <option value="">Assign to…</option>
+              {agents.map((a) => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
+            </select>
+            <button
+              type="button"
+              onClick={() => pickerAgent && onManualAssign(pickerAgent)}
+              disabled={!pickerAgent || busy !== null}
+              class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {busy === 'manual' ? 'Assigning…' : 'Assign'}
+            </button>
+            <button
+              type="button"
+              onClick={() => onAutoAssign()}
+              disabled={busy !== null}
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
+            >
+              <Wand2 size={12} /> {busy === 'assign' ? 'Classifying…' : 'Auto-assign'}
+            </button>
+          </div>
+        </>
+      }
+    >
+      <div class="space-y-3">
+        <div>
+          <div class="text-[10.5px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Title</div>
+          <div class="text-[14px] text-[var(--color-text)] leading-snug">{task.title}</div>
+        </div>
+        {task.prompt && task.prompt !== task.title && (
+          <div>
+            <div class="text-[10.5px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Prompt</div>
+            <div class="text-[12.5px] text-[var(--color-text-muted)] whitespace-pre-wrap font-mono leading-relaxed bg-[var(--color-elevated)] border border-[var(--color-border)] rounded p-3">
+              {task.prompt}
+            </div>
+          </div>
+        )}
+        <div class="grid grid-cols-3 gap-3 pt-1">
+          <Stat label="Created" value={formatRelativeTime(task.created_at)} />
+          <Stat label="Priority" value={task.priority > 0 ? 'P' + task.priority : '—'} />
+          <Stat label="Created by" value={task.created_by || 'dashboard'} />
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">{label}</div>
+      <div class="text-[12.5px] text-[var(--color-text)] tabular-nums">{value}</div>
     </div>
   );
 }
