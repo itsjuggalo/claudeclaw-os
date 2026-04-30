@@ -1963,6 +1963,25 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.text('', 400);
 
+    // First-class fallback: warroom/avatars/<id>.png is hand-curated art
+    // that exists for all canonical agents (main + the four sub-agents).
+    // We prefer it over the per-agent disk cache because the Telegram bot
+    // photo is often unset; the warroom asset always renders something.
+    const warroomAvatar = path.join(PROJECT_ROOT, 'warroom', 'avatars', `${agentId}.png`);
+    const serveWarroomAvatar = (): Response => {
+      const data = fs.readFileSync(warroomAvatar);
+      return new Response(new Uint8Array(data), {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
+      });
+    };
+
+    // 'main' has no agent.yaml (the host process), so resolveAgentDir
+    // throws. Serve the warroom asset directly if present, else 404.
+    if (agentId === 'main') {
+      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
+      return c.text('', 404);
+    }
+
     let agentDir: string;
     let botToken: string;
     try {
@@ -1970,6 +1989,9 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       const cfg = loadAgentConfig(agentId);
       botToken = cfg.botToken;
     } catch {
+      // Agent isn't loadable yet (config in progress). Still serve the
+      // warroom asset if it exists rather than 404'ing the UI.
+      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
       return c.text('', 404);
     }
 
@@ -1983,8 +2005,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' },
       });
     }
-    if (fs.existsSync(noAvatarFlag)) return c.body(null, 204);
-    if (!botToken) return c.text('', 404);
+    // Telegram said no photo previously. Fall back to warroom asset
+    // before returning 204 so we still render something pretty.
+    if (fs.existsSync(noAvatarFlag)) {
+      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
+      return c.body(null, 204);
+    }
+    if (!botToken) {
+      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
+      return c.text('', 404);
+    }
 
     try {
       // Telegram bots expose their profile photo via getMe (returns photo
@@ -1995,14 +2025,21 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       const smallId = meJson?.result?.photo?.small_file_id;
       if (!smallId) {
         try { fs.writeFileSync(noAvatarFlag, ''); } catch {}
+        if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
         return c.body(null, 204);
       }
       const fileRes = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(smallId)}`);
       const fileJson: any = await fileRes.json();
       const filePath = fileJson?.result?.file_path;
-      if (!filePath) return c.body(null, 204);
+      if (!filePath) {
+        if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
+        return c.body(null, 204);
+      }
       const dlRes = await fetch(`https://api.telegram.org/file/bot${botToken}/${filePath}`);
-      if (!dlRes.ok) return c.body(null, 204);
+      if (!dlRes.ok) {
+        if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
+        return c.body(null, 204);
+      }
       const buf = Buffer.from(await dlRes.arrayBuffer());
       fs.writeFileSync(cachePath, buf);
       return new Response(new Uint8Array(buf), {
@@ -2010,6 +2047,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       });
     } catch (err) {
       logger.warn({ err, agentId }, 'Failed to fetch avatar from Telegram');
+      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
       return c.body(null, 204);
     }
   });
