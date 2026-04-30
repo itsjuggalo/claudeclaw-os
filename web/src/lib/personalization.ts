@@ -108,6 +108,17 @@ export function setMissionColumnWidth(agentId: string, px: number): void {
   debouncedSave('mission_column_widths', JSON.stringify(next));
 }
 
+/** Replace the entire widths map in one shot — used by the "uniform"
+ *  layout presets so we hit the backend once instead of N times. */
+export function setMissionColumnWidthsBulk(next: Record<string, number>): void {
+  const cleaned: Record<string, number> = {};
+  for (const [id, px] of Object.entries(next)) {
+    cleaned[id] = Math.max(240, Math.min(640, Math.round(px)));
+  }
+  missionColumnWidths.value = cleaned;
+  debouncedSave('mission_column_widths', JSON.stringify(cleaned));
+}
+
 // ── Hotkey resolution ──────────────────────────────────────────────────
 
 const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || '');

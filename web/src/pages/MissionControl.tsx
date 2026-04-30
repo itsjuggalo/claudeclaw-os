@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
-import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2 } from 'lucide-preact';
+import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2, LayoutGrid as LayoutIcon, Check } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
@@ -15,6 +15,7 @@ import {
   missionColumnWidths,
   setMissionColumnOrder,
   setMissionColumnWidth,
+  setMissionColumnWidthsBulk,
 } from '@/lib/personalization';
 
 interface MissionTask {
@@ -132,6 +133,7 @@ export function MissionControl() {
             <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
               {totalActive} active · {inbox.length} unassigned · {tasks.data?.tasks?.length ?? 0} total
             </span>
+            <LayoutMenu agents={orderedAgents} />
             <button
               type="button"
               onClick={() => setHistoryOpen(true)}
@@ -415,6 +417,145 @@ function ResizeHandle({ agentId, currentWidth }: { agentId: string; currentWidth
       class="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-[var(--color-accent)] active:bg-[var(--color-accent)] opacity-0 hover:opacity-50 transition-opacity"
       title="Drag to resize"
     />
+  );
+}
+
+// ── Layout menu ─────────────────────────────────────────────────────
+//
+// Magnet/Rectangle-style layout presets. Snaps every agent column to
+// the same width in one shot — uniform Compact/Normal/Wide, plus
+// "Fit to viewport" that divides available horizontal space evenly,
+// and Reset which clears all custom widths so columns revert to default.
+//
+// Inbox is intentionally not affected — it stays pinned at its
+// hand-picked width regardless of layout choice.
+
+const SIDEBAR_WIDTH = 260;
+const INBOX_WIDTH = 300;
+const PAGE_PADDING_X = 32; // p-4 on container = 16 each side
+const COLUMN_GAP = 12; // gap-3
+
+function LayoutMenu({ agents }: { agents: Agent[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const widths = missionColumnWidths.value;
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('click', onClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('click', onClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+
+  function applyUniform(px: number) {
+    const next: Record<string, number> = {};
+    for (const a of agents) next[a.id] = px;
+    setMissionColumnWidthsBulk(next);
+    setOpen(false);
+  }
+
+  function applyFit() {
+    if (agents.length === 0) { setOpen(false); return; }
+    const available = window.innerWidth - SIDEBAR_WIDTH - INBOX_WIDTH - PAGE_PADDING_X
+      - (agents.length + 1) * COLUMN_GAP;
+    const per = Math.floor(available / agents.length);
+    const next: Record<string, number> = {};
+    for (const a of agents) next[a.id] = per;
+    setMissionColumnWidthsBulk(next);
+    setOpen(false);
+  }
+
+  function reset() {
+    setMissionColumnWidthsBulk({});
+    setOpen(false);
+  }
+
+  // Detect "currently active" preset by checking whether all agent
+  // columns share a single width that matches one of our presets.
+  const sample = agents[0] ? widths[agents[0].id] : undefined;
+  const allSame = agents.length > 0 && agents.every((a) => widths[a.id] === sample);
+  const activePreset =
+    !allSame ? null
+    : sample === 260 ? 'compact'
+    : sample === 320 ? 'normal'
+    : sample === 480 ? 'wide'
+    : sample === undefined ? 'reset'
+    : null;
+
+  return (
+    <div ref={ref} class="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+        title="Column layout presets"
+      >
+        <LayoutIcon size={13} /> Layout
+      </button>
+      {open && (
+        <div class="absolute right-0 top-full mt-1 z-50 w-[240px] bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg shadow-2xl overflow-hidden">
+          <div class="px-3 py-2 section-label border-b border-[var(--color-border)]">Uniform width</div>
+          <LayoutItem
+            label="Compact"
+            hint="260 px each"
+            active={activePreset === 'compact'}
+            onClick={() => applyUniform(260)}
+          />
+          <LayoutItem
+            label="Normal"
+            hint="320 px each"
+            active={activePreset === 'normal'}
+            onClick={() => applyUniform(320)}
+          />
+          <LayoutItem
+            label="Wide"
+            hint="480 px each"
+            active={activePreset === 'wide'}
+            onClick={() => applyUniform(480)}
+          />
+          <div class="border-t border-[var(--color-border)]" />
+          <LayoutItem
+            label="Fit to viewport"
+            hint="divide space evenly"
+            onClick={applyFit}
+          />
+          <div class="border-t border-[var(--color-border)]" />
+          <LayoutItem
+            label="Reset"
+            hint="clear custom widths"
+            active={activePreset === 'reset'}
+            onClick={reset}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LayoutItem({
+  label, hint, active, onClick,
+}: {
+  label: string; hint: string; active?: boolean; onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      class="w-full flex items-center gap-2 px-3 py-2 text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+    >
+      <span class="text-[var(--color-text)]">{label}</span>
+      <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">{hint}</span>
+      {active && <Check size={12} class="text-[var(--color-accent)] ml-1" />}
+    </button>
   );
 }
 
