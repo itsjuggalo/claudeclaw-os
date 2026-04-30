@@ -41,6 +41,7 @@ import {
   getRecentMissionTasks,
   saveWarRoomConversationTurn,
   insertAuditLog,
+  saveTokenUsage,
 } from './db.js';
 import { buildMemoryContext } from './memory.js';
 import { ingestConversationTurn } from './memory-ingest.js';
@@ -1539,6 +1540,35 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         // and Y" instead of generic "no reply produced".
         if (typeof e.subtype === 'string') stopReason = e.subtype as string;
         gotResult = true;
+        // Persist usage so the Usage page and Agents cards reflect war
+        // room cost. Without this, /standup, /discuss, and @-mentions
+        // all run for free as far as the dashboard is concerned and
+        // today/lifetime totals undercount.
+        try {
+          const evUsage = (e as any).usage as Record<string, number> | undefined;
+          const totalCost = (e as any).total_cost_usd as number | undefined;
+          if (evUsage) {
+            const inputTokens = evUsage['input_tokens'] ?? 0;
+            const outputTokens = evUsage['output_tokens'] ?? 0;
+            const cacheRead = evUsage['cache_read_input_tokens'] ?? 0;
+            saveTokenUsage(
+              sessionChatId,
+              undefined,
+              inputTokens,
+              outputTokens,
+              cacheRead,
+              cacheRead + inputTokens,
+              totalCost ?? 0,
+              false,
+              agentId,
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            { err: err instanceof Error ? err.message : err, agentId, meetingId },
+            'failed to persist warroom token usage (non-fatal)',
+          );
+        }
       }
       if (cancelFlag.cancelled) break;
     }
