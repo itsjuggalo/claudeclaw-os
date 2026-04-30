@@ -343,16 +343,25 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   // War Room entry.
-  //   - ?mode=voice → serve the existing cinematic voice page (deep link).
-  //   - else → mode picker (Voice | Text) which then navigates to
-  //     /warroom?mode=voice for voice or /warroom/text for text.
+  //   - ?mode=voice → serve the cinematic legacy voice page (interactive
+  //     Pipecat WebSocket UI).
+  //   - ?mode=picker → serve the legacy picker (kept around as an escape
+  //     hatch when v2 is misbehaving).
+  //   - In legacy mode → serve the legacy picker (current pre-v2 behavior).
+  //   - Otherwise → fall through to the v2 SPA so a refresh of /warroom
+  //     stays inside the new dashboard. The v2 page has its own picker.
   app.get('/warroom', (c) => {
     const chatId = c.req.query('chatId') || '';
     const mode = c.req.query('mode') || '';
     if (mode === 'voice') {
       return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
     }
-    return c.html(getWarRoomPickerHtml(DASHBOARD_TOKEN, chatId));
+    if (mode === 'picker' || legacyMode || !fs.existsSync(newDashboardIndex)) {
+      return c.html(getWarRoomPickerHtml(DASHBOARD_TOKEN, chatId));
+    }
+    // v2 SPA: same-origin token already injected by the new frontend at
+    // mount time. The new War Room page handles its own routing.
+    return c.html(fs.readFileSync(newDashboardIndex, 'utf-8'));
   });
 
   // Text War Room page. Expects ?meetingId= (created via POST

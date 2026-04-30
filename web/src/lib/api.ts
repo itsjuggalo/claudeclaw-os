@@ -81,3 +81,13 @@ export async function apiDelete<T = unknown>(path: string): Promise<T> {
 export function tokenizedSseUrl(path: string): string {
   return withToken(path);
 }
+
+// Vite dev runs on :5173 and proxies /api/* and /warroom/text to the
+// backend on :3141. The legacy voice room at /warroom?mode=voice can't
+// be proxied (it shares a path prefix with the v2 SPA route), so links
+// that go to legacy pages must point at the backend origin in dev.
+const BACKEND_ORIGIN = (import.meta as any).env?.DEV ? 'http://localhost:3141' : '';
+
+export function legacyUrl(path: string): string {
+  return BACKEND_ORIGIN + path;
+}

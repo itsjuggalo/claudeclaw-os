@@ -30,6 +30,10 @@ export default defineConfig({
       // the new frontend can hit real endpoints without CORS gymnastics.
       '/api': 'http://localhost:3141',
       '/ws': { target: 'ws://localhost:3141', ws: true },
+      // The text war room is served as a legacy HTML page by the backend
+      // at /warroom/text. Anything under /warroom/text/* goes straight
+      // through to backend so meetings still open from the v2 launcher.
+      '/warroom/text': 'http://localhost:3141',
       '/warroom-music': 'http://localhost:3141',
       '/warroom-client.js': 'http://localhost:3141',
       '/warroom-avatar': 'http://localhost:3141',

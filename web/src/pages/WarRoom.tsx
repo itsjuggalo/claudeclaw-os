@@ -5,7 +5,7 @@ import { PageState } from '@/components/PageState';
 import { AgentAvatar } from '@/components/AgentAvatar';
 import { Pill } from '@/components/Pill';
 import { useFetch } from '@/lib/useFetch';
-import { apiPost, dashboardToken, chatId } from '@/lib/api';
+import { apiPost, dashboardToken, chatId, legacyUrl } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
 type Mode = 'picker' | 'voice' | 'text' | 'meet';
@@ -52,7 +52,7 @@ export function WarRoom() {
                 icon={<ExternalLink size={20} />}
                 title="Open in classic"
                 description="Voice and text War Room pages from the legacy dashboard, served by the same backend."
-                href={`/warroom?token=${encodeURIComponent(dashboardToken)}&chatId=${encodeURIComponent(chatId)}`}
+                href={legacyUrl(`/warroom?mode=picker&token=${encodeURIComponent(dashboardToken)}&chatId=${encodeURIComponent(chatId)}`)}
               />
             </div>
           </div>
@@ -188,7 +188,7 @@ function VoicePane() {
       <section>
         <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-2">Open the voice room</div>
         <a
-          href={`/warroom?mode=voice&token=${encodeURIComponent(dashboardToken)}&chatId=${encodeURIComponent(chatId)}`}
+          href={legacyUrl(`/warroom?mode=voice&token=${encodeURIComponent(dashboardToken)}&chatId=${encodeURIComponent(chatId)}`)}
           target="_blank"
           rel="noreferrer"
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors"
@@ -253,7 +253,7 @@ function TextPane() {
     try {
       const res = await apiPost<{ ok: boolean; meetingId: string }>('/api/warroom/text/new', { chatId });
       // Open in same window — text war room is served by legacy backend at /warroom/text.
-      window.location.href = `/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(res.meetingId)}&chatId=${encodeURIComponent(chatId)}`;
+      window.location.href = legacyUrl(`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(res.meetingId)}&chatId=${encodeURIComponent(chatId)}`);
     } catch (err: any) {
       alert('New meeting failed: ' + (err?.message || err));
     } finally { setCreating(false); }
@@ -282,7 +282,7 @@ function TextPane() {
           {list.map((m) => (
             <a
               key={m.id}
-              href={`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(m.id)}&chatId=${encodeURIComponent(chatId)}`}
+              href={legacyUrl(`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(m.id)}&chatId=${encodeURIComponent(chatId)}`)}
               class="block bg-[var(--color-card)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] rounded-lg p-3 transition-colors"
             >
               <div class="flex items-center gap-2 mb-1">
