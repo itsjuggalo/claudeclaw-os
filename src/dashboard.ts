@@ -1970,8 +1970,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!parsed || typeof parsed !== 'object') {
       return c.json({ error: 'agent.yaml must be a YAML object' }, 400);
     }
-    if (!parsed.id || !parsed.description || !parsed.model) {
-      return c.json({ error: 'agent.yaml requires id, description, and model fields' }, 400);
+    // Canonical schema (src/agent-config.ts loadAgentConfig): name and
+    // telegram_bot_token_env are required; description and model are
+    // strongly recommended. id is derived from the directory name, NOT
+    // a yaml field. Reject the save if either required field is missing
+    // so we never poison the file and crash the agent on next start.
+    if (!parsed.name || !parsed.telegram_bot_token_env) {
+      return c.json({ error: 'agent.yaml requires name and telegram_bot_token_env fields' }, 400);
     }
 
     // If the client posted back the redacted token, splice in the real
