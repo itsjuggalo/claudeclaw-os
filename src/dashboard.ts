@@ -52,7 +52,7 @@ import {
 } from './db.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
-import { listAgentIds, loadAgentConfig, setAgentModel } from './agent-config.js';
+import { listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel } from './agent-config.js';
 import {
   listTemplates,
   validateAgentId,
@@ -127,12 +127,13 @@ const WARROOM_TEXT_ID_RE = /^wr_[a-z0-9_]{4,64}$/i;
 // Browser crypto.randomUUID() produces lowercase v4 UUIDs. Accept either case.
 const CLIENT_MSG_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function startDashboard(botApi?: Api<RawApi>): void {
-  if (!DASHBOARD_TOKEN) {
-    logger.info('DASHBOARD_TOKEN not set, dashboard disabled');
-    return;
-  }
-
+/**
+ * Build the dashboard Hono app without binding it to a port. Exported for
+ * contract tests so the route surface can be exercised via `app.request()`
+ * without standing up a real server. Production callers should use
+ * `startDashboard` instead, which builds the app then serves it.
+ */
+export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const app = new Hono();
 
   // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers)
@@ -299,10 +300,46 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     await next();
   });
 
-  // Serve dashboard HTML
+  // Serve dashboard HTML.
+  // Default: the new Vite-built Mission Control frontend at dist/web/index.html.
+  // Fallback: set DASHBOARD_LEGACY=true in .env to revert to the legacy
+  // single-file template HTML (kept around as the rollback ejector seat
+  // for the rewrite — see SHIP-CHECKLIST and the rewrite plan).
+  const legacyMode = (process.env.DASHBOARD_LEGACY || '').toLowerCase() === 'true';
+  const newDashboardIndex = path.join(PROJECT_ROOT, 'dist', 'web', 'index.html');
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
-    return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId, WARROOM_ENABLED));
+    if (legacyMode || !fs.existsSync(newDashboardIndex)) {
+      return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId, WARROOM_ENABLED));
+    }
+    // Read fresh on each request so dev rebuilds appear without restart.
+    // The new frontend reads ?token= and ?chatId= from window.location, so
+    // no server-side templating is needed; we ship the static HTML as-is.
+    const html = fs.readFileSync(newDashboardIndex, 'utf-8');
+    return c.html(html);
+  });
+
+  // Static asset serving for the Vite-built frontend.
+  // Vite emits hashed files under dist/web/assets/.
+  app.get('/assets/*', (c) => {
+    const url = new URL(c.req.url);
+    const rel = url.pathname.replace(/^\//, '');
+    const filePath = path.join(PROJECT_ROOT, 'dist', 'web', rel);
+    // Defense in depth: ensure the resolved path stays inside dist/web/.
+    const root = path.join(PROJECT_ROOT, 'dist', 'web');
+    if (!filePath.startsWith(root + path.sep)) return c.text('', 403);
+    if (!fs.existsSync(filePath)) return c.text('', 404);
+    const data = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const ctype = ext === '.js' ? 'application/javascript'
+      : ext === '.css' ? 'text/css'
+      : ext === '.map' ? 'application/json'
+      : ext === '.svg' ? 'image/svg+xml'
+      : ext === '.woff2' ? 'font/woff2'
+      : 'application/octet-stream';
+    return new Response(new Uint8Array(data), {
+      headers: { 'Content-Type': ctype, 'Cache-Control': 'public, max-age=31536000, immutable' },
+    });
   });
 
   // War Room entry.
@@ -1909,6 +1946,65 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json({ running: isAgentRunning(agentId) });
   });
 
+  // Lazy-fetch the agent's Telegram profile photo and cache it on disk.
+  // First request hits Telegram (getMe → photo file_id → getFile → download),
+  // subsequent requests serve directly from agents/<id>/avatar.png. Returns
+  // 204 if the bot has no photo set, 404 if the agent doesn't exist.
+  app.get('/api/agents/:id/avatar', async (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.text('', 400);
+
+    let agentDir: string;
+    let botToken: string;
+    try {
+      agentDir = resolveAgentDir(agentId);
+      const cfg = loadAgentConfig(agentId);
+      botToken = cfg.botToken;
+    } catch {
+      return c.text('', 404);
+    }
+
+    const cachePath = path.join(agentDir, 'avatar.png');
+    const noAvatarFlag = path.join(agentDir, '.no-avatar');
+
+    // Hot path: serve from disk cache (1h browser cache).
+    if (fs.existsSync(cachePath)) {
+      const data = fs.readFileSync(cachePath);
+      return new Response(new Uint8Array(data), {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' },
+      });
+    }
+    if (fs.existsSync(noAvatarFlag)) return c.body(null, 204);
+    if (!botToken) return c.text('', 404);
+
+    try {
+      // Telegram bots expose their profile photo via getMe (returns photo
+      // small/big file_ids when set). getFile turns the file_id into a
+      // downloadable file_path which we fetch and cache.
+      const meRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+      const meJson: any = await meRes.json();
+      const smallId = meJson?.result?.photo?.small_file_id;
+      if (!smallId) {
+        try { fs.writeFileSync(noAvatarFlag, ''); } catch {}
+        return c.body(null, 204);
+      }
+      const fileRes = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(smallId)}`);
+      const fileJson: any = await fileRes.json();
+      const filePath = fileJson?.result?.file_path;
+      if (!filePath) return c.body(null, 204);
+      const dlRes = await fetch(`https://api.telegram.org/file/bot${botToken}/${filePath}`);
+      if (!dlRes.ok) return c.body(null, 204);
+      const buf = Buffer.from(await dlRes.arrayBuffer());
+      fs.writeFileSync(cachePath, buf);
+      return new Response(new Uint8Array(buf), {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' },
+      });
+    } catch (err) {
+      logger.warn({ err, agentId }, 'Failed to fetch avatar from Telegram');
+      return c.body(null, 204);
+    }
+  });
+
   // ── Security & Audit ─────────────────────────────────────────────────
 
   app.get('/api/security/status', (c) => {
@@ -2022,6 +2118,21 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const aborted = abortActiveQuery(chatId);
     return c.json({ ok: aborted });
   });
+
+  return app;
+}
+
+/**
+ * Start the dashboard: build the Hono app, bind it to DASHBOARD_PORT, and
+ * wire up the WebSocket proxy for the voice War Room.
+ */
+export function startDashboard(botApi?: Api<RawApi>): void {
+  if (!DASHBOARD_TOKEN) {
+    logger.info('DASHBOARD_TOKEN not set, dashboard disabled');
+    return;
+  }
+
+  const app = buildDashboardApp(botApi);
 
   // Default to loopback. Anyone on the same LAN is otherwise one
   // dashboard-token leak away from full mutation access. Operators who
