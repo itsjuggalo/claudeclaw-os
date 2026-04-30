@@ -550,6 +550,16 @@ export async function warmupMeeting(): Promise<void> {
       }
       _warmupDone = true;
       logger.info('text War Room warmup complete');
+      // Kick off per-agent SDK warmups in parallel now that the router
+      // path is hot. Fire-and-forget — these complete asynchronously
+      // and warm each agent's subprocess + system-prompt cache so the
+      // first real turn for each agent doesn't pay cold start.
+      try {
+        const ids = listAllAgents().map((a) => a.id);
+        if (ids.length > 0) prewarmAgentSDKs(['main', ...ids.filter((i) => i !== 'main')]);
+      } catch (err) {
+        logger.warn({ err: err instanceof Error ? err.message : err }, 'agent prewarm fanout failed (non-fatal)');
+      }
     } catch (err) {
       logger.warn({ err: err instanceof Error ? err.message : err }, 'warmup failed (non-fatal)');
     } finally {
@@ -563,6 +573,95 @@ export async function warmupMeeting(): Promise<void> {
 
 export function isWarmupDone(): boolean {
   return _warmupDone;
+}
+
+// ── Per-agent SDK warmup ─────────────────────────────────────────────
+// Each agent runs in its own Claude Agent SDK subprocess with its own
+// cwd, MCP allowlist, and CLAUDE.md. The first call to query() for a
+// given agent pays a real cold-start: subprocess spawn, settings
+// resolution, MCP load, system prompt build, prompt-cache miss against
+// Anthropic. Once warm (within ~5 min of last call), subsequent queries
+// are dramatically faster.
+//
+// Slash commands /standup and /discuss run 5 agents back-to-back. Without
+// pre-warming, agents 2–5 each pay sequential cold start, easily blowing
+// past the 55s per-agent budget. With pre-warm, we kick off a tiny query
+// for every speaker in parallel before the first runAgentTurn fires.
+// 10s later all 5 SDKs are loaded; the first speaker still pays its
+// cold start (its turn is already running) but speakers 2–5 hit a hot
+// cache.
+
+const _warmupAgentInFlight = new Map<string, Promise<void>>();
+const _warmupAgentDone = new Set<string>();
+const AGENT_WARMUP_TIMEOUT_MS = 12_000;
+
+export async function warmupAgentSDK(agentId: string): Promise<void> {
+  if (_warmupAgentDone.has(agentId)) return;
+  // 'main' is the host process itself — its SDK is already warm by
+  // virtue of running. Skip to avoid a noisy "config not found" error
+  // (main has no agents/main/agent.yaml).
+  if (agentId === 'main') { _warmupAgentDone.add(agentId); return; }
+  const existing = _warmupAgentInFlight.get(agentId);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      // Best-effort: any error here just means warmup didn't take. The
+      // real turn will pay cold start as it would have anyway.
+      loadAgentConfig(agentId); // validates the agent + loads its env
+      const agentDir = resolveAgentDir(agentId);
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), AGENT_WARMUP_TIMEOUT_MS);
+      try {
+        for await (const ev of query({
+          prompt: singleTurn('ok'),
+          options: {
+            cwd: agentDir,
+            // Haiku for speed — we only need to spin up the SDK and warm
+            // the network path. The real turn uses the agent's actual
+            // model; Anthropic's prompt cache spans models for the same
+            // session less aggressively, but the subprocess + SDK +
+            // MCP boot is the dominant cost we're amortizing here.
+            model: 'claude-haiku-4-5-20251001',
+            allowedTools: [],
+            disallowedTools: ['*'],
+            settingSources: [],
+            maxTurns: 1,
+            permissionMode: 'bypassPermissions',
+            allowDangerouslySkipPermissions: true,
+            env: sdkEnvStripped(),
+            abortController: abort,
+          } as any,
+        })) {
+          if ((ev as any).type === 'result') break;
+        }
+        _warmupAgentDone.add(agentId);
+        logger.info({ agentId }, 'agent SDK warmed');
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (err) {
+      logger.warn({
+        err: err instanceof Error ? err.message : err,
+        agentId,
+      }, 'agent SDK warmup failed (non-fatal)');
+    } finally {
+      _warmupAgentInFlight.delete(agentId);
+    }
+  })();
+
+  _warmupAgentInFlight.set(agentId, promise);
+  return promise;
+}
+
+/** Pre-warm every agent in `agentIds` in parallel. Fire-and-forget — the
+ *  caller doesn't block on it. Useful at slash-command start so speakers
+ *  2–N hit a hot SDK by the time their turn fires. */
+export function prewarmAgentSDKs(agentIds: string[]): void {
+  for (const id of agentIds) {
+    if (_warmupAgentDone.has(id)) continue;
+    void warmupAgentSDK(id);
+  }
 }
 
 /** Cancel an in-flight turn. Returns true if a matching turn was found.
@@ -783,6 +882,11 @@ interface SlashHandlerArgs {
 async function handleStandup(args: SlashHandlerArgs): Promise<void> {
   const { meetingId, turnId, channel, roster, rosterById, cancelFlag, turnState } = args;
   const { speakers, skipped } = pickSlashRoster(roster);
+  // Fire-and-forget parallel SDK warmup for every speaker. Speakers 2-N
+  // hit a hot SDK by the time their turn fires, dropping their cold-start
+  // cost from ~10-15s to ~1s. The first speaker still pays cold start but
+  // its budget is the same as any other.
+  prewarmAgentSDKs(speakers);
   if (speakers.length === 0) {
     channel.emit({
       type: 'system_note', turnId,
@@ -835,6 +939,9 @@ async function handleStandup(args: SlashHandlerArgs): Promise<void> {
 
 async function handleDiscuss(args: SlashHandlerArgs): Promise<void> {
   const { meetingId, turnId, channel, roster, rosterById, cancelFlag, turnState } = args;
+  // Same parallel pre-warm trick as /standup.
+  const { speakers: allSpeakers } = pickSlashRoster(roster);
+  prewarmAgentSDKs(allSpeakers);
   // Strip the "/discuss" prefix from userText to extract the topic. The
   // verbatim slash command is what was persisted as the user row; here
   // we pull just the topic to seed each agent's prompt.
