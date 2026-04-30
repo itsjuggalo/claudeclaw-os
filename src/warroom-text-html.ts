@@ -175,55 +175,62 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     letter-spacing: 1.2px;
     text-transform: uppercase;
   }
-  /* Agent rail — MSN-style pill cards. Each row is a rounded card with
-     a round avatar, name, status dot, and a "what they last did" line
-     fed by the hive_mind table. New status fades in to avoid jarring
-     swaps when the polling loop merges in fresh data. */
+  /* Agent rail — vertical card layout. Big round avatar on top, name +
+     status stacked underneath. Closer to an MSN/Discord profile card
+     than the old horizontal row. The status line uses hive_mind to
+     show what each agent last did; cross-fades on update. */
   .agent-row {
-    display: flex; align-items: center; gap: 12px;
-    padding: 11px 12px;
-    border-radius: 999px 18px 18px 999px; /* pill on the avatar side, gentle rounding on the right */
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 14px 10px 12px;
+    border-radius: 16px;
     border: 1px solid var(--border);
     background: var(--bg-elev);
     cursor: pointer;
     transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
-    text-align: left;
+    text-align: center;
     color: inherit;
     font: inherit;
     width: 100%;
   }
-  .agent-row:hover { background: var(--bg-elev-2); border-color: var(--border-strong); transform: translateX(1px); }
+  .agent-row:hover { background: var(--bg-elev-2); border-color: var(--border-strong); transform: translateY(-1px); }
   .agent-row:focus-visible { outline: none; border-color: var(--indigo); box-shadow: 0 0 0 2px rgba(99,102,241,0.25); }
   .agent-row.pinned { border-color: var(--indigo); background: var(--indigo-soft); }
   .agent-row.selected { border-color: rgba(245,158,11,0.5); background: rgba(245,158,11,0.08); }
   .agent-row.speaking { border-color: rgba(34,197,94,0.6); background: rgba(34,197,94,0.10); }
   .agent-avatar {
-    width: 40px; height: 40px; border-radius: 50%;
+    width: 56px; height: 56px; border-radius: 50%;
     background: #1a1a25;
     display: flex; align-items: center; justify-content: center;
-    font-size: 14px; font-weight: 700;
+    font-size: 18px; font-weight: 700;
     flex-shrink: 0;
     border: 2px solid var(--border-strong);
     overflow: hidden;
     transition: border-color 200ms ease, box-shadow 200ms ease;
+    position: relative;
   }
-  .agent-row.speaking .agent-avatar { border-color: rgba(34,197,94,0.8); box-shadow: 0 0 0 3px rgba(34,197,94,0.15); }
-  .agent-row.pinned .agent-avatar { border-color: var(--indigo); }
+  .agent-row.speaking .agent-avatar { border-color: rgba(34,197,94,0.85); box-shadow: 0 0 0 3px rgba(34,197,94,0.18); }
+  .agent-row.pinned .agent-avatar { border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(99,102,241,0.20); }
   .agent-avatar img { width: 100%; height: 100%; object-fit: cover; }
-  .agent-meta { flex: 1; min-width: 0; }
+  .agent-meta { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; }
   .agent-name {
-    font-size: 13.5px; font-weight: 600; line-height: 1.2;
+    font-size: 14px; font-weight: 600; line-height: 1.2;
     white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
-    display: flex; align-items: center; gap: 6px;
+    display: inline-flex; align-items: center; gap: 6px;
+    max-width: 100%;
   }
   /* MSN-style "what they last did" line. Old text fades out upward as
-     the new text fades in — a single line, fixed height, ellipsised. */
+     the new text fades in — a single line, fixed height, ellipsised.
+     With a vertical layout we have a bit more horizontal room so we
+     can fit ~2 lines of summary text. */
   .agent-status-line {
     font-size: 11.5px;
     color: var(--text-mute);
-    line-height: 1.3;
-    white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
-    margin-top: 3px;
+    line-height: 1.35;
+    width: 100%;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
     transition: opacity 200ms ease, transform 200ms ease;
     opacity: 1;
     font-style: italic;
@@ -235,12 +242,12 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     margin-top: 2px;
     font-family: 'JetBrains Mono', ui-monospace, monospace;
   }
-  /* Inline status dot next to the name (idle / typing / pinned). */
+  /* Inline status dot beside the name (idle / typing / pinned). Small
+     and unobtrusive — speaking gets the pulse + ring on the avatar. */
   .agent-status-dot {
     width: 7px; height: 7px; border-radius: 50%;
     background: var(--text-mute);
     flex-shrink: 0;
-    margin-left: auto;
   }
   .agent-row.pinned .agent-status-dot { background: var(--indigo); }
   .agent-row.selected .agent-status-dot { background: var(--amber); }
