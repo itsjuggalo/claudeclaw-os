@@ -1,7 +1,9 @@
+import { useState } from 'preact/hooks';
 import { PageHeader } from '@/components/PageHeader';
-import { Pill } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
+import { apiPost } from '@/lib/api';
+import { pushToast } from '@/lib/toasts';
 
 interface Health {
   killSwitches: Record<string, boolean>;
@@ -54,27 +56,21 @@ export function Settings() {
 
       {health.data && (
         <div class="flex-1 overflow-y-auto p-6 space-y-4 max-w-3xl">
-          <Section title="Kill switches" subtitle="Runtime feature gates. Each one re-reads .env every 1.5s, so toggling in the file takes effect without a restart.">
+          <Section title="Kill switches" subtitle="Runtime feature gates. Toggling writes the flag to .env atomically; the runtime re-reads it within 1.5s so changes take effect without a restart.">
             <div class="space-y-2">
               {Object.entries(health.data.killSwitches).map(([key, on]) => {
                 const meta = KILL_SWITCH_LABELS[key] || { label: key, description: '' };
                 const refusals = health.data!.killSwitchRefusals[key] || 0;
                 return (
-                  <div key={key} class="flex items-start gap-3 bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg px-4 py-3">
-                    <div class="flex-1 min-w-0">
-                      <div class="flex items-center gap-2 mb-0.5">
-                        <span class="text-[12.5px] font-medium text-[var(--color-text)]">{meta.label}</span>
-                        <code class="text-[10px] text-[var(--color-text-faint)] font-mono">{key}</code>
-                      </div>
-                      <div class="text-[11px] text-[var(--color-text-muted)] leading-snug">{meta.description}</div>
-                      {refusals > 0 && (
-                        <div class="text-[10.5px] text-[var(--color-status-failed)] mt-1 tabular-nums">
-                          {refusals} refusals since startup
-                        </div>
-                      )}
-                    </div>
-                    <Pill tone={on ? 'done' : 'failed'}>{on ? 'on' : 'off'}</Pill>
-                  </div>
+                  <KillSwitchRow
+                    key={key}
+                    switchKey={key}
+                    label={meta.label}
+                    description={meta.description}
+                    on={on}
+                    refusals={refusals}
+                    onChange={() => health.refresh()}
+                  />
                 );
               })}
             </div>
@@ -97,6 +93,77 @@ export function Settings() {
           </Section>
         </div>
       )}
+    </div>
+  );
+}
+
+interface KillSwitchRowProps {
+  switchKey: string;
+  label: string;
+  description: string;
+  on: boolean;
+  refusals: number;
+  onChange: () => void;
+}
+
+function KillSwitchRow({ switchKey, label, description, on, refusals, onChange }: KillSwitchRowProps) {
+  const [busy, setBusy] = useState(false);
+  async function toggle() {
+    const newValue = !on;
+    if (!newValue && switchKey === 'DASHBOARD_MUTATIONS_ENABLED') {
+      if (!confirm('Disabling dashboard mutations will lock this dashboard read-only. Every non-GET request will return 503 until you re-enable it (which means you cannot use this UI to turn it back on — you have to edit .env directly). Continue?')) {
+        return;
+      }
+    }
+    if (!newValue && switchKey === 'LLM_SPAWN_ENABLED') {
+      if (!confirm('Disabling LLM_SPAWN_ENABLED will stop every Claude SDK call across all agents. Mission tasks, scheduled tasks, and agent replies will all stop firing. Continue?')) {
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      await apiPost('/api/security/kill-switch', { key: switchKey, enabled: newValue });
+      pushToast({
+        tone: newValue ? 'success' : 'warn',
+        title: label + ' ' + (newValue ? 'enabled' : 'disabled'),
+        description: 'Takes effect within 1.5s.',
+      });
+      // Wait a tick for the kill-switches re-read window so the next
+      // refresh shows the new state.
+      setTimeout(onChange, 1700);
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Toggle failed', description: err?.message || String(err), durationMs: 6000 });
+    } finally { setBusy(false); }
+  }
+  return (
+    <div class="flex items-start gap-3 bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg px-4 py-3">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-0.5">
+          <span class="text-[12.5px] font-medium text-[var(--color-text)]">{label}</span>
+          <code class="text-[10px] text-[var(--color-text-faint)] font-mono">{switchKey}</code>
+        </div>
+        <div class="text-[11px] text-[var(--color-text-muted)] leading-snug">{description}</div>
+        {refusals > 0 && (
+          <div class="text-[10.5px] text-[var(--color-status-failed)] mt-1 tabular-nums">
+            {refusals} refusals since startup
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={toggle}
+        disabled={busy}
+        class="relative shrink-0 inline-flex items-center w-9 h-5 rounded-full transition-colors disabled:opacity-40"
+        style={{
+          backgroundColor: on ? 'var(--color-status-done)' : 'var(--color-border-strong)',
+        }}
+        title={on ? 'Disable' : 'Enable'}
+      >
+        <span
+          class="inline-block w-3.5 h-3.5 rounded-full bg-white shadow transition-transform"
+          style={{ transform: on ? 'translateX(20px)' : 'translateX(2px)' }}
+        />
+      </button>
     </div>
   );
 }

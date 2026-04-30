@@ -8,6 +8,7 @@ import yaml from 'js-yaml';
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
 import { listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster } from './agent-config.js';
 import { refreshAgentRegistry } from './orchestrator.js';
+import { atomicEnvWrite } from './env-write.js';
 import { logger } from './logger.js';
 import { IS_WINDOWS, IS_MACOS, IS_LINUX, killProcess, isProcessAlive, claudeCodeHandoff, findProcessesByPattern } from './platform.js';
 
@@ -268,21 +269,6 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
 }
 
 // ── .env management ──────────────────────────────────────────────────
-
-// Write contents to envPath atomically via temp-file + rename so concurrent
-// reads (kill-switches re-reads .env every 1.5s) never see a torn file.
-// File mode is forced to 0600 because it carries bot tokens.
-function atomicEnvWrite(envPath: string, contents: string): void {
-  const tmp = `${envPath}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
-  const fd = fs.openSync(tmp, 'w', 0o600);
-  try {
-    fs.writeSync(fd, contents);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tmp, envPath);
-}
 
 function writeBotTokenToEnv(envPath: string, envKey: string, token: string, agentId: string): void {
   let content = '';

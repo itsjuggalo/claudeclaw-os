@@ -11,6 +11,7 @@ import { useFetch } from '@/lib/useFetch';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { apiPost, apiPatch, apiDelete } from '@/lib/api';
 import { formatCost } from '@/lib/format';
+import { pushToast } from '@/lib/toasts';
 
 interface Agent {
   id: string;
@@ -35,17 +36,30 @@ export function Agents() {
   async function setAllModels(model: string) {
     setPendingAction('bulk-model');
     try {
-      const res = await apiPatch<{ ok: boolean; restartRequired: string[] }>('/api/agents/model', { model });
+      const res = await apiPatch<{ ok: boolean; updated: string[]; restartRequired: string[] }>('/api/agents/model', { model });
       setBulkModel(model);
-      if (res.restartRequired?.length) {
-        alert(
-          `Model updated for ${res.restartRequired.length} agent${res.restartRequired.length === 1 ? '' : 's'}. ` +
-          `These agents need a restart to use the new model: ${res.restartRequired.join(', ')}`
-        );
+      const restartCount = res.restartRequired?.length || 0;
+      if (restartCount > 0) {
+        pushToast({
+          tone: 'warn',
+          title: `${restartCount} agent${restartCount === 1 ? '' : 's'} need restart`,
+          description: 'Yaml updated, but running processes still use the old model: ' + res.restartRequired.join(', '),
+          durationMs: 0,
+          action: {
+            label: 'Restart all',
+            run: async () => {
+              await Promise.all(res.restartRequired.map((id) => apiPost(`/api/agents/${id}/restart`).catch(() => null)));
+              pushToast({ tone: 'success', title: 'Restarting agents', description: restartCount + ' processes bouncing.' });
+              setTimeout(refresh, 3000);
+            },
+          },
+        });
+      } else {
+        pushToast({ tone: 'success', title: 'Model set for all agents', description: 'Now running on ' + model });
       }
       refresh();
     } catch (err: any) {
-      alert('Bulk model change failed: ' + (err?.message || err));
+      pushToast({ tone: 'error', title: 'Bulk model change failed', description: err?.message || String(err), durationMs: 6000 });
     } finally { setPendingAction(null); }
   }
 
@@ -126,13 +140,26 @@ function AgentCard({ agent, onChange, onOpen }: { agent: Agent; onChange: () => 
     try {
       const res = await apiPatch<{ ok: boolean; restartRequired: boolean }>(`/api/agents/${agent.id}/model`, { model });
       if (res.restartRequired) {
-        if (confirm(`Model updated to ${model}. Restart ${agent.id} now to apply?`)) {
-          await apiPost(`/api/agents/${agent.id}/restart`);
-        }
+        pushToast({
+          tone: 'warn',
+          title: agent.id + ' needs a restart',
+          description: `Model is now ${model}, but the running process is still on the old one.`,
+          durationMs: 0,
+          action: {
+            label: 'Restart now',
+            run: async () => {
+              await apiPost(`/api/agents/${agent.id}/restart`);
+              pushToast({ tone: 'success', title: agent.id + ' restarting', description: 'Should be live again in a few seconds.' });
+              setTimeout(onChange, 2500);
+            },
+          },
+        });
+      } else {
+        pushToast({ tone: 'success', title: 'Model set to ' + model, description: 'Takes effect on the next message.' });
       }
       onChange();
     } catch (err: any) {
-      alert('Model change failed: ' + (err?.message || err));
+      pushToast({ tone: 'error', title: 'Model change failed', description: err?.message || String(err), durationMs: 6000 });
     } finally { setBusy(null); }
   }
 

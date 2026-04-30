@@ -4,9 +4,10 @@ import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { StatusDot } from '@/components/Pill';
 import { useFetch } from '@/lib/useFetch';
-import { apiGet, apiPost, tokenizedSseUrl, chatId } from '@/lib/api';
+import { apiGet, apiPost, chatId } from '@/lib/api';
 import { renderMarkdown } from '@/lib/markdown';
 import { formatCost, formatNumber } from '@/lib/format';
+import { subscribeChatStream, chatStreamConnected, resetUnread } from '@/lib/chat-stream';
 
 interface Turn { role: 'user' | 'assistant'; content: string; source?: string; created_at?: number; }
 interface Agent { id: string; name: string; running: boolean; }
@@ -31,9 +32,9 @@ export function Chat() {
   const [processing, setProcessing] = useState(false);
   const [progressLabel, setProgressLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [streamConnected, setStreamConnected] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const streamConnected = chatStreamConnected.value;
 
   // Live session info for the bar.
   const health = useFetch<Health>(`/api/health?chatId=${encodeURIComponent(chatId)}`, 30_000);
@@ -58,65 +59,31 @@ export function Chat() {
     if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
   }, [turns, processing]);
 
-  // SSE — single connection for the page.
+  // Subscribe to the global chat SSE (started in main.tsx). The page just
+  // reads the events; the stream itself stays open for the whole app
+  // lifecycle so the sidebar unread badge keeps tracking.
   useEffect(() => {
-    const url = tokenizedSseUrl('/api/chat/stream');
-    const es = new EventSource(url);
-    es.onopen = () => setStreamConnected(true);
-    es.onerror = () => setStreamConnected(false);
-
-    const onUser = (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(ev.data);
+    resetUnread();
+    const unsub = subscribeChatStream((eventName, data) => {
+      if (eventName === 'user_message') {
         setTurns((prev) => [...prev, { role: 'user', content: data.content, source: data.source }]);
-      } catch {}
-    };
-    const onAssistant = (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(ev.data);
+      } else if (eventName === 'assistant_message') {
         setTurns((prev) => [...prev, { role: 'assistant', content: data.content, source: data.source }]);
         setProcessing(false); setProgressLabel(null);
-        // Refresh health/tokens after a turn settles so the bar reflects new cost.
         health.refresh();
         if (activeAgent !== 'all') agentTokens.refresh();
-      } catch {}
-    };
-    const onProcessing = (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(ev.data);
+      } else if (eventName === 'processing') {
         if (data.processing !== undefined) setProcessing(!!data.processing);
         if (!data.processing) setProgressLabel(null);
-      } catch {}
-    };
-    const onProgress = (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(ev.data);
+      } else if (eventName === 'progress') {
         if (data.description) setProgressLabel(data.description);
-      } catch {}
-    };
-    const onErr = (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(ev.data);
+      } else if (eventName === 'error') {
         setTurns((prev) => [...prev, { role: 'assistant', content: data.content || 'Error' }]);
-      } catch {}
-      setProcessing(false); setProgressLabel(null);
-    };
-
-    es.addEventListener('user_message', onUser);
-    es.addEventListener('assistant_message', onAssistant);
-    es.addEventListener('processing', onProcessing);
-    es.addEventListener('progress', onProgress);
-    es.addEventListener('error', onErr as any);
-
-    return () => {
-      es.removeEventListener('user_message', onUser);
-      es.removeEventListener('assistant_message', onAssistant);
-      es.removeEventListener('processing', onProcessing);
-      es.removeEventListener('progress', onProgress);
-      es.removeEventListener('error', onErr as any);
-      es.close();
-    };
-  }, []); // SSE survives the page; activeAgent change just reloads history.
+        setProcessing(false); setProgressLabel(null);
+      }
+    });
+    return unsub;
+  }, [activeAgent]);
 
   async function send(textOverride?: string) {
     const message = (textOverride ?? draft).trim();

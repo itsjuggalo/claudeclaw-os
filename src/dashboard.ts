@@ -2020,6 +2020,39 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return c.json(getSecurityStatus());
   });
 
+  // Toggle a kill switch by name. Writes the flag to .env atomically;
+  // kill-switches.ts re-reads .env every 1.5s so the change takes effect
+  // without a process restart.
+  const ALLOWED_KILL_SWITCHES = new Set([
+    'WARROOM_TEXT_ENABLED',
+    'WARROOM_VOICE_ENABLED',
+    'LLM_SPAWN_ENABLED',
+    'DASHBOARD_MUTATIONS_ENABLED',
+    'MISSION_AUTO_ASSIGN_ENABLED',
+    'SCHEDULER_ENABLED',
+  ]);
+  app.post('/api/security/kill-switch', async (c) => {
+    const body = await c.req.json<{ key?: string; enabled?: boolean }>();
+    const key = body?.key;
+    const enabled = body?.enabled;
+    if (!key || typeof enabled !== 'boolean') {
+      return c.json({ error: 'key (string) and enabled (boolean) required' }, 400);
+    }
+    if (!ALLOWED_KILL_SWITCHES.has(key)) {
+      return c.json({ error: 'unknown kill switch: ' + key }, 400);
+    }
+    try {
+      const envPath = path.join(PROJECT_ROOT, '.env');
+      const { setEnvKey } = await import('./env-write.js');
+      setEnvKey(envPath, key, enabled ? 'true' : 'false');
+      logger.info({ key, enabled }, 'Kill switch toggled via dashboard');
+      return c.json({ ok: true, key, enabled });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: 'Failed to write .env: ' + msg }, 500);
+    }
+  });
+
   app.get('/api/audit', (c) => {
     const limit = parseInt(c.req.query('limit') || '50', 10);
     const offset = parseInt(c.req.query('offset') || '0', 10);
