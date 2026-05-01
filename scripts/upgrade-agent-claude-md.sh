@@ -48,21 +48,51 @@ Here'\''s the report you asked for.
 ```
 
 For images you generated, prefer `[SEND_PHOTO:...]` so they preview inline.
+
+### Do NOT try to send files any other way
+
+The marker is the ONLY supported way to send files back to the user. Specifically, **do not**:
+
+- `curl https://api.telegram.org/bot<token>/sendDocument` — your subprocess does not have a valid token in its env, and any token you find by reading `.env` belongs to a DIFFERENT bot (the main bot or another sub-agent), not yours. You will get a 401 and waste a turn diagnosing it.
+- Use the `plugin:telegram:telegram` MCP skill (`reply`, `download_attachment`, etc.) to send outgoing files. That skill is wired to a Claude-in-Chrome / @claude.ai session, not your agent'\''s own bot, and its stored token may be stale or unrelated. Use that skill ONLY for incoming attachments the user sent you.
+- Read the user-uploaded file with the `Read` tool and paste base64 / hex into chat. The marker handles binary properly.
+
+If a marker doesn'\''t appear to send and the user asks why, say so plainly — DO NOT fall back to one of the above paths.
 '
 
+# Sentinel that distinguishes the "do not curl / do not use telegram skill"
+# strengthening from the older short version. Any CLAUDE.md missing this
+# string gets the strengthening appended OR replaced.
+SENTINEL='Do NOT try to send files any other way'
+
 patched=0
+strengthened=0
 skipped=0
 
 patch_one() {
   local target="$1"
   if [ ! -f "$target" ]; then return; fi
-  if grep -q 'SEND_FILE\|SEND_PHOTO' "$target"; then
-    echo "  skip $target (already has file-send section)"
+  if grep -qF "$SENTINEL" "$target"; then
+    echo "  skip $target (already has full file-send + don'\''t-curl section)"
     skipped=$((skipped+1))
     return
   fi
+  if grep -q 'SEND_FILE\|SEND_PHOTO' "$target"; then
+    # Old short version — strip out the existing "Sending Files" section,
+    # then append the new long version. We cut from "## Sending Files via
+    # Telegram" up to (but not including) the next "## " heading or EOF.
+    awk '
+      /^## Sending Files via Telegram/ { in_old=1; next }
+      in_old && /^## / { in_old=0 }
+      !in_old { print }
+    ' "$target" > "$target.tmp" && mv "$target.tmp" "$target"
+    printf '%s\n' "$SECTION" >> "$target"
+    echo "  strengthened $target (replaced short section with full version)"
+    strengthened=$((strengthened+1))
+    return
+  fi
   printf '%s\n' "$SECTION" >> "$target"
-  echo "  patched $target"
+  echo "  patched $target (added full section)"
   patched=$((patched+1))
 }
 
@@ -77,5 +107,5 @@ for root in "$CONFIG_ROOT/agents" "$PROJECT_ROOT/agents"; do
 done
 
 echo
-echo "Done. Patched: $patched, skipped: $skipped."
+echo "Done. Patched: $patched, strengthened: $strengthened, skipped: $skipped."
 echo "Agents pick up the change on their next turn — no restart needed."

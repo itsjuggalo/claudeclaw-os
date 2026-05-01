@@ -42,6 +42,16 @@ Here's the report you asked for.
 \`\`\`
 
 For images you generated, prefer \`[SEND_PHOTO:...]\` so they preview inline.
+
+### Do NOT try to send files any other way
+
+The marker is the ONLY supported way to send files back to the user. Specifically, **do not**:
+
+- \`curl https://api.telegram.org/bot<token>/sendDocument\` — your subprocess does not have a valid token in its env, and any token you find by reading \`.env\` belongs to a DIFFERENT bot (the main bot or another sub-agent), not yours. You will get a 401 and waste a turn diagnosing it.
+- Use the \`plugin:telegram:telegram\` MCP skill (\`reply\`, \`download_attachment\`, etc.) to send outgoing files. That skill is wired to a Claude-in-Chrome / @claude.ai session, not your agent's own bot, and its stored token may be stale or unrelated. Use that skill ONLY for incoming attachments the user sent you.
+- Read the user-uploaded file with the \`Read\` tool and paste base64 / hex into chat. The marker handles binary properly.
+
+If a marker doesn't appear to send and the user asks why, say so plainly — DO NOT fall back to one of the above paths. The marker is reliable; if it failed, the bot wrapper logged it and the maintainer can debug from logs.
 `.trim();
 
 // ── Helpers ──────────────────────────────────────────────────────────
