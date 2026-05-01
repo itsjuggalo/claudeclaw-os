@@ -294,19 +294,41 @@ function blendedLobeColor(nx: number, ny: number, nz: number): THREE.Color {
 
 function cloneMaterialWithVertexColors(material: THREE.Material | THREE.Material[] | undefined) {
   const cloneOne = (m: THREE.Material | undefined) => {
-    const cloned = m ? m.clone() : new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0 });
-    (cloned as THREE.MeshStandardMaterial).vertexColors = true;
+    const cloned = m
+      ? m.clone()
+      : new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0 });
+    const std = cloned as THREE.MeshStandardMaterial;
+    std.vertexColors = true;
+    // Subtle emissive tint matching the vertex color, so each lobe
+    // gives off a faint colored glow that the bloom pass picks up.
+    // Don't tint with a single hue — set emissiveIntensity and let the
+    // vertex colors drive the per-fragment emissive (Three.js
+    // multiplies emissive * emissiveMap; with no map, vertexColors
+    // contribute via the diffuse channel, but raising emissive on a
+    // white base color makes the whole mesh glow uniformly. Trick:
+    // set emissive to a soft warm color and keep intensity moderate.)
+    if (std.emissive !== undefined) {
+      std.emissive = new THREE.Color(0x331122);
+      std.emissiveIntensity = 0.06;
+    }
     return cloned;
   };
   return Array.isArray(material) ? material.map(cloneOne) : cloneOne(material);
 }
 
 function isDominantLobe(lobeId: string, w: ReturnType<typeof lobeWeights>) {
-  if (lobeId === 'frontal') return w.wFrontal > 0.45;
-  if (lobeId === 'parietal') return w.wParietal > 0.35;
-  if (lobeId === 'temporal') return w.wTemporal > 0.4;
-  if (lobeId === 'occipital') return w.wOccipital > 0.45;
-  return false;
+  // Argmax classification — pick the lobe with the highest weight at
+  // this point and check it matches. This guarantees every surface
+  // vertex gets classified into exactly one lobe, even when no
+  // single weight is high enough on a complex anatomical mesh
+  // (where the previous fixed thresholds left many vertices with
+  // no lobe and produced 0-pool results).
+  let maxKey = 'frontal';
+  let maxVal = w.wFrontal;
+  if (w.wParietal > maxVal) { maxVal = w.wParietal; maxKey = 'parietal'; }
+  if (w.wTemporal > maxVal) { maxVal = w.wTemporal; maxKey = 'temporal'; }
+  if (w.wOccipital > maxVal) { maxVal = w.wOccipital; maxKey = 'occipital'; }
+  return maxKey === lobeId;
 }
 
 function pointLobeId(nx: number, ny: number, nz: number): string | null {
@@ -500,26 +522,10 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     const brainGroup = new THREE.Group();
     scene.add(brainGroup);
 
-    // Subtle ambient halo behind the brain
-    const haloGeo = new THREE.PlaneGeometry(5, 5);
-    const haloMat = new THREE.ShaderMaterial({
-      uniforms: { uColor: { value: new THREE.Color(0x6080ff) } },
-      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: `
-        varying vec2 vUv;
-        uniform vec3 uColor;
-        void main() {
-          float d = length(vUv - vec2(0.5));
-          float a = smoothstep(0.5, 0.0, d) * 0.18;
-          gl_FragColor = vec4(uColor, a);
-        }
-      `,
-      transparent: true,
-      depthWrite: false,
-    });
-    const halo = new THREE.Mesh(haloGeo, haloMat);
-    halo.position.z = -1.2;
-    scene.add(halo);
+    // (The atmospheric glow comes from the page's CSS radial gradient
+    // and the bloom pass — no in-scene halo plane needed. The previous
+    // 5×5 plane became a visible blue cylinder when the camera tilted
+    // off-axis.)
 
     // Dots group — parented to the brain so the dots rotate, breathe,
     // and tilt with it. Previously they sat in scene root, which left
@@ -550,10 +556,11 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     composer.addPass(new RenderPass(scene, camera));
     const bloom = new UnrealBloomPass(
       new THREE.Vector2(w, h),
-      0.18, // strength — very conservative. UnrealBloomPass amplifies
-            // hard; anything over 0.25 turns the dots into nukes.
-      0.35, // radius
-      0.92, // threshold — only the brightest peak-firing dots bloom
+      0.30, // strength — bumped up now that the brain mesh has more
+            // surface area to absorb the glow without blowing dots out.
+      0.55, // radius — softer falloff so the glow feels diffuse
+      0.85, // threshold — slightly lower so emissive lobes start to
+            // bloom too, not just peak-firing dots
     );
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
@@ -649,7 +656,12 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     const fallbackToProcedural = (err: unknown) => {
       if (import.meta.env.DEV) console.warn('Falling back to procedural brain mesh; /brain.glb failed to load.', err);
       if (disposed) return;
-      brainGroup.clear();
+      // Remove only the loaded GLB (if any) — keep dotsGroup parented.
+      // Walk children and remove any THREE.Group that came from the
+      // gltf scene, but keep dotsGroup which we added at init.
+      const toRemove: THREE.Object3D[] = [];
+      brainGroup.children.forEach((c) => { if (c !== dotsGroup) toRemove.push(c); });
+      toRemove.forEach((c) => brainGroup.remove(c));
       activateBrain(buildProceduralBrain(brainGroup));
     };
 
@@ -666,7 +678,10 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
           if (pools.left.length + pools.right.length === 0) {
             throw new Error('Loaded brain GLB did not expose usable surface vertices.');
           }
-          brainGroup.clear();
+          // brainGroup.clear() would remove the dotsGroup we added at
+          // init time. Instead just add the loaded gltf scene
+          // alongside it; the brain mesh and dots end up under the
+          // same parent transform so they rotate / breathe together.
           brainGroup.add(gltf.scene);
           activateBrain(pools);
         } catch (err) {
@@ -696,6 +711,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
 
     // Track slot index per (lobe, side) so dots spread out evenly.
     const slotIdx: Record<string, number> = {};
+    let placed = 0;
 
     for (const e of entries) {
       const lobe = lobeFor(e.agent_id);
@@ -706,29 +722,50 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       const idx = slotIdx[key] = (slotIdx[key] ?? -1) + 1;
       const pos = pickSurface(surface, lobe, idx);
       if (!pos) continue;
+      placed++;
 
       // Push the dot a bit outward along the surface normal so it
-      // sits *on* the brain rather than embedded in it.
-      const len = pos.length();
-      const outward = pos.clone().multiplyScalar(1 + 0.015 / len);
+      // Push the dot outward by an *absolute* amount along the radial
+      // direction. A relative scale (e.g. ×1.08) doesn't help vertices
+      // that already sit at radius 0.7 when the mesh extends to 0.8 —
+      // they get pushed to 0.756 and stay inside the surface. An
+      // absolute 0.10-unit push always pokes the dot clear of the
+      // anatomical GLB's sulci.
+      const radial = pos.clone();
+      if (radial.lengthSq() > 0) radial.normalize();
+      // Push 0.06 absolute units along the radial direction so the
+      // dot sits clearly on the brain's surface without floating off
+      // into space.
+      const outward = pos.clone().add(radial.multiplyScalar(0.06));
 
-      const colorHex = agentColors[e.agent_id] || '#888';
+      // Resolve CSS custom properties (e.g. `var(--color-accent)`) to
+      // a hex string before handing to THREE.Color, which can't parse
+      // CSS vars.
+      let colorHex = agentColors[e.agent_id] || '#888';
+      if (typeof colorHex === 'string' && colorHex.startsWith('var(')) {
+        const m = colorHex.match(/var\((--[^)]+)\)/);
+        if (m) {
+          const resolved = getComputedStyle(document.documentElement)
+            .getPropertyValue(m[1])
+            .trim();
+          if (resolved) colorHex = resolved;
+        }
+      }
       const color = new THREE.Color(colorHex);
 
-      const r = 0.04 * filters.nodeSize;
+      const r = 0.022 * filters.nodeSize;
       const dotGeo = new THREE.SphereGeometry(r, 14, 14);
-      // Emissive material so the bloom pass catches each dot like a
-      // tiny firing neuron. The emissiveIntensity is animated in the
-      // rAF loop to create the neural-firing pulse effect.
-      const dotMat = new THREE.MeshStandardMaterial({
+      // MeshBasicMaterial — unlit so the dot color reads cleanly
+      // against the brain's textured surface. depthTest stays on so
+      // back-side dots get correctly occluded by the front of the
+      // brain (rather than all dots stacking up on screen).
+      const dotMat = new THREE.MeshBasicMaterial({
         color,
-        emissive: color,
-        emissiveIntensity: 0.20,
-        roughness: 0.4,
-        metalness: 0,
+        transparent: true,
       });
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(outward);
+      dot.renderOrder = 999; // draw after the opaque brain mesh
       state.dotsGroup.add(dot);
 
       // Halo — additive sphere that gets pulled by bloom for an
@@ -745,6 +782,9 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
 
       const entryWithLobe = { ...e, lobe };
       state.dotMap.set(dot, { entry: entryWithLobe, pos: outward, mesh: dot, halo });
+    }
+    if (placed === 0 && entries.length > 0 && import.meta.env.DEV) {
+      console.warn('[brain3d] no dots placed despite', entries.length, 'entries — surface pools may be empty');
     }
   }, [entries, agentColors, filters.nodeSize, ready]);
 
