@@ -368,9 +368,11 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     halo.position.z = -1.2;
     scene.add(halo);
 
-    // Dots group
+    // Dots group — parented to the brain so the dots rotate, breathe,
+    // and tilt with it. Previously they sat in scene root, which left
+    // them floating in space while the brain spun around them.
     const dotsGroup = new THREE.Group();
-    scene.add(dotsGroup);
+    brainGroup.add(dotsGroup);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
