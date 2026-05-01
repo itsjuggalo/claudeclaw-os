@@ -12,6 +12,38 @@ import { atomicEnvWrite } from './env-write.js';
 import { logger } from './logger.js';
 import { IS_WINDOWS, IS_MACOS, IS_LINUX, killProcess, isProcessAlive, claudeCodeHandoff, findProcessesByPattern } from './platform.js';
 
+// Documentation block injected into every newly-created agent's
+// CLAUDE.md if the template they were generated from doesn't already
+// teach the file-send markers. The plumbing in src/bot.ts:637
+// (extractFileMarkers) supports these for every agent — agents just
+// need to know the syntax exists.
+const FILE_SEND_SECTION = `
+## Sending Files via Telegram
+
+When the user asks you to create a file and send it back (PDF, spreadsheet, image, screenshot, etc.), include a file marker in your response. The bot wrapper parses these markers and sends the files as Telegram attachments — you do NOT call any tool, just include the literal marker text in your reply.
+
+**Syntax:**
+- \`[SEND_FILE:/absolute/path/to/file.pdf]\` — sends as a document attachment
+- \`[SEND_PHOTO:/absolute/path/to/image.png]\` — sends as an inline photo
+- \`[SEND_FILE:/absolute/path/to/file.pdf|Optional caption]\` — with a caption
+
+**Rules:**
+- Always use absolute paths (no \`~\`, no relative paths)
+- Create the file first, then include the marker
+- Place the marker on its own line
+- Multiple markers in one response are fine
+- Max file size: 50 MB (Telegram limit)
+- The marker text gets stripped from the visible message
+
+**Example:**
+\`\`\`
+Here's the report you asked for.
+[SEND_FILE:/tmp/q1-report.pdf|Q1 2026 Report]
+\`\`\`
+
+For images you generated, prefer \`[SEND_PHOTO:...]\` so they preview inline.
+`.trim();
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /**
@@ -220,6 +252,15 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
       let content = fs.readFileSync(src, 'utf-8');
       // Replace template agent ID references with the new agent ID
       content = content.replace(/\[AGENT_ID\]/g, id);
+      // Guarantee the file-send section regardless of which template was
+      // picked. The _template version has it, but Comms/Content/Ops/etc.
+      // (which users can pick as templates) might not — those files are
+      // gated by the pre-commit hook so we can't modify them in-repo.
+      // Appending here ensures every newly-created agent knows about the
+      // [SEND_FILE:...] / [SEND_PHOTO:...] markers without exception.
+      if (!/\[SEND_FILE:/.test(content) && !/\[SEND_PHOTO:/.test(content)) {
+        content = content.replace(/\s*$/, '') + '\n' + FILE_SEND_SECTION + '\n';
+      }
       fs.writeFileSync(path.join(agentDir, 'CLAUDE.md'), content, 'utf-8');
       break;
     }

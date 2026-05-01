@@ -2,6 +2,24 @@
 
 All notable changes to ClaudeClaw will be documented here.
 
+## [unreleased] - 2026-05-01
+
+### Fixed — agent file-send awareness
+- New agents created via the dashboard wizard now always include the
+  `[SEND_FILE:...]` / `[SEND_PHOTO:...]` marker documentation in their
+  CLAUDE.md, regardless of which template the user picked. The plumbing
+  in `src/bot.ts:637` (`extractFileMarkers`) has always supported these
+  for every agent — newly-created agents just didn't know the syntax
+  existed and would say things like "I can't send files" when asked to
+  attach an image they'd just generated.
+- **Action required for existing agents:** after pulling this commit,
+  run `bash scripts/upgrade-agent-claude-md.sh` once. It idempotently
+  appends the section to any `agents/<id>/CLAUDE.md` (in either the
+  repo or `$CLAUDECLAW_CONFIG`) that doesn't already mention
+  `SEND_FILE`/`SEND_PHOTO`. Safe to re-run; skips already-patched
+  files. Agents pick up the change on their next turn — no restart
+  needed.
+
 ## [unreleased] - 2026-04-29
 
 ### Added — text war room
