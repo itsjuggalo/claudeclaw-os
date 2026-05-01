@@ -3,6 +3,7 @@ import { Modal } from '@/components/Modal';
 import { apiPatch } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { useFetch } from '@/lib/useFetch';
+import { describeCron } from '@/lib/cron';
 
 interface ScheduledTask {
   id: string;
@@ -28,26 +29,6 @@ const PRESETS: Array<{ label: string; cron: string }> = [
   { label: 'Every Sunday 6pm', cron: '0 18 * * 0' },
   { label: 'Every 4 hours', cron: '0 */4 * * *' },
 ];
-
-// Cheap client-side cron sanity check + human preview. The server still
-// does the real validation via cron-parser; this just gives instant
-// feedback so the user isn't typing into a void.
-function describeCron(cron: string): { ok: boolean; preview: string } {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return { ok: false, preview: 'Cron must be 5 fields: minute hour dom month dow' };
-  const [m, h, dom, mon, dow] = parts;
-  if (m === '*' && h === '*' && dom === '*' && mon === '*' && dow === '*') {
-    return { ok: true, preview: 'Every minute' };
-  }
-  const bits: string[] = [];
-  if (h.includes(',')) bits.push('At hours ' + h);
-  else if (h.startsWith('*/')) bits.push('Every ' + h.slice(2) + ' hours');
-  else if (h !== '*') bits.push('At ' + h.padStart(2, '0') + ':' + (m === '0' ? '00' : m.padStart(2, '0')));
-  if (dow !== '*') bits.push(dow === '1-5' ? 'on weekdays' : 'on day-of-week ' + dow);
-  if (dom !== '*') bits.push('on day-of-month ' + dom);
-  if (mon !== '*') bits.push('in month ' + mon);
-  return { ok: true, preview: bits.length ? bits.join(' ') : cron };
-}
 
 export function EditTaskModal({ open, task, onClose, onSaved }: Props) {
   const [prompt, setPrompt] = useState('');
@@ -142,7 +123,7 @@ export function EditTaskModal({ open, task, onClose, onSaved }: Props) {
             class="w-full px-3 py-2 rounded bg-[var(--color-bg)] border border-[var(--color-border)] focus:border-[var(--color-accent)] focus:outline-none text-[12.5px] text-[var(--color-text)] font-mono"
           />
           <div class={'mt-1.5 text-[11px] ' + (cronPreview.ok ? 'text-[var(--color-text-faint)]' : 'text-[var(--color-status-failed)]')}>
-            {cronPreview.preview}
+            {cronPreview.text}
           </div>
           <div class="mt-2 flex flex-wrap gap-1.5">
             {PRESETS.map((p) => (

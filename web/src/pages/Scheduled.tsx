@@ -11,6 +11,7 @@ import { apiPost, apiDelete } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 import { privacyBlur } from '@/lib/privacy';
 import { pushToast } from '@/lib/toasts';
+import { describeCron } from '@/lib/cron';
 
 interface ScheduledTask {
   id: string;
@@ -27,18 +28,6 @@ interface ScheduledTask {
 }
 
 type ViewMode = 'cards' | 'list';
-
-function describeCron(cron: string): string {
-  if (cron === '0 9 * * *') return 'Daily at 9am';
-  if (cron === '0 8 * * 1-5') return 'Every weekday at 8am';
-  if (cron === '0 9 * * 1') return 'Every Monday at 9am';
-  if (cron === '0 18 * * 0') return 'Every Sunday at 6pm';
-  if (/^0 \*\/(\d+) \* \* \*$/.test(cron)) {
-    const m = cron.match(/^0 \*\/(\d+) \* \* \*$/)!;
-    return 'Every ' + m[1] + ' hour' + (m[1] === '1' ? '' : 's');
-  }
-  return cron;
-}
 
 function formatCountdown(unixSeconds: number): string {
   const diff = unixSeconds - Date.now() / 1000;
@@ -340,7 +329,7 @@ function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRe
           <div class="flex items-center gap-2 text-[10.5px] text-[var(--color-text-faint)] flex-wrap">
             <span class="inline-flex items-center gap-1">
               <Clock size={10} />
-              {describeCron(task.schedule)}
+              {describeCron(task.schedule).text}
             </span>
             {task.status === 'active' && (
               <span class="text-[var(--color-accent)] tabular-nums">{formatCountdown(task.next_run)}</span>
@@ -406,7 +395,7 @@ function TaskListRow({ task, blurOn, selected, onToggleSelect, onAction, onDelet
         </span>
       </td>
       <td class="px-3 py-2.5 text-[var(--color-text-muted)] tabular-nums whitespace-nowrap">
-        {describeCron(task.schedule)}
+        {describeCron(task.schedule).text}
       </td>
       <td class="px-3 py-2.5 text-[var(--color-text-faint)] tabular-nums whitespace-nowrap">
         {task.status === 'active' ? formatCountdown(task.next_run) : '—'}
