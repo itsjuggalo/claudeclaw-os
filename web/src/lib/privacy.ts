@@ -11,7 +11,7 @@
 
 import { signal } from '@preact/signals';
 
-export type PrivacySection = 'memories' | 'hive';
+export type PrivacySection = 'memories' | 'hive' | 'scheduled';
 
 function key(section: PrivacySection): string {
   return `claudeclaw.privacy.${section}`;
