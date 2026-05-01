@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { X } from 'lucide-preact';
+import { X, Search, RotateCw, Sparkles, ChevronDown, ChevronRight } from 'lucide-preact';
 import { formatRelativeTime } from '@/lib/format';
 
 interface HiveEntry {
@@ -14,32 +14,128 @@ interface HiveEntry {
 
 interface Props {
   entries: HiveEntry[];
-  agentFilter: string; // 'all' | agent_id
+  /** Top-level agent tab — 'all' or an agent id. Acts as a hard filter. */
+  agentFilter: string;
+  /** Per-agent dot color (defaults supplied by the parent). */
   agentColors: Record<string, string>;
   blurOn: boolean;
 }
 
-// Stylized brain silhouette in a 800×500 viewBox. Two hemispheres with
-// a soft pinch at the longitudinal fissure. Coordinates picked by hand
-// to read as a brain at a glance — not anatomically faithful.
-const BRAIN_PATH =
-  'M 110,270 ' +
-  'C 110,150 230,80 360,90 ' +
-  'C 380,72 420,72 440,90 ' +
-  'C 570,80 690,150 690,270 ' +
-  'C 700,335 660,385 590,405 ' +
-  'C 565,440 515,460 470,455 ' +
-  'C 450,475 420,485 400,478 ' +
-  'C 380,485 350,475 330,455 ' +
-  'C 285,460 235,440 210,405 ' +
-  'C 140,385 100,335 110,270 Z';
+// ── Brain shape ─────────────────────────────────────────────────────
+// Hand-tuned multi-path silhouette in an 800×500 viewBox. Goes for
+// recognizable-as-a-brain over anatomically perfect: smooth bumpy
+// cortex, longitudinal fissure, distinct cerebellum at the back, and
+// a tiny brainstem extension. All the gyri texture comes from the
+// dashed sulci overlay rather than chiseling the outline itself,
+// which keeps the shape readable when scaled small.
 
 const VIEW_W = 800;
-const VIEW_H = 500;
-const MAX_DOTS = 320;
+const VIEW_H = 540;
 
-// Mulberry32 — tiny, stable PRNG seeded by an int. Used so the layout
-// is deterministic across reloads (same entry id → same seed).
+// Cerebrum (the big two-hemisphere body)
+const CEREBRUM_PATH =
+  'M 400,82 ' +
+  'C 425,75 462,76 492,86 ' +
+  'C 528,75 568,82 598,100 ' +
+  'C 638,118 662,150 672,190 ' +
+  'C 682,225 682,260 672,300 ' +
+  'C 662,335 645,365 615,385 ' +
+  'C 605,395 590,403 572,407 ' +
+  'C 555,415 540,420 510,420 ' +
+  'L 400,420 ' +
+  'L 290,420 ' +
+  'C 260,420 245,415 228,407 ' +
+  'C 210,403 195,395 185,385 ' +
+  'C 155,365 138,335 128,300 ' +
+  'C 118,260 118,225 128,190 ' +
+  'C 138,150 162,118 202,100 ' +
+  'C 232,82 272,75 308,86 ' +
+  'C 338,76 375,75 400,82 Z';
+
+// Cerebellum (back-bottom rounded bump that joins the cerebrum)
+const CEREBELLUM_PATH =
+  'M 286,418 ' +
+  'C 274,438 282,468 314,476 ' +
+  'C 354,488 446,488 486,476 ' +
+  'C 518,468 526,438 514,418 ' +
+  'L 286,418 Z';
+
+// Longitudinal fissure (decorative dashed line down the middle)
+const FISSURE_PATH = 'M 400,84 C 397,180 403,300 400,418';
+
+// Sulci — short curved lines suggesting cortical folds.
+const SULCI = [
+  // Central sulcus, left and right hemispheres
+  'M 260,165 C 235,200 232,250 252,290',
+  'M 540,165 C 565,200 568,250 548,290',
+  // Lateral sulcus
+  'M 175,260 C 215,290 250,310 285,318',
+  'M 625,260 C 585,290 550,310 515,318',
+  // Parieto-occipital sulcus
+  'M 320,330 L 360,365',
+  'M 480,330 L 440,365',
+];
+
+// Cerebellar folia — horizontal striations that read as the cerebellum's
+// distinctive ridge pattern.
+const FOLIA = [
+  { y: 432, x1: 295, x2: 505 },
+  { y: 442, x1: 290, x2: 510 },
+  { y: 452, x1: 290, x2: 510 },
+  { y: 462, x1: 300, x2: 500 },
+];
+
+// Brainstem — small bumpy strip below the cerebellum
+const BRAINSTEM_PATH =
+  'M 378,476 ' +
+  'C 374,492 374,510 380,520 ' +
+  'L 420,520 ' +
+  'C 426,510 426,492 422,476 Z';
+
+// ── Lobes ───────────────────────────────────────────────────────────
+// Each lobe is an axis-aligned rectangle inside the brain. Rectangles
+// can overlap a bit; rejection sampling against both the lobe rect
+// AND the brain shape keeps dots inside the silhouette. Rectangles
+// are also used to position the lobe label and as click targets when
+// the user wants to filter by lobe.
+
+interface Lobe {
+  id: string;
+  label: string;
+  color: string;
+  rect: [number, number, number, number]; // x, y, w, h
+  labelAt: [number, number];
+}
+
+const LOBES: Lobe[] = [
+  { id: 'frontal',    label: 'Frontal',    color: '#5eb6ff', rect: [180,  88, 440, 130], labelAt: [400, 110] },
+  { id: 'parietal',   label: 'Parietal',   color: '#10b981', rect: [220, 218, 360,  90], labelAt: [400, 248] },
+  { id: 'temporal',   label: 'Temporal',   color: '#f59e0b', rect: [140, 280, 520,  60], labelAt: [200, 320] },
+  { id: 'occipital',  label: 'Occipital',  color: '#a78bfa', rect: [250, 340, 300,  78], labelAt: [400, 388] },
+  { id: 'cerebellum', label: 'Cerebellum', color: '#fb7185', rect: [280, 418, 240,  60], labelAt: [400, 458] },
+  { id: 'brainstem',  label: 'Brainstem',  color: '#94a3b8', rect: [370, 476,  60,  44], labelAt: [400, 530] },
+];
+
+const LOBE_BY_ID = LOBES.reduce<Record<string, Lobe>>((acc, l) => { acc[l.id] = l; return acc; }, {});
+
+// Map agent → home lobe. Anything not in the map falls back to
+// frontal. The mapping reads loosely as "the role this agent plays
+// inside the assistant's cognition".
+const AGENT_LOBE: Record<string, string> = {
+  main:     'frontal',     // the executive — decisions, planning
+  research: 'parietal',    // sensing & integration
+  comms:    'temporal',    // language & memory
+  content:  'occipital',   // visual / creative output
+  ops:      'cerebellum',  // coordination
+  meta:     'brainstem',   // the autonomic, system-level stuff
+};
+
+function lobeFor(entry: HiveEntry): Lobe {
+  return LOBE_BY_ID[AGENT_LOBE[entry.agent_id] || 'frontal'];
+}
+
+// ── PRNG + layout ───────────────────────────────────────────────────
+
 function rng(seed: number): () => number {
   let s = seed >>> 0;
   return () => {
@@ -53,75 +149,135 @@ function rng(seed: number): () => number {
 
 interface Pt { x: number; y: number }
 
-// Generate N points inside the brain path via rejection sampling. Runs
-// once after mount when the SVG path is in the DOM and we can call
-// isPointInFill on it.
-function generatePoints(pathEl: SVGPathElement, count: number): Pt[] {
+// Per-lobe pool of valid positions, filled once on mount and reused
+// every render. Dots are slotted in entry-order so layout is stable
+// across polls — new entries take new slots, removed entries vacate.
+type LobePools = Record<string, Pt[]>;
+
+function generateLobePools(
+  cerebrum: SVGPathElement,
+  cerebellum: SVGPathElement,
+  brainstem: SVGPathElement,
+): LobePools {
+  const pools: LobePools = {};
   const r = rng(0xb14b);
-  const out: Pt[] = [];
-  let tries = 0;
-  const maxTries = count * 30;
-  while (out.length < count && tries < maxTries) {
-    tries++;
-    const x = 80 + r() * (VIEW_W - 160);
-    const y = 70 + r() * (VIEW_H - 140);
-    // SVGPathElement.isPointInFill expects an SVGPoint in the path's
-    // own coord space. Modern browsers accept a DOMPoint-like object.
-    if ((pathEl as any).isPointInFill({ x, y })) {
-      // Quick spacing — reject if too close to an existing point.
+  for (const lobe of LOBES) {
+    const target = lobe.id === 'brainstem' ? 24 : lobe.id === 'cerebellum' ? 60 : 120;
+    const pts: Pt[] = [];
+    let tries = 0;
+    while (pts.length < target && tries < target * 60) {
+      tries++;
+      const [x0, y0, w, h] = lobe.rect;
+      const x = x0 + r() * w;
+      const y = y0 + r() * h;
+      const insideAny =
+        (cerebrum as any).isPointInFill({ x, y }) ||
+        (cerebellum as any).isPointInFill({ x, y }) ||
+        (brainstem as any).isPointInFill({ x, y });
+      if (!insideAny) continue;
       let tooClose = false;
-      for (const p of out) {
-        const dx = p.x - x;
-        const dy = p.y - y;
-        if (dx * dx + dy * dy < 9 * 9) { tooClose = true; break; }
+      for (const p of pts) {
+        const dx = p.x - x, dy = p.y - y;
+        if (dx * dx + dy * dy < 11 * 11) { tooClose = true; break; }
       }
-      if (!tooClose) out.push({ x, y });
+      if (!tooClose) pts.push({ x, y });
     }
+    pools[lobe.id] = pts;
   }
-  return out;
+  return pools;
 }
 
+// ── Filter state ────────────────────────────────────────────────────
+
+interface BrainFilters {
+  query: string;
+  hiddenAgents: Set<string>;
+  hiddenLobes: Set<string>;
+  nodeSize: number;     // 0.5x .. 2x
+  edgeOpacity: number;  // 0 .. 1
+  tilt: number;         // -25 .. 25 (degrees rotateY)
+}
+
+const DEFAULT_FILTERS: BrainFilters = {
+  query: '',
+  hiddenAgents: new Set(),
+  hiddenLobes: new Set(),
+  nodeSize: 1,
+  edgeOpacity: 0.4,
+  tilt: 0,
+};
+
+// ── Component ───────────────────────────────────────────────────────
+
 export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props) {
-  const pathRef = useRef<SVGPathElement>(null);
+  const cerebrumRef = useRef<SVGPathElement>(null);
+  const cerebellumRef = useRef<SVGPathElement>(null);
+  const brainstemRef = useRef<SVGPathElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const [points, setPoints] = useState<Pt[]>([]);
+
+  const [pools, setPools] = useState<LobePools>({});
   const [hovered, setHovered] = useState<number | null>(null);
+  const [hoverLobe, setHoverLobe] = useState<string | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
   const [selected, setSelected] = useState<HiveEntry | null>(null);
+  const [filters, setFilters] = useState<BrainFilters>(DEFAULT_FILTERS);
+  const [animateNonce, setAnimateNonce] = useState(0);
 
   useEffect(() => {
-    if (!pathRef.current) return;
-    setPoints(generatePoints(pathRef.current, MAX_DOTS));
+    if (!cerebrumRef.current || !cerebellumRef.current || !brainstemRef.current) return;
+    setPools(generateLobePools(cerebrumRef.current, cerebellumRef.current, brainstemRef.current));
   }, []);
 
-  // Slot the most recent entries into the precomputed points. New
-  // entries push older ones out of the visualization.
-  const sliced = useMemo(() => entries.slice(0, points.length), [entries, points.length]);
+  // Group entries by lobe and slot them into the pre-computed pools.
+  // Entries are already newest-first from the API, so the brightest
+  // dot in each lobe is the most recent activity.
+  const placed = useMemo(() => {
+    const lobeIndex: Record<string, number> = {};
+    const out: Array<HiveEntry & { pt: Pt; lobe: string }> = [];
+    for (const e of entries) {
+      const lobe = lobeFor(e);
+      const pool = pools[lobe.id];
+      if (!pool || pool.length === 0) continue;
+      const idx = lobeIndex[lobe.id] = (lobeIndex[lobe.id] ?? -1) + 1;
+      const pt = pool[idx % pool.length];
+      out.push({ ...e, pt, lobe: lobe.id });
+    }
+    return out;
+  }, [entries, pools]);
 
-  // Edges: connect consecutive entries within the same chat_id when
-  // they happened within 30 minutes of each other. Gives the graph
-  // its sessions-of-activity feel without a force layout.
+  // Edges within the same chat_id and within 30 minutes — same logic
+  // as before. Drawn beneath the dots.
   const edges = useMemo(() => {
-    if (sliced.length === 0 || points.length === 0) return [] as Array<{ a: number; b: number; agent: string }>;
     const out: Array<{ a: number; b: number; agent: string }> = [];
     const byChat = new Map<string, number[]>();
-    sliced.forEach((e, i) => {
+    placed.forEach((e, i) => {
       const arr = byChat.get(e.chat_id);
       if (arr) arr.push(i); else byChat.set(e.chat_id, [i]);
     });
     for (const idxs of byChat.values()) {
       if (idxs.length < 2) continue;
-      const sorted = idxs.slice().sort((a, b) => sliced[a].created_at - sliced[b].created_at);
+      const sorted = idxs.slice().sort((a, b) => placed[a].created_at - placed[b].created_at);
       for (let i = 1; i < sorted.length; i++) {
         const a = sorted[i - 1];
         const b = sorted[i];
-        if (sliced[b].created_at - sliced[a].created_at <= 1800) {
-          out.push({ a, b, agent: sliced[a].agent_id });
+        if (placed[b].created_at - placed[a].created_at <= 1800) {
+          out.push({ a, b, agent: placed[a].agent_id });
         }
       }
     }
     return out;
-  }, [sliced, points.length]);
+  }, [placed]);
+
+  function isVisible(e: HiveEntry & { lobe: string }): boolean {
+    if (filters.hiddenAgents.has(e.agent_id)) return false;
+    if (filters.hiddenLobes.has(e.lobe)) return false;
+    if (agentFilter !== 'all' && e.agent_id !== agentFilter) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      if (!e.summary.toLowerCase().includes(q) && !e.action.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  }
 
   function handleMove(e: MouseEvent) {
     if (!wrapRef.current) return;
@@ -129,156 +285,359 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
     setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
   }
 
-  const hoveredEntry = hovered !== null ? sliced.find((e) => e.id === hovered) || null : null;
+  const hoveredEntry = hovered !== null ? placed.find((e) => e.id === hovered) || null : null;
+
+  const visibleAgents = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const e of entries) counts[e.agent_id] = (counts[e.agent_id] || 0) + 1;
+    return counts;
+  }, [entries]);
+
+  function update<K extends keyof BrainFilters>(key: K, value: BrainFilters[K]) {
+    setFilters((f) => ({ ...f, [key]: value }));
+  }
+  function toggleHidden(set: 'hiddenAgents' | 'hiddenLobes', id: string) {
+    setFilters((f) => {
+      const next = new Set(f[set]);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return { ...f, [set]: next };
+    });
+  }
 
   return (
-    <div class="relative flex-1 min-h-0 overflow-hidden" ref={wrapRef} onMouseMove={handleMove}>
-      <svg
-        viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-        class="w-full h-full"
-        preserveAspectRatio="xMidYMid meet"
+    <div class="flex-1 flex min-h-0">
+      <div
+        ref={wrapRef}
+        class="brain-stage flex-1 relative overflow-hidden"
+        style={{
+          background:
+            'radial-gradient(ellipse 70% 60% at 50% 45%, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 70%), var(--color-bg)',
+        }}
+        onMouseMove={handleMove}
       >
-        <defs>
-          <radialGradient id="brainGlow" cx="50%" cy="48%" r="55%">
-            <stop offset="0%" stop-color="var(--color-accent)" stop-opacity="0.10" />
-            <stop offset="60%" stop-color="var(--color-accent)" stop-opacity="0.04" />
-            <stop offset="100%" stop-color="var(--color-accent)" stop-opacity="0" />
-          </radialGradient>
-          <filter id="dotBlur" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="2" />
-          </filter>
-        </defs>
-
-        <path
-          ref={pathRef}
-          d={BRAIN_PATH}
-          fill="url(#brainGlow)"
-          stroke="var(--color-border-strong)"
-          stroke-width="1"
-          stroke-dasharray="3 4"
-          opacity="0.85"
-        />
-        {/* Subtle longitudinal fissure */}
-        <path
-          d="M 400,90 C 395,200 405,300 400,478"
-          fill="none"
-          stroke="var(--color-border)"
-          stroke-width="0.8"
-          stroke-dasharray="2 5"
-          opacity="0.5"
-        />
-
-        {/* Edges first so dots draw on top */}
-        {edges.map((edge, i) => {
-          const pa = points[edge.a];
-          const pb = points[edge.b];
-          if (!pa || !pb) return null;
-          const dim = agentFilter !== 'all' && edge.agent !== agentFilter;
-          return (
-            <line
-              key={i}
-              x1={pa.x}
-              y1={pa.y}
-              x2={pb.x}
-              y2={pb.y}
-              stroke={agentColors[edge.agent] || 'var(--color-text-faint)'}
-              stroke-width={dim ? 0.4 : 0.9}
-              opacity={dim ? 0.15 : 0.45}
-            />
-          );
-        })}
-
-        {sliced.map((entry, i) => {
-          const p = points[i];
-          if (!p) return null;
-          const dim = agentFilter !== 'all' && entry.agent_id !== agentFilter;
-          const isHovered = hovered === entry.id;
-          const color = agentColors[entry.agent_id] || 'var(--color-text-muted)';
-          const r = isHovered ? 5.5 : 3.5;
-          return (
-            <g key={entry.id}>
-              {isHovered && (
-                <circle cx={p.x} cy={p.y} r={11} fill={color} opacity={0.18} filter="url(#dotBlur)" />
-              )}
-              <circle
-                cx={p.x}
-                cy={p.y}
-                r={r}
-                fill={color}
-                opacity={dim ? 0.18 : 0.95}
-                stroke={isHovered ? 'white' : 'none'}
-                stroke-width={isHovered ? 0.8 : 0}
-                style={{ cursor: 'pointer', transition: 'r 120ms, opacity 120ms' }}
-                onMouseEnter={() => setHovered(entry.id)}
-                onMouseLeave={() => setHovered((h) => (h === entry.id ? null : h))}
-                onClick={() => setSelected(entry)}
-              />
-            </g>
-          );
-        })}
-      </svg>
-
-      {points.length > 0 && entries.length === 0 && (
-        <div class="absolute inset-0 flex items-center justify-center text-[12px] text-[var(--color-text-faint)] pointer-events-none">
-          No activity yet.
-        </div>
-      )}
-
-      {hoveredEntry && mousePos && (
-        <div
-          class="absolute pointer-events-none bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg shadow-xl px-3 py-2 text-[11.5px] text-[var(--color-text)] max-w-[320px] z-10"
-          style={{
-            left: Math.min(mousePos.x + 12, (wrapRef.current?.clientWidth || 800) - 340),
-            top: Math.min(mousePos.y + 12, (wrapRef.current?.clientHeight || 500) - 110),
-          }}
+        <svg
+          viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+          class="w-full h-full"
+          preserveAspectRatio="xMidYMid meet"
+          style={{ transform: `rotateY(${filters.tilt}deg)` }}
         >
-          <div class="flex items-center gap-2 mb-1">
-            <span
-              class="inline-block w-1.5 h-1.5 rounded-full"
-              style={{ backgroundColor: agentColors[hoveredEntry.agent_id] || 'var(--color-text-muted)' }}
-            />
-            <span class="font-mono text-[10.5px] text-[var(--color-text-muted)]">
-              @{hoveredEntry.agent_id} · {hoveredEntry.action}
-            </span>
-            <span class="text-[10px] text-[var(--color-text-faint)] ml-auto tabular-nums">
-              {formatRelativeTime(hoveredEntry.created_at)}
-            </span>
-          </div>
-          <div class={'leading-snug ' + (blurOn ? 'privacy-blur' : '')}>
-            {hoveredEntry.summary}
-          </div>
-        </div>
-      )}
+          <defs>
+            <radialGradient id="brainFill" cx="50%" cy="42%" r="60%">
+              <stop offset="0%" stop-color="color-mix(in srgb, var(--color-accent) 28%, transparent)" />
+              <stop offset="55%" stop-color="color-mix(in srgb, var(--color-accent) 8%, transparent)" />
+              <stop offset="100%" stop-color="transparent" />
+            </radialGradient>
+            <radialGradient id="brainGlow" cx="50%" cy="48%" r="70%">
+              <stop offset="0%" stop-color="var(--color-accent)" stop-opacity="0.12" />
+              <stop offset="100%" stop-color="transparent" />
+            </radialGradient>
+            <filter id="dotGlow" x="-100%" y="-100%" width="300%" height="300%">
+              <feGaussianBlur stdDeviation="3" />
+            </filter>
+            <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="1.4" />
+              <feMerge>
+                <feMergeNode />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+            {LOBES.map((l) => (
+              <radialGradient key={l.id} id={`lobeGlow-${l.id}`} cx="50%" cy="50%" r="55%">
+                <stop offset="0%" stop-color={l.color} stop-opacity="0.22" />
+                <stop offset="100%" stop-color={l.color} stop-opacity="0" />
+              </radialGradient>
+            ))}
+            <clipPath id="brainClip">
+              <path d={CEREBRUM_PATH} />
+              <path d={CEREBELLUM_PATH} />
+              <path d={BRAINSTEM_PATH} />
+            </clipPath>
+          </defs>
 
-      {selected && (
-        <DetailPanel
-          entry={selected}
-          color={agentColors[selected.agent_id] || 'var(--color-text-muted)'}
-          blurOn={blurOn}
-          onClose={() => setSelected(null)}
-        />
-      )}
+          {/* Backlit halo behind the brain */}
+          <ellipse cx={VIEW_W / 2} cy={250} rx={300} ry={210} fill="url(#brainGlow)" />
+
+          {/* Lobe glows — only visible when that lobe is hovered/active */}
+          <g clip-path="url(#brainClip)">
+            {LOBES.map((l) => {
+              const active = hoverLobe === l.id;
+              return (
+                <ellipse
+                  key={l.id}
+                  cx={l.rect[0] + l.rect[2] / 2}
+                  cy={l.rect[1] + l.rect[3] / 2}
+                  rx={l.rect[2] * 0.7}
+                  ry={l.rect[3] * 0.9}
+                  fill={`url(#lobeGlow-${l.id})`}
+                  opacity={active ? 1 : 0}
+                  style={{ transition: 'opacity 220ms ease-out' }}
+                />
+              );
+            })}
+          </g>
+
+          {/* Brain silhouette fills */}
+          <path
+            ref={cerebrumRef}
+            d={CEREBRUM_PATH}
+            fill="url(#brainFill)"
+          />
+          <path
+            ref={cerebellumRef}
+            d={CEREBELLUM_PATH}
+            fill="url(#brainFill)"
+            opacity="0.85"
+          />
+          <path
+            ref={brainstemRef}
+            d={BRAINSTEM_PATH}
+            fill="url(#brainFill)"
+            opacity="0.7"
+          />
+
+          {/* Cerebellar folia (decorative striations) */}
+          <g clip-path="url(#brainClip)" opacity="0.35">
+            {FOLIA.map((f, i) => (
+              <line
+                key={i}
+                x1={f.x1} y1={f.y}
+                x2={f.x2} y2={f.y}
+                stroke="var(--color-border-strong)"
+                stroke-width="0.6"
+              />
+            ))}
+          </g>
+
+          {/* Sulci (decorative) */}
+          <g opacity="0.45">
+            {SULCI.map((d, i) => (
+              <path
+                key={i}
+                d={d}
+                fill="none"
+                stroke="var(--color-border-strong)"
+                stroke-width="0.6"
+                stroke-dasharray="2 4"
+              />
+            ))}
+          </g>
+
+          {/* Longitudinal fissure */}
+          <path
+            d={FISSURE_PATH}
+            fill="none"
+            stroke="var(--color-border-strong)"
+            stroke-width="0.8"
+            stroke-dasharray="2 5"
+            opacity="0.6"
+          />
+
+          {/* Animated outline strokes — drawn last so they sit on top */}
+          <path
+            d={CEREBRUM_PATH}
+            fill="none"
+            stroke="color-mix(in srgb, var(--color-accent) 60%, var(--color-text))"
+            stroke-width="1"
+            opacity="0.7"
+            class="brain-outline-anim"
+          />
+          <path
+            d={CEREBELLUM_PATH}
+            fill="none"
+            stroke="color-mix(in srgb, var(--color-accent) 60%, var(--color-text))"
+            stroke-width="1"
+            opacity="0.6"
+            class="brain-outline-anim"
+            style={{ animationDelay: '350ms' }}
+          />
+          <path
+            d={BRAINSTEM_PATH}
+            fill="none"
+            stroke="color-mix(in srgb, var(--color-accent) 60%, var(--color-text))"
+            stroke-width="0.9"
+            opacity="0.55"
+            class="brain-outline-anim"
+            style={{ animationDelay: '600ms' }}
+          />
+
+          {/* Lobe labels — clickable to toggle visibility */}
+          {LOBES.map((l) => {
+            const hidden = filters.hiddenLobes.has(l.id);
+            return (
+              <text
+                key={l.id}
+                x={l.labelAt[0]}
+                y={l.labelAt[1]}
+                text-anchor="middle"
+                class={'brain-lobe-label ' + (hoverLobe === l.id ? 'is-active' : (hidden ? 'is-dim' : ''))}
+                style={{ cursor: 'pointer', pointerEvents: 'auto', fill: hoverLobe === l.id ? l.color : undefined }}
+                onMouseEnter={() => setHoverLobe(l.id)}
+                onMouseLeave={() => setHoverLobe((h) => (h === l.id ? null : h))}
+                onClick={() => toggleHidden('hiddenLobes', l.id)}
+              >
+                {l.label}
+              </text>
+            );
+          })}
+
+          {/* Edges (drawn first so dots sit on top) */}
+          <g style={{ opacity: filters.edgeOpacity }}>
+            {edges.map((edge, i) => {
+              const a = placed[edge.a];
+              const b = placed[edge.b];
+              if (!a || !b) return null;
+              const visible = isVisible(a) && isVisible(b);
+              const color = agentColors[edge.agent] || 'var(--color-text-muted)';
+              // Quadratic bezier with control point pulled slightly toward
+              // the brain center so curves arc rather than cut straight.
+              const mx = (a.pt.x + b.pt.x) / 2;
+              const my = (a.pt.y + b.pt.y) / 2;
+              const cx = mx + (VIEW_W / 2 - mx) * 0.15;
+              const cy = my + (250 - my) * 0.15;
+              return (
+                <path
+                  key={i}
+                  d={`M ${a.pt.x},${a.pt.y} Q ${cx},${cy} ${b.pt.x},${b.pt.y}`}
+                  fill="none"
+                  stroke={color}
+                  stroke-width={visible ? 0.85 : 0.4}
+                  opacity={visible ? 1 : 0.18}
+                  filter="url(#softGlow)"
+                />
+              );
+            })}
+          </g>
+
+          {/* Dots */}
+          <g key={animateNonce}>
+            {placed.map((entry, i) => {
+              const visible = isVisible(entry);
+              const isHovered = hovered === entry.id;
+              const isSelected = selected?.id === entry.id;
+              const color = agentColors[entry.agent_id] || 'var(--color-text-muted)';
+              const r = (isHovered || isSelected ? 5.2 : 3.4) * filters.nodeSize;
+              return (
+                <g
+                  key={entry.id}
+                  class="brain-dot-bloom"
+                  style={{ animationDelay: `${Math.min(i * 18, 2400)}ms` }}
+                  onMouseEnter={() => setHovered(entry.id)}
+                  onMouseLeave={() => setHovered((h) => (h === entry.id ? null : h))}
+                  onClick={() => setSelected(entry)}
+                >
+                  {/* Outer halo */}
+                  <circle
+                    cx={entry.pt.x}
+                    cy={entry.pt.y}
+                    r={r * 3}
+                    fill={color}
+                    opacity={visible ? (isHovered ? 0.35 : 0.15) : 0.04}
+                    filter="url(#dotGlow)"
+                    style={{ transition: 'opacity 200ms, r 180ms', pointerEvents: 'none' }}
+                  />
+                  {/* Main dot */}
+                  <circle
+                    cx={entry.pt.x}
+                    cy={entry.pt.y}
+                    r={r}
+                    fill={color}
+                    opacity={visible ? 0.95 : 0.18}
+                    stroke={isHovered || isSelected ? 'white' : 'none'}
+                    stroke-width={isHovered || isSelected ? 0.9 : 0}
+                    style={{ cursor: 'pointer', transition: 'r 180ms, opacity 200ms' }}
+                  />
+                  {/* Inner highlight */}
+                  <circle
+                    cx={entry.pt.x - r * 0.3}
+                    cy={entry.pt.y - r * 0.3}
+                    r={r * 0.35}
+                    fill="white"
+                    opacity={visible ? (isHovered ? 0.85 : 0.5) : 0.1}
+                    style={{ pointerEvents: 'none', transition: 'opacity 200ms' }}
+                  />
+                </g>
+              );
+            })}
+          </g>
+        </svg>
+
+        {/* Hover tooltip */}
+        {hoveredEntry && mousePos && !selected && (
+          <div
+            class="absolute pointer-events-none bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg shadow-xl px-3 py-2 text-[11.5px] text-[var(--color-text)] max-w-[320px] z-10"
+            style={{
+              left: Math.min(mousePos.x + 14, (wrapRef.current?.clientWidth || 800) - 340),
+              top: Math.min(mousePos.y + 14, (wrapRef.current?.clientHeight || 500) - 110),
+              backdropFilter: 'blur(8px)',
+            }}
+          >
+            <div class="flex items-center gap-2 mb-1">
+              <span
+                class="inline-block w-1.5 h-1.5 rounded-full"
+                style={{ backgroundColor: agentColors[hoveredEntry.agent_id] || 'var(--color-text-muted)' }}
+              />
+              <span class="font-mono text-[10.5px] text-[var(--color-text-muted)]">
+                @{hoveredEntry.agent_id} · {hoveredEntry.action}
+              </span>
+              <span class="text-[10px] text-[var(--color-text-faint)] ml-auto tabular-nums">
+                {formatRelativeTime(hoveredEntry.created_at)}
+              </span>
+            </div>
+            <div class={'leading-snug ' + (blurOn ? 'privacy-blur revealed' : '')}>
+              {hoveredEntry.summary}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Right side panel */}
+      <aside class="w-[320px] border-l border-[var(--color-border)] bg-[var(--color-card)] flex flex-col min-h-0">
+        {selected ? (
+          <DetailPanel
+            entry={selected}
+            color={agentColors[selected.agent_id] || 'var(--color-text-muted)'}
+            blurOn={blurOn}
+            lobeLabel={LOBE_BY_ID[AGENT_LOBE[selected.agent_id] || 'frontal']?.label}
+            onClose={() => setSelected(null)}
+          />
+        ) : (
+          <FilterPanel
+            filters={filters}
+            update={update}
+            toggleHidden={toggleHidden}
+            visibleAgents={visibleAgents}
+            agentColors={agentColors}
+            onAnimate={() => setAnimateNonce((n) => n + 1)}
+            onReset={() => setFilters(DEFAULT_FILTERS)}
+            totalEntries={entries.length}
+            visibleEntries={placed.filter(isVisible).length}
+          />
+        )}
+      </aside>
     </div>
   );
 }
 
+// ── Detail panel ─────────────────────────────────────────────────────
+
 function DetailPanel({
-  entry,
-  color,
-  blurOn,
-  onClose,
+  entry, color, blurOn, lobeLabel, onClose,
 }: {
   entry: HiveEntry;
   color: string;
   blurOn: boolean;
+  lobeLabel?: string;
   onClose: () => void;
 }) {
   const [revealed, setRevealed] = useState(false);
   return (
-    <div class="absolute top-3 right-3 bottom-3 w-[360px] bg-[var(--color-card)] border border-[var(--color-border)] rounded-xl shadow-2xl flex flex-col z-20">
-      <div class="flex items-center px-4 py-3 border-b border-[var(--color-border)] gap-2">
+    <>
+      <header class="flex items-center px-4 py-3 border-b border-[var(--color-border)] gap-2">
         <span class="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
         <span class="font-mono text-[12px] text-[var(--color-text)]">@{entry.agent_id}</span>
+        {lobeLabel && (
+          <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] ml-1">{lobeLabel}</span>
+        )}
         <span class="text-[10.5px] text-[var(--color-text-faint)] ml-auto tabular-nums">
           {formatRelativeTime(entry.created_at)}
         </span>
@@ -289,34 +648,264 @@ function DetailPanel({
         >
           <X size={13} />
         </button>
-      </div>
+      </header>
       <div class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        <div>
-          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Action</div>
-          <div class="font-mono text-[11.5px] text-[var(--color-text)]">{entry.action}</div>
-        </div>
-        <div>
-          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Summary</div>
+        <Field label="Action">
+          <span class="font-mono text-[11.5px] text-[var(--color-text)]">{entry.action}</span>
+        </Field>
+        <Field label="Summary">
           <div
             class={'text-[12.5px] text-[var(--color-text)] leading-relaxed ' + (blurOn && !revealed ? 'privacy-blur' : (blurOn && revealed ? 'privacy-blur revealed' : ''))}
             onClick={() => blurOn && setRevealed((v) => !v)}
           >
             {entry.summary}
           </div>
-        </div>
+        </Field>
         {entry.artifacts && (
-          <div>
-            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Artifacts</div>
+          <Field label="Artifacts">
             <div class="font-mono text-[11px] text-[var(--color-text-muted)] whitespace-pre-wrap break-words">
               {entry.artifacts}
             </div>
-          </div>
+          </Field>
         )}
-        <div>
-          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Chat</div>
+        <Field label="Chat">
           <div class="font-mono text-[11px] text-[var(--color-text-muted)] truncate">{entry.chat_id}</div>
-        </div>
+        </Field>
       </div>
+    </>
+  );
+}
+
+function Field({ label, children }: { label: string; children: any }) {
+  return (
+    <div>
+      <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">{label}</div>
+      {children}
+    </div>
+  );
+}
+
+// ── Filter panel ─────────────────────────────────────────────────────
+
+function FilterPanel({
+  filters, update, toggleHidden, visibleAgents, agentColors, onAnimate, onReset, totalEntries, visibleEntries,
+}: {
+  filters: BrainFilters;
+  update: <K extends keyof BrainFilters>(key: K, value: BrainFilters[K]) => void;
+  toggleHidden: (set: 'hiddenAgents' | 'hiddenLobes', id: string) => void;
+  visibleAgents: Record<string, number>;
+  agentColors: Record<string, string>;
+  onAnimate: () => void;
+  onReset: () => void;
+  totalEntries: number;
+  visibleEntries: number;
+}) {
+  const [openSection, setOpenSection] = useState({
+    agents: true,
+    lobes: true,
+    display: true,
+  });
+  return (
+    <>
+      <header class="flex items-center px-4 py-3 border-b border-[var(--color-border)] gap-2">
+        <Sparkles size={13} class="text-[var(--color-accent)]" />
+        <span class="text-[12.5px] font-semibold text-[var(--color-text)]">Filters</span>
+        <span class="text-[10.5px] text-[var(--color-text-faint)] ml-auto tabular-nums">
+          {visibleEntries} / {totalEntries}
+        </span>
+        <button
+          type="button"
+          onClick={onReset}
+          class="text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          title="Reset all filters"
+        >
+          <RotateCw size={11} />
+        </button>
+      </header>
+
+      <div class="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+        {/* Search */}
+        <div>
+          <div class="relative">
+            <Search size={12} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-text-faint)]" />
+            <input
+              value={filters.query}
+              onInput={(e) => update('query', (e.target as HTMLInputElement).value)}
+              placeholder="Search summaries…"
+              class="w-full pl-7 pr-2.5 py-1.5 rounded bg-[var(--color-bg)] border border-[var(--color-border)] focus:border-[var(--color-accent)] focus:outline-none text-[12px] text-[var(--color-text)]"
+            />
+          </div>
+        </div>
+
+        {/* Agents */}
+        <Section
+          label="Agents"
+          open={openSection.agents}
+          onToggle={() => setOpenSection((s) => ({ ...s, agents: !s.agents }))}
+        >
+          <div class="space-y-1">
+            {Object.entries(visibleAgents).sort((a, b) => b[1] - a[1]).map(([id, count]) => {
+              const on = !filters.hiddenAgents.has(id);
+              const color = agentColors[id] || 'var(--color-text-muted)';
+              const lobe = LOBE_BY_ID[AGENT_LOBE[id] || 'frontal'];
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => toggleHidden('hiddenAgents', id)}
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors text-left"
+                >
+                  <span
+                    class="inline-block w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: color, boxShadow: on ? `0 0 6px ${color}` : 'none' }}
+                  />
+                  <span class={'font-mono text-[11.5px] ' + (on ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)]')}>
+                    @{id}
+                  </span>
+                  {lobe && (
+                    <span class="text-[10px] text-[var(--color-text-faint)]" style={{ color: on ? lobe.color : undefined, opacity: on ? 0.7 : 0.4 }}>
+                      {lobe.label.toLowerCase()}
+                    </span>
+                  )}
+                  <span class="ml-auto text-[10.5px] tabular-nums text-[var(--color-text-faint)]">{count}</span>
+                  <span class={'brain-switch ' + (on ? 'is-on' : '')} />
+                </button>
+              );
+            })}
+          </div>
+        </Section>
+
+        {/* Lobes */}
+        <Section
+          label="Regions"
+          open={openSection.lobes}
+          onToggle={() => setOpenSection((s) => ({ ...s, lobes: !s.lobes }))}
+        >
+          <div class="space-y-1">
+            {LOBES.map((l) => {
+              const on = !filters.hiddenLobes.has(l.id);
+              return (
+                <button
+                  key={l.id}
+                  type="button"
+                  onClick={() => toggleHidden('hiddenLobes', l.id)}
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors text-left"
+                >
+                  <span
+                    class="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+                    style={{
+                      backgroundColor: l.color,
+                      opacity: on ? 1 : 0.3,
+                      boxShadow: on ? `0 0 6px ${l.color}` : 'none',
+                    }}
+                  />
+                  <span class={'text-[12px] ' + (on ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)]')}>
+                    {l.label}
+                  </span>
+                  <span class={'brain-switch ml-auto ' + (on ? 'is-on' : '')} />
+                </button>
+              );
+            })}
+          </div>
+        </Section>
+
+        {/* Display */}
+        <Section
+          label="Display"
+          open={openSection.display}
+          onToggle={() => setOpenSection((s) => ({ ...s, display: !s.display }))}
+        >
+          <div class="space-y-3">
+            <SliderRow
+              label="Node size"
+              value={filters.nodeSize}
+              min={0.5}
+              max={2}
+              step={0.05}
+              onInput={(v) => update('nodeSize', v)}
+            />
+            <SliderRow
+              label="Edge opacity"
+              value={filters.edgeOpacity}
+              min={0}
+              max={1}
+              step={0.05}
+              onInput={(v) => update('edgeOpacity', v)}
+            />
+            <SliderRow
+              label="Tilt"
+              value={filters.tilt}
+              min={-25}
+              max={25}
+              step={1}
+              onInput={(v) => update('tilt', v)}
+              fmt={(v) => `${v}°`}
+            />
+            <button
+              type="button"
+              onClick={onAnimate}
+              class="w-full py-1.5 mt-1 rounded bg-[var(--color-elevated)] hover:bg-[var(--color-accent-soft)] text-[var(--color-text)] hover:text-[var(--color-accent)] text-[11.5px] transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Sparkles size={11} /> Animate
+            </button>
+          </div>
+        </Section>
+      </div>
+    </>
+  );
+}
+
+function Section({
+  label, open, onToggle, children,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  children: any;
+}) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        class="w-full flex items-center gap-1 text-[10.5px] uppercase tracking-wider text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)] mb-1.5"
+      >
+        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        {label}
+      </button>
+      {open && children}
+    </div>
+  );
+}
+
+function SliderRow({
+  label, value, min, max, step, onInput, fmt,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onInput: (v: number) => void;
+  fmt?: (v: number) => string;
+}) {
+  return (
+    <div>
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-[11px] text-[var(--color-text-muted)]">{label}</span>
+        <span class="text-[10.5px] text-[var(--color-text-faint)] tabular-nums">
+          {fmt ? fmt(value) : value.toFixed(2)}
+        </span>
+      </div>
+      <input
+        type="range"
+        class="brain-slider"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onInput={(e) => onInput(parseFloat((e.target as HTMLInputElement).value))}
+      />
     </div>
   );
 }
