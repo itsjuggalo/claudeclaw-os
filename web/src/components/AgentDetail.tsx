@@ -1,11 +1,13 @@
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
+import { Camera, Trash2, ExternalLink } from 'lucide-preact';
 import { Modal } from '@/components/Modal';
 import { AgentAvatar } from '@/components/AgentAvatar';
 import { Pill, StatusDot } from '@/components/Pill';
 import { Tab } from '@/components/PageHeader';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime, formatCost } from '@/lib/format';
-import { chatId } from '@/lib/api';
+import { chatId, dashboardToken } from '@/lib/api';
+import { pushToast } from '@/lib/toasts';
 
 interface Agent {
   id: string;
@@ -52,9 +54,104 @@ export function AgentDetail({ agent, onClose }: Props) {
 }
 
 function Header({ agent }: { agent: Agent }) {
+  // Cache-bust the avatar by bumping a counter every time we upload or
+  // delete — the AgentAvatar component reads `?token=...` only and
+  // would otherwise serve the stale cached image.
+  const [avatarVersion, setAvatarVersion] = useState(0);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function pickAndUpload(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      pushToast({ tone: 'error', title: 'Image too large', description: 'Max 5 MB.', durationMs: 6000 });
+      input.value = '';
+      return;
+    }
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.append('image', file);
+      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/avatar?token=${encodeURIComponent(dashboardToken)}`, {
+        method: 'PUT',
+        body: form,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as any).error || `HTTP ${res.status}`);
+      }
+      setAvatarVersion((v) => v + 1);
+      pushToast({
+        tone: 'success',
+        title: 'Avatar updated',
+        description: 'Telegram propagation needs @BotFather → /setuserpic on your phone.',
+        durationMs: 8000,
+      });
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Upload failed', description: err?.message || String(err), durationMs: 7000 });
+    } finally {
+      setBusy(false);
+      input.value = '';
+    }
+  }
+
+  async function clearAvatar() {
+    if (!confirm(`Remove the custom avatar for ${agent.id}? The dashboard will fall back to Telegram's avatar (if set) or initials.`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/avatar?token=${encodeURIComponent(dashboardToken)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as any).error || `HTTP ${res.status}`);
+      }
+      setAvatarVersion((v) => v + 1);
+      pushToast({ tone: 'success', title: 'Avatar removed' });
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Delete failed', description: err?.message || String(err), durationMs: 7000 });
+    } finally { setBusy(false); }
+  }
+
+  function openBotFather() {
+    // Deep-links to BotFather in the Telegram app (or web) so the user
+    // can finish the loop with /setuserpic. The actual upload to
+    // BotFather can't be automated via the Bot API.
+    window.open('https://t.me/BotFather', '_blank', 'noreferrer');
+  }
+
   return (
     <div class="flex items-start gap-3 mb-4 -mt-2">
-      <AgentAvatar agentId={agent.id} name={agent.name} running={agent.running} size={44} />
+      <div class="relative shrink-0 group">
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={busy}
+          class="relative block rounded-full focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:outline-none disabled:opacity-50"
+          title="Change avatar"
+        >
+          {/* avatarVersion forces a remount so AgentAvatar re-fetches */}
+          <AgentAvatar
+            key={avatarVersion}
+            agentId={agent.id}
+            name={agent.name}
+            running={agent.running}
+            size={44}
+          />
+          <span class="absolute inset-0 rounded-full flex items-center justify-center bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity">
+            <Camera size={16} />
+          </span>
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          onChange={pickAndUpload}
+          class="hidden"
+        />
+      </div>
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
           <StatusDot tone={agent.running ? 'done' : 'cancelled'} />
@@ -64,6 +161,33 @@ function Header({ agent }: { agent: Agent }) {
         {agent.description && (
           <div class="text-[12px] text-[var(--color-text-muted)] mt-0.5 leading-snug">{agent.description}</div>
         )}
+        <div class="flex items-center gap-2 mt-2">
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            class="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
+          >
+            <Camera size={11} /> {busy ? 'Working…' : 'Change avatar'}
+          </button>
+          <button
+            type="button"
+            onClick={clearAvatar}
+            disabled={busy}
+            class="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-status-failed)] border border-[var(--color-border)] hover:border-[var(--color-status-failed)] transition-colors disabled:opacity-40"
+            title="Remove custom avatar (revert to Telegram or initials)"
+          >
+            <Trash2 size={11} />
+          </button>
+          <button
+            type="button"
+            onClick={openBotFather}
+            class="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+            title="Telegram bot avatars can only be set via @BotFather → /setuserpic"
+          >
+            Set on Telegram <ExternalLink size={10} />
+          </button>
+        </div>
       </div>
     </div>
   );

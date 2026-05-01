@@ -2441,6 +2441,110 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
+  // Upload a custom avatar from the dashboard. Saves the image to the
+  // agent's directory (sub-agents) or warroom/avatars (main), where the
+  // GET endpoint above already serves it as the highest-priority source
+  // ahead of the Telegram getMe fallback. PNG / JPEG / WebP, 5 MB max.
+  //
+  // Telegram propagation is NOT possible via the Bot API — the bot's
+  // profile picture can only be set by the bot owner through @BotFather
+  // (/setuserpic). The frontend surfaces the manual step.
+  app.put('/api/agents/:id/avatar', async (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+
+    // Pick the destination: main has no agents/main/ directory, so its
+    // avatar lives at warroom/avatars/main.png (the same fallback path
+    // the GET endpoint reads from). Sub-agents go to their own dir.
+    let target: string;
+    if (agentId === 'main') {
+      target = path.join(PROJECT_ROOT, 'warroom', 'avatars', 'main.png');
+    } else {
+      let agentDir: string;
+      try { agentDir = resolveAgentDir(agentId); }
+      catch { return c.json({ error: 'agent not found' }, 404); }
+      target = path.join(agentDir, 'avatar.png');
+    }
+
+    // Two upload modes — multipart/form-data with `image` field, or
+    // application/octet-stream with the raw PNG bytes (handier for
+    // CLI testing). Both end up writing to `target`.
+    let bytes: Buffer | null = null;
+    const ct = c.req.header('content-type') || '';
+    try {
+      if (ct.startsWith('multipart/form-data')) {
+        const form = await c.req.formData();
+        const file = form.get('image');
+        if (!file || typeof file === 'string') {
+          return c.json({ error: 'missing "image" file field' }, 400);
+        }
+        bytes = Buffer.from(await (file as File).arrayBuffer());
+      } else {
+        const buf = await c.req.arrayBuffer();
+        if (buf.byteLength === 0) return c.json({ error: 'empty body' }, 400);
+        bytes = Buffer.from(buf);
+      }
+    } catch (err) {
+      return c.json({ error: 'failed to read upload' }, 400);
+    }
+
+    if (!bytes || bytes.length === 0) return c.json({ error: 'empty upload' }, 400);
+    if (bytes.length > 5 * 1024 * 1024) return c.json({ error: 'image too large (max 5 MB)' }, 400);
+
+    // Magic-byte check — accept PNG, JPEG, WebP. Saving with .png
+    // extension is fine because the GET endpoint serves it as image/png
+    // and modern browsers happily render JPEG/WebP under that MIME too.
+    const sig = bytes.subarray(0, 12);
+    const isPng = sig[0] === 0x89 && sig[1] === 0x50 && sig[2] === 0x4e && sig[3] === 0x47;
+    const isJpeg = sig[0] === 0xff && sig[1] === 0xd8 && sig[2] === 0xff;
+    const isWebp = sig[0] === 0x52 && sig[1] === 0x49 && sig[2] === 0x46 && sig[3] === 0x46
+                && sig[8] === 0x57 && sig[9] === 0x45 && sig[10] === 0x42 && sig[11] === 0x50;
+    if (!isPng && !isJpeg && !isWebp) {
+      return c.json({ error: 'image must be PNG, JPEG, or WebP' }, 400);
+    }
+
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, bytes);
+      try { fs.chmodSync(target, 0o644); } catch {}
+      // Drop the .no-avatar sticky-fail flag if it was set so the GET
+      // path serves the new upload instead of the 24h cached "no photo".
+      if (agentId !== 'main') {
+        try {
+          const dir = resolveAgentDir(agentId);
+          const flag = path.join(dir, '.no-avatar');
+          if (fs.existsSync(flag)) fs.unlinkSync(flag);
+        } catch {}
+      }
+      insertAuditLog(agentId, '', 'upload_avatar', `${bytes.length} bytes`, false);
+      return c.json({ ok: true, bytes: bytes.length, path: target });
+    } catch (err) {
+      logger.error({ err, agentId }, 'Failed to write avatar');
+      return c.json({ error: 'failed to save avatar' }, 500);
+    }
+  });
+
+  app.delete('/api/agents/:id/avatar', (c) => {
+    const agentId = c.req.param('id');
+    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    let target: string;
+    if (agentId === 'main') {
+      target = path.join(PROJECT_ROOT, 'warroom', 'avatars', 'main.png');
+    } else {
+      let agentDir: string;
+      try { agentDir = resolveAgentDir(agentId); }
+      catch { return c.json({ error: 'agent not found' }, 404); }
+      target = path.join(agentDir, 'avatar.png');
+    }
+    try {
+      if (fs.existsSync(target)) fs.unlinkSync(target);
+      insertAuditLog(agentId, '', 'delete_avatar', '', false);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: 'failed to delete avatar' }, 500);
+    }
+  });
+
   // ── Dashboard personalization ────────────────────────────────────────
   // Tiny key/value store backed by the dashboard_settings table. Used by
   // the workspace name, hotkey mod choice, mission column order/widths,
