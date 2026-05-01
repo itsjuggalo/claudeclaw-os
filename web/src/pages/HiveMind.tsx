@@ -1,7 +1,9 @@
 import { useState } from 'preact/hooks';
+import { Brain as BrainIcon, List as ListIcon } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { PrivacyToggle } from '@/components/PrivacyToggle';
+import { BrainGraph } from '@/components/BrainGraph';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime } from '@/lib/format';
 import { privacyBlur } from '@/lib/privacy';
@@ -25,9 +27,20 @@ const AGENT_HUE: Record<string, string> = {
 };
 
 const KNOWN_AGENTS = ['main', 'research', 'comms', 'content', 'ops'];
+const VIEW_KEY = 'claudeclaw.hive.view';
+type ViewMode = 'brain' | 'activity';
+
+function loadView(): ViewMode {
+  try {
+    const v = localStorage.getItem(VIEW_KEY);
+    if (v === 'brain' || v === 'activity') return v;
+  } catch {}
+  return 'brain';
+}
 
 export function HiveMind() {
   const [filter, setFilter] = useState<string>('all');
+  const [view, setView] = useState<ViewMode>(loadView());
   // Per-row reveal overrides — session only, not persisted. Clicking a
   // blurred summary unblurs that row until the page closes.
   const [revealed, setRevealed] = useState<Set<number>>(new Set());
@@ -39,6 +52,11 @@ export function HiveMind() {
   const entries = data?.entries ?? [];
   const allAgents = agentList.data?.agents?.map((a) => a.id) ?? KNOWN_AGENTS;
   const blurOn = privacyBlur('hive').value;
+
+  function setViewPersisted(v: ViewMode) {
+    setView(v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch {}
+  }
 
   function toggleRow(id: number) {
     if (!blurOn) return;
@@ -55,6 +73,7 @@ export function HiveMind() {
           <>
             <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">{entries.length} entries</span>
             <PrivacyToggle section="hive" />
+            <ViewSwitcher view={view} onChange={setViewPersisted} />
           </>
         }
         tabs={
@@ -76,7 +95,16 @@ export function HiveMind() {
         />
       )}
 
-      {entries.length > 0 && (
+      {entries.length > 0 && view === 'brain' && (
+        <BrainGraph
+          entries={entries}
+          agentFilter={filter}
+          agentColors={AGENT_HUE}
+          blurOn={blurOn}
+        />
+      )}
+
+      {entries.length > 0 && view === 'activity' && (
         <div class="flex-1 overflow-y-auto">
           <table class="w-full text-[12px]">
             <thead class="sticky top-0 bg-[var(--color-bg)] border-b border-[var(--color-border)]">
@@ -122,6 +150,35 @@ export function HiveMind() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+function ViewSwitcher({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) => void }) {
+  return (
+    <div class="inline-flex bg-[var(--color-elevated)] border border-[var(--color-border)] rounded p-0.5">
+      <button
+        type="button"
+        onClick={() => onChange('brain')}
+        class={[
+          'inline-flex items-center justify-center w-7 h-7 rounded transition-colors',
+          view === 'brain' ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
+        ].join(' ')}
+        title="Brain view"
+      >
+        <BrainIcon size={13} />
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange('activity')}
+        class={[
+          'inline-flex items-center justify-center w-7 h-7 rounded transition-colors',
+          view === 'activity' ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
+        ].join(' ')}
+        title="Activity table"
+      >
+        <ListIcon size={13} />
+      </button>
     </div>
   );
 }
