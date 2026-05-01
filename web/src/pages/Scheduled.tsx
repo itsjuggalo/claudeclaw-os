@@ -1,10 +1,11 @@
 import { useState } from 'preact/hooks';
-import { Pause, Play, Trash2, Clock, LayoutGrid, List, CheckSquare } from 'lucide-preact';
+import { Pause, Play, Trash2, Clock, LayoutGrid, List, CheckSquare, Pencil } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
 import { PrivacyToggle } from '@/components/PrivacyToggle';
 import { ConfirmModal } from '@/components/ConfirmModal';
+import { EditTaskModal } from '@/components/EditTaskModal';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost, apiDelete } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
@@ -65,6 +66,7 @@ export function Scheduled() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState<null | 'single' | 'bulk'>(null);
   const [pendingSingle, setPendingSingle] = useState<ScheduledTask | null>(null);
+  const [editing, setEditing] = useState<ScheduledTask | null>(null);
   const [busy, setBusy] = useState(false);
   const blurOn = privacyBlur('scheduled').value;
 
@@ -184,6 +186,7 @@ export function Scheduled() {
                 onToggleSelect={() => toggleSelect(t.id)}
                 onAction={(a) => action(t, a)}
                 onDeleteRequest={() => { setPendingSingle(t); setConfirmOpen('single'); }}
+                onEdit={() => setEditing(t)}
               />
             ))}
           </div>
@@ -223,12 +226,20 @@ export function Scheduled() {
                   onToggleSelect={() => toggleSelect(t.id)}
                   onAction={(a) => action(t, a)}
                   onDeleteRequest={() => { setPendingSingle(t); setConfirmOpen('single'); }}
+                  onEdit={() => setEditing(t)}
                 />
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      <EditTaskModal
+        open={editing !== null}
+        task={editing}
+        onClose={() => setEditing(null)}
+        onSaved={refresh}
+      />
 
       <ConfirmModal
         open={confirmOpen === 'single'}
@@ -294,9 +305,10 @@ interface RowProps {
   onToggleSelect: () => void;
   onAction: (a: 'pause' | 'resume') => void;
   onDeleteRequest: () => void;
+  onEdit: () => void;
 }
 
-function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRequest }: RowProps) {
+function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRequest, onEdit }: RowProps) {
   const [showResult, setShowResult] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const statusTone = task.status === 'running' ? 'running' : task.status === 'paused' ? 'cancelled' : 'done';
@@ -305,14 +317,16 @@ function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRe
   return (
     <div
       class={[
-        'bg-[var(--color-card)] border rounded-lg p-3 hover:border-[var(--color-border-strong)] transition-colors',
+        'bg-[var(--color-card)] border rounded-lg p-3 hover:border-[var(--color-border-strong)] transition-colors cursor-pointer group',
         selected ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]',
       ].join(' ')}
+      onClick={onEdit}
     >
       <div class="flex items-start gap-2 mb-2">
         <input
           type="checkbox"
           checked={selected}
+          onClick={(e) => e.stopPropagation()}
           onChange={onToggleSelect}
           class="mt-1 shrink-0 cursor-pointer accent-[var(--color-accent)]"
         />
@@ -343,7 +357,7 @@ function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRe
         <RowActions task={task} onAction={onAction} onDeleteRequest={onDeleteRequest} />
       </div>
       {task.last_result && (
-        <div class="mt-2 pt-2 border-t border-[var(--color-border)]">
+        <div class="mt-2 pt-2 border-t border-[var(--color-border)]" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
             onClick={() => setShowResult((v) => !v)}
@@ -365,14 +379,17 @@ function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRe
   );
 }
 
-function TaskListRow({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRequest }: RowProps) {
+function TaskListRow({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRequest, onEdit }: RowProps) {
   const [revealed, setRevealed] = useState(false);
   const statusTone = task.status === 'running' ? 'running' : task.status === 'paused' ? 'cancelled' : 'done';
   const blurClass = blurOn && !revealed ? 'privacy-blur' : (blurOn && revealed ? 'privacy-blur revealed' : '');
 
   return (
-    <tr class={selected ? 'bg-[var(--color-accent-soft)] border-b border-[var(--color-border)]' : 'border-b border-[var(--color-border)] hover:bg-[var(--color-elevated)] transition-colors'}>
-      <td class="px-6 py-2.5">
+    <tr
+      class={'cursor-pointer ' + (selected ? 'bg-[var(--color-accent-soft)] border-b border-[var(--color-border)]' : 'border-b border-[var(--color-border)] hover:bg-[var(--color-elevated)] transition-colors')}
+      onClick={onEdit}
+    >
+      <td class="px-6 py-2.5" onClick={(e) => e.stopPropagation()}>
         <input
           type="checkbox"
           checked={selected}
@@ -418,7 +435,7 @@ function RowActions({ task, onAction, onDeleteRequest }: {
   onDeleteRequest: () => void;
 }) {
   return (
-    <div class="inline-flex items-center gap-1">
+    <div class="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
       {task.status === 'active' && (
         <button
           type="button"

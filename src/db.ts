@@ -1311,6 +1311,26 @@ export function deleteScheduledTask(id: string): void {
   db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id);
 }
 
+/**
+ * Patch the editable fields of a scheduled task. Caller is responsible
+ * for recomputing next_run when schedule changes. Pass `undefined` to
+ * skip a field; pass a value to update it.
+ */
+export function updateScheduledTask(
+  id: string,
+  patch: { prompt?: string; schedule?: string; nextRun?: number; agentId?: string },
+): void {
+  const sets: string[] = [];
+  const vals: any[] = [];
+  if (patch.prompt !== undefined) { sets.push('prompt = ?'); vals.push(patch.prompt); }
+  if (patch.schedule !== undefined) { sets.push('schedule = ?'); vals.push(patch.schedule); }
+  if (patch.nextRun !== undefined) { sets.push('next_run = ?'); vals.push(patch.nextRun); }
+  if (patch.agentId !== undefined) { sets.push('agent_id = ?'); vals.push(patch.agentId); }
+  if (sets.length === 0) return;
+  vals.push(id);
+  db.prepare(`UPDATE scheduled_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+}
+
 export function pauseScheduledTask(id: string): void {
   db.prepare(`UPDATE scheduled_tasks SET status = 'paused' WHERE id = ?`).run(id);
 }
