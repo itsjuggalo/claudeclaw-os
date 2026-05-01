@@ -98,6 +98,17 @@ function fbm(x: number, y: number, z: number): number {
   return noise3D(x, y, z) * 0.55 + noise3D(x * 2.3, y * 2.3, z * 2.3) * 0.28 + noise3D(x * 5.1, y * 5.1, z * 5.1) * 0.17;
 }
 
+// Ridge noise — `1 - |fbm|` produces meandering linear ridges instead
+// of round bumps. Stacked at multiple frequencies it gives the rope-
+// like cortical-fold pattern that makes a surface read as "brain"
+// rather than "rock with pebbles".
+function ridgedFbm(x: number, y: number, z: number): number {
+  const r1 = (1 - Math.abs(fbm(x, y, z))) * 0.55;
+  const r2 = (1 - Math.abs(fbm(x * 2.7, y * 2.7, z * 2.7))) * 0.30;
+  const r3 = (1 - Math.abs(fbm(x * 6.3, y * 6.3, z * 6.3))) * 0.15;
+  return r1 + r2 + r3; // ~0..1
+}
+
 function smoothstep(edge0: number, edge1: number, x: number) {
   const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
@@ -109,26 +120,32 @@ function smoothstep(edge0: number, edge1: number, x: number) {
 // re-used to assign dots to surface positions.
 
 function lobeWeights(x: number, y: number, z: number) {
-  // Coordinate frame: +x = right, +y = up, +z = back
-  // (dots use +z = front in their own coords; we flip below for clarity)
-  const front = -z; // larger = more frontal
-  // Frontal: dominant where front is large (positive)
-  const wFrontal = smoothstep(0.0, 0.8, front);
-  // Occipital: dominant where front is very negative (back)
-  const wOccipital = smoothstep(-0.1, -0.7, front);
-  // Parietal: top middle (high y, mid front)
-  const wParietal = smoothstep(0.0, 0.55, y) * smoothstep(-0.5, 0.4, front) * (1 - wFrontal);
-  // Temporal: lower band (low y), away from poles
-  const wTemporal = smoothstep(0.1, -0.4, y) * smoothstep(-0.7, 0.7, front);
+  // Three.js camera defaults to looking in -z direction. With our
+  // camera at +z, vertices facing the user have z > 0 — that's the
+  // "front" of the brain (frontal lobe). Previous version inverted
+  // this and painted the visible surface as occipital, which is why
+  // everything looked dark/violet. Tight smoothstep bands give each
+  // lobe a clearly-dominant region.
+  const front = z;
+  const wFrontal = smoothstep(0.15, 0.55, front);
+  const wOccipital = smoothstep(-0.15, -0.55, front);
+  const wParietal = smoothstep(0.05, 0.45, y) * (1 - wFrontal - wOccipital);
+  const wTemporal = smoothstep(-0.05, -0.45, y);
   return { wFrontal, wParietal, wTemporal, wOccipital };
 }
 
 function buildHemisphere(side: 'left' | 'right'): { mesh: THREE.Mesh; surface: THREE.Vector3[] } {
-  const detail = 5; // 4 = 642 verts, 5 = 2562 verts — smoother surface
+  // Detail 6 ≈ 10k verts — enough resolution for the ridge displacement
+  // to articulate as visible cortical folds rather than a polyhedron.
+  const detail = 6;
   const geo = new THREE.IcosahedronGeometry(1, detail);
-  // Stretch into brain proportions: a bit narrower than a sphere on x,
-  // shorter on y, longer front-to-back on z.
   geo.scale(0.55, 0.78, 1.0);
+
+  // Carve a flat-ish wall on the inner side so the two hemispheres
+  // present a clear longitudinal fissure when placed side by side
+  // instead of two overlapping ovals. We push inner-facing verts
+  // toward the midline before the noise displacement runs.
+  const sign = side === 'left' ? -1 : 1;
 
   const positions = geo.attributes.position;
   const count = positions.count;
@@ -136,23 +153,42 @@ function buildHemisphere(side: 'left' | 'right'): { mesh: THREE.Mesh; surface: T
   const surface: THREE.Vector3[] = [];
 
   for (let i = 0; i < count; i++) {
-    const x = positions.getX(i);
-    const y = positions.getY(i);
-    const z = positions.getZ(i);
+    let x = positions.getX(i);
+    let y = positions.getY(i);
+    let z = positions.getZ(i);
 
-    // Multi-octave noise displacement along the radial direction.
-    const len = Math.sqrt(x * x + y * y + z * z);
+    // Pull inner-side vertices toward x=0 so the hemisphere has a
+    // flatter inside face. `sign === -1` (left) means x < 0 = outer.
+    const facingMidline = (sign === -1 && x > 0) || (sign === 1 && x < 0);
+    if (facingMidline) {
+      const t = Math.min(1, Math.abs(x) / 0.45);
+      x *= 0.35 * (1 - t * 0.6);
+    }
+
+    const len = Math.sqrt(x * x + y * y + z * z) + 0.0001;
     const nx = x / len, ny = y / len, nz = z / len;
-    const n = fbm(nx * 2.4, ny * 2.4, nz * 2.4);
-    const factor = 1 + n * 0.085;
 
+    // Ridge noise displacement — meandering folds, not round bumps.
+    // Sample noise in a slightly squished space so ridges flow more
+    // along the front-back axis (anterior-posterior), like real
+    // cortical gyri patterns.
+    const sx = nx * 3.2;
+    const sy = ny * 3.2;
+    const sz = nz * 2.4; // squish z so ridges elongate front-to-back
+    const ridge = ridgedFbm(sx, sy, sz);
+    // Center the ridge value around 0 so it pushes both inward and
+    // outward (creates valleys between gyri, not just bumps).
+    const displacement = (ridge - 0.45) * 0.20;
+
+    const factor = 1 + displacement;
     const px = x * factor;
     const py = y * factor;
     const pz = z * factor;
 
     positions.setXYZ(i, px, py, pz);
 
-    // Lobe colors: blended by weight
+    // Lobe colors: blended by weight, no desaturation — let the
+    // agent-mapped hues actually show.
     const w = lobeWeights(nx, ny, nz);
     const sum = w.wFrontal + w.wParietal + w.wTemporal + w.wOccipital + 0.0001;
     const wf = w.wFrontal / sum;
@@ -160,37 +196,40 @@ function buildHemisphere(side: 'left' | 'right'): { mesh: THREE.Mesh; surface: T
     const wt = w.wTemporal / sum;
     const wo = w.wOccipital / sum;
 
-    const r = wf * FRONTAL.r + wp * PARIETAL.r + wt * TEMPORAL.r + wo * OCCIPITAL.r;
-    const g = wf * FRONTAL.g + wp * PARIETAL.g + wt * TEMPORAL.g + wo * OCCIPITAL.g;
-    const b = wf * FRONTAL.b + wp * PARIETAL.b + wt * TEMPORAL.b + wo * OCCIPITAL.b;
+    const cr = wf * FRONTAL.r + wp * PARIETAL.r + wt * TEMPORAL.r + wo * OCCIPITAL.r;
+    const cg = wf * FRONTAL.g + wp * PARIETAL.g + wt * TEMPORAL.g + wo * OCCIPITAL.g;
+    const cb = wf * FRONTAL.b + wp * PARIETAL.b + wt * TEMPORAL.b + wo * OCCIPITAL.b;
 
-    // Tone the colors a bit so they read as a brain rather than a
-    // candy-colored ball. Mix with a desaturated base.
-    const baseR = 0.34, baseG = 0.32, baseB = 0.42;
-    const mix = 0.55;
-    colors[i * 3]     = r * mix + baseR * (1 - mix);
-    colors[i * 3 + 1] = g * mix + baseG * (1 - mix);
-    colors[i * 3 + 2] = b * mix + baseB * (1 - mix);
+    // Pure lobe colors — desaturation here was the reason every
+    // region used to read as "purple". A tiny base mix (0.08) just
+    // softens the edges where two lobes meet.
+    const baseR = 0.5, baseG = 0.48, baseB = 0.55;
+    const mix = 0.92;
+    colors[i * 3]     = cr * mix + baseR * (1 - mix);
+    colors[i * 3 + 1] = cg * mix + baseG * (1 - mix);
+    colors[i * 3 + 2] = cb * mix + baseB * (1 - mix);
 
-    // Save outward-facing surface vertices for dot placement (skip
-    // the inner-facing wall where it touches the midline).
-    if (side === 'left' && x < -0.05) surface.push(new THREE.Vector3(px, py, pz));
-    if (side === 'right' && x > 0.05) surface.push(new THREE.Vector3(px, py, pz));
+    // Save outward-facing surface vertices for dot placement.
+    if (sign === -1 && x < -0.05) surface.push(new THREE.Vector3(px, py, pz));
+    if (sign === 1 && x > 0.05) surface.push(new THREE.Vector3(px, py, pz));
   }
 
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
 
-  const mat = new THREE.MeshPhongMaterial({
+  // MeshStandardMaterial gives proper PBR specular highlights; with
+  // moderate roughness the gyri ridges catch light convincingly.
+  const mat = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    shininess: 22,
-    transparent: true,
-    opacity: 0.95,
+    roughness: 0.62,
+    metalness: 0.0,
     flatShading: false,
   });
 
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.x = side === 'left' ? -0.018 : 0.018; // tiny gap = longitudinal fissure
+  // Bigger gap so the longitudinal fissure is visible even from
+  // shallow viewing angles. The flattened inner walls meet here.
+  mesh.position.x = sign * 0.04;
   return { mesh, surface };
 }
 
@@ -272,25 +311,31 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     const scene = new THREE.Scene();
     scene.background = null;
 
-    const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 100);
-    camera.position.set(0, 0.1, 3.4);
+    const camera = new THREE.PerspectiveCamera(38, w / h, 0.1, 100);
+    camera.position.set(0, 0.15, 4.2);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(w, h);
+    renderer.setSize(w, h, false);
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
     renderer.setClearColor(0x000000, 0);
     wrap.appendChild(renderer.domElement);
     renderer.domElement.style.outline = 'none';
+    renderer.domElement.style.display = 'block';
 
-    // Lighting — soft, with a key light from upper-front.
-    scene.add(new THREE.AmbientLight(0x7080a0, 0.6));
-    const key = new THREE.DirectionalLight(0xffffff, 0.85);
+    // Lighting — calibrated for PBR. Total intensity ~1.0 so vertex
+    // colors aren't washed out. Stronger directional contrast picks
+    // out the cortex ridges; weaker ambient keeps the lobe hues
+    // recognizable.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+    const key = new THREE.DirectionalLight(0xffffff, 0.65);
     key.position.set(2, 3, 4);
     scene.add(key);
-    const fill = new THREE.DirectionalLight(0x6090ff, 0.35);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.18);
     fill.position.set(-3, -1, 2);
     scene.add(fill);
-    const rim = new THREE.DirectionalLight(0xa080ff, 0.4);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.25);
     rim.position.set(0, 1, -3);
     scene.add(rim);
 
@@ -348,11 +393,12 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       rafId = requestAnimationFrame(animate);
       const t = (performance.now() - start) / 1000;
 
-      // Idle drift: slow auto-rotation when not interacting.
-      const idle = Date.now() - lastInteract > 2200;
-      if (idle) brainGroup.rotation.y += 0.0014;
+      // Idle drift: slow auto-rotation when not interacting. Tighter
+      // threshold + faster rate so it's actually visible.
+      const idle = Date.now() - lastInteract > 1500;
+      if (idle) brainGroup.rotation.y += 0.0035;
 
-      // Subtle breathing pulse — the whole brain scales gently.
+      // Subtle breathing pulse.
       const breathe = 1 + Math.sin(t * 0.7) * 0.012;
       brainGroup.scale.setScalar(breathe);
 
@@ -361,15 +407,22 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     }
     animate();
 
-    // Resize
-    const ro = new ResizeObserver(() => {
+    // Resize. Also fire once on a microtask so we catch any late
+    // layout settling — the initial mount sometimes reports a
+    // narrower clientWidth than what the layout finally computes.
+    function resize() {
       const nw = wrap.clientWidth;
       const nh = wrap.clientHeight;
-      renderer.setSize(nw, nh);
+      if (nw === 0 || nh === 0) return;
+      renderer.setSize(nw, nh, false);
       camera.aspect = nw / nh;
       camera.updateProjectionMatrix();
-    });
+    }
+    const ro = new ResizeObserver(resize);
     ro.observe(wrap);
+    // Belt-and-suspenders: re-resize on the next frame, after Suspense
+    // boundary and any flex layout has fully settled.
+    requestAnimationFrame(() => requestAnimationFrame(resize));
 
     sceneStateRef.current = {
       scene, camera, renderer, controls,
@@ -433,17 +486,18 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       const colorHex = agentColors[e.agent_id] || '#888';
       const color = new THREE.Color(colorHex);
 
-      const r = 0.022 * filters.nodeSize;
+      const r = 0.04 * filters.nodeSize;
       const dotGeo = new THREE.SphereGeometry(r, 12, 12);
       const dotMat = new THREE.MeshBasicMaterial({ color, transparent: true });
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(outward);
       state.dotsGroup.add(dot);
 
-      // Halo (additive sprite-style sphere)
-      const haloGeo = new THREE.SphereGeometry(r * 3.5, 8, 8);
+      // Halo (additive sprite-style sphere). depthTest:false so halos
+      // don't get clipped by the brain mesh in front of them.
+      const haloGeo = new THREE.SphereGeometry(r * 2.6, 8, 8);
       const haloMat = new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0.18, depthWrite: false,
+        color, transparent: true, opacity: 0.32, depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
       const halo = new THREE.Mesh(haloGeo, haloMat);
@@ -589,7 +643,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); setPanelOpen(true); }}
-            class="absolute top-4 right-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-card)]/90 border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[11.5px] text-[var(--color-text)] shadow-lg transition-colors z-10"
+            class="absolute top-4 right-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-card)] border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[11.5px] text-[var(--color-text)] shadow-lg transition-colors z-30"
             style={{ backdropFilter: 'blur(8px)' }}
           >
             <SlidersHorizontal size={12} />
@@ -601,7 +655,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
         )}
 
         {/* Drag hint */}
-        <div class="absolute bottom-3 left-1/2 -translate-x-1/2 text-[10.5px] text-[var(--color-text-faint)] pointer-events-none select-none">
+        <div class="absolute bottom-3 left-1/2 -translate-x-1/2 text-[10.5px] text-[var(--color-text-faint)] pointer-events-none select-none z-30 px-2 py-0.5 rounded bg-[var(--color-bg)]/60" style={{ backdropFilter: 'blur(4px)' }}>
           drag to rotate · scroll to zoom
         </div>
 

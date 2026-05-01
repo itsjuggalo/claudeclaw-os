@@ -1748,7 +1748,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   app.get('/api/memories/list', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const limit = parseInt(c.req.query('limit') || '50', 10);
     const offset = parseInt(c.req.query('offset') || '0', 10);
     const sortBy = (c.req.query('sort') || 'importance') as 'importance' | 'salience' | 'recent';
@@ -1758,7 +1758,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // System health
   app.get('/api/health', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const sessionId = getSession(chatId);
     let contextPct = 0;
     let turns = 0;
@@ -1819,7 +1819,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Token / cost stats
   app.get('/api/tokens', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const stats = getDashboardTokenStats(chatId);
     const costTimeline = getDashboardCostTimeline(chatId, 30);
     const recentUsage = getDashboardRecentTokenUsage(chatId, 20);
@@ -2905,8 +2905,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Chat history (paginated)
   app.get('/api/chat/history', (c) => {
-    const chatId = c.req.query('chatId') || '';
-    if (!chatId) return c.json({ error: 'chatId required' }, 400);
+    // Default to the configured chat when the dashboard is opened
+    // without ?chatId. Other endpoints already do this; previously this
+    // route 400'd and the error landed in the user-facing UI.
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
+    if (!chatId) return c.json({ turns: [] });
     const limit = parseInt(c.req.query('limit') || '40', 10);
     const beforeId = c.req.query('beforeId');
     const turns = getConversationPage(chatId, limit, beforeId ? parseInt(beforeId, 10) : undefined);

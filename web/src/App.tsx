@@ -36,9 +36,18 @@ export function App() {
           <Route path="/voices"><Voices /></Route>
           <Route path="/settings"><Settings /></Route>
 
+          {/* Common alt slugs that used to point at placeholder pages */}
+          <Route path="/hive-mind"><Redirect to="/hive" /></Route>
+          <Route path="/hivemind"><Redirect to="/hive" /></Route>
+          <Route path="/memory"><Redirect to="/memories" /></Route>
+
           <Route path="/"><Redirect to={DEFAULT_ROUTE} /></Route>
           <Route>
-            <Placeholder title="Not found" description="This page does not exist. Use ⌘K to jump somewhere." />
+            <Placeholder
+              title="Not found"
+              description="This page does not exist. Use ⌘K to jump somewhere."
+              hideRoadmapNote
+            />
           </Route>
         </Switch>
       </main>
