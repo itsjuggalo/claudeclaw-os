@@ -25,6 +25,11 @@ export function Audit() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Sticky union of every agent_id we've ever seen in this session, so
+  // narrowing the filter to a single agent doesn't make the other chips
+  // disappear (the previous version derived chips from the currently
+  // loaded rows, which collapsed once you filtered).
+  const [knownAgents, setKnownAgents] = useState<string[]>([]);
 
   useEffect(() => {
     setItems([]); setOffset(0); setLoading(true);
@@ -44,12 +49,16 @@ export function Audit() {
       setTotal(data.total ?? data.entries.length);
       setItems(reset ? data.entries : [...items, ...data.entries]);
       setOffset(off + data.entries.length);
+      setKnownAgents((prev) => {
+        const next = new Set(prev);
+        for (const e of data.entries) next.add(e.agent_id);
+        return Array.from(next).sort();
+      });
     } catch (err: any) { setError(err?.message || String(err)); }
     finally { setLoading(false); }
   }
 
-  // Distinct agent IDs from loaded entries (for filter chips).
-  const agentIds = Array.from(new Set(items.map((e) => e.agent_id))).sort();
+  const agentIds = knownAgents;
 
   return (
     <div class="flex flex-col h-full">
@@ -60,7 +69,7 @@ export function Audit() {
           <>
             <Tab label="All" active={filter === 'all'} onClick={() => setFilter('all')} />
             <Tab label="Blocked" active={filter === 'blocked'} onClick={() => setFilter('blocked')} />
-            {filter === 'all' && agentIds.length > 1 && (
+            {filter === 'all' && agentIds.length > 0 && (
               <>
                 <span class="mx-1 text-[var(--color-text-faint)]">·</span>
                 <Tab label="Any agent" active={agentFilter === 'all'} onClick={() => setAgentFilter('all')} />
