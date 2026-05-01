@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
-import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText, Lightbulb } from 'lucide-preact';
+import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText, Lightbulb, RefreshCw } from 'lucide-preact';
 import { Link } from 'wouter-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
@@ -113,22 +113,44 @@ export function Agents() {
               onSelect={setAllModels}
               disabled={pendingAction === 'bulk-model'}
             />
-            <button
-              type="button"
-              onClick={refreshSuggestions}
-              disabled={refreshingSuggestions}
-              title="Scan hive_mind for agents that should be split"
-              class={[
-                'inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] border transition-colors',
-                suggestions.length > 0
-                  ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)] hover:bg-[var(--color-accent)] hover:text-white'
-                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border-[var(--color-border)]',
-                'disabled:opacity-40',
-              ].join(' ')}
-            >
-              <Lightbulb size={13} />
-              {refreshingSuggestions ? 'Scanning…' : (suggestions.length > 0 ? `${suggestions.length} suggestion${suggestions.length === 1 ? '' : 's'}` : 'Suggestions')}
-            </button>
+            {suggestions.length > 0 ? (
+              // Cached on mount via useAgentSuggestions — clicking is
+              // INSTANT, not a scan. Opens the first suggestion's modal
+              // directly. The refresh icon next to it is the only path
+              // that triggers Haiku.
+              <div class="inline-flex">
+                <button
+                  type="button"
+                  onClick={() => setOpenedSuggestion(suggestions[0])}
+                  title={`View ${suggestions.length} active suggestion${suggestions.length === 1 ? '' : 's'}`}
+                  class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-l text-[12px] border border-r-0 transition-colors bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)] hover:bg-[var(--color-accent)] hover:text-white"
+                >
+                  <Lightbulb size={13} />
+                  {suggestions.length} suggestion{suggestions.length === 1 ? '' : 's'}
+                </button>
+                <button
+                  type="button"
+                  onClick={refreshSuggestions}
+                  disabled={refreshingSuggestions}
+                  title="Re-scan hive_mind for new suggestions (~30–90s)"
+                  class="inline-flex items-center justify-center px-2 py-1.5 rounded-r text-[12px] border bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)] hover:bg-[var(--color-accent)] hover:text-white disabled:opacity-40 transition-colors"
+                >
+                  <RefreshCw size={12} class={refreshingSuggestions ? 'animate-spin' : ''} />
+                </button>
+              </div>
+            ) : (
+              // No active suggestions — only path is the explicit scan.
+              <button
+                type="button"
+                onClick={refreshSuggestions}
+                disabled={refreshingSuggestions}
+                title="Scan hive_mind for agents that should be split (~30–90s)"
+                class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
+              >
+                <Lightbulb size={13} />
+                {refreshingSuggestions ? 'Scanning…' : 'Scan for suggestions'}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setWizardOpen(true)}
