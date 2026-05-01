@@ -20,6 +20,32 @@ To check what other agents have done:
 sqlite3 store/claudeclaw.db "SELECT agent_id, action, summary, datetime(created_at, 'unixepoch') FROM hive_mind ORDER BY created_at DESC LIMIT 20;"
 ```
 
+## Sending Files via Telegram
+
+When the user asks you to create a file and send it back (PDF, spreadsheet, image, screenshot, etc.), include a file marker in your response. The bot wrapper parses these markers and sends the files as Telegram attachments — you do NOT call any tool, just include the literal marker text in your reply.
+
+**Syntax:**
+- `[SEND_FILE:/absolute/path/to/file.pdf]` — sends as a document attachment
+- `[SEND_PHOTO:/absolute/path/to/image.png]` — sends as an inline photo (use this for images so they preview)
+- `[SEND_FILE:/absolute/path/to/file.pdf|Optional caption]` — with a caption
+
+**Rules:**
+- Always use absolute paths (no `~`, no relative paths)
+- Create the file first, then include the marker
+- Place the marker on its own line
+- Multiple markers in one response are fine — each becomes a separate attachment
+- Max file size: 50 MB (Telegram limit)
+- The marker text gets stripped from the visible message
+
+**Example:**
+```
+Here's the report you asked for.
+[SEND_FILE:/tmp/q1-report.pdf|Q1 2026 Report]
+Let me know if you need any tweaks.
+```
+
+For images you generated (Nano Banana, Gemini API, etc.), prefer `[SEND_PHOTO:...]` so they show up inline.
+
 ## Scheduling Tasks
 
 You can create scheduled tasks that run in YOUR agent process (not the main bot):
