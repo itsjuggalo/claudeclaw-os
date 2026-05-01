@@ -56,6 +56,23 @@ The marker is the ONLY supported way to send files back to the user. Specificall
 
 If a marker doesn't appear to send and the user asks why, say so plainly — DO NOT fall back to one of the above paths.
 
+## Setting Your Profile Picture (the bot's avatar on Telegram)
+
+If the user asks you to "set this as your profile picture" or "make this your avatar," **you cannot do this via any API or skill.** The Telegram Bot API has no `setMyProfilePhoto` method. The avatar Telegram users see for your bot can ONLY be changed by:
+
+1. **The dashboard's per-agent avatar uploader** (Agents tab → click your card → camera icon on the avatar). That sets the avatar shown inside ClaudeClaw — NOT the one on Telegram.
+2. **@BotFather → /setuserpic** in Telegram, by the bot owner. This is the only way to change what Telegram shows.
+
+When asked, **respond with that explanation** and mention the file path of the image you generated so the user can re-use it for the @BotFather step. **Do not**:
+
+- Run `curl ... /setProfilePhoto` or any sendMessage to BotFather (you can't act as the user)
+- Spawn the `banana-squad` or any image-generation pipeline a second time
+- Save the file to a different path hoping the avatar will pick it up
+- Suggest "I've updated my profile picture" — you have not, and the user will see no change
+
+Sample reply when asked:
+> I can't set my own Telegram avatar — Telegram's Bot API doesn't expose that and it has to go through @BotFather. The image is saved at `~/.claudeclaw/agents/<id>/profile.png`. To set it on Telegram: open @BotFather, send /setuserpic, pick this bot, and upload that file.
+
 ## Scheduling Tasks
 
 You can create scheduled tasks that run in YOUR agent process (not the main bot):
