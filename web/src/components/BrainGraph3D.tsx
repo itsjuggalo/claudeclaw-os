@@ -347,7 +347,9 @@ function buildProceduralBrain(brainGroup: THREE.Group): LobePools {
   return { left: left.surface, right: right.surface };
 }
 
-function prepareLoadedBrainModel(model: THREE.Object3D): LobePools {
+function prepareLoadedBrainModel(
+  model: THREE.Object3D,
+): { pools: LobePools; brainGeos: BrainGeoSnapshot[] } {
   const box = new THREE.Box3().setFromObject(model);
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
@@ -360,6 +362,7 @@ function prepareLoadedBrainModel(model: THREE.Object3D): LobePools {
 
   const lobePoolCounts = new Map<string, number>();
   const pools: LobePools = { left: [], right: [] };
+  const brainGeos: BrainGeoSnapshot[] = [];
   const world = new THREE.Vector3();
   const normal = new THREE.Vector3();
 
@@ -376,6 +379,8 @@ function prepareLoadedBrainModel(model: THREE.Object3D): LobePools {
 
     const pos = geo.getAttribute('position') as THREE.BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
+    const baseColors = new Float32Array(pos.count * 3);
+    const vertexLobeIds: string[] = new Array(pos.count);
     const step = Math.max(1, Math.floor(pos.count / 900));
 
     for (let i = 0; i < pos.count; i++) {
@@ -386,10 +391,16 @@ function prepareLoadedBrainModel(model: THREE.Object3D): LobePools {
       colors[i * 3] = color.r;
       colors[i * 3 + 1] = color.g;
       colors[i * 3 + 2] = color.b;
+      baseColors[i * 3] = color.r;
+      baseColors[i * 3 + 1] = color.g;
+      baseColors[i * 3 + 2] = color.b;
+
+      // Argmax lobe assignment for every vertex so the activity-glow
+      // pass knows which lobe each vertex belongs to.
+      const lobeId = pointLobeId(normal.x, normal.y, normal.z) || 'frontal';
+      vertexLobeIds[i] = lobeId;
 
       if (i % step !== 0) continue;
-      const lobeId = pointLobeId(normal.x, normal.y, normal.z);
-      if (!lobeId) continue;
       const side = world.x < 0 ? 'left' : 'right';
       const poolKey = `${side}-${lobeId}`;
       if ((lobePoolCounts.get(poolKey) ?? 0) >= 120) continue;
@@ -400,9 +411,41 @@ function prepareLoadedBrainModel(model: THREE.Object3D): LobePools {
 
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
+    brainGeos.push({ mesh: obj, baseColors, vertexLobeIds });
   });
 
-  return pools;
+  return { pools, brainGeos };
+}
+
+// Walk every brain mesh's vertex color attribute and brighten each
+// vertex by its lobe's activity intensity. Bloom catches the bright
+// spots, so heavily-active lobes glow visibly. Cheap O(verts) on
+// each entry change — typically called once per refresh.
+function applyActivityGlow(
+  brainGeos: BrainGeoSnapshot[],
+  activityByLobe: Record<string, number>,
+  maxActivity: number,
+) {
+  if (brainGeos.length === 0) return;
+  for (const geo of brainGeos) {
+    const colorAttr = geo.mesh.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+    if (!colorAttr) continue;
+    const arr = colorAttr.array as Float32Array;
+    const lobeIds = geo.vertexLobeIds;
+    const base = geo.baseColors;
+    for (let i = 0; i < lobeIds.length; i++) {
+      const lobeId = lobeIds[i];
+      const activity = activityByLobe[lobeId] || 0;
+      // Quadratic ramp so very active lobes pop dramatically while
+      // moderate activity stays subtle.
+      const t = maxActivity > 0 ? activity / maxActivity : 0;
+      const boost = 1 + Math.pow(t, 0.7) * 1.6;
+      arr[i * 3]     = Math.min(2.0, base[i * 3]     * boost);
+      arr[i * 3 + 1] = Math.min(2.0, base[i * 3 + 1] * boost);
+      arr[i * 3 + 2] = Math.min(2.0, base[i * 3 + 2] * boost);
+    }
+    colorAttr.needsUpdate = true;
+  }
 }
 
 // Pick a deterministic dot position for an entry inside its lobe's
@@ -443,6 +486,17 @@ interface DotData {
   halo: THREE.Mesh;
 }
 
+// Per-mesh data captured when the GLB loads, used to modulate vertex
+// emissive based on per-lobe activity. baseColors holds the original
+// lobe-weighted vertex colors; vertexLobeIds[i] is the dominant lobe
+// for vertex i. The activity-glow effect uses these to recompute the
+// `color` attribute without touching geometry topology.
+interface BrainGeoSnapshot {
+  mesh: THREE.Mesh;
+  baseColors: Float32Array;
+  vertexLobeIds: string[];
+}
+
 export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const sceneStateRef = useRef<{
@@ -452,6 +506,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     controls: OrbitControls;
     leftSurface: THREE.Vector3[];
     rightSurface: THREE.Vector3[];
+    brainGeos: BrainGeoSnapshot[];
     dotsGroup: THREE.Group;
     raycaster: THREE.Raycaster;
     pointer: THREE.Vector2;
@@ -624,7 +679,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
 
     sceneStateRef.current = {
       scene, camera, renderer, controls,
-      leftSurface: [], rightSurface: [],
+      leftSurface: [], rightSurface: [], brainGeos: [],
       dotsGroup, raycaster, pointer, dotMap,
       rafId, lastInteract, brainGroup,
       cleanup: () => {
@@ -646,10 +701,11 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       },
     };
 
-    const activateBrain = (pools: LobePools) => {
+    const activateBrain = (pools: LobePools, brainGeos: BrainGeoSnapshot[] = []) => {
       if (disposed || !sceneStateRef.current) return;
       sceneStateRef.current.leftSurface = pools.left;
       sceneStateRef.current.rightSurface = pools.right;
+      sceneStateRef.current.brainGeos = brainGeos;
       setReady(true);
     };
 
@@ -674,16 +730,14 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       (gltf) => {
         if (disposed) return;
         try {
-          const pools = prepareLoadedBrainModel(gltf.scene);
+          const { pools, brainGeos } = prepareLoadedBrainModel(gltf.scene);
           if (pools.left.length + pools.right.length === 0) {
             throw new Error('Loaded brain GLB did not expose usable surface vertices.');
           }
-          // brainGroup.clear() would remove the dotsGroup we added at
-          // init time. Instead just add the loaded gltf scene
-          // alongside it; the brain mesh and dots end up under the
-          // same parent transform so they rotate / breathe together.
+          // Keep dotsGroup parented; just add the loaded gltf scene
+          // alongside it.
           brainGroup.add(gltf.scene);
-          activateBrain(pools);
+          activateBrain(pools, brainGeos);
         } catch (err) {
           fallbackToProcedural(err);
         }
@@ -753,28 +807,22 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       }
       const color = new THREE.Color(colorHex);
 
+      // Dot meshes are kept around for raycasting (hover/click) but
+      // rendered invisibly — the activity-glow effect on the brain's
+      // own vertex colors is now what visualizes per-lobe density.
       const r = 0.022 * filters.nodeSize;
-      const dotGeo = new THREE.SphereGeometry(r, 14, 14);
-      // MeshBasicMaterial — unlit so the dot color reads cleanly
-      // against the brain's textured surface. depthTest stays on so
-      // back-side dots get correctly occluded by the front of the
-      // brain (rather than all dots stacking up on screen).
+      const dotGeo = new THREE.SphereGeometry(r, 8, 8);
       const dotMat = new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
+        color, transparent: true, opacity: 0, depthWrite: false,
       });
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(outward);
-      dot.renderOrder = 999; // draw after the opaque brain mesh
+      dot.visible = true; // kept "visible" so raycasting works; opacity 0 makes it invisible
       state.dotsGroup.add(dot);
 
-      // Halo — additive sphere that gets pulled by bloom for an
-      // extra outer glow. The dot itself bloomed gives the core; the
-      // halo gives the soft falloff.
-      const haloGeo = new THREE.SphereGeometry(r * 2.6, 10, 10);
+      const haloGeo = new THREE.SphereGeometry(r * 2.6, 6, 6);
       const haloMat = new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0.42, depthWrite: false,
-        blending: THREE.AdditiveBlending,
+        color, transparent: true, opacity: 0, depthWrite: false,
       });
       const halo = new THREE.Mesh(haloGeo, haloMat);
       halo.position.copy(outward);
@@ -787,6 +835,34 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       console.warn('[brain3d] no dots placed despite', entries.length, 'entries — surface pools may be empty');
     }
   }, [entries, agentColors, filters.nodeSize, ready]);
+
+  // Activity glow — recompute brain vertex colors so each lobe brightens
+  // in proportion to how much agent activity has landed there. Bloom
+  // catches the hot regions and the cortex grooves naturally appear lit.
+  useEffect(() => {
+    const state = sceneStateRef.current;
+    if (!state || !ready || state.brainGeos.length === 0) return;
+
+    // Activity per lobe: sum entries whose agent maps there, but
+    // respect the agent / lobe / search filters so the brain
+    // actually responds to filter toggles.
+    const activity: Record<string, number> = {
+      frontal: 0, parietal: 0, temporal: 0, occipital: 0,
+    };
+    for (const e of entries) {
+      if (filters.hiddenAgents.has(e.agent_id)) continue;
+      if (agentFilter !== 'all' && e.agent_id !== agentFilter) continue;
+      if (filters.query) {
+        const q = filters.query.toLowerCase();
+        if (!e.summary.toLowerCase().includes(q) && !e.action.toLowerCase().includes(q)) continue;
+      }
+      const lobe = lobeFor(e.agent_id);
+      if (filters.hiddenLobes.has(lobe)) continue;
+      activity[lobe] = (activity[lobe] || 0) + 1;
+    }
+    const maxActivity = Math.max(1, ...Object.values(activity));
+    applyActivityGlow(state.brainGeos, activity, maxActivity);
+  }, [entries, ready, filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter]);
 
   // Apply visibility (agent / lobe / search filter) without rebuilding meshes.
   useEffect(() => {
