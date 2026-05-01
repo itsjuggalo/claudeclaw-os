@@ -157,6 +157,12 @@ export function Settings() {
             </Card>
           </Section>
 
+          <Section title="Acknowledgements">
+            <Card>
+              <ReadOnlyRow label="3D brain model" value="Detailed Human Brain Model, NIH 3D 3DPX-021161, CC-BY" />
+            </Card>
+          </Section>
+
         </div>
       )}
     </div>

@@ -410,6 +410,29 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
   });
 
+  // Top-level static files copied from web/public/ at build time
+  // (e.g. /brain.glb for the 3D Hive Mind view). These have stable
+  // names so they sit at the root rather than under /assets/.
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm)}', (c) => {
+    const filename = c.req.param('filename');
+    const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
+    const root = path.join(PROJECT_ROOT, 'dist', 'web');
+    if (!filePath.startsWith(root + path.sep)) return c.text('', 403);
+    if (!fs.existsSync(filePath)) return c.text('', 404);
+    const data = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const ctype = ext === '.glb' ? 'model/gltf-binary'
+      : ext === '.gltf' ? 'model/gltf+json'
+      : ext === '.wasm' ? 'application/wasm'
+      : 'application/octet-stream';
+    return new Response(new Uint8Array(data), {
+      headers: {
+        'Content-Type': ctype,
+        'Cache-Control': 'public, max-age=86400',
+      },
+    });
+  });
+
   // War Room entry.
   //   - ?mode=voice → serve the cinematic legacy voice page (interactive
   //     Pipecat WebSocket UI).

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -267,6 +269,120 @@ function buildHemisphere(side: 'left' | 'right'): { mesh: THREE.Mesh; surface: T
   return { mesh, surface };
 }
 
+type LobePools = Record<'left' | 'right', THREE.Vector3[]>;
+
+function blendedLobeColor(nx: number, ny: number, nz: number): THREE.Color {
+  const w = lobeWeights(nx, ny, nz);
+  const sum = w.wFrontal + w.wParietal + w.wTemporal + w.wOccipital + 0.0001;
+  const wf = w.wFrontal / sum;
+  const wp = w.wParietal / sum;
+  const wt = w.wTemporal / sum;
+  const wo = w.wOccipital / sum;
+
+  const cr = wf * FRONTAL.r + wp * PARIETAL.r + wt * TEMPORAL.r + wo * OCCIPITAL.r;
+  const cg = wf * FRONTAL.g + wp * PARIETAL.g + wt * TEMPORAL.g + wo * OCCIPITAL.g;
+  const cb = wf * FRONTAL.b + wp * PARIETAL.b + wt * TEMPORAL.b + wo * OCCIPITAL.b;
+
+  const baseR = 0.5, baseG = 0.48, baseB = 0.55;
+  const mix = 0.92;
+  return new THREE.Color(
+    cr * mix + baseR * (1 - mix),
+    cg * mix + baseG * (1 - mix),
+    cb * mix + baseB * (1 - mix),
+  );
+}
+
+function cloneMaterialWithVertexColors(material: THREE.Material | THREE.Material[] | undefined) {
+  const cloneOne = (m: THREE.Material | undefined) => {
+    const cloned = m ? m.clone() : new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0 });
+    (cloned as THREE.MeshStandardMaterial).vertexColors = true;
+    return cloned;
+  };
+  return Array.isArray(material) ? material.map(cloneOne) : cloneOne(material);
+}
+
+function isDominantLobe(lobeId: string, w: ReturnType<typeof lobeWeights>) {
+  if (lobeId === 'frontal') return w.wFrontal > 0.45;
+  if (lobeId === 'parietal') return w.wParietal > 0.35;
+  if (lobeId === 'temporal') return w.wTemporal > 0.4;
+  if (lobeId === 'occipital') return w.wOccipital > 0.45;
+  return false;
+}
+
+function pointLobeId(nx: number, ny: number, nz: number): string | null {
+  const w = lobeWeights(nx, ny, nz);
+  for (const lobe of LOBES) {
+    if (isDominantLobe(lobe.id, w)) return lobe.id;
+  }
+  return null;
+}
+
+function buildProceduralBrain(brainGroup: THREE.Group): LobePools {
+  const left = buildHemisphere('left');
+  const right = buildHemisphere('right');
+  brainGroup.add(left.mesh);
+  brainGroup.add(right.mesh);
+  return { left: left.surface, right: right.surface };
+}
+
+function prepareLoadedBrainModel(model: THREE.Object3D): LobePools {
+  const box = new THREE.Box3().setFromObject(model);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const targetSize = 1.6;
+  const scale = targetSize / Math.max(size.x, size.y, size.z, 0.0001);
+
+  model.position.copy(center).multiplyScalar(-scale);
+  model.scale.setScalar(scale);
+  model.updateMatrixWorld(true);
+
+  const lobePoolCounts = new Map<string, number>();
+  const pools: LobePools = { left: [], right: [] };
+  const world = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+
+  model.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return;
+    const originalGeo = obj.geometry as THREE.BufferGeometry | undefined;
+    const position = originalGeo?.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!originalGeo || !position) return;
+
+    const geo = originalGeo.clone();
+    obj.geometry = geo;
+    obj.material = cloneMaterialWithVertexColors(obj.material);
+    obj.updateMatrixWorld(true);
+
+    const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+    const colors = new Float32Array(pos.count * 3);
+    const step = Math.max(1, Math.floor(pos.count / 900));
+
+    for (let i = 0; i < pos.count; i++) {
+      world.fromBufferAttribute(pos, i).applyMatrix4(obj.matrixWorld);
+      normal.copy(world).normalize();
+
+      const color = blendedLobeColor(normal.x, normal.y, normal.z);
+      colors[i * 3] = color.r;
+      colors[i * 3 + 1] = color.g;
+      colors[i * 3 + 2] = color.b;
+
+      if (i % step !== 0) continue;
+      const lobeId = pointLobeId(normal.x, normal.y, normal.z);
+      if (!lobeId) continue;
+      const side = world.x < 0 ? 'left' : 'right';
+      const poolKey = `${side}-${lobeId}`;
+      if ((lobePoolCounts.get(poolKey) ?? 0) >= 120) continue;
+      lobePoolCounts.set(poolKey, (lobePoolCounts.get(poolKey) ?? 0) + 1);
+      const sample = world.clone();
+      pools[side].push(sample);
+    }
+
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+  });
+
+  return pools;
+}
+
 // Pick a deterministic dot position for an entry inside its lobe's
 // surface points. Stable across renders so the visualization doesn't
 // shuffle on every poll.
@@ -276,11 +392,7 @@ function pickSurface(surface: THREE.Vector3[], lobeId: string, slotIdx: number):
     const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
     const nx = v.x / len, ny = v.y / len, nz = v.z / len;
     const w = lobeWeights(nx, ny, nz);
-    if (lobeId === 'frontal') return w.wFrontal > 0.45;
-    if (lobeId === 'parietal') return w.wParietal > 0.35;
-    if (lobeId === 'temporal') return w.wTemporal > 0.4;
-    if (lobeId === 'occipital') return w.wOccipital > 0.45;
-    return false;
+    return isDominantLobe(lobeId, w);
   });
   if (region.length === 0) return null;
   return region[slotIdx % region.length];
@@ -345,6 +457,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
   // Init scene once
   useEffect(() => {
     if (!wrapRef.current) return;
+    setReady(false);
     const wrap = wrapRef.current;
     const w = wrap.clientWidth;
     const h = wrap.clientHeight;
@@ -382,31 +495,9 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     rim.position.set(0, 1, -3);
     scene.add(rim);
 
-    // Brain
+    // Brain. The GLB path is preferred; the procedural mesh remains as
+    // a runtime fallback if the asset is absent, corrupt, or blocked.
     const brainGroup = new THREE.Group();
-    const left = buildHemisphere('left');
-    const right = buildHemisphere('right');
-    brainGroup.add(left.mesh);
-    brainGroup.add(right.mesh);
-
-    // Brainstem stub at the back-bottom — small, slightly desaturated,
-    // matches the cerebrum's surface roughness so it reads as the same
-    // tissue. Adds anatomical credibility without complicating the
-    // lobe-coloring system.
-    const stemGeo = new THREE.CylinderGeometry(0.1, 0.14, 0.42, 24, 8, false);
-    stemGeo.translate(0, -0.2, 0);
-    const stemMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(0xb89999),
-      roughness: 0.7,
-      metalness: 0,
-    });
-    const stem = new THREE.Mesh(stemGeo, stemMat);
-    // Tuck below the cerebrum, angled slightly back so it emerges from
-    // the underside rather than poking straight down.
-    stem.position.set(0, -0.45, -0.35);
-    stem.rotation.x = -0.45;
-    brainGroup.add(stem);
-
     scene.add(brainGroup);
 
     // Subtle ambient halo behind the brain
@@ -467,6 +558,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
 
+    let disposed = false;
     let rafId = 0;
     const start = performance.now();
     function animate() {
@@ -525,10 +617,11 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
 
     sceneStateRef.current = {
       scene, camera, renderer, controls,
-      leftSurface: left.surface, rightSurface: right.surface,
+      leftSurface: [], rightSurface: [],
       dotsGroup, raycaster, pointer, dotMap,
       rafId, lastInteract, brainGroup,
       cleanup: () => {
+        disposed = true;
         cancelAnimationFrame(rafId);
         ro.disconnect();
         controls.dispose();
@@ -545,7 +638,44 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
         if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
       },
     };
-    setReady(true);
+
+    const activateBrain = (pools: LobePools) => {
+      if (disposed || !sceneStateRef.current) return;
+      sceneStateRef.current.leftSurface = pools.left;
+      sceneStateRef.current.rightSurface = pools.right;
+      setReady(true);
+    };
+
+    const fallbackToProcedural = (err: unknown) => {
+      if (import.meta.env.DEV) console.warn('Falling back to procedural brain mesh; /brain.glb failed to load.', err);
+      if (disposed) return;
+      brainGroup.clear();
+      activateBrain(buildProceduralBrain(brainGroup));
+    };
+
+    const loader = new GLTFLoader();
+    // Brain GLB ships with meshopt geometry compression (~8x smaller).
+    // Without this decoder the load fails and we fall back to procedural.
+    loader.setMeshoptDecoder(MeshoptDecoder as any);
+    loader.load(
+      '/brain.glb',
+      (gltf) => {
+        if (disposed) return;
+        try {
+          const pools = prepareLoadedBrainModel(gltf.scene);
+          if (pools.left.length + pools.right.length === 0) {
+            throw new Error('Loaded brain GLB did not expose usable surface vertices.');
+          }
+          brainGroup.clear();
+          brainGroup.add(gltf.scene);
+          activateBrain(pools);
+        } catch (err) {
+          fallbackToProcedural(err);
+        }
+      },
+      undefined,
+      fallbackToProcedural,
+    );
 
     return () => { sceneStateRef.current?.cleanup(); sceneStateRef.current = null; };
   }, []);
