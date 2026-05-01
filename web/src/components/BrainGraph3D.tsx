@@ -135,16 +135,12 @@ function lobeWeights(x: number, y: number, z: number) {
 }
 
 function buildHemisphere(side: 'left' | 'right'): { mesh: THREE.Mesh; surface: THREE.Vector3[] } {
-  // Detail 6 ≈ 10k verts — enough resolution for the ridge displacement
-  // to articulate as visible cortical folds rather than a polyhedron.
   const detail = 6;
   const geo = new THREE.IcosahedronGeometry(1, detail);
-  geo.scale(0.55, 0.78, 1.0);
+  // Anatomical proportions: longer front-to-back than wide-or-tall,
+  // matching a real brain's superior axis (~16cm L × 14cm W × 12cm H).
+  geo.scale(0.50, 0.70, 1.18);
 
-  // Carve a flat-ish wall on the inner side so the two hemispheres
-  // present a clear longitudinal fissure when placed side by side
-  // instead of two overlapping ovals. We push inner-facing verts
-  // toward the midline before the noise displacement runs.
   const sign = side === 'left' ? -1 : 1;
 
   const positions = geo.attributes.position;
@@ -157,28 +153,48 @@ function buildHemisphere(side: 'left' | 'right'): { mesh: THREE.Mesh; surface: T
     let y = positions.getY(i);
     let z = positions.getZ(i);
 
-    // Pull inner-side vertices toward x=0 so the hemisphere has a
-    // flatter inside face. `sign === -1` (left) means x < 0 = outer.
+    // Flatten the inner wall so the longitudinal fissure is crisp.
     const facingMidline = (sign === -1 && x > 0) || (sign === 1 && x < 0);
     if (facingMidline) {
       const t = Math.min(1, Math.abs(x) / 0.45);
       x *= 0.35 * (1 - t * 0.6);
     }
 
+    // Anatomical bulges, applied before the noise displacement so the
+    // ridges follow the bulge contours rather than fight them.
+    //
+    // Temporal pouch: lower-side area (y < 0, |x| moderate) bulges
+    // outward and downward. This is the big lateral-lower bump that
+    // gives a brain its iconic "kidney bean" side profile.
+    const pouchT = smoothstep(0.0, -0.55, y) * smoothstep(0.0, 0.55, Math.abs(x));
+    if (pouchT > 0) {
+      x *= 1 + pouchT * 0.18;
+      y -= pouchT * 0.10;
+    }
+    // Frontal pole: round and bulge the very front (high z).
+    const frontT = smoothstep(0.7, 1.05, z);
+    if (frontT > 0) {
+      z *= 1 + frontT * 0.06;
+      const radial = Math.sqrt(x * x + y * y) + 0.0001;
+      const radialBoost = 1 + frontT * 0.05;
+      x *= radialBoost;
+      y *= radialBoost;
+    }
+    // Occipital pole: same treatment at the back.
+    const backT = smoothstep(-0.7, -1.05, z);
+    if (backT > 0) {
+      z *= 1 + backT * 0.04;
+    }
+
     const len = Math.sqrt(x * x + y * y + z * z) + 0.0001;
     const nx = x / len, ny = y / len, nz = z / len;
 
     // Ridge noise displacement — meandering folds, not round bumps.
-    // Sample noise in a slightly squished space so ridges flow more
-    // along the front-back axis (anterior-posterior), like real
-    // cortical gyri patterns.
-    const sx = nx * 3.2;
-    const sy = ny * 3.2;
-    const sz = nz * 2.4; // squish z so ridges elongate front-to-back
+    const sx = nx * 3.4;
+    const sy = ny * 3.4;
+    const sz = nz * 2.6;
     const ridge = ridgedFbm(sx, sy, sz);
-    // Center the ridge value around 0 so it pushes both inward and
-    // outward (creates valleys between gyri, not just bumps).
-    const displacement = (ridge - 0.45) * 0.20;
+    const displacement = (ridge - 0.45) * 0.22;
 
     const factor = 1 + displacement;
     const px = x * factor;
@@ -312,7 +328,9 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     scene.background = null;
 
     const camera = new THREE.PerspectiveCamera(38, w / h, 0.1, 100);
-    camera.position.set(0, 0.15, 4.2);
+    // Three-quarter side view — the iconic angle for a brain.
+    // Front lobe forward-right, temporal pouch visible below.
+    camera.position.set(3.4, 0.6, 2.4);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
