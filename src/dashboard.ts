@@ -58,6 +58,11 @@ import {
   getAgentFileHistory,
   pruneAgentFileHistory,
   type AgentFileKind,
+  insertAgentSuggestion,
+  listActiveAgentSuggestions,
+  dismissAgentSuggestion,
+  markAgentSuggestionActed,
+  getRecentlySuggestedSplits,
 } from './db.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
@@ -529,7 +534,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!fs.existsSync(avatarPath)) return c.text('', 404);
     const data = fs.readFileSync(avatarPath);
     return new Response(data, {
-      headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
+      // 60s so user-uploaded avatars (which target this same file for
+      // main) propagate quickly across all dashboard surfaces. Higher
+      // miss rate is fine — the file is small.
+      headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' },
     });
   });
 
@@ -2231,6 +2239,159 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
+  // ── Agent split suggestions ─────────────────────────────────────────
+  // Scans hive_mind for the last 200 actions per agent, sends the bag
+  // (agent description + their recent action summaries) to Haiku, and
+  // asks "is any one agent doing several distinct domains that warrant
+  // a split?" Suggestions land in agent_suggestions and surface as a
+  // lightbulb badge on the AgentCard. The user can dismiss (= "no
+  // thanks") or act (= "open the wizard pre-filled"); both states stick
+  // so re-running analysis doesn't keep re-suggesting the same split.
+
+  app.get('/api/agents/suggestions', (c) => {
+    return c.json({ suggestions: listActiveAgentSuggestions() });
+  });
+
+  app.post('/api/agents/suggestions/refresh', async (c) => {
+    const liveAgents = ['main', ...listAgentIds()];
+    const agentMeta: Array<{ id: string; description: string; rawCount: number; recentSummaries: string[] }> = [];
+    for (const id of liveAgents) {
+      let description = '';
+      if (id !== 'main') {
+        try { description = loadAgentConfig(id).description || ''; } catch { /* skip */ }
+      } else {
+        description = 'Primary ClaudeClaw bot — general triage and routing';
+      }
+      const entries = getHiveMindEntries(200, id);
+      const allFiltered = entries
+        .map((e) => `[${e.action}] ${e.summary}`)
+        .filter((s) => s.length > 0);
+      // Sample evenly across the agent's last 200 entries, picking 12
+      // representative summaries. We want diversity (different domains,
+      // not just the latest cluster) without bloating the prompt past
+      // Haiku's comfort zone — total prompt with 6 agents × 12
+      // summaries × ~80 chars stays under ~2 KB and typically completes
+      // in 15–25s.
+      const target = 12;
+      const recentSummaries = allFiltered.length <= target
+        ? allFiltered
+        : allFiltered.filter((_, i) => i % Math.ceil(allFiltered.length / target) === 0).slice(0, target);
+      agentMeta.push({ id, description, rawCount: allFiltered.length, recentSummaries });
+    }
+
+    // Skip agents with too little signal — splitting an agent that's
+    // done 5 things isn't useful, and Haiku will hallucinate splits.
+    const eligible = agentMeta.filter((a) => a.rawCount >= 20);
+    if (eligible.length === 0) {
+      return c.json({ ok: true, suggestions: [], reason: 'not enough hive_mind activity to analyze' });
+    }
+
+    const recentlySuggested = new Set(
+      getRecentlySuggestedSplits(30).map((r) => `${r.from_agent}::${r.suggested_id}`),
+    );
+
+    // Prompt: "for each agent, is one doing many distinct domains?"
+    // Constrain the model to suggest AT MOST one split per agent and
+    // require activity_share_pct so the user knows whether the
+    // suggestion is meaningful (a 5%-share split isn't worth doing).
+    const promptParts = [
+      'You analyze a multi-agent system to spot when an agent has drifted into doing many distinct things and should be split.',
+      '',
+      'For each agent below, decide: is there ONE coherent sub-domain handling >= 25% of their recent activity that would benefit from being its own specialized agent? Only suggest a split when the new agent would have a clean scope and the parent agent would be more focused after the split.',
+      '',
+      'Return JSON with this exact shape:',
+      '{ "suggestions": [{ "from_agent": "<id>", "suggested_id": "<lowercase-id>", "suggested_name": "<Title Case>", "suggested_description": "<one-sentence scope, 80 chars max>", "reasoning": "<why now, 200 chars max>", "activity_share_pct": <integer 0-100> }] }',
+      '',
+      'Rules:',
+      '- suggested_id must be lowercase letters, numbers, hyphens; not match an existing agent.',
+      '- Suggest at most one split per from_agent.',
+      '- Skip suggestions where activity_share_pct < 25.',
+      '- If no agent needs splitting, return { "suggestions": [] }.',
+      '',
+      'Agents:',
+    ];
+    for (const a of eligible) {
+      promptParts.push('');
+      promptParts.push(`AGENT: ${a.id}`);
+      promptParts.push(`DESCRIPTION: ${a.description || '(no description)'}`);
+      promptParts.push('RECENT ACTIVITY:');
+      for (const s of a.recentSummaries) {
+        promptParts.push(`  - ${s}`);
+      }
+    }
+    const existingIds = new Set(liveAgents);
+
+    let raw = '';
+    const promptStr = promptParts.join('\n');
+    logger.info({ promptBytes: promptStr.length, agentCount: eligible.length }, 'agent suggestion: starting analysis');
+    const t0 = Date.now();
+    try {
+      // 120s timeout — the dashboard process spawns the SDK subprocess
+      // alongside its own busy event loop (war-room polling, memory
+      // ingest, scheduler). Cold-starts under load have measured up to
+      // 90s in practice, vs 4–5s for a standalone CLI call with the
+      // same prompt size. Better to wait than fail spuriously.
+      raw = await extractViaClaude(promptStr, 120_000);
+      logger.info({ elapsedMs: Date.now() - t0, responseBytes: raw.length }, 'agent suggestion: Haiku replied');
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : err, elapsedMs: Date.now() - t0 }, 'agent suggestion analysis failed');
+      return c.json({ error: 'analysis failed (Haiku unavailable)' }, 503);
+    }
+    const parsed = parseJsonResponse<{ suggestions: any[] }>(raw);
+    const list = Array.isArray(parsed?.suggestions) ? parsed!.suggestions : [];
+
+    let inserted = 0;
+    let skipped = 0;
+    for (const s of list) {
+      if (!s || typeof s !== 'object') { skipped++; continue; }
+      const fromAgent = String(s.from_agent || '').trim();
+      const suggestedId = String(s.suggested_id || '').trim().toLowerCase();
+      const suggestedName = String(s.suggested_name || '').trim();
+      const suggestedDescription = String(s.suggested_description || '').trim();
+      const reasoning = String(s.reasoning || '').trim();
+      const sharePct = Math.max(0, Math.min(100, Math.round(Number(s.activity_share_pct) || 0)));
+
+      if (!fromAgent || !existingIds.has(fromAgent)) { skipped++; continue; }
+      if (!/^[a-z0-9-]{2,32}$/.test(suggestedId)) { skipped++; continue; }
+      if (existingIds.has(suggestedId)) { skipped++; continue; }
+      if (!suggestedName || !suggestedDescription || !reasoning) { skipped++; continue; }
+      if (sharePct < 25) { skipped++; continue; }
+      // Don't re-suggest the exact same split we already proposed in
+      // the last 30 days (whether dismissed or still active).
+      if (recentlySuggested.has(`${fromAgent}::${suggestedId}`)) { skipped++; continue; }
+
+      insertAgentSuggestion({
+        from_agent: fromAgent,
+        suggested_id: suggestedId,
+        suggested_name: suggestedName,
+        suggested_description: suggestedDescription.slice(0, 200),
+        reasoning: reasoning.slice(0, 500),
+        activity_share_pct: sharePct,
+      });
+      inserted++;
+    }
+    insertAuditLog('main', '', 'agent_suggestion_refresh', `inserted=${inserted} skipped=${skipped}`, false);
+    return c.json({ ok: true, inserted, skipped, suggestions: listActiveAgentSuggestions() });
+  });
+
+  app.post('/api/agents/suggestions/:id/dismiss', (c) => {
+    const id = parseInt(c.req.param('id'), 10);
+    if (!Number.isFinite(id)) return c.json({ error: 'invalid id' }, 400);
+    const ok = dismissAgentSuggestion(id);
+    if (!ok) return c.json({ error: 'not found or already dismissed' }, 404);
+    insertAuditLog('main', '', 'agent_suggestion_dismiss', `id=${id}`, false);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/agents/suggestions/:id/acted', (c) => {
+    const id = parseInt(c.req.param('id'), 10);
+    if (!Number.isFinite(id)) return c.json({ error: 'invalid id' }, 400);
+    const ok = markAgentSuggestionActed(id);
+    if (!ok) return c.json({ error: 'not found or already acted' }, 404);
+    insertAuditLog('main', '', 'agent_suggestion_acted', `id=${id}`, false);
+    return c.json({ ok: true });
+  });
+
   // ── Agent Creation & Management ──────────────────────────────────────
 
   // List available agent templates
@@ -2352,7 +2513,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const serveWarroomAvatar = (): Response => {
       const data = fs.readFileSync(warroomAvatar);
       return new Response(new Uint8Array(data), {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' },
       });
     };
 
@@ -2383,7 +2544,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (fs.existsSync(cachePath)) {
       const data = fs.readFileSync(cachePath);
       return new Response(new Uint8Array(data), {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' },
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' },
       });
     }
     // Telegram said no photo previously. The flag has a 24h TTL so that
@@ -2432,7 +2593,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       const buf = Buffer.from(await dlRes.arrayBuffer());
       fs.writeFileSync(cachePath, buf);
       return new Response(new Uint8Array(buf), {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' },
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' },
       });
     } catch (err) {
       logger.warn({ err, agentId }, 'Failed to fetch avatar from Telegram');

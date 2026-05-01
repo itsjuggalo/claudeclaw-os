@@ -36,11 +36,11 @@ function isQuotaError(err: unknown): boolean {
  * failure). Caller is responsible for parsing + validation, same as
  * before — keeps the contract identical to generateContent().
  */
-export async function extractViaClaude(prompt: string): Promise<string> {
+export async function extractViaClaude(prompt: string, timeoutMs = 15_000): Promise<string> {
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
   const env = getScrubbedSdkEnv(secrets);
   const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), 15_000);
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
   let text = '';
   try {
     async function* turn(): AsyncGenerator<{

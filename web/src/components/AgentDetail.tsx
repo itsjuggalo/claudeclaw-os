@@ -133,13 +133,17 @@ function Header({ agent }: { agent: Agent }) {
           class="relative block rounded-full focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:outline-none disabled:opacity-50"
           title="Change avatar"
         >
-          {/* avatarVersion forces a remount so AgentAvatar re-fetches */}
+          {/* cacheBust appends ?v=<n> to the avatar URL so the browser
+              skips its 1h HTTP cache and refetches after upload/delete.
+              Without this, the new image bytes are on disk but every
+              IMG element across the dashboard keeps showing the old
+              cached PNG until the cache expires. */}
           <AgentAvatar
-            key={avatarVersion}
             agentId={agent.id}
             name={agent.name}
             running={agent.running}
             size={44}
+            cacheBust={avatarVersion}
           />
           <span class="absolute inset-0 rounded-full flex items-center justify-center bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity">
             <Camera size={16} />

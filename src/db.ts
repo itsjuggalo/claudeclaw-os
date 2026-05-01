@@ -315,6 +315,30 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_file_history_lookup
       ON agent_file_history(agent_id, file_kind, created_at DESC);
 
+    -- LLM-generated suggestions for spinning off specialized agents.
+    -- The analyzer scans hive_mind activity grouped by agent_id and
+    -- spots when one agent is doing several distinct domains that
+    -- would benefit from being split. Each suggestion lives until the
+    -- user dismisses it (sets dismissed_at) or acts on it. We keep
+    -- dismissed rows so re-running analysis doesn't keep re-suggesting
+    -- the same split — the analyzer skips parents+IDs that already
+    -- have a non-superseded suggestion.
+    CREATE TABLE IF NOT EXISTS agent_suggestions (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_agent            TEXT NOT NULL,
+      suggested_id          TEXT NOT NULL,
+      suggested_name        TEXT NOT NULL,
+      suggested_description TEXT NOT NULL,
+      reasoning             TEXT NOT NULL,
+      activity_share_pct    INTEGER,
+      created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      dismissed_at          INTEGER,
+      acted_at              INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_suggestions_active
+      ON agent_suggestions(from_agent, created_at DESC)
+      WHERE dismissed_at IS NULL AND acted_at IS NULL;
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       summary,
       raw_text,
@@ -2918,6 +2942,64 @@ export function getAgentFileHistory(id: number): AgentFileHistoryRow | null {
     `SELECT * FROM agent_file_history WHERE id = ?`,
   ).get(id) as AgentFileHistoryRow | undefined;
   return row ?? null;
+}
+
+// ── Agent suggestions ──────────────────────────────────────────────
+
+export interface AgentSuggestion {
+  id: number;
+  from_agent: string;
+  suggested_id: string;
+  suggested_name: string;
+  suggested_description: string;
+  reasoning: string;
+  activity_share_pct: number | null;
+  created_at: number;
+  dismissed_at: number | null;
+  acted_at: number | null;
+}
+
+export function insertAgentSuggestion(s: Omit<AgentSuggestion, 'id' | 'created_at' | 'dismissed_at' | 'acted_at'>): number {
+  const r = db.prepare(
+    `INSERT INTO agent_suggestions
+       (from_agent, suggested_id, suggested_name, suggested_description, reasoning, activity_share_pct)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(s.from_agent, s.suggested_id, s.suggested_name, s.suggested_description, s.reasoning, s.activity_share_pct);
+  return Number(r.lastInsertRowid);
+}
+
+export function listActiveAgentSuggestions(): AgentSuggestion[] {
+  return db.prepare(
+    `SELECT * FROM agent_suggestions
+     WHERE dismissed_at IS NULL AND acted_at IS NULL
+     ORDER BY created_at DESC`,
+  ).all() as AgentSuggestion[];
+}
+
+export function dismissAgentSuggestion(id: number): boolean {
+  const r = db.prepare(
+    `UPDATE agent_suggestions SET dismissed_at = strftime('%s','now')
+     WHERE id = ? AND dismissed_at IS NULL AND acted_at IS NULL`,
+  ).run(id);
+  return r.changes > 0;
+}
+
+export function markAgentSuggestionActed(id: number): boolean {
+  const r = db.prepare(
+    `UPDATE agent_suggestions SET acted_at = strftime('%s','now')
+     WHERE id = ? AND acted_at IS NULL`,
+  ).run(id);
+  return r.changes > 0;
+}
+
+/** Used by the analyzer to skip re-suggesting splits the user already
+ *  rejected or acted on. Returns the set of (from_agent, suggested_id)
+ *  pairs that have any historical suggestion (active or not). */
+export function getRecentlySuggestedSplits(daysBack = 30): Array<{ from_agent: string; suggested_id: string }> {
+  return db.prepare(
+    `SELECT from_agent, suggested_id FROM agent_suggestions
+     WHERE created_at > strftime('%s','now') - (? * 86400)`,
+  ).all(daysBack) as Array<{ from_agent: string; suggested_id: string }>;
 }
 
 /** Hard cap on retained versions per (agent, kind) so the table doesn't

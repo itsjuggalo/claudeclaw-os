@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
-import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText } from 'lucide-preact';
+import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText, Lightbulb } from 'lucide-preact';
 import { Link } from 'wouter-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
@@ -8,6 +8,7 @@ import { Modal } from '@/components/Modal';
 import { ModelPicker } from '@/components/ModelPicker';
 import { AgentAvatar } from '@/components/AgentAvatar';
 import { AgentDetail } from '@/components/AgentDetail';
+import { AgentSuggestionBadge, AgentSuggestionModal, useAgentSuggestions, type AgentSuggestion } from '@/components/AgentSuggestions';
 import { useFetch } from '@/lib/useFetch';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { apiPost, apiPatch, apiDelete } from '@/lib/api';
@@ -33,7 +34,39 @@ export function Agents() {
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [bulkModel, setBulkModel] = useState<string>('');
   const [detailAgent, setDetailAgent] = useState<Agent | null>(null);
+  const [openedSuggestion, setOpenedSuggestion] = useState<AgentSuggestion | null>(null);
+  const [suggestionPrefill, setSuggestionPrefill] = useState<AgentSuggestion | null>(null);
+  const [refreshingSuggestions, setRefreshingSuggestions] = useState(false);
+  const suggestionsFetch = useAgentSuggestions();
+  const suggestions = suggestionsFetch.data?.suggestions ?? [];
   const agents = data?.agents ?? [];
+
+  async function refreshSuggestions() {
+    setRefreshingSuggestions(true);
+    try {
+      const res = await apiPost<{ inserted: number; skipped: number; reason?: string }>('/api/agents/suggestions/refresh');
+      suggestionsFetch.refresh();
+      if (res.reason) {
+        pushToast({ tone: 'warn', title: 'Not enough activity yet', description: res.reason, durationMs: 6000 });
+      } else if (res.inserted === 0) {
+        pushToast({ tone: 'success', title: 'No new suggestions', description: 'Your agents look well-scoped.' });
+      } else {
+        pushToast({
+          tone: 'success',
+          title: `${res.inserted} suggestion${res.inserted === 1 ? '' : 's'}`,
+          description: 'Look for the lightbulb icon on each agent card.',
+        });
+      }
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Refresh failed', description: err?.message || String(err), durationMs: 7000 });
+    } finally { setRefreshingSuggestions(false); }
+  }
+
+  function actOnSuggestion(s: AgentSuggestion) {
+    setOpenedSuggestion(null);
+    setSuggestionPrefill(s);
+    setWizardOpen(true);
+  }
 
   async function setAllModels(model: string) {
     setPendingAction('bulk-model');
@@ -82,6 +115,22 @@ export function Agents() {
             />
             <button
               type="button"
+              onClick={refreshSuggestions}
+              disabled={refreshingSuggestions}
+              title="Scan hive_mind for agents that should be split"
+              class={[
+                'inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] border transition-colors',
+                suggestions.length > 0
+                  ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)] hover:bg-[var(--color-accent)] hover:text-white'
+                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border-[var(--color-border)]',
+                'disabled:opacity-40',
+              ].join(' ')}
+            >
+              <Lightbulb size={13} />
+              {refreshingSuggestions ? 'Scanning…' : (suggestions.length > 0 ? `${suggestions.length} suggestion${suggestions.length === 1 ? '' : 's'}` : 'Suggestions')}
+            </button>
+            <button
+              type="button"
               onClick={() => setWizardOpen(true)}
               class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors"
             >
@@ -106,19 +155,42 @@ export function Agents() {
                 agent={a}
                 onChange={refresh}
                 onOpen={() => setDetailAgent(a)}
+                suggestions={suggestions}
+                onOpenSuggestion={(s) => setOpenedSuggestion(s)}
               />
             ))}
           </div>
         </div>
       )}
 
-      <CreateAgentWizard open={wizardOpen} onClose={() => setWizardOpen(false)} onCreated={refresh} />
+      <CreateAgentWizard
+        open={wizardOpen}
+        onClose={() => { setWizardOpen(false); setSuggestionPrefill(null); }}
+        onCreated={refresh}
+        prefill={suggestionPrefill ? {
+          id: suggestionPrefill.suggested_id,
+          name: suggestionPrefill.suggested_name,
+          description: suggestionPrefill.suggested_description,
+        } : undefined}
+      />
       <AgentDetail agent={detailAgent} onClose={() => setDetailAgent(null)} />
+      <AgentSuggestionModal
+        suggestion={openedSuggestion}
+        onClose={() => setOpenedSuggestion(null)}
+        onActed={actOnSuggestion}
+        onChange={suggestionsFetch.refresh}
+      />
     </div>
   );
 }
 
-function AgentCard({ agent, onChange, onOpen }: { agent: Agent; onChange: () => void; onOpen: () => void }) {
+function AgentCard({ agent, onChange, onOpen, suggestions, onOpenSuggestion }: {
+  agent: Agent;
+  onChange: () => void;
+  onOpen: () => void;
+  suggestions: AgentSuggestion[];
+  onOpenSuggestion: (s: AgentSuggestion) => void;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
 
   async function run(action: 'restart' | 'stop' | 'start' | 'delete') {
@@ -180,6 +252,7 @@ function AgentCard({ agent, onChange, onOpen }: { agent: Agent; onChange: () => 
             <span class="text-[13px] font-medium text-[var(--color-text)] truncate">
               {agent.name || agent.id}
             </span>
+            <AgentSuggestionBadge agentId={agent.id} suggestions={suggestions} onOpen={onOpenSuggestion} />
           </div>
           <div class="text-[10px] text-[var(--color-text-faint)] uppercase tracking-wider">
             {agent.id}
@@ -266,7 +339,16 @@ function AgentCard({ agent, onChange, onOpen }: { agent: Agent; onChange: () => 
 
 // ── Wizard ───────────────────────────────────────────────────────────
 
-function CreateAgentWizard({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+interface CreateAgentWizardProps {
+  open: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+  /** Optional pre-fill from a suggestion ("spin off X" flow). When set,
+   *  the wizard opens to step 1 with id/name/description already filled. */
+  prefill?: { id: string; name: string; description: string };
+}
+
+function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWizardProps) {
   const [step, setStep] = useState(1);
   const [id, setId] = useState('');
   const [name, setName] = useState('');
@@ -283,6 +365,18 @@ function CreateAgentWizard({ open, onClose, onCreated }: { open: boolean; onClos
 
   const debouncedId = useDebouncedValue(id, 350);
   const debouncedToken = useDebouncedValue(botToken, 600);
+
+  // Apply suggestion-driven prefill when the wizard opens with one.
+  // We watch on open transition to avoid clobbering user edits if they
+  // tweak the prefilled fields before clicking Next.
+  useEffect(() => {
+    if (open && prefill) {
+      setId(prefill.id);
+      setName(prefill.name);
+      setNameTouched(true); // suppress the auto-generate-name effect
+      setDescription(prefill.description);
+    }
+  }, [open, prefill?.id]);
 
   // Reset on close.
   function close() {
