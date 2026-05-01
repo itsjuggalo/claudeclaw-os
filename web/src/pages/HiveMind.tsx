@@ -1,5 +1,6 @@
-import { useState } from 'preact/hooks';
-import { Brain as BrainIcon, List as ListIcon } from 'lucide-preact';
+import { useEffect, useState, useMemo } from 'preact/hooks';
+import { lazy, Suspense } from 'preact/compat';
+import { Brain as BrainIcon, Box, List as ListIcon } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { PrivacyToggle } from '@/components/PrivacyToggle';
@@ -7,6 +8,13 @@ import { BrainGraph } from '@/components/BrainGraph';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime } from '@/lib/format';
 import { privacyBlur } from '@/lib/privacy';
+import { hasWebGL } from '@/lib/webgl';
+
+// Lazy-load 3D so the ~150KB three.js bundle only ships when the user
+// flips to the 3D view. Default 2D path stays cheap.
+const BrainGraph3D = lazy(() =>
+  import('@/components/BrainGraph3D').then((m) => ({ default: m.BrainGraph3D })),
+);
 
 interface HiveEntry {
   id: number;
@@ -28,21 +36,21 @@ const AGENT_HUE: Record<string, string> = {
 
 const KNOWN_AGENTS = ['main', 'research', 'comms', 'content', 'ops'];
 const VIEW_KEY = 'claudeclaw.hive.view';
-type ViewMode = 'brain' | 'activity';
+type ViewMode = 'brain2d' | 'brain3d' | 'activity';
 
 function loadView(): ViewMode {
   try {
     const v = localStorage.getItem(VIEW_KEY);
-    if (v === 'brain' || v === 'activity') return v;
+    if (v === 'brain2d' || v === 'brain3d' || v === 'activity') return v;
+    // Migrate the old 'brain' value to 'brain2d'.
+    if (v === 'brain') return 'brain2d';
   } catch {}
-  return 'brain';
+  return 'brain2d';
 }
 
 export function HiveMind() {
   const [filter, setFilter] = useState<string>('all');
   const [view, setView] = useState<ViewMode>(loadView());
-  // Per-row reveal overrides — session only, not persisted. Clicking a
-  // blurred summary unblurs that row until the page closes.
   const [revealed, setRevealed] = useState<Set<number>>(new Set());
   const agentList = useFetch<{ agents: { id: string }[] }>('/api/agents');
   const path = filter === 'all'
@@ -52,6 +60,12 @@ export function HiveMind() {
   const entries = data?.entries ?? [];
   const allAgents = agentList.data?.agents?.map((a) => a.id) ?? KNOWN_AGENTS;
   const blurOn = privacyBlur('hive').value;
+
+  // Resolve to 2D if user requested 3D but the browser can't do WebGL.
+  const webgl = useMemo(() => hasWebGL(), []);
+  const effectiveView: ViewMode = view === 'brain3d' && !webgl ? 'brain2d' : view;
+  // One-time hint when we silently downgraded.
+  const downgraded = view === 'brain3d' && !webgl;
 
   function setViewPersisted(v: ViewMode) {
     setView(v);
@@ -73,7 +87,7 @@ export function HiveMind() {
           <>
             <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums">{entries.length} entries</span>
             <PrivacyToggle section="hive" />
-            <ViewSwitcher view={view} onChange={setViewPersisted} />
+            <ViewSwitcher view={view} onChange={setViewPersisted} webglAvailable={webgl} />
           </>
         }
         tabs={
@@ -85,6 +99,11 @@ export function HiveMind() {
           </>
         }
       />
+      {downgraded && (
+        <div class="px-6 py-2 text-[11px] text-[var(--color-text-muted)] bg-[var(--color-elevated)] border-b border-[var(--color-border)]">
+          WebGL isn't available on this device. Showing the 2D brain instead.
+        </div>
+      )}
       {error && <PageState error={error} />}
       {loading && !data && <PageState loading />}
       {!loading && !error && entries.length === 0 && (
@@ -95,7 +114,7 @@ export function HiveMind() {
         />
       )}
 
-      {entries.length > 0 && view === 'brain' && (
+      {entries.length > 0 && effectiveView === 'brain2d' && (
         <BrainGraph
           entries={entries}
           agentFilter={filter}
@@ -104,7 +123,22 @@ export function HiveMind() {
         />
       )}
 
-      {entries.length > 0 && view === 'activity' && (
+      {entries.length > 0 && effectiveView === 'brain3d' && (
+        <Suspense fallback={
+          <div class="flex-1 flex items-center justify-center text-[12px] text-[var(--color-text-muted)]">
+            Loading 3D engine…
+          </div>
+        }>
+          <BrainGraph3D
+            entries={entries}
+            agentFilter={filter}
+            agentColors={AGENT_HUE}
+            blurOn={blurOn}
+          />
+        </Suspense>
+      )}
+
+      {entries.length > 0 && effectiveView === 'activity' && (
         <div class="flex-1 overflow-y-auto">
           <table class="w-full text-[12px]">
             <thead class="sticky top-0 bg-[var(--color-bg)] border-b border-[var(--color-border)]">
@@ -122,23 +156,15 @@ export function HiveMind() {
                     {formatRelativeTime(e.created_at)}
                   </td>
                   <td class="px-3 py-2">
-                    <span
-                      class="inline-flex items-center gap-1.5"
-                      style={{ color: AGENT_HUE[e.agent_id] || 'var(--color-text-muted)' }}
-                    >
+                    <span class="inline-flex items-center gap-1.5" style={{ color: AGENT_HUE[e.agent_id] || 'var(--color-text-muted)' }}>
                       <span class="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'currentColor' }} />
                       {e.agent_id}
                     </span>
                   </td>
-                  <td class="px-3 py-2 font-mono text-[11px] text-[var(--color-text-muted)]">
-                    {e.action}
-                  </td>
+                  <td class="px-3 py-2 font-mono text-[11px] text-[var(--color-text-muted)]">{e.action}</td>
                   <td class="px-3 py-2 text-[var(--color-text)] truncate max-w-0">
                     <span
-                      class={[
-                        blurOn ? 'privacy-blur' : '',
-                        revealed.has(e.id) ? 'revealed' : '',
-                      ].filter(Boolean).join(' ')}
+                      class={[blurOn ? 'privacy-blur' : '', revealed.has(e.id) ? 'revealed' : ''].filter(Boolean).join(' ')}
                       onClick={(ev) => { ev.stopPropagation(); toggleRow(e.id); }}
                     >
                       {e.summary}
@@ -154,31 +180,50 @@ export function HiveMind() {
   );
 }
 
-function ViewSwitcher({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) => void }) {
+function ViewSwitcher({
+  view, onChange, webglAvailable,
+}: {
+  view: ViewMode;
+  onChange: (v: ViewMode) => void;
+  webglAvailable: boolean;
+}) {
   return (
     <div class="inline-flex bg-[var(--color-elevated)] border border-[var(--color-border)] rounded p-0.5">
-      <button
-        type="button"
-        onClick={() => onChange('brain')}
-        class={[
-          'inline-flex items-center justify-center w-7 h-7 rounded transition-colors',
-          view === 'brain' ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
-        ].join(' ')}
-        title="Brain view"
-      >
-        <BrainIcon size={13} />
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange('activity')}
-        class={[
-          'inline-flex items-center justify-center w-7 h-7 rounded transition-colors',
-          view === 'activity' ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
-        ].join(' ')}
-        title="Activity table"
-      >
-        <ListIcon size={13} />
-      </button>
+      <ViewBtn icon={<BrainIcon size={13} />} title="2D brain" active={view === 'brain2d'} onClick={() => onChange('brain2d')} />
+      <ViewBtn
+        icon={<Box size={13} />}
+        title={webglAvailable ? '3D brain' : '3D brain (WebGL not available)'}
+        active={view === 'brain3d'}
+        onClick={() => onChange('brain3d')}
+        disabled={!webglAvailable}
+      />
+      <ViewBtn icon={<ListIcon size={13} />} title="Activity table" active={view === 'activity'} onClick={() => onChange('activity')} />
     </div>
+  );
+}
+
+function ViewBtn({
+  icon, title, active, onClick, disabled,
+}: {
+  icon: any;
+  title: string;
+  active: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      class={[
+        'inline-flex items-center justify-center w-7 h-7 rounded transition-colors',
+        active ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
+        disabled ? 'opacity-30 cursor-not-allowed' : '',
+      ].join(' ')}
+    >
+      {icon}
+    </button>
   );
 }
