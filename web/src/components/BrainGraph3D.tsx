@@ -421,11 +421,18 @@ function prepareLoadedBrainModel(
 // vertex by its lobe's activity intensity. Bloom catches the bright
 // spots, so heavily-active lobes glow visibly. Cheap O(verts) on
 // each entry change — typically called once per refresh.
+// Reference activity count where a lobe is considered "fully lit".
+// Using a fixed reference (rather than max-of-current-lobes) means
+// unchecking the busiest lobe doesn't cause the others to suddenly
+// look brighter — each lobe's brightness reflects its actual entry
+// count, independent of how active its siblings are.
+const ACTIVITY_FULL_LIT = 30;
+
 function applyActivityGlow(
   brainGeos: BrainGeoSnapshot[],
   activityByLobe: Record<string, number>,
-  maxActivity: number,
   hoveredLobe: string | null,
+  glowIntensity: number,
 ) {
   if (brainGeos.length === 0) return;
   for (const geo of brainGeos) {
@@ -437,12 +444,11 @@ function applyActivityGlow(
     for (let i = 0; i < lobeIds.length; i++) {
       const lobeId = lobeIds[i];
       const activity = activityByLobe[lobeId] || 0;
-      const t = maxActivity > 0 ? activity / maxActivity : 0;
-      // Strong baseline (1.6×) so every lobe reads as lit, with a
-      // softer activity curve on top. The squashed curve keeps the
-      // gradient between active and quiet lobes visible without
-      // letting the busiest lobe blow out the bloom.
-      let boost = 1.6 + Math.pow(t, 0.5) * 0.9;
+      // Absolute activity scaled to a fixed reference. Quiet lobes
+      // sit at baseline (1.6×); a lobe with 30+ entries reaches the
+      // full activity boost regardless of how busy its siblings are.
+      const t = Math.min(1, activity / ACTIVITY_FULL_LIT);
+      let boost = 1.6 + Math.pow(t, 0.5) * 0.9 * glowIntensity;
       if (hoveredLobe && lobeId === hoveredLobe) {
         boost *= 1.4;
       }
@@ -817,9 +823,9 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       const color = new THREE.Color(colorHex);
 
       // Dot meshes are kept around for raycasting (hover/click) but
-      // rendered invisibly — the activity-glow effect on the brain's
-      // own vertex colors is now what visualizes per-lobe density.
-      const r = 0.022 * filters.nodeSize;
+      // rendered invisibly. Fixed radius — they're not visible, so
+      // the user-facing slider is now Glow intensity instead.
+      const r = 0.04;
       const dotGeo = new THREE.SphereGeometry(r, 8, 8);
       const dotMat = new THREE.MeshBasicMaterial({
         color, transparent: true, opacity: 0, depthWrite: false,
@@ -869,9 +875,8 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       if (filters.hiddenLobes.has(lobe)) continue;
       activity[lobe] = (activity[lobe] || 0) + 1;
     }
-    const maxActivity = Math.max(1, ...Object.values(activity));
-    applyActivityGlow(state.brainGeos, activity, maxActivity, hoveredLobe);
-  }, [entries, ready, filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter, hoveredLobe]);
+    applyActivityGlow(state.brainGeos, activity, hoveredLobe, filters.nodeSize);
+  }, [entries, ready, filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter, hoveredLobe, filters.nodeSize]);
 
   // Apply visibility (agent / lobe / search filter) without rebuilding meshes.
   useEffect(() => {
@@ -1259,7 +1264,14 @@ function FilterPanel({
           </div>
         </Section>
         <Section label="Display" open={openSection.display} onToggle={() => setOpenSection((s) => ({ ...s, display: !s.display }))}>
-          <SliderRow label="Node size" value={filters.nodeSize} min={0.5} max={2} step={0.05} onInput={(v) => update('nodeSize', v)} />
+          <SliderRow
+            label="Glow intensity"
+            value={filters.nodeSize}
+            min={0}
+            max={2}
+            step={0.05}
+            onInput={(v) => update('nodeSize', v)}
+          />
         </Section>
       </div>
     </>
