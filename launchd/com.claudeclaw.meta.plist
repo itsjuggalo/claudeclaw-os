@@ -6,7 +6,7 @@
   <string>com.claudeclaw.meta</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/Cellar/node/23.11.0/bin/node</string>
+    <string>__NODE_PATH__</string>
     <string>dist/index.js</string>
     <string>--agent</string>
     <string>meta</string>
@@ -18,7 +18,7 @@
     <key>NODE_ENV</key>
     <string>production</string>
     <key>PATH</key>
-    <string>/opt/homebrew/Cellar/node/23.11.0/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>__HOME__</string>
   </dict>
