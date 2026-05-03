@@ -65,6 +65,7 @@ vi.mock('./security.js', () => ({
 const {
   pickSlashRoster,
   maybeLogWarRoomToHive,
+  SLASH_HARD_CAP,
 } = await import('./warroom-text-orchestrator.js');
 
 type Roster = Array<{ id: string; name: string; description: string }>;
@@ -80,6 +81,29 @@ beforeEach(() => {
   // pickSlashRoster keeps a module-level rotation offset map keyed by
   // meetingId. Each test that exercises rotation uses a fresh meetingId
   // so cases don't leak through that map.
+});
+
+// ── SLASH_HARD_CAP ↔ UI MAX_CAP regression (F-03) ───────────────────
+// If you change SLASH_HARD_CAP, update MAX_CAP in
+// web/src/pages/StandupConfig.tsx in the same commit. The test reads
+// the .tsx source and re-derives MAX_CAP so the constant cannot drift
+// silently between the slider's upper bound and the server's clamp.
+
+describe('SLASH_HARD_CAP ↔ UI MAX_CAP', () => {
+  it('matches the value the UI assumes (currently 8)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('path');
+    expect(SLASH_HARD_CAP).toBe(8);
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'web', 'src', 'pages', 'StandupConfig.tsx'),
+      'utf8',
+    );
+    const m = src.match(/const\s+MAX_CAP\s*=\s*(\d+)/);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBe(SLASH_HARD_CAP);
+  });
 });
 
 // ── pickSlashRoster ──────────────────────────────────────────────────

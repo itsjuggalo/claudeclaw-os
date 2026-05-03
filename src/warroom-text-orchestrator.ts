@@ -859,7 +859,10 @@ const SLASH_CANONICAL_ORDER = ['research', 'ops', 'comms', 'content', 'main'];
 // the dynamic per-agent budget computed below, we stay safely under
 // that ceiling. Rosters bigger than 8 are rare; if you hit it, add
 // follow-up /standup runs or raise this cap and the watchdog together.
-const SLASH_HARD_CAP = 8;
+// Exported so the UI can pin a regression test against drift between
+// web/src/pages/StandupConfig.tsx (MAX_CAP) and this constant. Mark the
+// pair as load-bearing if you ever change either side.
+export const SLASH_HARD_CAP = 8;
 
 // Total budget across all speakers in a single slash-command turn.
 // 270s leaves 30s headroom under the 300s queue watchdog for SDK
