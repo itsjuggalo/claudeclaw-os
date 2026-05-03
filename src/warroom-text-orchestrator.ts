@@ -918,9 +918,14 @@ function dedupePreserveOrder(ids: string[]): string[] {
   return out;
 }
 
-function pickSlashRoster(
+export type StandupConfigReader = () => StandupConfigPersisted | null;
+
+export function pickSlashRoster(
   roster: RosterAgent[],
   opts: { forceOrder?: string[]; meetingId?: string } = {},
+  // Test seam: callers in production use the SQLite-backed loader;
+  // tests pass a stub so they don't need an in-memory database.
+  configReader: StandupConfigReader = loadStandupConfig,
 ): { speakers: string[]; skipped: string[]; budgetMs: number; adhoc: boolean } {
   const rosterIds = new Set(roster.map((r) => r.id));
 
@@ -939,7 +944,7 @@ function pickSlashRoster(
     return { speakers, skipped, budgetMs, adhoc: true };
   }
 
-  const config = loadStandupConfig();
+  const config = configReader();
 
   let ordered: string[];
   let cap = SLASH_HARD_CAP;
@@ -1937,17 +1942,20 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         // Hive-mind row for the team rail / Hive Mind page. Without
         // this, agents only used in War Room (or via /standup) end
         // up with empty hive ledgers — exactly the "Content has zero
-        // entries" failure the user spotted. Dedupe via the
-        // assistantInserted check so retry replays don't double-log.
-        // Floor on length filters out one-word "ok" / "noted" replies
-        // that aren't worth surfacing in the activity feed.
-        if (finalText.trim().length >= 25) {
-          try {
-            const action = role === 'primary' ? 'warroom_reply' : 'warroom_chime_in';
-            logToHiveMind(agentId, meetingChatId, action, finalText.slice(0, 280));
-          } catch (err) {
-            logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'logToHiveMind from warroom failed');
-          }
+        // entries" failure the user spotted. All gating lives in
+        // maybeLogWarRoomToHive so the rules are testable without
+        // standing up the full SDK turn pipeline.
+        try {
+          maybeLogWarRoomToHive({
+            agentId,
+            meetingChatId,
+            role,
+            finalText,
+            incomplete: !!incomplete,
+            assistantInserted: true,
+          });
+        } catch (err) {
+          logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'logToHiveMind from warroom failed');
         }
       }
     } catch (err) {
@@ -1992,6 +2000,46 @@ function sdkEnvStripped(): Record<string, string | undefined> {
   // point in the codebase strips the same set of secret-shaped vars.
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
   return getScrubbedSdkEnv(secrets);
+}
+
+// ── Hive-mind logging gate ───────────────────────────────────────────
+// Pulled out of runAgentTurn so the rules — empty-chat skip, sub-25-char
+// floor, retry-replay dedupe, primary-vs-intervener action — can be
+// asserted by unit tests without booting the SDK. Returns the action
+// that was logged (or null) so tests can assert the routing decision.
+
+export interface MaybeHiveLogArgs {
+  agentId: string;
+  meetingChatId: string;
+  role: 'primary' | 'intervener';
+  finalText: string;
+  incomplete: boolean;
+  /** False on retry replays where the assistant insert was a no-op.
+   *  Defends against double-logging the same reply on retry. */
+  assistantInserted: boolean;
+}
+
+export type HiveLogFn = (
+  agentId: string,
+  chatId: string,
+  action: string,
+  summary: string,
+) => void;
+
+export function maybeLogWarRoomToHive(
+  args: MaybeHiveLogArgs,
+  logFn: HiveLogFn = logToHiveMind,
+): { logged: boolean; action: 'warroom_reply' | 'warroom_chime_in' | null; summary: string | null } {
+  const { agentId, meetingChatId, role, finalText, incomplete, assistantInserted } = args;
+  if (!meetingChatId) return { logged: false, action: null, summary: null };
+  if (!finalText) return { logged: false, action: null, summary: null };
+  if (incomplete) return { logged: false, action: null, summary: null };
+  if (!assistantInserted) return { logged: false, action: null, summary: null };
+  if (finalText.trim().length < 25) return { logged: false, action: null, summary: null };
+  const action = role === 'primary' ? 'warroom_reply' : 'warroom_chime_in';
+  const summary = finalText.slice(0, 280);
+  logFn(agentId, meetingChatId, action, summary);
+  return { logged: true, action, summary };
 }
 
 // ── Test-only exports ────────────────────────────────────────────────
