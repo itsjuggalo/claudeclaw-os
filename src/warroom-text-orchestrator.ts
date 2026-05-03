@@ -2042,13 +2042,3 @@ export function maybeLogWarRoomToHive(
   return { logged: true, action, summary };
 }
 
-// ── Test-only exports ────────────────────────────────────────────────
-
-export const _test = {
-  extractAllAtMentions,
-  emitNullPrimaryNote,
-  routerContextFor,
-  isGreeting,
-  isAcknowledgment,
-  isSocialMessage,
-};

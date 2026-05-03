@@ -67,9 +67,13 @@ const {
   maybeLogWarRoomToHive,
 } = await import('./warroom-text-orchestrator.js');
 
-type Roster = Array<{ id: string; name: string }>;
+type Roster = Array<{ id: string; name: string; description: string }>;
 function buildRoster(ids: string[]): Roster {
-  return ids.map((id) => ({ id, name: id[0].toUpperCase() + id.slice(1) }));
+  return ids.map((id) => ({
+    id,
+    name: id[0].toUpperCase() + id.slice(1),
+    description: '',
+  }));
 }
 
 beforeEach(() => {
