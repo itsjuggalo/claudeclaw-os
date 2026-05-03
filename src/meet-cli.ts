@@ -861,9 +861,10 @@ Commands:
   list        [--active]
   show        --session-id <id>
 
-Pika avatar files: warroom/avatars/<agent>-meet.(png|jpg|jpeg), falling
-back to <agent>.png. voice_id defaults to the Pika preset ${DEFAULT_VOICE_ID}
-if agent.yaml has no meet_voice_id field. Briefing budget: ${BRIEF_TIMEOUT_SEC}s.
+Pika avatar files: warroom/avatars/<agent>-meet.png, falling back to
+<agent>.png (PNG only — the resolver doesn't load .jpg/.jpeg). voice_id
+defaults to the Pika preset ${DEFAULT_VOICE_ID} if agent.yaml has no
+meet_voice_id field. Briefing budget: ${BRIEF_TIMEOUT_SEC}s.
 `);
 }
 
