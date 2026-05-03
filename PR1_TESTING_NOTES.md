@@ -37,7 +37,7 @@ Vite dev validated against running backend on `:3141` (legacy code) plus new `/a
 
 ## Backend additions in this session
 
-- **`GET /api/agents/:id/avatar`** — lazy fetch via Telegram `getMe` → `getFile` → cache as `agents/<id>/avatar.png`. 1h browser cache. Returns 204 if bot has no photo, 404 if agent doesn't exist. **Needs backend restart to ship.**
+- **`GET /api/agents/:id/avatar`** — lazy fetch via Telegram `getMe` → `getFile` → cache as `agents/<id>/avatar.png`. ETag-based revalidation (`Cache-Control: no-cache, must-revalidate`); the browser stores bytes but checks the tag on every request, and the resolver returns `304` when nothing changed. Returns `204` when the agent exists but has no avatar resolved. Returns `400 {error}` on a malformed id and (per the avatar status-code consistency pass) `404 {error}` on an unknown agent id. **Needs backend restart to ship.**
 
 ## Commands the new UI hits (verified wired)
 
