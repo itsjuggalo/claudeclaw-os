@@ -2732,7 +2732,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // JSON {agents: [{id, enabled}], maxSpeakers}. Drives /standup
     // and /discuss in the text War Room — the user picks who's in,
     // their order, and the cap. Read by pickSlashRoster() in
-    // src/warroom-text-orchestrator.ts. See web/src/pages/Standup.tsx.
+    // src/warroom-text-orchestrator.ts. UI: web/src/pages/StandupConfig.tsx.
     'standup_config',
   ]);
   const SETTING_VALUE_MAX_BYTES = 4 * 1024;
