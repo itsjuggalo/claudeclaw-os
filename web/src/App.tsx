@@ -22,7 +22,7 @@ import { DEFAULT_ROUTE } from '@/lib/routes';
 export function App() {
   const open = sidebarOpen.value;
   return (
-    <div class="flex h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+    <div class="flex h-screen h-[100dvh] bg-[var(--color-bg)] text-[var(--color-text)]">
       {/* Mobile-only hamburger. Hidden on >=md where the sidebar is
        *  always inline. */}
       <button

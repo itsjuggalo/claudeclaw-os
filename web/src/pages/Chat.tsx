@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { Send, Square, Sparkles } from 'lucide-preact';
+import { Send, Square, Sparkles, ArrowDown } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { StatusDot } from '@/components/Pill';
@@ -36,6 +36,17 @@ export function Chat() {
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamConnected = chatStreamConnected.value;
+  // Track whether the message list is scrolled near the bottom. Drives
+  // the floating "scroll to latest" button and tells the auto-scroll
+  // effect whether it's safe to jump on a new turn (we don't yank the
+  // viewport while the user is reading older messages).
+  const [atBottom, setAtBottom] = useState(true);
+
+  function scrollToBottom(smooth = true) {
+    const el = messagesRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  }
 
   // Live session info for the bar.
   const health = useFetch<Health>(`/api/health?chatId=${encodeURIComponent(chatId)}`, 30_000);
@@ -56,9 +67,28 @@ export function Chat() {
       .finally(() => setLoading(false));
   }, [activeAgent]);
 
+  // Auto-scroll only when the user is already near the bottom. New
+  // messages arriving while they're reading history shouldn't yank
+  // them away.
   useEffect(() => {
-    if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
-  }, [turns, processing]);
+    if (atBottom && messagesRef.current) {
+      messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+    }
+  }, [turns, processing, atBottom]);
+
+  // Watch the message list scroll position so the "scroll to latest"
+  // button shows up the moment the user scrolls away from the bottom.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    function onScroll() {
+      const dist = el!.scrollHeight - el!.scrollTop - el!.clientHeight;
+      setAtBottom(dist < 60);
+    }
+    el.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [activeAgent]);
 
   // Subscribe to the global chat SSE (started in main.tsx). The page just
   // reads the events; the stream itself stays open for the whole app
@@ -158,14 +188,27 @@ export function Chat() {
         agentLabel={activeAgentObj ? activeAgentObj.name || activeAgentObj.id : undefined}
       />
 
-      <div ref={messagesRef} class="flex-1 overflow-y-auto px-6 py-4 space-y-2">
-        {error && <div class="text-[var(--color-status-failed)] text-[11.5px]">{error}</div>}
-        {loading && <PageState loading />}
-        {!loading && turns.length === 0 && (
-          <PageState empty emptyTitle="No messages yet" emptyDescription="Type below to talk to your agent. Replies stream in via SSE." />
+      <div class="relative flex-1 min-h-0">
+        <div ref={messagesRef} class="absolute inset-0 overflow-y-auto px-6 py-4 space-y-2">
+          {error && <div class="text-[var(--color-status-failed)] text-[11.5px]">{error}</div>}
+          {loading && <PageState loading />}
+          {!loading && turns.length === 0 && (
+            <PageState empty emptyTitle="No messages yet" emptyDescription="Type below to talk to your agent. Replies stream in via SSE." />
+          )}
+          {turns.map((t, i) => <Bubble key={i} turn={t} />)}
+          {processing && <ProcessingBubble label={progressLabel} />}
+        </div>
+        {!atBottom && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom(true)}
+            class="absolute bottom-3 right-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-medium bg-[var(--color-accent)] text-white shadow-lg hover:bg-[var(--color-accent-hover)] transition-colors"
+            aria-label="Scroll to latest message"
+          >
+            <ArrowDown size={13} />
+            Latest
+          </button>
         )}
-        {turns.map((t, i) => <Bubble key={i} turn={t} />)}
-        {processing && <ProcessingBubble label={progressLabel} />}
       </div>
 
       <div class="border-t border-[var(--color-border)] px-4 pt-2 pb-3">
