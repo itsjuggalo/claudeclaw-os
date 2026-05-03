@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import { logger } from './logger.js';
 
@@ -195,15 +196,24 @@ function scanDirectory(dir: string): void {
 /**
  * Scan skills/ (relative to project root) and ~/.claude/skills/ to
  * populate the registry. Safe to call multiple times; clears previous state.
+ *
+ * `projectRootOverride` redirects the project-skills scan to a different
+ * directory — used by tests to point at a temp fixture root instead of the
+ * real repo. In production the override is omitted and the path is derived
+ * from this file's location via fileURLToPath() (decodes URL-encoded chars
+ * so paths with spaces / parens / unicode resolve correctly).
  */
-export function initSkillRegistry(): void {
+export function initSkillRegistry(projectRootOverride?: string): void {
   skills.clear();
 
-  // Find project root by walking up from this file looking for CLAUDE.md
-  let projectRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-  // Fallback: look for CLAUDE.md to confirm
+  // fileURLToPath decodes URL-encoded characters (e.g. %20 → space).
+  // The previous implementation used `new URL(import.meta.url).pathname`
+  // directly, which left %20 in the path and silently broke the project
+  // skills scan for anyone whose clone path contained a space.
+  let projectRoot = projectRootOverride
+    ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
   if (!fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))) {
-    // Already at a reasonable default, just continue
     logger.debug({ projectRoot }, 'CLAUDE.md not found at expected project root');
   }
 
