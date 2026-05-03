@@ -449,6 +449,56 @@ describe('PATCH /api/agents/:id/model', () => {
   });
 });
 
+describe('PATCH /api/dashboard/settings standup_config', () => {
+  async function patchStandupConfig(value: string) {
+    return app.request('/api/dashboard/settings' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'standup_config', value }),
+    });
+  }
+
+  it('accepts a well-formed payload', async () => {
+    const res = await patchStandupConfig(JSON.stringify({
+      agents: [{ id: 'main', enabled: true }, { id: 'comms', enabled: false }],
+      maxSpeakers: 5,
+    }));
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects non-JSON value with 400', async () => {
+    const res = await patchStandupConfig('not json {');
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body.error).toMatch(/standup_config/);
+  });
+
+  it('rejects agents-not-an-array with 400', async () => {
+    const res = await patchStandupConfig(JSON.stringify({ agents: 'nope', maxSpeakers: 5 }));
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body.error).toMatch(/agents must be an array/);
+  });
+
+  it('rejects an agent entry without an id with 400', async () => {
+    const res = await patchStandupConfig(JSON.stringify({
+      agents: [{ enabled: true }],
+      maxSpeakers: 5,
+    }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects maxSpeakers out of [1, 8] with 400', async () => {
+    const res = await patchStandupConfig(JSON.stringify({
+      agents: [{ id: 'main', enabled: true }],
+      maxSpeakers: 99,
+    }));
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body.error).toMatch(/maxSpeakers/);
+  });
+});
+
 describe('GET /api/warroom/agents', () => {
   it('returns { agents: [...] } with main present', async () => {
     const res = await get('/api/warroom/agents');

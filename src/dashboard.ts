@@ -2741,6 +2741,37 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return c.json(getAllDashboardSettings());
   });
 
+  // Per-key shape validators. The byte cap upstream of this catches a
+  // hostile blob; per-key shape validation catches the case where a bug
+  // in the UI saves a structurally wrong but small payload that would
+  // then read back as defaults at /standup time.
+  function validateStandupConfigJson(value: string): string | null {
+    let parsed: unknown;
+    try { parsed = JSON.parse(value); }
+    catch { return 'standup_config: value must be valid JSON'; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return 'standup_config: value must be a JSON object';
+    }
+    const obj = parsed as Record<string, unknown>;
+    if (!Array.isArray(obj.agents)) {
+      return 'standup_config: agents must be an array';
+    }
+    for (const a of obj.agents) {
+      if (!a || typeof a !== 'object' || typeof (a as { id?: unknown }).id !== 'string') {
+        return 'standup_config: each agent entry must be { id: string, enabled?: boolean }';
+      }
+      const enabled = (a as { enabled?: unknown }).enabled;
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        return 'standup_config: agent.enabled must be boolean when present';
+      }
+    }
+    if (typeof obj.maxSpeakers !== 'number' || !Number.isFinite(obj.maxSpeakers)
+        || !Number.isInteger(obj.maxSpeakers) || obj.maxSpeakers < 1 || obj.maxSpeakers > 8) {
+      return 'standup_config: maxSpeakers must be an integer in [1, 8]';
+    }
+    return null;
+  }
+
   app.patch('/api/dashboard/settings', async (c) => {
     const body = await c.req.json().catch(() => null) as { key?: string; value?: string } | null;
     if (!body || typeof body.key !== 'string' || typeof body.value !== 'string') {
@@ -2751,6 +2782,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
     if (Buffer.byteLength(body.value, 'utf8') > SETTING_VALUE_MAX_BYTES) {
       return c.json({ error: `value exceeds ${SETTING_VALUE_MAX_BYTES} bytes` }, 400);
+    }
+    if (body.key === 'standup_config') {
+      const err = validateStandupConfigJson(body.value);
+      if (err) return c.json({ error: err }, 400);
     }
     // Workspace name has its own length cap so the sidebar layout stays
     // sane. Strip control chars + zero-width joiners; trim whitespace.
