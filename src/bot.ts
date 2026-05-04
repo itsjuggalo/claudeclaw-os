@@ -133,6 +133,11 @@ export function setMainModelOverride(model: string): void {
   if (ALLOWED_CHAT_ID) chatModelOverride.set(ALLOWED_CHAT_ID, model);
 }
 
+export function getMainModelOverride(): string | undefined {
+  if (!ALLOWED_CHAT_ID) return undefined;
+  return chatModelOverride.get(ALLOWED_CHAT_ID);
+}
+
 // WhatsApp state per Telegram chat
 interface WaStateList { mode: 'list'; chats: WaChat[] }
 interface WaStateChat { mode: 'chat'; chatId: string; chatName: string }

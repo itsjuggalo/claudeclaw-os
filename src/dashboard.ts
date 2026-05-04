@@ -90,7 +90,7 @@ import {
   suggestBotNames,
   isAgentRunning,
 } from './agent-create.js';
-import { processMessageFromDashboard } from './bot.js';
+import { getMainModelOverride, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
 import { getWarRoomPickerHtml } from './warroom-text-picker-html.js';
@@ -1882,11 +1882,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
           } catch { /* process not running */ }
         }
         const stats = getAgentTokenStats(id);
+        const mainOverride = id === 'main' ? getMainModelOverride() : undefined;
         return {
           id,
           name: config.name,
           description: config.description,
-          model: config.model ?? 'claude-opus-4-6',
+          model: mainOverride ?? config.model ?? 'claude-opus-4-6',
           running,
           todayTurns: stats.todayTurns,
           todayCost: stats.todayCost,
@@ -1911,7 +1912,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
     const mainStats = getAgentTokenStats('main');
     const allAgents = [
-      { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
+      { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: getMainModelOverride() ?? 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
       ...agents,
     ];
 
