@@ -264,6 +264,41 @@ Then restart the bot (Ctrl+C and `npm start`, or restart the background service)
 
 ---
 
+## Cloud deployment (advanced)
+
+ClaudeClaw is designed to run on a local Mac or Linux box. Most setup paths assume you've run `claude login` on the host, you have a writable filesystem for SQLite + Obsidian + skill caches, and the process restarts mean "your machine reboots". If you want to host it on Railway, Fly, Render, Hetzner, or any other VM/container platform, two things break by default.
+
+### 1. Claude Code can't authenticate
+
+The Claude Code CLI normally reads your Max-plan OAuth credentials from `~/.claude/.credentials.json`, which is created by `claude login` on the host. A fresh container has no such file. The subprocess exits immediately and ClaudeClaw retries forever, surfacing only `Claude Code subprocess crashed. Retrying...`
+
+Pick one of:
+
+- **Long-lived OAuth token (Max plan).** On your local machine run `claude setup-token`. It prints a token that does not expire on its own. Set it on your cloud host as `CLAUDE_CODE_OAUTH_TOKEN=<token>`. Redeploy.
+- **API key (pay per token).** Get a key from [console.anthropic.com](https://console.anthropic.com). Set `ANTHROPIC_API_KEY=<key>`. This bypasses your subscription and bills per request.
+
+### 2. Container storage is ephemeral
+
+ClaudeClaw stores conversation history, extracted memories, scheduled tasks, WhatsApp Web session keys, Slack tokens, and audit logs in `store/claudeclaw.db` on disk. Most cloud platforms wipe the filesystem on every redeploy. Without a persistent volume mount you lose the SQLite database, which means:
+
+- Every redeploy resets memory and session history
+- WhatsApp Web reauthorizes (requires scanning the QR again)
+- Scheduled tasks vanish
+- Mission Control queue drops
+
+Mount a persistent volume at the project root (`/app` on Railway, a Fly volume on Fly, etc.) so `store/` survives restarts. If your platform doesn't offer persistence, ClaudeClaw will work as a stateless bot but the memory and messaging features won't behave the way they do locally.
+
+### Other gotchas
+
+- **CPU/RAM**: the SDK subprocess is a full `node` + `claude` runtime per query. 512 MB minimum, 1 GB recommended.
+- **Outbound network**: needs to reach `api.anthropic.com`, `api.telegram.org`, and any optional services you enable (Gemini, ElevenLabs, Slack, etc.).
+- **launchd / systemd**: skip the background-service step in setup. Your platform manages the process.
+- **Cloudflare Tunnel**: if you want the dashboard public, the cloud platform's own URL will already be public. You don't need the tunnel.
+
+If your platform refuses to run the bot at all (binary missing, npm install failing in the container, etc.), open an issue with the platform name and the build log. Cloud deployment isn't the supported path, but we'll help where we can.
+
+---
+
 ## How it works
 
 ![ClaudeClaw architecture](assets/architecture.png)
