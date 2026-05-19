@@ -18,6 +18,7 @@ import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
+import { getSelectedProviderConfig } from './active-provider.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -93,7 +94,17 @@ async function runDueTasks(): Promise<void> {
         await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
 
         // Run as a fresh agent call (no session — scheduled tasks are autonomous)
-        const result = await runAgent(task.prompt, undefined, () => {}, undefined, agentDefaultModel, abortController, undefined, agentMcpAllowlist);
+        const result = await runAgent(
+          task.prompt,
+          undefined,
+          () => {},
+          undefined,
+          agentDefaultModel,
+          abortController,
+          undefined,
+          agentMcpAllowlist,
+          getSelectedProviderConfig(),
+        );
         clearTimeout(timeout);
 
         if (result.aborted) {
@@ -176,7 +187,17 @@ async function runDueMissionTasks(): Promise<void> {
     }, 5_000);
 
     try {
-      const result = await runAgent(mission.prompt, undefined, () => {}, undefined, agentDefaultModel, abortController, undefined, agentMcpAllowlist);
+      const result = await runAgent(
+        mission.prompt,
+        undefined,
+        () => {},
+        undefined,
+        agentDefaultModel,
+        abortController,
+        undefined,
+        agentMcpAllowlist,
+        getSelectedProviderConfig(),
+      );
       clearTimeout(timeout);
       clearInterval(cancelPoll);
 

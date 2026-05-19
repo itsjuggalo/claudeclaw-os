@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
+import { setMainProviderConfig, type ProviderConfig, type ProviderType } from '../src/provider.js';
 
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 const c = {
@@ -169,6 +170,213 @@ async function validateBotToken(token: string): Promise<{ valid: boolean; userna
   }
 }
 
+function commandExists(command: string): boolean {
+  const check = PLATFORM === 'win32' ? ['where', command] : ['which', command];
+  return spawnSync(check[0], [check[1]], { stdio: 'pipe' }).status === 0;
+}
+
+function stripAnsi(s: string): string {
+  return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function getOpenCodeCredentialCount(): number | null {
+  const result = spawnSync('opencode', ['providers', 'list'], { stdio: 'pipe', encoding: 'utf-8' });
+  if (result.status !== 0) return null;
+  const output = stripAnsi(`${result.stdout}\n${result.stderr}`);
+  const match = output.match(/(\d+)\s+credentials?/i);
+  if (match) return parseInt(match[1], 10);
+  return output.toLowerCase().includes('credentials') ? 0 : null;
+}
+
+function getOpenCodeModels(): string[] {
+  const result = spawnSync('opencode', ['models'], { stdio: 'pipe', encoding: 'utf-8' });
+  if (result.status !== 0) return [];
+  return stripAnsi(result.stdout)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(line));
+}
+
+async function selectOpenCodeModel(): Promise<string | null> {
+  const models = getOpenCodeModels();
+  if (models.length === 0) {
+    warn('Could not load OpenCode models. You can still enter a model id manually.');
+    const manual = await ask('OpenCode default model (provider/model, or Enter to keep current)');
+    return manual || null;
+  }
+
+  info('Available OpenCode models:');
+  console.log();
+  models.forEach((model, idx) => {
+    console.log(`  ${c.cyan}${String(idx + 1).padStart(2, ' ')}.${c.reset} ${model}`);
+  });
+  console.log();
+  info('Press Enter to keep OpenCode\'s current default model.');
+  const answer = await ask('Select model number, or type a model id');
+  if (!answer) return null;
+
+  const numeric = parseInt(answer, 10);
+  if (!Number.isNaN(numeric) && numeric >= 1 && numeric <= models.length) {
+    return models[numeric - 1];
+  }
+  if (/^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(answer)) return answer;
+
+  warn(`Unknown model selection "${answer}". Keeping OpenCode's current default model.`);
+  return null;
+}
+
+function updateOpenCodeDefaultModel(model: string): void {
+  const configDir = path.join(os.homedir(), '.config', 'opencode');
+  const configPath = path.join(configDir, 'opencode.jsonc');
+  fs.mkdirSync(configDir, { recursive: true });
+
+  let raw: Record<string, unknown> = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      const content = fs.readFileSync(configPath, 'utf-8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+      raw = JSON.parse(content) as Record<string, unknown>;
+    } catch {
+      warn(`Could not parse ${configPath}; writing a clean config with the model setting.`);
+    }
+  }
+  raw['model'] = model;
+  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
+}
+
+function ensureAgentsMdSymlink(dir: string): boolean {
+  const claudeMd = path.join(dir, 'CLAUDE.md');
+  const agentsMd = path.join(dir, 'AGENTS.md');
+  if (!fs.existsSync(claudeMd) || fs.existsSync(agentsMd)) return false;
+
+  try {
+    fs.symlinkSync('CLAUDE.md', agentsMd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type SetupProviderType = Extract<ProviderType, 'claude' | 'opencode' | 'gemini' | 'codex' | 'acp'>;
+
+async function configureProvider(): Promise<SetupProviderType> {
+  section('Provider');
+  info('Choose the agent backend ClaudeClaw should use for the main bot.');
+  info('ACP providers use their own auth and model config; Claude uses Claude Code auth.');
+  console.log();
+
+  bullet('1. Claude');
+  bullet('2. OpenCode (default)');
+  bullet('3. Gemini CLI');
+  bullet('4. Codex ACP adapter');
+  bullet('5. Custom ACP command');
+  console.log();
+
+  const answer = (await ask('Select provider', '2')).toLowerCase();
+  let choice: SetupProviderType;
+  if (answer === '1' || answer === 'claude' || answer === 'c') {
+    choice = 'claude';
+  } else if (answer === '2' || answer === 'opencode' || answer === 'o') {
+    choice = 'opencode';
+  } else if (answer === '3' || answer === 'gemini' || answer === 'g') {
+    choice = 'gemini';
+  } else if (answer === '4' || answer === 'codex') {
+    choice = 'codex';
+  } else if (answer === '5' || answer === 'acp' || answer === 'custom') {
+    choice = 'acp';
+  } else {
+    warn(`Unknown provider "${answer}". Using OpenCode.`);
+    choice = 'opencode';
+  }
+
+  if (choice === 'claude') {
+    setMainProviderConfig({ type: 'claude', model: 'claude-opus-4-6' });
+    ok('Provider set to Claude');
+    return 'claude';
+  }
+
+  if (choice === 'gemini') {
+    if (!commandExists('gemini')) {
+      fail('Gemini CLI not found');
+      info('Install and authenticate Gemini CLI first, then re-run setup.');
+      process.exit(1);
+    }
+    ok('Gemini CLI found');
+    info('Gemini auth and model selection are managed by the Gemini CLI.');
+    setMainProviderConfig({ type: 'gemini' });
+    ok('Provider set to Gemini CLI');
+    return 'gemini';
+  }
+
+  if (choice === 'codex') {
+    if (!commandExists('codex-acp')) {
+      fail('codex-acp adapter not found');
+      info('Install and authenticate the Codex ACP adapter first, then re-run setup.');
+      process.exit(1);
+    }
+    ok('codex-acp adapter found');
+    info('Codex auth and model selection are managed by the adapter/Codex config.');
+    setMainProviderConfig({ type: 'codex' });
+    ok('Provider set to Codex ACP adapter');
+    return 'codex';
+  }
+
+  if (choice === 'acp') {
+    const command = await ask('ACP command');
+    if (!command) {
+      fail('Custom ACP provider requires a command');
+      process.exit(1);
+    }
+    const argsRaw = await ask('ACP arguments', '--acp');
+    const provider: ProviderConfig = { type: 'acp', command, args: splitArgs(argsRaw) };
+    if (!commandExists(command)) warn(`Command "${command}" was not found on PATH right now.`);
+    setMainProviderConfig(provider);
+    ok('Provider set to custom ACP');
+    return 'acp';
+  }
+
+  if (!commandExists('opencode')) {
+    fail('OpenCode CLI not found');
+    info('Install OpenCode first, then re-run setup. See: https://opencode.ai');
+    process.exit(1);
+  }
+  ok('OpenCode CLI found');
+
+  const credentialCount = getOpenCodeCredentialCount();
+  if (credentialCount && credentialCount > 0) {
+    ok(`OpenCode auth found (${credentialCount} credential${credentialCount === 1 ? '' : 's'})`);
+    info('OpenCode lists model provider credentials here, not an "OpenCode" account.');
+  } else if (await confirm('Run OpenCode auth login now?', true)) {
+    const result = spawnSync('opencode', ['auth', 'login'], { stdio: 'inherit' });
+    if (result.status === 0) ok('OpenCode auth flow completed');
+    else warn('OpenCode auth did not complete. You can run: opencode auth login');
+  } else {
+    info('Run this before starting the bot: opencode auth login');
+  }
+
+  if (await confirm('Choose an OpenCode model now?', false)) {
+    const model = await selectOpenCodeModel();
+    if (model) {
+      updateOpenCodeDefaultModel(model);
+      ok(`OpenCode default model set to ${model}`);
+    } else {
+      ok('Keeping OpenCode current default model');
+    }
+  } else {
+    ok('Keeping OpenCode current default model');
+  }
+
+  setMainProviderConfig({ type: 'opencode' });
+  ok('Provider set to OpenCode');
+  return 'opencode';
+}
+
+function splitArgs(input: string): string[] {
+  const matches = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  return matches.map((part) => part.replace(/^["']|["']$/g, ''));
+}
+
 const PLATFORM = process.platform;
 
 function isWSL(): boolean {
@@ -193,12 +401,12 @@ async function main() {
   // ── 2. What is ClaudeClaw ────────────────────────────────────────────────
   section('What is ClaudeClaw?');
 
-  console.log(`  ClaudeClaw bridges your Claude Code CLI to Telegram.`);
-  console.log(`  You message your bot from your phone. ClaudeClaw runs the`);
-  console.log(`  ${c.bold}actual${c.reset} ${c.cyan}claude${c.reset} CLI on your computer — with all your skills,`);
+  console.log(`  ClaudeClaw bridges a local agent provider to Telegram.`);
+  console.log(`  You message your bot from your phone. ClaudeClaw runs`);
+  console.log(`  ${c.bold}OpenCode${c.reset}, ${c.bold}Gemini CLI${c.reset}, another ${c.bold}ACP provider${c.reset}, or ${c.bold}Claude Code${c.reset} on your computer — with your skills,`);
   console.log(`  tools, and context — and sends the result back to you.`);
   console.log();
-  console.log(`  ${c.bold}It is not a chatbot wrapper.${c.reset} It runs real Claude Code.`);
+  console.log(`  ${c.bold}It is not a chatbot wrapper.${c.reset} It runs a real local provider.`);
   console.log(`  Everything you can do in your terminal, you can do from your phone.`);
   console.log();
 
@@ -212,9 +420,9 @@ async function main() {
   console.log(`  ${c.bold}FAQ${c.reset}`);
   console.log();
   console.log(`  ${c.cyan}Q:${c.reset} Does this cost anything?`);
-  info('ClaudeClaw itself is free. You need a Claude Code subscription (Max plan)');
-  info('or an Anthropic API key. Optional features (voice, video) have their own');
-  info('free tiers. Nothing is billed without your API keys.');
+  info('ClaudeClaw itself is free. Configure your selected provider on this machine:');
+  info('OpenCode/Gemini/custom ACP with their own provider keys, or Claude Code auth via claude login / ANTHROPIC_API_KEY.');
+  info('Optional features (voice, video) have their own free tiers.');
   console.log();
   console.log(`  ${c.cyan}Q:${c.reset} Does my computer need to stay on?`);
   info('Yes. ClaudeClaw runs on your machine. When your computer sleeps or shuts');
@@ -227,8 +435,8 @@ async function main() {
   info('shut everything down instantly from your phone.');
   console.log();
   console.log(`  ${c.cyan}Q:${c.reset} Can I run this on a server / VPS?`);
-  info('Yes. Set an ANTHROPIC_API_KEY instead of using claude login, and use');
-  info('the auto-start service option at the end of setup.');
+  info('Yes. Configure the selected provider on the server first. For ACP providers,');
+  info('install/authenticate the command there. For Claude Code, use claude login or ANTHROPIC_API_KEY.');
   console.log();
 
   const understood = await confirm('Ready to continue?');
@@ -275,42 +483,46 @@ async function main() {
     process.exit(1);
   }
 
-  // Claude CLI
-  const claudeCmd = PLATFORM === 'win32' ? 'where claude' : 'which claude';
-  try {
-    execSync(claudeCmd, { stdio: 'pipe' });
-    let version = '';
-    try { version = execSync('claude --version', { stdio: 'pipe' }).toString().trim(); } catch { }
-    ok(`Claude CLI ${version}`);
-  } catch {
-    fail('Claude CLI not found');
-    console.log();
-    info('Install it:');
-    info('  npm install -g @anthropic-ai/claude-code');
-    info('  claude login');
-    console.log();
-    const proceed = await confirm('Install Claude Code now and re-run setup later?', false);
-    if (proceed) {
-      console.log();
-      info('Running: npm install -g @anthropic-ai/claude-code');
-      const result = spawnSync('npm', ['install', '-g', '@anthropic-ai/claude-code'], { stdio: 'inherit' });
-      if (result.status === 0) {
-        ok('Claude Code installed. Run claude login, then npm run setup again.');
-      } else {
-        fail('Install failed. Run manually: npm install -g @anthropic-ai/claude-code');
-      }
-    }
-    process.exit(1);
-  }
+  const selectedProvider = await configureProvider();
 
-  // Claude auth — check if user has logged in via OAuth or API key
-  const claudeDir = path.join(os.homedir(), '.claude');
-  const hasClaudeDir = fs.existsSync(claudeDir);
-  if (hasClaudeDir && fs.readdirSync(claudeDir).length > 1) {
-    ok('Claude auth — logged in');
-  } else {
-    warn('Not logged in. Run: claude login');
-    info('The bot needs Claude Code auth to work. Log in before starting.');
+  // Claude CLI
+  if (selectedProvider === 'claude') {
+    const claudeCmd = PLATFORM === 'win32' ? 'where claude' : 'which claude';
+    try {
+      execSync(claudeCmd, { stdio: 'pipe' });
+      let version = '';
+      try { version = execSync('claude --version', { stdio: 'pipe' }).toString().trim(); } catch { }
+      ok(`Claude CLI ${version}`);
+    } catch {
+      fail('Claude CLI not found');
+      console.log();
+      info('Install it:');
+      info('  npm install -g @anthropic-ai/claude-code');
+      info('  claude login');
+      console.log();
+      const proceed = await confirm('Install Claude Code now and re-run setup later?', false);
+      if (proceed) {
+        console.log();
+        info('Running: npm install -g @anthropic-ai/claude-code');
+        const result = spawnSync('npm', ['install', '-g', '@anthropic-ai/claude-code'], { stdio: 'inherit' });
+        if (result.status === 0) {
+          ok('Claude Code installed. Run claude login, then npm run setup again.');
+        } else {
+          fail('Install failed. Run manually: npm install -g @anthropic-ai/claude-code');
+        }
+      }
+      process.exit(1);
+    }
+
+    // Claude auth — check if user has logged in via OAuth or API key
+    const claudeDir = path.join(os.homedir(), '.claude');
+    const hasClaudeDir = fs.existsSync(claudeDir);
+    if (hasClaudeDir && fs.readdirSync(claudeDir).length > 1) {
+      ok('Claude auth — logged in');
+    } else {
+      warn('Not logged in. Run: claude login');
+      info('The bot needs Claude Code auth to work. Log in before starting.');
+    }
   }
 
   // Git config (user.name and user.email)
@@ -572,6 +784,9 @@ async function main() {
     }
   } else {
     ok(`CLAUDE.md exists at ${claudeMdDest}`);
+  }
+  if (ensureAgentsMdSymlink(claudeclawConfigDir)) {
+    ok(`Created AGENTS.md symlink → ${path.join(claudeclawConfigDir, 'AGENTS.md')}`);
   }
 
   // ── 6b. CLAUDE.md personalization ────────────────────────────────────────
@@ -1107,6 +1322,7 @@ async function main() {
       if (fs.existsSync(templateClaudeMd) && !fs.existsSync(destClaudeMd)) {
         fs.copyFileSync(templateClaudeMd, destClaudeMd);
       }
+      ensureAgentsMdSymlink(agentDir);
 
       // Create agent.yaml from example
       const exampleYaml = path.join(PROJECT_ROOT, 'agents', templateId, 'agent.yaml.example');
@@ -1167,7 +1383,9 @@ async function main() {
 
   ok(`Bot: @${botUsername || '(configure TELEGRAM_BOT_TOKEN)'}`);
   env.ALLOWED_CHAT_ID ? ok(`Chat ID: ${env.ALLOWED_CHAT_ID}`) : warn('Chat ID: not set (bot will tell you on first message)');
-  env.ANTHROPIC_API_KEY ? ok('Claude: API key (pay-per-token)') : ok('Claude: Max plan subscription');
+  selectedProvider === 'opencode'
+    ? ok('Provider: OpenCode (keys/models managed by OpenCode)')
+    : env.ANTHROPIC_API_KEY ? ok('Provider: Claude Code API key (pay-per-token)') : ok('Provider: Claude Code login / subscription');
   wantVoiceIn && env.GROQ_API_KEY ? ok('Voice input: Groq Whisper ✓') : wantVoiceIn ? warn('Voice input: GROQ_API_KEY not set') : info('Voice input: not enabled');
   wantVoiceOut && env.ELEVENLABS_API_KEY ? ok('Voice output: ElevenLabs ✓') : wantVoiceOut ? warn('Voice output: ElevenLabs keys not set') : info('Voice output: not enabled');
   wantVideo && env.GOOGLE_API_KEY ? ok('Video analysis: Gemini ✓') : wantVideo ? warn('Video analysis: GOOGLE_API_KEY not set') : info('Video analysis: not enabled');

@@ -13,22 +13,39 @@
 // Env vars are set by `src/test-env-setup.ts` (vitest setupFiles) so they
 // land BEFORE config.ts evaluates at import time.
 
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { _initTestDatabase } from './db.js';
 import { buildDashboardApp } from './dashboard.js';
+import { STORE_DIR } from './config.js';
 import type { Hono } from 'hono';
 
 const TOKEN = 'test-contract-token';
 const Q = '?token=' + TOKEN;
 
 let app: Hono;
+const mainConfigPath = path.join(STORE_DIR, 'main-config.json');
+let originalMainConfig: string | null = null;
 
 beforeAll(() => {
+  originalMainConfig = fs.existsSync(mainConfigPath)
+    ? fs.readFileSync(mainConfigPath, 'utf-8')
+    : null;
   app = buildDashboardApp(undefined) as unknown as Hono;
 });
 
 beforeEach(() => {
   _initTestDatabase();
+});
+
+afterEach(() => {
+  if (originalMainConfig === null) {
+    try { fs.unlinkSync(mainConfigPath); } catch { /* absent */ }
+  } else {
+    fs.mkdirSync(path.dirname(mainConfigPath), { recursive: true });
+    fs.writeFileSync(mainConfigPath, originalMainConfig, 'utf-8');
+  }
 });
 
 async function get(path: string) {
@@ -400,9 +417,11 @@ describe('GET /api/security/status', () => {
 });
 
 describe('GET /api/chat/history', () => {
-  it('rejects missing chatId with 400', async () => {
+  it('defaults missing chatId to the configured dashboard chat', async () => {
     const res = await get('/api/chat/history');
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ turns: expect.any(Array) });
   });
 
   it('returns { turns: [] } with chatId', async () => {
@@ -446,6 +465,79 @@ describe('PATCH /api/agents/:id/model', () => {
       model: 'claude-sonnet-4-6',
       restartRequired: false,
     });
+  });
+});
+
+describe('provider selection endpoints', () => {
+  it('reports selectable Gemini and Codex model providers', async () => {
+    const geminiRes = await get('/api/providers/models?provider=gemini');
+    expect(geminiRes.status).toBe(200);
+    expect(await jsonOf(geminiRes)).toMatchObject({
+      provider: 'gemini',
+      defaultModel: expect.any(String),
+      selectable: true,
+      allowCustom: true,
+    });
+
+    const codexRes = await get('/api/providers/models?provider=codex');
+    expect(codexRes.status).toBe(200);
+    expect(await jsonOf(codexRes)).toMatchObject({
+      provider: 'codex',
+      defaultModel: expect.any(String),
+      selectable: true,
+      allowCustom: true,
+    });
+  });
+
+  it('updates main to a built-in ACP provider without restart', async () => {
+    const res = await app.request('/api/agents/main/provider' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: { type: 'gemini' } }),
+    });
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      ok: true,
+      agent: 'main',
+      provider: { type: 'gemini' },
+      restartRequired: false,
+    });
+  });
+
+  it('updates main provider with a selected model without restart', async () => {
+    const res = await app.request('/api/agents/main/provider' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: { type: 'codex', model: 'gpt-5.3-codex' } }),
+    });
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      ok: true,
+      agent: 'main',
+      provider: { type: 'codex', model: 'gpt-5.3-codex' },
+      restartRequired: false,
+    });
+  });
+
+  it('reports provider-specific runtime options', async () => {
+    const claudeRes = await get('/api/providers/runtime-options?provider=claude');
+    expect(claudeRes.status).toBe(200);
+    expect(await jsonOf(claudeRes)).toMatchObject({
+      provider: 'claude',
+      source: 'static',
+      modeOptions: expect.arrayContaining([expect.objectContaining({ id: 'max' })]),
+      thinkingOptions: expect.arrayContaining([expect.objectContaining({ id: 'auto' })]),
+    });
+  });
+
+  it('rejects custom ACP without a command', async () => {
+    const res = await app.request('/api/agents/main/provider' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: { type: 'acp' } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({ error: expect.stringMatching(/command/i) });
   });
 });
 

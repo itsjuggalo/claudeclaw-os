@@ -8,6 +8,7 @@ import { PROJECT_ROOT } from './config.js';
 import { logToHiveMind, createInterAgentTask, completeInterAgentTask } from './db.js';
 import { logger } from './logger.js';
 import { buildMemoryContext } from './memory.js';
+import { getSelectedProviderConfig } from './active-provider.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -217,6 +218,7 @@ export async function delegateToAgent(
         abortCtrl,
         undefined, // no streaming for delegation
         agentConfig.mcpServers,
+        getSelectedProviderConfig(),
       );
 
       clearTimeout(timer);

@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { readEnvFile } from './env.js';
+import type { ProviderConfig } from './provider.js';
 
 const envConfig = readEnvFile([
   'TELEGRAM_BOT_TOKEN',
@@ -46,6 +47,7 @@ export let activeBotToken =
   process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
 export let agentCwd: string | undefined; // undefined = use PROJECT_ROOT
 export let agentDefaultModel: string | undefined; // from agent.yaml
+export let agentProvider: ProviderConfig | undefined; // from agent.yaml/main-config
 export let agentObsidianConfig: { vault: string; folders: string[]; readOnly?: string[] } | undefined;
 export let agentSystemPrompt: string | undefined; // loaded from agents/{id}/CLAUDE.md
 export let agentMcpAllowlist: string[] | undefined; // from agent.yaml mcp_servers
@@ -55,6 +57,7 @@ export function setAgentOverrides(opts: {
   botToken: string;
   cwd: string;
   model?: string;
+  provider?: ProviderConfig;
   obsidian?: { vault: string; folders: string[]; readOnly?: string[] };
   systemPrompt?: string;
   mcpServers?: string[];
@@ -63,6 +66,7 @@ export function setAgentOverrides(opts: {
   activeBotToken = opts.botToken;
   agentCwd = opts.cwd;
   agentDefaultModel = opts.model;
+  agentProvider = opts.provider;
   agentObsidianConfig = opts.obsidian;
   agentSystemPrompt = opts.systemPrompt;
   agentMcpAllowlist = opts.mcpServers;
@@ -75,6 +79,13 @@ export function setAgentOverrides(opts: {
  *  re-reads CLAUDE.md from cwd via settingSources on every turn. */
 export function updateAgentSystemPrompt(next: string | undefined): void {
   agentSystemPrompt = next;
+}
+
+/** Update just the active provider for the running process. Dashboard
+ * provider changes persist to disk separately; this keeps main hot-switches
+ * honest without rebuilding the full agent override object. */
+export function updateAgentProvider(next: ProviderConfig | undefined): void {
+  agentProvider = next;
 }
 
 export const TELEGRAM_BOT_TOKEN =
@@ -260,4 +271,3 @@ export const WARROOM_PORT = parseInt(
   process.env.WARROOM_PORT || envConfig.WARROOM_PORT || '7860',
   10,
 );
-

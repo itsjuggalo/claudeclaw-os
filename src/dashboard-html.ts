@@ -389,7 +389,15 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
       <label class="text-xs text-gray-400 block mb-1">Description</label>
       <input type="text" id="caw-desc" placeholder="What this agent does" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" maxlength="200">
 
-      <div class="flex gap-2 mb-3">
+      <div class="flex gap-2 mb-2">
+        <div style="flex:1">
+          <label class="text-xs text-gray-400 block mb-1">Provider</label>
+          <select id="caw-provider" onchange="cawProviderChanged()" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
+            <option value="opencode">OpenCode</option>
+            <option value="claude">Claude</option>
+            <option value="acp">ACP</option>
+          </select>
+        </div>
         <div style="flex:1">
           <label class="text-xs text-gray-400 block mb-1">Model</label>
           <select id="caw-model" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
@@ -398,12 +406,12 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
             <option value="claude-haiku-4-5">Haiku 4.5</option>
           </select>
         </div>
-        <div style="flex:1">
-          <label class="text-xs text-gray-400 block mb-1">Template</label>
-          <select id="caw-template" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
-            <option value="_template">Blank</option>
-          </select>
-        </div>
+      </div>
+      <div class="mb-3">
+        <label class="text-xs text-gray-400 block mb-1">Template</label>
+        <select id="caw-template" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
+          <option value="_template">Blank</option>
+        </select>
       </div>
 
       <div id="caw-step1-error" class="text-red-400 text-xs mb-2" style="display:none"></div>
@@ -1499,9 +1507,13 @@ async function loadAgents() {
       const modelShort = function(m) { return {'claude-opus-4-6':'Opus','claude-sonnet-4-6':'Sonnet','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
       const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-6' : 'claude-sonnet-4-6');
       const modelLabel = modelShort(currentModel);
+      const providerType = (a.provider && a.provider.type) || 'opencode';
+      const providerLabel = providerType === 'claude' ? 'Claude: ' + modelLabel : providerType === 'opencode' ? 'OpenCode' : 'ACP';
       const modelSelect = '<div class="model-picker" data-agent="' + a.id + '" onclick="event.stopPropagation();toggleModelPicker(this)">' +
-        '<span class="model-current">' + modelLabel + ' <span style="font-size:8px;opacity:0.5">&#9662;</span></span>' +
+        '<span class="model-current">' + providerLabel + ' <span style="font-size:8px;opacity:0.5">&#9662;</span></span>' +
         '<div class="model-menu" style="display:none">' +
+          '<div class="model-opt' + (providerType === 'opencode' ? ' model-active' : '') + '" data-provider="opencode" onclick="pickProvider(this)">OpenCode default</div>' +
+          '<div class="model-opt' + (providerType === 'acp' ? ' model-active' : '') + '" data-provider="acp" onclick="pickProvider(this)">ACP default</div>' +
           modelOpts.map(m => '<div class="model-opt' + (currentModel === m ? ' model-active' : '') + '" data-model="' + m + '" onclick="pickModel(this)">' + modelShort(m) + '</div>').join('') +
         '</div>' +
       '</div>';
@@ -1550,6 +1562,22 @@ async function pickModel(optEl) {
     });
     await loadAgents();
   } catch(e) { console.error('Model update failed:', e); }
+}
+
+async function pickProvider(optEl) {
+  var provider = optEl.dataset.provider;
+  var picker = optEl.closest('.model-picker');
+  var agentId = picker.dataset.agent;
+  picker.querySelector('.model-menu').style.display = 'none';
+  try {
+    await fetch(BASE + '/api/agents/' + agentId + '/provider?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: { type: provider } }),
+    });
+    await loadAgents();
+    await loadMissionControl();
+  } catch(e) { console.error('Provider update failed:', e); }
 }
 
 async function pickGlobalModel(optEl) {
@@ -1732,6 +1760,53 @@ let cawCreatedId = null;
 let cawIdDebounce = null;
 let cawTokenDebounce = null;
 let cawNameManuallyEdited = false;
+const CAW_FALLBACK_MODELS = {
+  claude: [
+    { id: 'claude-opus-4-6', label: 'Opus 4.6' },
+    { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+    { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
+    { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+  ],
+  opencode: [{ id: 'opencode-default', label: 'OpenCode default' }],
+  acp: [{ id: 'provider-default', label: 'Provider default' }],
+};
+
+function cawSetModelOptions(models, selected, disabled) {
+  var sel = document.getElementById('caw-model');
+  sel.innerHTML = '';
+  models.forEach(function(m) {
+    var opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.label || m.id;
+    sel.appendChild(opt);
+  });
+  if (selected && models.some(function(m) { return m.id === selected; })) sel.value = selected;
+  sel.disabled = !!disabled;
+  sel.style.opacity = disabled ? '0.65' : '1';
+}
+
+async function cawLoadModels(provider, selected) {
+  var fallback = CAW_FALLBACK_MODELS[provider] || CAW_FALLBACK_MODELS.opencode;
+  cawSetModelOptions(fallback, selected, provider !== 'claude' && provider !== 'opencode');
+  try {
+    var data = await api('/api/providers/models?provider=' + encodeURIComponent(provider));
+    var models = data.models && data.models.length ? data.models : fallback;
+    cawSetModelOptions(models, selected || data.defaultModel, data.selectable === false);
+  } catch(e) {
+    console.error('Provider model load error:', e);
+  }
+}
+
+function cawProviderChanged() {
+  var provider = document.getElementById('caw-provider').value;
+  cawLoadModels(provider, null);
+}
+
+function cawSelectedProviderPayload() {
+  var provider = document.getElementById('caw-provider').value;
+  if (provider === 'claude') return { type: 'claude', model: document.getElementById('caw-model').value };
+  return { type: provider };
+}
 
 function openCreateAgentWizard() {
   cawStep = 1;
@@ -1743,7 +1818,8 @@ function openCreateAgentWizard() {
   document.getElementById('caw-id').value = '';
   document.getElementById('caw-name').value = '';
   document.getElementById('caw-desc').value = '';
-  document.getElementById('caw-model').value = 'claude-sonnet-4-6';
+  document.getElementById('caw-provider').value = 'opencode';
+  cawSetModelOptions(CAW_FALLBACK_MODELS.opencode, 'opencode-default', false);
   document.getElementById('caw-token').value = '';
   document.getElementById('caw-id-status').innerHTML = '';
   document.getElementById('caw-token-status').innerHTML = '';
@@ -1751,6 +1827,7 @@ function openCreateAgentWizard() {
   document.getElementById('caw-step1-error').style.display = 'none';
   document.getElementById('caw-step2-error').style.display = 'none';
   cawShowStep(1);
+  cawLoadModels('opencode', null);
   loadCawTemplates();
   var o = document.getElementById('create-agent-overlay');
   var m = document.getElementById('create-agent-modal');
@@ -1924,6 +2001,7 @@ async function cawCreate() {
         name: document.getElementById('caw-name').value.trim(),
         description: document.getElementById('caw-desc').value.trim(),
         model: document.getElementById('caw-model').value,
+        provider: cawSelectedProviderPayload(),
         template: document.getElementById('caw-template').value,
         botToken: document.getElementById('caw-token').value.trim(),
       }),

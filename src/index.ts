@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd, refreshWarRoomRoster } from './agent-config.js';
+import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd, resolveInstructionMd, refreshWarRoomRoster } from './agent-config.js';
 import { createBot } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
@@ -16,6 +16,7 @@ import { runWarroomAvatarMigration } from './avatars.js';
 import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
+import { getMainProviderConfig } from './provider.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 import { getVenvPython, killProcess } from './platform.js';
 
@@ -41,30 +42,40 @@ if (AGENT_ID !== 'main') {
     botToken: agentConfig.botToken,
     cwd: agentDir,
     model: agentConfig.model,
+    provider: agentConfig.provider,
     obsidian: agentConfig.obsidian,
     systemPrompt,
     mcpServers: agentConfig.mcpServers,
   });
   logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
 } else {
-  // For main bot: read CLAUDE.md from CLAUDECLAW_CONFIG and inject it as
-  // systemPrompt — the same pattern used by sub-agents. Never copy the file
-  // into the repo; that defeats the purpose of CLAUDECLAW_CONFIG and risks
-  // accidentally committing personal config.
-  const externalClaudeMd = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
-  if (fs.existsSync(externalClaudeMd)) {
+  setAgentOverrides({
+    agentId: 'main',
+    botToken: activeBotToken,
+    cwd: PROJECT_ROOT,
+    provider: getMainProviderConfig(),
+  });
+
+  // For main bot: load CLAUDE.md from CLAUDECLAW_CONFIG/agents/main/ (same
+  // pattern as sub-agents). Falls back to CLAUDECLAW_CONFIG/CLAUDE.md for
+  // backward compatibility with setups that only have a root-level file.
+  const agentClaudeMd = resolveAgentClaudeMd('main');
+  const claudeMdSource = agentClaudeMd ?? resolveInstructionMd(CLAUDECLAW_CONFIG);
+
+  if (claudeMdSource) {
     let systemPrompt: string | undefined;
     try {
-      systemPrompt = fs.readFileSync(externalClaudeMd, 'utf-8');
+      systemPrompt = fs.readFileSync(claudeMdSource, 'utf-8');
     } catch { /* unreadable */ }
     if (systemPrompt) {
       setAgentOverrides({
         agentId: 'main',
         botToken: activeBotToken,
         cwd: PROJECT_ROOT,
+        provider: getMainProviderConfig(),
         systemPrompt,
       });
-      logger.info({ source: externalClaudeMd }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');
+      logger.info({ source: claudeMdSource }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');
     }
   } else if (!fs.existsSync(path.join(PROJECT_ROOT, 'CLAUDE.md'))) {
     logger.warn(
