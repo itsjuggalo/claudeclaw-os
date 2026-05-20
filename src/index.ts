@@ -49,18 +49,17 @@ if (AGENT_ID !== 'main') {
   });
   logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
 } else {
-  setAgentOverrides({
-    agentId: 'main',
-    botToken: activeBotToken,
-    cwd: PROJECT_ROOT,
-    provider: getMainProviderConfig(),
-  });
-
-  // For main bot: load CLAUDE.md from CLAUDECLAW_CONFIG/agents/main/ (same
-  // pattern as sub-agents). Falls back to CLAUDECLAW_CONFIG/CLAUDE.md for
-  // backward compatibility with setups that only have a root-level file.
+  // Main bot follows the same pattern as sub-agents: load CLAUDE.md from
+  // CLAUDECLAW_CONFIG/agents/main/ and set CWD to that directory so the
+  // Claude SDK loads the personal CLAUDE.md (not the repo template).
+  // Falls back to CLAUDECLAW_CONFIG/CLAUDE.md for backward compatibility.
   const agentClaudeMd = resolveAgentClaudeMd('main');
   const claudeMdSource = agentClaudeMd ?? resolveInstructionMd(CLAUDECLAW_CONFIG);
+
+  // Use the agent dir as CWD when a personal CLAUDE.md exists there.
+  // This prevents the SDK from loading the repo's template CLAUDE.md
+  // (which is gone — only CLAUDE.md.example ships in the repo now).
+  const mainAgentDir = agentClaudeMd ? path.dirname(agentClaudeMd) : null;
 
   if (claudeMdSource) {
     let systemPrompt: string | undefined;
@@ -71,15 +70,15 @@ if (AGENT_ID !== 'main') {
       setAgentOverrides({
         agentId: 'main',
         botToken: activeBotToken,
-        cwd: PROJECT_ROOT,
+        cwd: mainAgentDir ?? PROJECT_ROOT,
         provider: getMainProviderConfig(),
         systemPrompt,
       });
-      logger.info({ source: claudeMdSource }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');
+      logger.info({ source: claudeMdSource, cwd: mainAgentDir ?? PROJECT_ROOT }, 'Loaded main agent CLAUDE.md');
     }
-  } else if (!fs.existsSync(path.join(PROJECT_ROOT, 'CLAUDE.md'))) {
+  } else {
     logger.warn(
-      'No CLAUDE.md found. Copy CLAUDE.md.example to %s/CLAUDE.md and customize it.',
+      'No CLAUDE.md found. Copy CLAUDE.md.example to %s/agents/main/CLAUDE.md and customize it.',
       CLAUDECLAW_CONFIG,
     );
   }
