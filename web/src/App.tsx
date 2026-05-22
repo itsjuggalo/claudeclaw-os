@@ -8,6 +8,7 @@ import { Placeholder } from '@/pages/Placeholder';
 import { MissionControl } from '@/pages/MissionControl';
 import { Memories } from '@/pages/Memories';
 import { HiveMind } from '@/pages/HiveMind';
+import { McKb } from '@/pages/McKb';
 import { Agents } from '@/pages/Agents';
 import { Scheduled } from '@/pages/Scheduled';
 import { Audit } from '@/pages/Audit';
@@ -52,6 +53,7 @@ export function App() {
           <Route path="/chat"><Chat /></Route>
           <Route path="/memories"><Memories /></Route>
           <Route path="/hive"><HiveMind /></Route>
+          <Route path="/mckb"><McKb /></Route>
           <Route path="/usage"><Usage /></Route>
           <Route path="/audit"><Audit /></Route>
           <Route path="/warroom"><WarRoom /></Route>
