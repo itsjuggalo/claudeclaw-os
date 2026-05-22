@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 FIREBASE_FEED = Path("/home/ubuntu/.openclaw/workspace/directives/firebase_trade_signals.json")
+FIREBASE_FLOW = Path("/home/ubuntu/.openclaw/workspace/directives/firebase_flow_alerts.json")
 OUT_PATH = Path("/home/ubuntu/mission-control/signal-receiver/data/scored_signals_recent.json")
 
 # Base score by category (Boba's score sort order).
@@ -123,24 +124,82 @@ def convert(sig: dict) -> dict:
     }
 
 
-def main() -> int:
-    if not FIREBASE_FEED.exists():
-        print(f"firebase feed missing at {FIREBASE_FEED}", file=sys.stderr)
-        return 1
+def convert_flow_alert(sig: dict) -> dict:
+    """Map one FlowGreeks flow_alert → one scored_signals entry. Algorithmic
+    unusual-flow detection — feeds Boba's Protocol A (T0-T4 premium ladder)."""
+    fv = float(sig.get("flow_value") or 0)
+    # Tier from premium → score → grade
+    if fv >= 10_000_000:    score, tier = 95, "T0_MEGA"
+    elif fv >= 5_000_000:   score, tier = 88, "T1_HUGE"
+    elif fv >= 1_000_000:   score, tier = 78, "T2_UNUSUAL_HUGE"
+    elif fv >= 500_000:     score, tier = 68, "T3_UNUSUAL"
+    elif fv >= 100_000:     score, tier = 58, "T4_UNUSUAL"
+    else:                   score, tier = 50, "T4_UNUSUAL"
 
+    expiry_str, dte = fmt_expiry(str(sig.get("expiry_ts") or 0))
     try:
-        feed = json.loads(FIREBASE_FEED.read_text())
-    except Exception as e:
-        print(f"can't parse firebase feed: {e}", file=sys.stderr)
-        return 2
+        strike = float(sig.get("strike") or 0)
+    except (ValueError, TypeError):
+        strike = 0.0
+    spot = sig.get("spot") or strike or 0
+    is_bull = bool(sig.get("is_bullish"))
 
-    if not isinstance(feed, list):
-        print(f"unexpected feed shape: {type(feed).__name__}", file=sys.stderr)
-        return 3
+    return {
+        "timestamp": sig.get("captured_at") or datetime.now(timezone.utc).isoformat(),
+        "ticker": sig.get("ticker", "?"),
+        "option_type": (sig.get("option_type") or "C").upper(),
+        "strike": strike,
+        "expiry": expiry_str,
+        "dte": dte,
+        "spot": spot,
+        "flow_value": fv,
+        "flow_value_raw": fmt_flow_raw(fv),
+        "tier": tier,
+        "volume": sig.get("flow_count") or 100,
+        "oi": 1000,
+        "vol_oi_ratio": 0.1,
+        "sweeps": 1,
+        "blocks": 0,
+        "alert_type": sig.get("alert_type") or "weekly_flow",
+        "score": score,
+        "grade": grade_from_score(score),
+        "is_bullish": is_bull,
+        "reasons": [
+            f"FlowGreeks: {sig.get('source','FlowGreeks2')}/{sig.get('alert_type','flow')}",
+            f"Premium {fmt_flow_raw(fv)} → tier {tier}",
+            f"Direction: {'BULL' if is_bull else 'BEAR'}",
+        ],
+        "_source": "flowgreeks_converter",
+        "_firebase_id": (sig.get("id") or "").replace("flow:", ""),
+    }
 
-    # Convert only entries where signal_kind=="trade_signal" (skip notifications + alerts).
-    trade_signals = [s for s in feed if isinstance(s, dict) and s.get("signal_kind") == "trade_signal"]
-    converted = [convert(s) for s in trade_signals]
+
+def main() -> int:
+    converted: list[dict] = []
+
+    # Provider signals (Vivid2 / Name / Name2 — human-published "buy this contract")
+    if FIREBASE_FEED.exists():
+        try:
+            feed = json.loads(FIREBASE_FEED.read_text())
+            if isinstance(feed, list):
+                trade_signals = [s for s in feed if isinstance(s, dict) and s.get("signal_kind") == "trade_signal"]
+                converted.extend(convert(s) for s in trade_signals)
+        except Exception as e:
+            print(f"can't parse {FIREBASE_FEED}: {e}", file=sys.stderr)
+
+    # Algo flow alerts (FlowGreeks / FlowGreeks2 — unusual options flow)
+    if FIREBASE_FLOW.exists():
+        try:
+            flow = json.loads(FIREBASE_FLOW.read_text())
+            if isinstance(flow, list):
+                alerts = [s for s in flow if isinstance(s, dict) and s.get("signal_kind") == "flow_alert"]
+                converted.extend(convert_flow_alert(s) for s in alerts)
+        except Exception as e:
+            print(f"can't parse {FIREBASE_FLOW}: {e}", file=sys.stderr)
+
+    if not converted:
+        print("no signals available in either feed", file=sys.stderr)
+        return 1
 
     # Sort newest-first (Boba reads chronologically but doesn't care about order).
     converted.sort(key=lambda x: x.get("timestamp", ""), reverse=False)
@@ -150,13 +209,16 @@ def main() -> int:
 
     # Summary
     by_day: dict[str, int] = {}
+    by_source: dict[str, int] = {}
     for c in converted:
         d = c.get("timestamp", "")[:10] or "unknown"
         by_day[d] = by_day.get(d, 0) + 1
+        s = c.get("_source", "?")
+        by_source[s] = by_source.get(s, 0) + 1
     print(json.dumps({
         "wrote": str(OUT_PATH),
         "converted": len(converted),
-        "skipped_non_trade": len(feed) - len(trade_signals),
+        "by_source": by_source,
         "by_day": dict(sorted(by_day.items())[-5:]),
     }, indent=2))
     return 0
