@@ -17,6 +17,8 @@ const envConfig = readEnvFile([
   'DASHBOARD_PORT',
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
+  'DASHBOARD_BIND',
+  'DASHBOARD_AUTH_DISABLED',
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
@@ -181,6 +183,17 @@ export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
+
+// Bind interface. Default '127.0.0.1' = loopback-only (safest).
+// Override to '0.0.0.0' if you intentionally want LAN-reachable.
+export const DASHBOARD_BIND =
+  process.env.DASHBOARD_BIND || envConfig.DASHBOARD_BIND || '127.0.0.1';
+
+// Disable Bearer-token auth on the dashboard. ONLY safe when DASHBOARD_BIND is loopback.
+export const DASHBOARD_AUTH_DISABLED =
+  ['1', 'true', 'yes'].includes(
+    (process.env.DASHBOARD_AUTH_DISABLED || envConfig.DASHBOARD_AUTH_DISABLED || '').toLowerCase()
+  );
 
 // Database encryption key (SQLCipher). Required for encrypted database access.
 export const DB_ENCRYPTION_KEY =
