@@ -92,16 +92,19 @@ def record(cur, signal_id, account, ticker, action, qty, order_id, status, error
     # We'll add `build_rationale("BUY", source_label, category, raw)` as the 10th arg
     # Find call patterns and inject.
 
+    # Actual call signature in stock_auto_trader.py (verified against running code):
+    #   record(cur, signal_id, account, ticker, "BUY", 1, order_id, status, err)
+    #   record(cur, signal_id, account, ticker, "SELL", qty, order_id, status, err)
     text = re.sub(
-        r'record\(cur, signal_id, account, ticker, "BUY", QTY_PER_BUY, order_id, status, error_msg\)',
-        'record(cur, signal_id, account, ticker, "BUY", QTY_PER_BUY, order_id, status, error_msg, '
+        r'record\(cur, signal_id, account, ticker, "BUY", 1, order_id, status, err\)',
+        'record(cur, signal_id, account, ticker, "BUY", 1, order_id, status, err, '
         'build_rationale("BUY", source_label, category, raw))',
         text,
         count=10,
     )
     text = re.sub(
-        r'record\(cur, signal_id, account, ticker, "SELL", qty_to_close, order_id, status, error_msg\)',
-        'record(cur, signal_id, account, ticker, "SELL", qty_to_close, order_id, status, error_msg, '
+        r'record\(cur, signal_id, account, ticker, "SELL", qty, order_id, status, err\)',
+        'record(cur, signal_id, account, ticker, "SELL", qty, order_id, status, err, '
         'build_rationale("SELL", source_label, category, raw))',
         text,
         count=10,
