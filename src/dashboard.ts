@@ -4,6 +4,7 @@ import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
 import crypto from 'crypto';
@@ -2903,6 +2904,40 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       return c.json(body, r.status as 200);
     } catch (e) {
       return c.json({ status: 'offline', error: String((e as Error).message || e) }, 503);
+    }
+  });
+
+  // ── /journal — daily agent decision journal (Boba/Jazzy/stock/crypto) ──
+  app.get('/api/journal/list', async (c) => {
+    try {
+      const dir = path.join(os.homedir(), 'mc-kb', 'notes', 'agent-journal');
+      if (!fs.existsSync(dir)) return c.json({ days: [] });
+      const days = fs.readdirSync(dir)
+        .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+        .map((f) => f.replace(/\.md$/, ''))
+        .sort()
+        .reverse();
+      return c.json({ days });
+    } catch (e) {
+      return c.json({ days: [], error: String((e as Error).message || e) }, 500);
+    }
+  });
+
+  app.get('/api/journal/get', async (c) => {
+    const date = c.req.query('date') || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return c.json({ error: 'date must be YYYY-MM-DD' }, 400);
+    }
+    try {
+      const filePath = path.join(os.homedir(), 'mc-kb', 'notes', 'agent-journal', `${date}.md`);
+      if (!fs.existsSync(filePath)) {
+        return c.json({ date, content: '', missing: true });
+      }
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const stat = fs.statSync(filePath);
+      return c.json({ date, content, mtime: stat.mtime.toISOString(), bytes: stat.size });
+    } catch (e) {
+      return c.json({ error: String((e as Error).message || e) }, 500);
     }
   });
 

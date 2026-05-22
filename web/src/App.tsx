@@ -9,6 +9,7 @@ import { MissionControl } from '@/pages/MissionControl';
 import { Memories } from '@/pages/Memories';
 import { HiveMind } from '@/pages/HiveMind';
 import { McKb } from '@/pages/McKb';
+import { Journal } from '@/pages/Journal';
 import { Agents } from '@/pages/Agents';
 import { Scheduled } from '@/pages/Scheduled';
 import { Audit } from '@/pages/Audit';
@@ -54,6 +55,7 @@ export function App() {
           <Route path="/memories"><Memories /></Route>
           <Route path="/hive"><HiveMind /></Route>
           <Route path="/mckb"><McKb /></Route>
+          <Route path="/journal"><Journal /></Route>
           <Route path="/usage"><Usage /></Route>
           <Route path="/audit"><Audit /></Route>
           <Route path="/warroom"><WarRoom /></Route>
