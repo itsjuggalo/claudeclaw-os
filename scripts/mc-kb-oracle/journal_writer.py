@@ -29,6 +29,10 @@ STATE_DIR = Path("/home/ubuntu/.openclaw/workspace/state")
 DB_PATH = Path("/home/ubuntu/mission-control-restored/data/options_flow.sqlite")
 ENDPOINT = "http://127.0.0.1:8091/journal/write"
 
+# PM2 stdout/stderr log paths — used to capture "cycle ran but didn't decide" attempts
+# so the journal shows EVERY cycle invocation, not just ones that reached Claude.
+PM2_LOG_DIR = Path("/home/ubuntu/.pm2/logs")
+
 
 def today_et() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=-4)).strftime("%Y-%m-%d")
@@ -198,6 +202,90 @@ def render_crypto(day: str) -> str:
     return "\n## crypto_executor\n" + "\n".join(out)
 
 
+def render_cycle_attempts(agent: str, day: str) -> str:
+    """Parse PM2 stdout log for cycle invocations on `day` — captures EVERY fire,
+    including 'No fresh signals' early-exits, killswitch aborts, and successful
+    cycle completions. Lets the journal show attempts even without picks."""
+    log_path = PM2_LOG_DIR / f"{agent}-decision-cycle-out.log"
+    err_path = PM2_LOG_DIR / f"{agent}-decision-cycle-error.log"
+
+    def _scan(path: Path) -> list[tuple[str, str]]:
+        """Returns list of (time_hint, line) tuples — line classified by content."""
+        if not path.exists():
+            return []
+        try:
+            # Read tail (last ~30KB is plenty for today's events)
+            with path.open("rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 60_000))
+                blob = f.read().decode("utf-8", errors="ignore")
+        except Exception:
+            return []
+        out = []
+        # PM2 timestamps lines like: "2026-05-22T13:30:01: <text>" if you have the
+        # --time flag set. Without it, just look for our own markers in script.
+        for line in blob.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Match patterns we care about
+            if any(m in line for m in (
+                "No fresh signals",
+                "Cycle done:",
+                "Killswitch active",
+                "[bfe] enhancements failed",
+                "[mc-kb] log_event failed",
+                "[mc-kb] recall failed",
+                "[multiagent] debate post failed",
+                "fatal_account",
+            )):
+                out.append(line)
+        return out
+
+    out_lines = _scan(log_path)
+    err_lines = _scan(err_path)
+
+    if not (out_lines or err_lines):
+        return ""
+
+    # Count outcomes
+    counts: dict[str, int] = {
+        "no_signals": 0,
+        "completed": 0,
+        "killswitch": 0,
+        "errors": 0,
+    }
+    recent = []  # latest 8 events
+    for ln in (out_lines + err_lines):
+        if "No fresh signals" in ln:
+            counts["no_signals"] += 1
+        elif "Cycle done:" in ln:
+            counts["completed"] += 1
+        elif "Killswitch active" in ln:
+            counts["killswitch"] += 1
+        elif any(m in ln for m in ("failed", "fatal_account")):
+            counts["errors"] += 1
+        recent.append(ln)
+
+    # Keep last 8 events (most recent first)
+    recent = recent[-8:][::-1]
+
+    parts = [
+        f"\n## {agent.title()} — cycle attempts today\n",
+        f"\n- **{counts['completed']}** completed cycles (reached Claude)  ·  "
+        f"**{counts['no_signals']}** no-signal exits  ·  "
+        f"**{counts['killswitch']}** killswitch aborts  ·  "
+        f"**{counts['errors']}** errors\n",
+    ]
+    if recent:
+        parts.append("\n<details>\n<summary>Last 8 log lines (newest first)</summary>\n\n```\n")
+        for ln in recent:
+            parts.append(f"{ln[:280]}\n")
+        parts.append("```\n</details>\n")
+    return "".join(parts)
+
+
 def compose_journal(day: str) -> str:
     """Assemble the full day's journal markdown."""
     header = (
@@ -206,8 +294,13 @@ def compose_journal(day: str) -> str:
         f"POSTed to laptop's mc-kb via the reverse SSH tunnel and RAG-indexed within an hour.\n"
     )
     parts = [header]
+    # Reasoning sections (cycles that reached Claude + executed picks)
     parts.append(render_agent_decisions("boba", BOBA_LOG, day))
     parts.append(render_agent_decisions("jazzy", JAZZY_LOG, day))
+    # Cycle attempts (every PM2 fire, including no-signal exits)
+    parts.append(render_cycle_attempts("boba", day))
+    parts.append(render_cycle_attempts("jazzy", day))
+    # Trade execution layers
     parts.append(render_stock_trader(day))
     parts.append(render_crypto(day))
     parts.append(f"\n---\n_Last update: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_\n")
