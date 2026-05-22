@@ -22,6 +22,8 @@ import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+# (No new imports needed; datetime + json + Path are already pulled in.)
+
 DIRECTIVES = Path("/home/ubuntu/.openclaw/workspace/directives")
 BEST_OPTIONS_DIR = Path.home() / ".openclaw" / "data" / "best-options"
 SCORED_PATH = Path("/home/ubuntu/mission-control/signal-receiver/data/scored_signals_recent.json")
@@ -307,6 +309,86 @@ def sector_mix_warning(shortlist_tickers: list[str], threshold: int = 3) -> str:
 # Convenience: assemble all blocks given shortlist + platinum existence
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 6) Catalyst awareness — earnings / Fed / CPI within next 48h
+# ──────────────────────────────────────────────────────────────────────────────
+
+CATALYSTS_FILE = Path("/home/ubuntu/.openclaw/data/catalysts.json")
+
+
+def catalyst_block(shortlist_tickers: list[str] | None = None, window_hours: int = 48) -> str:
+    """Render upcoming catalysts within `window_hours`. Sources, in order:
+       1. ~/.openclaw/data/catalysts.json (manually maintained — schema below)
+       2. Empty if file missing.
+
+    Expected JSON schema:
+      {
+        "earnings": [{"ticker": "NVDA", "datetime": "2026-05-22T20:00:00Z", "when": "AMC"}],
+        "macro":    [{"name": "FOMC", "datetime": "2026-06-12T18:00:00Z", "impact": "high"}]
+      }
+
+    Highlights catalysts that affect shortlist tickers with ⚠️.
+    """
+    if not CATALYSTS_FILE.exists():
+        return ""
+    try:
+        data = json.loads(CATALYSTS_FILE.read_text())
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(hours=window_hours)
+    shortlist = {t.upper() for t in (shortlist_tickers or [])}
+
+    earnings = []
+    macro = []
+
+    for e in (data.get("earnings") or []):
+        try:
+            dt = datetime.fromisoformat(e.get("datetime", "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if not (now <= dt <= cutoff):
+            continue
+        tk = (e.get("ticker") or "").upper()
+        when = e.get("when", "?")
+        flag = "⚠️ " if tk in shortlist else ""
+        earnings.append(f"{flag}{tk} — {dt.strftime('%a %m/%d %H:%M UTC')} ({when})")
+
+    for m in (data.get("macro") or []):
+        try:
+            dt = datetime.fromisoformat(m.get("datetime", "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if not (now <= dt <= cutoff):
+            continue
+        nm = m.get("name", "?")
+        imp = m.get("impact", "?")
+        macro.append(f"{nm} — {dt.strftime('%a %m/%d %H:%M UTC')} (impact={imp})")
+
+    if not (earnings or macro):
+        return ""
+
+    lines = [f"\n# 📅 CATALYSTS in next {window_hours}h"]
+    if earnings:
+        lines.append("\n**Earnings:**")
+        lines.extend(f"  - {e}" for e in earnings[:12])
+    if macro:
+        lines.append("\n**Macro events:**")
+        lines.extend(f"  - {m}" for m in macro[:8])
+    lines.append(
+        "\n**Rule:** if a shortlist ticker has earnings inside the contract's expiry window, "
+        "either avoid the pick OR size down 50% and tighten stop. Don't trade options through earnings unprepared."
+    )
+    return "\n".join(lines) + "\n"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Convenience: assemble all blocks given shortlist + platinum existence
+# ──────────────────────────────────────────────────────────────────────────────
+
 def assemble_enhancements(shortlist_tickers: list[str], platinum_count: int = 0) -> str:
     """One-liner for the patch — concatenates all enhancement blocks."""
     parts = [
@@ -314,6 +396,7 @@ def assemble_enhancements(shortlist_tickers: list[str], platinum_count: int = 0)
         confluence_block(shortlist_tickers),
         fresh_flow_5min_block(),
         strike_cluster_block(),
+        catalyst_block(shortlist_tickers),
         sector_mix_warning(shortlist_tickers),
     ]
     return "".join(p for p in parts if p)

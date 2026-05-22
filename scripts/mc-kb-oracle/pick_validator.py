@@ -218,6 +218,91 @@ def _call_claude(prompt: str, timeout: int = 60) -> dict | None:
         return None
 
 
+def _call_gemini(prompt: str, timeout: int = 30) -> dict | None:
+    """Second-opinion call to Gemini 2.5 Flash via REST. Returns parsed JSON or None.
+
+    Matches the call pattern used by orion_telegram.py — no SDK dependency,
+    just urllib + the API key from secrets/gemini.key.
+    """
+    key = ""
+    for fname in ("gemini.key", "google-api-key.txt"):
+        p = SECRETS / fname
+        if p.exists():
+            try:
+                key = p.read_text().strip()
+                if key:
+                    break
+            except Exception:
+                pass
+    if not key:
+        return None
+
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"gemini-2.5-flash:generateContent?key={key}")
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
+    }
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode())
+        # Gemini returns: {"candidates": [{"content": {"parts": [{"text": "..."}]}}]}
+        text = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        if not text:
+            return None
+        idx = text.find("{")
+        if idx >= 0:
+            text = text[idx:]
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _merge_verdicts(claude_v: dict | None, gemini_v: dict | None, n_picks: int) -> dict:
+    """Combine Claude + Gemini verdicts. Per-pick PROCEED only if BOTH agree
+    (or if only one returned a verdict — single-LLM is better than no LLM).
+    Disagreement → ABORT with combined reason."""
+    out = {"verdicts": []}
+    cv = (claude_v or {}).get("verdicts", []) if claude_v else []
+    gv = (gemini_v or {}).get("verdicts", []) if gemini_v else []
+
+    def _find(verdicts: list, i: int) -> dict | None:
+        return next((v for v in verdicts if v.get("pick_index") == i), None)
+
+    for i in range(n_picks):
+        c = _find(cv, i)
+        g = _find(gv, i)
+        c_dec = (c or {}).get("verdict", "").upper() if c else ""
+        g_dec = (g or {}).get("verdict", "").upper() if g else ""
+        c_reason = (c or {}).get("reason", "") if c else ""
+        g_reason = (g or {}).get("reason", "") if g else ""
+
+        if c_dec and g_dec:
+            if c_dec == g_dec:
+                final = c_dec
+                reason = f"Claude+Gemini agree: {c_reason or g_reason}"
+            else:
+                final = "ABORT"  # disagreement → conservative abort
+                reason = f"Disagreement (Claude={c_dec}: {c_reason}) (Gemini={g_dec}: {g_reason})"
+        elif c_dec:
+            final = c_dec
+            reason = f"Claude only (Gemini unavailable): {c_reason}"
+        elif g_dec:
+            final = g_dec
+            reason = f"Gemini only (Claude unavailable): {g_reason}"
+        else:
+            final = "PROCEED"  # fail-open if neither LLM responded
+            reason = "no LLM verdicts available — default proceed"
+        out["verdicts"].append({"pick_index": i, "verdict": final, "reason": reason})
+    return out
+
+
 def _log(payload: dict) -> None:
     try:
         with JOURNAL_LOG.open("a") as f:
@@ -252,15 +337,17 @@ def validate_picks(picks: list[dict], account: str = "boba", sleep_sec: int = 12
     # 4) ticker-specific recalls (in parallel-ish — sequential but small)
     recalls = [_mc_kb_recall((p.get("ticker") or "")) for p in picks]
 
-    # 5) Claude verdict
+    # 5) Multi-LLM verdict — Claude + Gemini in parallel, merge results
     prompt = _format_validation_prompt(picks, t0, t2, recalls)
-    verdict = _call_claude(prompt, timeout=45)
+    claude_v = _call_claude(prompt, timeout=45)
+    gemini_v = _call_gemini(prompt, timeout=30)
+    verdict = _merge_verdicts(claude_v, gemini_v, len(picks))
 
-    if not verdict or "verdicts" not in verdict:
-        # Fail-open: never break the cycle. Log the failure + proceed with all picks.
+    # If BOTH LLMs failed entirely, fail-open with all picks proceeding.
+    if not (claude_v or gemini_v):
         _log({"cycle_id": cycle_id, "account": account, "status": "fail_open",
-              "picks_count": len(picks), "reason": "claude_or_parse_failed"})
-        print(f"[pick-validator] Claude validation unavailable — fail-open, proceeding with all {len(picks)} picks", flush=True)
+              "picks_count": len(picks), "reason": "both_llms_failed"})
+        print(f"[pick-validator] both LLMs unavailable — fail-open, proceeding with all {len(picks)} picks", flush=True)
         return picks
 
     verdicts = verdict.get("verdicts", [])
@@ -277,14 +364,24 @@ def validate_picks(picks: list[dict], account: str = "boba", sleep_sec: int = 12
             "reason": reason,
             "t0_spot": t0[i].get("spot_price"),
             "t2_spot": t2[i].get("spot_price"),
+            "claude_responded": bool(claude_v),
+            "gemini_responded": bool(gemini_v),
         })
         if decision == "PROCEED":
             # Annotate the pick with validation metadata for the journal
-            pick["validation"] = {"verdict": "PROCEED", "reason": reason, "t0_spot": t0[i].get("spot_price"), "t2_spot": t2[i].get("spot_price")}
+            pick["validation"] = {
+                "verdict": "PROCEED",
+                "reason": reason,
+                "t0_spot": t0[i].get("spot_price"),
+                "t2_spot": t2[i].get("spot_price"),
+                "validators": [n for n, ok in (("claude", bool(claude_v)), ("gemini", bool(gemini_v))) if ok],
+            }
             keep.append(pick)
 
     _log({"cycle_id": cycle_id, "account": account, "status": "ok",
-          "picks_in": len(picks), "picks_kept": len(keep), "decisions": log_entries})
+          "picks_in": len(picks), "picks_kept": len(keep),
+          "claude_used": bool(claude_v), "gemini_used": bool(gemini_v),
+          "decisions": log_entries})
 
     if len(keep) < len(picks):
         print(f"[pick-validator] aborted {len(picks)-len(keep)} of {len(picks)} picks after 2-min research", flush=True)
