@@ -3213,8 +3213,15 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     try {
       const envPath = path.join(PROJECT_ROOT, '.env');
       const { setEnvKey } = await import('./env-write.js');
+      // Capture the previous state so the audit row records old→new, which
+      // is what an operator actually wants during incident reconstruction.
+      const { isEnabled } = await import('./kill-switches.js');
+      const prev = isEnabled(key as Parameters<typeof isEnabled>[0]);
       setEnvKey(envPath, key, enabled ? 'true' : 'false');
-      logger.info({ key, enabled }, 'Kill switch toggled via dashboard');
+      logger.info({ key, enabled, prev }, 'Kill switch toggled via dashboard');
+      // Pack 03 audit: flips are blocked=1 because they represent a
+      // safety-relevant state change. The detail captures the transition.
+      insertAuditLog('main', '', 'kill_switch_flip', `${key}: ${prev} -> ${enabled}`, true);
       return c.json({ ok: true, key, enabled });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

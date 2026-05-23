@@ -14,6 +14,7 @@ import {
   completeMissionTask,
   resetStuckMissionTasks,
   getMissionTask,
+  insertAuditLog,
 } from './db.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
@@ -124,6 +125,7 @@ async function runDueTasks(): Promise<void> {
 
         if (result.aborted) {
           updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
+          insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'scheduled_task_run', `${task.id}: timeout (10m)`, true);
           await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
           logger.warn({ taskId: task.id }, 'Task timed out');
           return;
@@ -151,12 +153,14 @@ async function runDueTasks(): Promise<void> {
         });
 
         updateTaskAfterRun(task.id, nextRun, text, 'success');
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'scheduled_task_run', `${task.id}: success (${text.length} chars)`, false);
 
         logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
       } catch (err) {
         clearTimeout(timeout);
         const errMsg = err instanceof Error ? err.message : String(err);
         updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'scheduled_task_run', `${task.id}: failed — ${errMsg.slice(0, 200)}`, true);
 
         logger.error({ err, taskId: task.id }, 'Scheduled task failed');
         try {
@@ -228,9 +232,11 @@ async function runDueMissionTasks(): Promise<void> {
       if (result.aborted) {
         if (cancelledByUser) {
           // Status is already 'cancelled' from the dashboard write — leave it.
+          insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: cancelled-by-user`, false);
           logger.info({ missionId: mission.id }, 'Mission task cancelled by user');
         } else {
           completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
+          insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: timeout (10m)`, true);
           logger.warn({ missionId: mission.id }, 'Mission task timed out');
           try {
             await sender('Mission task timed out: "' + mission.title + '"');
@@ -243,6 +249,7 @@ async function runDueMissionTasks(): Promise<void> {
       } else {
         const text = result.text?.trim() || 'Task completed with no output.';
         completeMissionTask(mission.id, text, 'completed');
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: completed (${text.length} chars)`, false);
         logger.info({ missionId: mission.id }, 'Mission task completed');
 
         // Send result to Telegram
@@ -270,9 +277,11 @@ async function runDueMissionTasks(): Promise<void> {
       clearInterval(cancelPoll);
       const errMsg = err instanceof Error ? err.message : String(err);
       if (cancelledByUser) {
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: cancelled-by-user (threw on abort)`, false);
         logger.info({ missionId: mission.id }, 'Mission task cancelled by user (threw on abort)');
       } else {
         completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: failed — ${errMsg.slice(0, 200)}`, true);
         logger.error({ err, missionId: mission.id }, 'Mission task failed');
       }
     } finally {

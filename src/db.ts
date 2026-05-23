@@ -282,6 +282,7 @@ function createSchema(database: Database.Database): void {
       action      TEXT NOT NULL,
       detail      TEXT NOT NULL DEFAULT '',
       blocked     INTEGER NOT NULL DEFAULT 0,
+      pinned      INTEGER NOT NULL DEFAULT 0,
       created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC);
@@ -733,6 +734,10 @@ function runMigrations(database: Database.Database): void {
       ON conversation_log(source, source_meeting_id, source_turn_id, agent_id)
       WHERE source != 'telegram' AND role = 'assistant';
   `);
+
+  // Pack 03 (Audit Log): retention support — `pinned` rows survive the
+  // 90-day prune sweep. Backfilled to existing DBs as 0 (=prunable).
+  addColumnIfMissing(database, 'audit_log', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -2407,6 +2412,7 @@ export interface AuditLogEntry {
   action: string;
   detail: string;
   blocked: number;
+  pinned: number;
   created_at: number;
 }
 
@@ -2432,6 +2438,35 @@ export function getRecentBlockedActions(limit = 10): AuditLogEntry[] {
   return db.prepare(
     `SELECT * FROM audit_log WHERE blocked = 1 ORDER BY created_at DESC LIMIT ?`,
   ).all(limit) as AuditLogEntry[];
+}
+
+/**
+ * Pack 03 retention sweep. Deletes rows older than `retainDays` whose
+ * `pinned` column is 0. Pinned rows survive indefinitely so an operator
+ * can preserve forensic context for an ongoing incident or post-mortem.
+ *
+ * Returns the number of rows deleted.
+ *
+ * Safe to call repeatedly — runs in a single transaction, no locking
+ * coordination needed because deletes are by-id and disjoint from
+ * concurrent inserts.
+ */
+export function pruneOldAuditEntries(retainDays = 90): number {
+  const cutoff = Math.floor(Date.now() / 1000) - retainDays * 24 * 60 * 60;
+  const info = db.prepare(
+    `DELETE FROM audit_log WHERE created_at < ? AND pinned = 0`,
+  ).run(cutoff);
+  return Number(info.changes ?? 0);
+}
+
+/** Mark an audit row as pinned so the prune sweep won't delete it. */
+export function pinAuditEntry(id: number): void {
+  db.prepare(`UPDATE audit_log SET pinned = 1 WHERE id = ?`).run(id);
+}
+
+/** Unpin an audit row (it becomes eligible for the next prune sweep). */
+export function unpinAuditEntry(id: number): void {
+  db.prepare(`UPDATE audit_log SET pinned = 0 WHERE id = ?`).run(id);
 }
 
 // ── Phase 2: Compaction events ────────────────────────────────────────
