@@ -45,6 +45,7 @@ vi.mock('./db.js', () => ({
   completeMissionTask: vi.fn(),
   resetStuckMissionTasks: vi.fn(() => 0),
   getMissionTask: vi.fn(() => null),
+  insertAuditLog: vi.fn(),
 }));
 
 vi.mock('./bot.js', () => ({
