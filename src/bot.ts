@@ -43,7 +43,7 @@ import { buildCostFooter } from './cost-footer.js';
 import { DEFAULT_CLAUDE_MODEL, getMainProviderConfig, getProviderDisplay, ProviderConfig } from './provider.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
-import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
+import { parseDelegation, delegateToAgent, getAvailableAgents, classifyAndAssignAgent } from './orchestrator.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import {
   isLocked,
@@ -481,7 +481,13 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
   // ── Delegation detection ────────────────────────────────────────────
   // Intercept @agentId or /delegate syntax before running the main agent.
-  const delegation = parseDelegation(message);
+  // If no explicit delegation, Pack 05 auto-classifier picks an agent (or
+  // returns null to keep main). Auto-assign is gated by
+  // MISSION_AUTO_ASSIGN_ENABLED + LLM_SPAWN_ENABLED + complexity filter.
+  let delegation = parseDelegation(message);
+  if (!delegation) {
+    delegation = await classifyAndAssignAgent(message, AGENT_ID, chatIdStr);
+  }
   if (delegation) {
     setProcessing(chatIdStr, true);
     await sendTyping(ctx.api, chatId);
