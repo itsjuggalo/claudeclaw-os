@@ -1,6 +1,7 @@
 import { CronExpressionParser } from 'cron-parser';
 
 import { AGENT_ID, ALLOWED_CHAT_ID, agentMcpAllowlist, agentDefaultModel } from './config.js';
+import { isEnabled } from './kill-switches.js';
 import { ingestConversationTurn } from './memory-ingest.js';
 import {
   getDueTasks,
@@ -60,7 +61,21 @@ export function initScheduler(send: Sender, agentId = 'main'): void {
   logger.info({ agentId }, 'Scheduler started (checking every 60s)');
 }
 
+// Logged once per disable window so the journal shows a single line, not
+// one per 60s tick while an incident is in progress.
+let _scheduledTasksDisabledLogged = false;
+let _missionTasksDisabledLogged = false;
+
 async function runDueTasks(): Promise<void> {
+  if (!isEnabled('SCHEDULER_ENABLED')) {
+    if (!_scheduledTasksDisabledLogged) {
+      logger.warn('SCHEDULER_ENABLED=false — skipping due scheduled tasks (set to true in .env to resume)');
+      _scheduledTasksDisabledLogged = true;
+    }
+    return;
+  }
+  _scheduledTasksDisabledLogged = false;
+
   const tasks = getDueTasks(schedulerAgentId);
 
   if (tasks.length > 0) {
@@ -160,6 +175,15 @@ async function runDueTasks(): Promise<void> {
 }
 
 async function runDueMissionTasks(): Promise<void> {
+  if (!isEnabled('SCHEDULER_ENABLED')) {
+    if (!_missionTasksDisabledLogged) {
+      logger.warn('SCHEDULER_ENABLED=false — skipping mission task claims');
+      _missionTasksDisabledLogged = true;
+    }
+    return;
+  }
+  _missionTasksDisabledLogged = false;
+
   const mission = claimNextMissionTask(schedulerAgentId);
   if (!mission) return;
 
