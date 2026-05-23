@@ -173,6 +173,38 @@ async function main(): Promise<void> {
       if (pruned > 0) logger.info({ pruned }, 'Pruned old audit entries (24h sweep)');
     }, 24 * 60 * 60 * 1000);
 
+    // Pack 04 periodic refresh: re-run agent-split analysis every 24h.
+    // Off-by-explicit-false so set-and-forget behavior is the default;
+    // operators who don't want Haiku tokens spent on this can set
+    // SUGGESTIONS_AUTO_REFRESH_ENABLED=false. The dashboard refresh
+    // button keeps working either way.
+    const autoSuggestEnv = (process.env.SUGGESTIONS_AUTO_REFRESH_ENABLED ?? 'true').trim().toLowerCase();
+    const autoSuggestEnabled = autoSuggestEnv !== 'false' && autoSuggestEnv !== '0' && autoSuggestEnv !== 'off' && autoSuggestEnv !== 'no';
+    if (autoSuggestEnabled) {
+      // Delay first refresh 10 minutes after boot so a restart loop
+      // doesn't burn Haiku tokens; subsequent runs at 24h cadence.
+      setTimeout(() => {
+        void import('./agent-suggestions.js').then(({ refreshAgentSuggestions }) =>
+          refreshAgentSuggestions(),
+        ).then((r) => {
+          logger.info({ inserted: r.inserted, skipped: r.skipped, reason: r.reason }, 'Agent suggestions refreshed (startup)');
+        }).catch((err) => {
+          logger.warn({ err: err instanceof Error ? err.message : err }, 'Initial agent suggestion refresh failed (non-fatal)');
+        });
+      }, 10 * 60 * 1000);
+      setInterval(() => {
+        void import('./agent-suggestions.js').then(({ refreshAgentSuggestions }) =>
+          refreshAgentSuggestions(),
+        ).then((r) => {
+          logger.info({ inserted: r.inserted, skipped: r.skipped, reason: r.reason }, 'Agent suggestions refreshed (24h)');
+        }).catch((err) => {
+          logger.warn({ err: err instanceof Error ? err.message : err }, 'Periodic agent suggestion refresh failed (non-fatal)');
+        });
+      }, 24 * 60 * 60 * 1000);
+    } else {
+      logger.info('Agent suggestion auto-refresh disabled (SUGGESTIONS_AUTO_REFRESH_ENABLED=false)');
+    }
+
     // One-time bundled→mutable avatar migration. After this lands, any
     // previously user-uploaded main avatar that we wrote into the
     // bundled namespace gets copied into STORE_DIR/avatars/main.png so
