@@ -19,6 +19,7 @@ import { Voices } from '@/pages/Voices';
 import { Chat } from '@/pages/Chat';
 import { WarRoom } from '@/pages/WarRoom';
 import { AgentFiles } from '@/pages/AgentFiles';
+import { Peon } from '@/pages/Peon';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
@@ -60,6 +61,7 @@ export function App() {
           <Route path="/audit"><Audit /></Route>
           <Route path="/warroom"><WarRoom /></Route>
           <Route path="/voices"><Voices /></Route>
+          <Route path="/peon"><Peon /></Route>
           <Route path="/settings"><Settings /></Route>
 
           {/* Common alt slugs that used to point at placeholder pages */}

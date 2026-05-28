@@ -1486,6 +1486,125 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
+  // ── peon-ping sound pack switcher ────────────────────────────────
+  const PEON_BIN = path.join(os.homedir(), '.local', 'bin', 'peon');
+
+  function runPeon(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+    return new Promise((resolve) => {
+      import('child_process').then(({ execFile }) => {
+        execFile(PEON_BIN, args, { timeout: 8000, env: process.env }, (err, stdout, stderr) => {
+          resolve({ stdout: stdout || '', stderr: stderr || '', code: (err as any)?.code ?? 0 });
+        });
+      });
+    });
+  }
+
+  function parsePeonPackList(raw: string): { name: string; label: string; active: boolean }[] {
+    // Strip ANSI escape codes then parse "  name   N sounds   Display Name  [<-- active]"
+    const stripped = raw.replace(/\x1b\[[0-9;]*m/g, '');
+    const packs: { name: string; label: string; active: boolean }[] = [];
+    for (const line of stripped.split('\n')) {
+      const m = line.match(/^\s{2}(\S+)\s+\d+ sounds\s{3}(.+?)(?:\s+<-- active)?\s*$/);
+      if (!m) continue;
+      packs.push({ name: m[1], label: m[2].trim(), active: line.includes('<-- active') });
+    }
+    return packs;
+  }
+
+  app.get('/api/peon/packs', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    const { stdout } = await runPeon(['packs', 'list']);
+    const packs = parsePeonPackList(stdout);
+    const active = packs.find((p) => p.active)?.name ?? null;
+    return c.json({ ok: true, packs, active });
+  });
+
+  app.post('/api/peon/packs/use', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { name?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const name = (body.name || '').trim();
+    if (!name || !/^[a-z0-9_-]+$/.test(name)) {
+      return c.json({ ok: false, error: 'invalid pack name' }, 400);
+    }
+    const { stdout, code } = await runPeon(['packs', 'use', name]);
+    if (code !== 0) return c.json({ ok: false, error: stdout.trim() || 'peon error' }, 500);
+    return c.json({ ok: true, active: name });
+  });
+
+  app.get('/api/peon/status', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    const [statusRes, mobileRes, volRes] = await Promise.all([
+      runPeon(['status']),
+      runPeon(['mobile', 'status']),
+      runPeon(['volume']),
+    ]);
+    const stripped = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    const statusLine = stripped(statusRes.stdout);
+    const mobileLine = stripped(mobileRes.stdout);
+    const volLine = stripped(volRes.stdout);
+    const paused = /paused/i.test(statusLine);
+    const volMatch = volLine.match(/[\d.]+/);
+    const volume = volMatch ? parseFloat(volMatch[0]) : null;
+
+    // Parse mobile channels: look for "ntfy" and "telegram" lines
+    const mobileLines = mobileLine.split('\n').map((l) => stripped(l));
+    const ntfyLine = mobileLines.find((l) => /ntfy/i.test(l)) ?? null;
+    const telegramLine = mobileLines.find((l) => /telegram/i.test(l)) ?? null;
+    const mobileEnabled = !/disabled|off/i.test(mobileLine) && (ntfyLine !== null || telegramLine !== null);
+
+    const ntfyTopic = ntfyLine ? (ntfyLine.match(/Topic:\s*(\S+)/i)?.[1] ?? ntfyLine) : null;
+    const telegramConfigured = telegramLine !== null && !/not configured/i.test(telegramLine);
+
+    return c.json({
+      ok: true,
+      paused,
+      volume,
+      mobileEnabled,
+      ntfyTopic,
+      telegramConfigured,
+      raw: { status: statusLine, mobile: mobileLine, volume: volLine },
+    });
+  });
+
+  app.post('/api/peon/pause', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    await runPeon(['pause']);
+    return c.json({ ok: true, paused: true });
+  });
+
+  app.post('/api/peon/resume', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    await runPeon(['resume']);
+    return c.json({ ok: true, paused: false });
+  });
+
+  app.post('/api/peon/volume', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { volume?: number } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const vol = body.volume;
+    if (vol === undefined || vol < 0 || vol > 1) return c.json({ ok: false, error: 'volume must be 0.0–1.0' }, 400);
+    await runPeon(['volume', String(vol)]);
+    return c.json({ ok: true, volume: vol });
+  });
+
+  app.post('/api/peon/mobile/test', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    const { stdout, code } = await runPeon(['mobile', 'test']);
+    if (code !== 0) return c.json({ ok: false, error: stdout.trim() || 'peon error' }, 500);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/peon/mobile/toggle', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { enable?: boolean } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const cmd = body.enable ? 'on' : 'off';
+    await runPeon(['mobile', cmd]);
+    return c.json({ ok: true, mobileEnabled: body.enable });
+  });
+
   // Scheduled tasks
   app.get('/api/tasks', (c) => {
     const tasks = getAllScheduledTasks();
