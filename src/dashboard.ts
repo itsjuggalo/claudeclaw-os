@@ -1590,9 +1590,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   app.post('/api/peon/mobile/test', async (c) => {
-    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
-    const { stdout, code } = await runPeon(['mobile', 'test']);
-    if (code !== 0) return c.json({ ok: false, error: stdout.trim() || 'peon error' }, 500);
+    // peon mobile is off; relay script owns phone channels — call it directly
+    const relayScript = path.join(os.homedir(), '.claude', 'hooks', 'mobile-relay.sh');
+    const testPayload = JSON.stringify({ session_id: 'dashboard-test', message: 'Test from Mission Control — ntfy + Telegram relay live' });
+    const { execFile } = await import('child_process');
+    const err = await new Promise<Error | null>((resolve) => {
+      const proc = execFile(relayScript, [], { timeout: 12000, env: process.env }, (e) => resolve(e));
+      proc.stdin?.write(testPayload);
+      proc.stdin?.end();
+    });
+    if (err && (err as any).code !== 0) return c.json({ ok: false, error: String(err.message) }, 500);
     return c.json({ ok: true });
   });
 
