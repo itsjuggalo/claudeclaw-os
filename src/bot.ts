@@ -299,6 +299,28 @@ export function splitMessage(text: string): string[] {
   return parts;
 }
 
+function stripTrailingAcpFooter(text: string): string {
+  let cleaned = text;
+  while (/(?:\r?\n\s*)?\[acp\]\s*$/i.test(cleaned)) {
+    cleaned = cleaned.replace(/(?:\r?\n\s*)?\[acp\]\s*$/i, '');
+  }
+  return cleaned.trimEnd();
+}
+
+function sanitizeAcpDisplayText(text: string, provider: ProviderConfig): string {
+  if (provider.type !== 'acp') return text;
+  return stripTrailingAcpFooter(text);
+}
+
+function isAcpInfraProgress(description: string, provider: ProviderConfig): boolean {
+  if (provider.type !== 'acp') return false;
+  const trimmed = description.trim();
+  if (!trimmed) return false;
+  if (/^\[acp\]$/i.test(trimmed)) return true;
+  if (/\[acp\]\s*$/i.test(trimmed)) return true;
+  return /^acp (session started|model set to|mode set to|thinking set to)/i.test(trimmed);
+}
+
 // ── File marker types ─────────────────────────────────────────────────
 export interface FileMarker {
   type: 'document' | 'photo';
@@ -593,12 +615,18 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       };
       if (event.type === 'task_started') {
         emitChatEvent(progressPayload);
-        void ctx.reply(`🔄 ${event.description}`).catch(() => {});
+        // ACP emits infrastructure-level status (and occasional bare [acp]
+        // markers). Keep these visible in SSE logs, but don't post them
+        // to Telegram chat as user-facing messages.
+        const isAcpInfraStatus = isAcpInfraProgress(event.description, provider);
+        if (!isAcpInfraStatus) {
+          void ctx.reply(`🔄 ${event.description}`).catch(() => {});
+        }
       } else if (event.type === 'task_completed') {
         emitChatEvent(progressPayload);
         // Only notify Telegram for meaningful completions (sub-agent results),
         // not generic "Tool result" from every individual tool call.
-        if (event.description !== 'Tool result') {
+        if (event.description !== 'Tool result' && !isAcpInfraProgress(event.description, provider)) {
           void ctx.reply(`✓ ${event.description}`).catch(() => {});
         }
       } else if (event.type === 'plan') {
@@ -612,7 +640,9 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
           const now = Date.now();
           if (now - lastToolNotifyTime >= TOOL_NOTIFY_INTERVAL_MS) {
             lastToolNotifyTime = now;
-            void ctx.reply(`⚙️ ${event.description}...`).catch(() => {});
+            if (!isAcpInfraProgress(event.description, provider)) {
+              void ctx.reply(`⚙️ ${event.description}...`).catch(() => {});
+            }
           }
         }
       }
@@ -639,7 +669,8 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
       if (now - globalLast < GLOBAL_STREAM_INTERVAL_MS || deltaLen < 20) return;
 
-      let displayText = accumulated;
+      let displayText = sanitizeAcpDisplayText(accumulated, provider);
+      if (!displayText.trim()) return;
       if (displayText.length > 4000) {
         displayText = '...' + displayText.slice(displayText.length - 3900);
       }
@@ -699,7 +730,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       logger.info({ newSessionId: result.newSessionId }, 'Session saved');
     }
 
-    let rawResponse = result.text?.trim() || 'Done.';
+    let rawResponse = sanitizeAcpDisplayText(result.text?.trim() || 'Done.', provider) || 'Done.';
 
     // Exfiltration guard: scan for leaked secrets before sending to Telegram
     if (EXFILTRATION_GUARD_ENABLED) {
@@ -973,7 +1004,9 @@ export function createBot(): Bot {
       '/agents — List available agents\n' +
       '/delegate — Delegate task to agent\n' +
       '/lock — Lock session (PIN required to unlock)\n' +
-      '/status — Security status\n\n' +
+      '/status — Security status\n' +
+      '/packs — List installed sound packs\n' +
+      '/setpack <name> — Switch active sound pack\n\n' +
       'Delegation: @agentId: prompt or /delegate agentId prompt\n\n' +
       'You can also send voice notes, photos, files, and videos.'
     );
@@ -1365,8 +1398,37 @@ export function createBot(): Bot {
     messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `/delegate ${args}`));
   });
 
+  // /packs — list installed peon-ping sound packs
+  bot.command('packs', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    try {
+      const res = await fetch('http://localhost:3141/api/peon/packs');
+      const data = await res.json() as { ok: boolean; packs: { name: string; label: string; active: boolean }[]; active: string | null };
+      if (!data.ok || !data.packs.length) { await ctx.reply('No packs found.'); return; }
+      const lines = data.packs.map((p) => `${p.active ? '▶' : '  '} ${p.name} — ${p.label}`);
+      await ctx.reply(`🎮 Installed packs (${data.packs.length}):\n\n${lines.join('\n')}\n\nUse /setpack <name> to switch.`);
+    } catch { await ctx.reply('Could not reach peon API.'); }
+  });
+
+  // /setpack <name> — switch active peon-ping sound pack
+  bot.command('setpack', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const name = ctx.match?.trim().toLowerCase();
+    if (!name) { await ctx.reply('Usage: /setpack <pack-name>\n\nSee /packs for available names.'); return; }
+    try {
+      const res = await fetch('http://localhost:3141/api/peon/packs/use', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json() as { ok: boolean; active?: string; error?: string };
+      if (!data.ok) { await ctx.reply(`❌ ${data.error ?? 'Unknown error'}`); return; }
+      await ctx.reply(`✅ Sound pack switched to: ${name}`);
+    } catch { await ctx.reply('Could not reach peon API.'); }
+  });
+
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/provider', '/memory', '/forget', '/pin', '/unpin', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/lock', '/status']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/provider', '/memory', '/forget', '/pin', '/unpin', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/lock', '/status', '/packs', '/setpack']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
@@ -1777,7 +1839,7 @@ async function processDashboardMessage(
       setSession(chatIdStr, result.newSessionId, AGENT_ID);
     }
 
-    const rawResponse = result.text?.trim() || 'Done.';
+    const rawResponse = sanitizeAcpDisplayText(result.text?.trim() || 'Done.', dashProvider) || 'Done.';
 
     // Save conversation turn
     saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
