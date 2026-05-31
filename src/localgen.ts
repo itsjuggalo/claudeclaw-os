@@ -15,17 +15,11 @@ export interface LocalResult { ok: boolean; file?: string; url?: string; error?:
 
 let _busy = false;
 
-// Why not ready yet (deps still installing) — friendly message, or null if ready.
-function notReady(): string | null {
-  if (!fs.existsSync(PY)) return 'Local generator is not installed yet.';
-  if (!fs.existsSync(`${LG}/INSTALL_DONE`)) return 'Local generator is still installing/downloading — try again in a few minutes.';
-  return null;
-}
-
-function run(script: string, args: string[], saveRe: RegExp, urlFor: (file: string) => string, timeoutMs: number): Promise<LocalResult> {
+function run(script: string, args: string[], saveRe: RegExp, urlFor: (file: string) => string, timeoutMs: number, readyMarker: string, label: string): Promise<LocalResult> {
   return new Promise((resolve) => {
-    const why = notReady();
-    if (why) return resolve({ ok: false, error: why });
+    if (!fs.existsSync(PY)) return resolve({ ok: false, error: 'Local generator is not installed yet.' });
+    if (!fs.existsSync(`${LG}/INSTALL_DONE`)) return resolve({ ok: false, error: 'Local generator is still installing dependencies — try again shortly.' });
+    if (!fs.existsSync(readyMarker)) return resolve({ ok: false, error: `${label} model is still downloading (one-time, several GB) — try again in a few minutes.` });
     if (_busy) return resolve({ ok: false, error: 'A local generation is already running (GPU busy) — wait for it to finish.' });
     _busy = true;
     execFile(
@@ -64,7 +58,7 @@ export function generateLocalImage(opts: { prompt: string; model?: string; steps
   const model = opts.model === 'sd-turbo' ? 'sd-turbo' : 'sdxl-turbo';
   const steps = opts.steps && opts.steps > 0 ? Math.min(8, opts.steps) : 3;
   const args = ['--model', model, '--steps', String(steps), '--', prompt];
-  return run(`${LG}/generate_image_local.py`, args, /Image saved to (.+)/, (f) => `/api/gallery/file?root=generated&sub=&name=${encodeURIComponent(f)}`, 600_000);
+  return run(`${LG}/generate_image_local.py`, args, /Image saved to (.+)/, (f) => `/api/gallery/file?root=generated&sub=&name=${encodeURIComponent(f)}`, 600_000, `${LG}/SDXL_READY`, 'SDXL-Turbo image');
 }
 
 export function generateLocalVideo(opts: { prompt: string; frames?: number; steps?: number }): Promise<LocalResult> {
@@ -73,5 +67,5 @@ export function generateLocalVideo(opts: { prompt: string; frames?: number; step
   const frames = opts.frames && opts.frames > 0 ? Math.min(161, opts.frames) : 97;
   const steps = opts.steps && opts.steps > 0 ? Math.min(60, opts.steps) : 40;
   const args = ['--frames', String(frames), '--steps', String(steps), '--', prompt];
-  return run(`${LG}/generate_video.py`, args, /Video saved to (.+)/, (f) => `/api/gallery/file?root=video&sub=&name=${encodeURIComponent(f)}`, 1_200_000);
+  return run(`${LG}/generate_video.py`, args, /Video saved to (.+)/, (f) => `/api/gallery/file?root=video&sub=&name=${encodeURIComponent(f)}`, 1_200_000, `${LG}/LTX_READY`, 'LTX-Video');
 }
