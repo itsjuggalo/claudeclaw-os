@@ -11,6 +11,7 @@ import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache } from './gallery.js';
 import { generateImage } from './generate.js';
+import { generateLocalImage, generateLocalVideo } from './localgen.js';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -742,11 +743,31 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // appears in /gallery automatically. Returns {ok,file,url,notes} or {ok:false,error}.
   app.post('/api/gallery/generate', async (c) => {
     const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
-    const result = await generateImage({
+    const prompt = String(body?.prompt ?? '');
+    const source = typeof body?.source === 'string' ? body.source : 'banana';
+    const result = source === 'local'
+      ? await generateLocalImage({
+          prompt,
+          model: typeof body?.model === 'string' ? body.model : undefined,
+          steps: typeof body?.steps === 'number' ? body.steps : undefined,
+        })
+      : await generateImage({
+          prompt,
+          model: typeof body?.model === 'string' ? body.model : undefined,
+          aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+          size: typeof body?.size === 'string' ? body.size : undefined,
+        });
+    if (result.ok) invalidateGalleryCache();
+    return c.json(result);
+  });
+
+  // Local FREE video (diffusers LTX-Video on the GPU) → renders/ = gallery video section.
+  app.post('/api/gallery/generate-video', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const result = await generateLocalVideo({
       prompt: String(body?.prompt ?? ''),
-      model: typeof body?.model === 'string' ? body.model : undefined,
-      aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
-      size: typeof body?.size === 'string' ? body.size : undefined,
+      frames: typeof body?.frames === 'number' ? body.frames : undefined,
+      steps: typeof body?.steps === 'number' ? body.steps : undefined,
     });
     if (result.ok) invalidateGalleryCache();
     return c.json(result);
