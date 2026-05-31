@@ -2,7 +2,7 @@ import {
   LayoutGrid, ListTodo, Users, MessageSquare,
   Brain, Network, Activity, ShieldCheck,
   Swords, Database, BookOpen,
-  Settings, Smartphone, Wallet,
+  Settings, Smartphone, Wallet, Images,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -32,6 +32,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/usage',      label: 'Usage',           section: 'intelligence', icon: Activity,      shortcut: 'g u' },
   { path: '/audit',      label: 'Audit',           section: 'intelligence', icon: ShieldCheck                   },
   { path: '/wallets',    label: 'Wallets',         section: 'intelligence', icon: Wallet,        shortcut: 'g $' },
+  { path: '/gallery',    label: 'Gallery',         section: 'intelligence', icon: Images,        shortcut: 'g i' },
 
   { path: '/warroom',    label: 'War Room',        section: 'collaborate',  icon: Swords,        shortcut: 'g w' },
   { path: '/peon',       label: 'Peon Ping',       section: 'collaborate',  icon: Smartphone                },

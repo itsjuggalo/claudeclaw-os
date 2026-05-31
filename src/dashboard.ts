@@ -9,6 +9,7 @@ import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
+import { getGallery, resolveGalleryFile, galleryMime } from './gallery.js';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -705,6 +706,34 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
+  });
+
+  // ── Gallery — generated images/videos, surfaced from the same local source
+  //    folders as the :8090 BobaCatTrades + Nano gallery (see src/gallery.ts).
+  //    Served here so it's same-origin (no CORS) and works even if :8090 is down.
+  app.get('/api/gallery', (c) => {
+    try {
+      return c.json(getGallery());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+  app.get('/api/gallery/file', (c) => {
+    const full = resolveGalleryFile(
+      c.req.query('root') || '',
+      c.req.query('sub') || '',
+      c.req.query('name') || '',
+    );
+    if (!full) return c.text('', 404);
+    let data: Buffer;
+    try {
+      data = fs.readFileSync(full);
+    } catch {
+      return c.text('', 404); // file vanished between stat and read (live folders)
+    }
+    return new Response(new Uint8Array(data), {
+      headers: { 'Content-Type': galleryMime(full), 'Cache-Control': 'public, max-age=300' },
+    });
   });
 
   // ── War Room meeting history & transcript persistence ──────────────
