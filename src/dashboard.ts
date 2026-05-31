@@ -8,6 +8,7 @@ import os from 'os';
 import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
 import crypto from 'crypto';
+import { getWallets } from './wallets.js';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -693,6 +694,17 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       }
     });
     return c.json({ agents });
+  });
+
+  // ── Wallets — aggregated brokerage/exchange balances (moved here from
+  //    MissionCtrl so sensitive balances stay on the local-only dashboard) ──
+  app.get('/api/wallets', async (c) => {
+    try {
+      const wallets = await getWallets();
+      return c.json(wallets);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
   });
 
   // ── War Room meeting history & transcript persistence ──────────────
