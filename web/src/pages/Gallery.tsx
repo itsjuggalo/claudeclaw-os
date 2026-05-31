@@ -6,11 +6,16 @@ import { useState } from 'preact/hooks';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
+import { dashboardToken } from '@/lib/api';
 
 interface GFile { name: string; url: string; type: 'image' | 'video'; }
 interface GSection { id: string; title: string; desc: string; count: number; files: GFile[]; }
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
+
+// <img>/<video> can't send the fetch auth header — append the dashboard token
+// (if any) so tiles load when Bearer auth is enabled; no-op when disabled.
+const withTok = (u: string) => (dashboardToken ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}` : u);
 
 export function Gallery() {
   const { data, loading, error, refresh } = useFetch<GSection[]>('/api/gallery', 60_000);
@@ -75,9 +80,9 @@ export function Gallery() {
                     >
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '1 / 1', padding: '9px', background: '#0d1117' }}>
                         {f.type === 'video' ? (
-                          <video src={f.url} controls preload="metadata" style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }} />
+                          <video src={withTok(f.url)} controls preload="metadata" style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }} />
                         ) : (
-                          <img src={f.url} loading="lazy" alt={f.name} style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }} />
+                          <img src={withTok(f.url)} loading="lazy" alt={f.name} style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }} />
                         )}
                       </div>
                       <figcaption style={{ padding: '7px 10px', fontSize: '11px', color: '#8b97a4', fontFamily: MONO, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={f.name}>
@@ -98,7 +103,7 @@ export function Gallery() {
           onClick={() => setLightbox(null)}
           style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(3,5,8,0.9)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', padding: '24px', cursor: 'zoom-out' }}
         >
-          <img src={lightbox.url} alt={lightbox.name} style={{ maxWidth: '94vw', maxHeight: '86vh', borderRadius: '10px', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }} />
+          <img src={withTok(lightbox.url)} alt={lightbox.name} style={{ maxWidth: '94vw', maxHeight: '86vh', borderRadius: '10px', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }} />
           <div style={{ fontSize: '12px', color: '#8b97a4', fontFamily: MONO }}>{lightbox.name}</div>
         </div>
       )}

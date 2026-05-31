@@ -9,7 +9,8 @@ import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
-import { getGallery, resolveGalleryFile, galleryMime } from './gallery.js';
+import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache } from './gallery.js';
+import { generateImage } from './generate.js';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -734,6 +735,21 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return new Response(new Uint8Array(data), {
       headers: { 'Content-Type': galleryMime(full), 'Cache-Control': 'public, max-age=300' },
     });
+  });
+
+  // POST a prompt → run the Nano Banana generator (banana-maker skill). The image
+  // saves into its output/ dir, which is the gallery "Generated" section, so it
+  // appears in /gallery automatically. Returns {ok,file,url,notes} or {ok:false,error}.
+  app.post('/api/gallery/generate', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const result = await generateImage({
+      prompt: String(body?.prompt ?? ''),
+      model: typeof body?.model === 'string' ? body.model : undefined,
+      aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+      size: typeof body?.size === 'string' ? body.size : undefined,
+    });
+    if (result.ok) invalidateGalleryCache();
+    return c.json(result);
   });
 
   // ── War Room meeting history & transcript persistence ──────────────

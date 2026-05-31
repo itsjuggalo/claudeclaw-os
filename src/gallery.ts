@@ -113,6 +113,12 @@ export function getGallery(): GallerySection[] {
   return sections;
 }
 
+/** Drop the cached scan so the next /api/gallery reflects new files immediately
+ *  (called after a generation so the new image shows without the 15s wait). */
+export function invalidateGalleryCache(): void {
+  _cache = null;
+}
+
 export function galleryMime(name: string): string {
   return MIME[path.extname(name).toLowerCase()] || 'application/octet-stream';
 }

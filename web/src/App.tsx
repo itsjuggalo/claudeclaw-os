@@ -22,6 +22,7 @@ import { AgentFiles } from '@/pages/AgentFiles';
 import { Peon } from '@/pages/Peon';
 import { Wallets } from '@/pages/Wallets';
 import { Gallery } from '@/pages/Gallery';
+import { Create } from '@/pages/Create';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
@@ -63,6 +64,7 @@ export function App() {
           <Route path="/audit"><Audit /></Route>
           <Route path="/wallets"><Wallets /></Route>
           <Route path="/gallery"><Gallery /></Route>
+          <Route path="/create"><Create /></Route>
           <Route path="/warroom"><WarRoom /></Route>
           <Route path="/voices"><Voices /></Route>
           <Route path="/peon"><Peon /></Route>
