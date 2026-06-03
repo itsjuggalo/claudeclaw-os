@@ -9,7 +9,7 @@ import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE } from './config.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
-import { getCatalog, kbSearch, kbAsk, sqlMeta, sqlSelect, listSecrets, revealSecret } from './databases.js';
+import { getCatalog, kbSearch, kbAsk, kbSources, sqlMeta, sqlSelect, listSecrets, revealSecret } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
@@ -3759,6 +3759,15 @@ init();
     const top = parseInt(c.req.query('top') || '8', 10);
     try {
       return c.json(await kbSearch(id, q, top));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/sources', async (c) => {
+    const id = c.req.param('id');
+    try {
+      return c.json(await kbSources(id));
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }

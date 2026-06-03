@@ -8,12 +8,13 @@
 import type { ComponentChildren } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
 import { useRoute, useLocation } from 'wouter-preact';
-import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search } from 'lucide-preact';
+import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search, Download } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { fmtUpdated } from '@/pages/Databases';
+import { renderMarkdown } from '@/lib/markdown';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 
@@ -92,9 +93,11 @@ export function DatabaseDetail() {
 
   return (
     <div class="flex flex-col h-full">
-      {item.type === 'kb' && <KbDetail item={item} back={backLink} />}
-      {item.type === 'sql' && <SqlDetail item={item} back={backLink} />}
-      {item.type === 'secrets' && <SecretsDetail item={item} back={backLink} />}
+      {/* key by id so internal state (tab, answer, sources, query, result)
+          fully resets when navigating between two DBs of the same type. */}
+      {item.type === 'kb' && <KbDetail key={item.id} item={item} back={backLink} />}
+      {item.type === 'sql' && <SqlDetail key={item.id} item={item} back={backLink} />}
+      {item.type === 'secrets' && <SecretsDetail key={item.id} item={item} back={backLink} />}
     </div>
   );
 }
@@ -111,6 +114,16 @@ interface KbHit {
 }
 interface KbSearchResponse { hits: KbHit[]; abstained: boolean; }
 interface KbAskResponse { answer: string; sources: string[]; abstained?: boolean; used_portfolio?: boolean; }
+interface KbSourceGroup { name: string; chunks: number; sources: number; }
+interface KbSourcesResponse {
+  groupBy: string | null; totalChunks: number; totalSources: number;
+  groups: KbSourceGroup[]; error?: string;
+}
+
+// "Heading (course)" → "Heading" — the bit worth re-searching.
+function citationHeading(s: string): string {
+  return s.replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
 
 const LAYER_COLOR: Record<string, string> = {
   identity: '#a78bfa', critical: '#f59e0b', working: '#10b981', episodic: '#5eb6ff',
@@ -132,6 +145,17 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [search, setSearch] = useState<KbSearchResponse | null>(null);
+
+  // Sources (breakdown) state — lazily loaded the first time the tab opens.
+  const [sources, setSources] = useState<KbSourcesResponse | null>(null);
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [sourcesErr, setSourcesErr] = useState<string | null>(null);
+
+  // Jump from a citation to the Search tab, pre-filled with the lesson heading.
+  function jumpToSearch(heading: string) {
+    setQuery(heading);
+    setTab('search');
+  }
 
   async function runAsk() {
     if (!question.trim()) return;
@@ -168,6 +192,25 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
     void run();
     return () => { cancelled = true; };
   }, [dq, tab, item.id]);
+
+  useEffect(() => {
+    if (tab !== 'sources' || sources || sourcesLoading) return;
+    let cancelled = false;
+    async function run() {
+      setSourcesLoading(true);
+      setSourcesErr(null);
+      try {
+        const r = await apiGet<KbSourcesResponse>('/api/databases/kb/' + item.id + '/sources');
+        if (!cancelled) setSources(r);
+      } catch (e) {
+        if (!cancelled) setSourcesErr(String((e as Error).message || e));
+      } finally {
+        if (!cancelled) setSourcesLoading(false);
+      }
+    }
+    void run();
+    return () => { cancelled = true; };
+  }, [tab, item.id, sources, sourcesLoading]);
 
   const noData = answer && (answer.abstained || !answer.answer.trim());
 
@@ -252,19 +295,32 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                             borderRadius: '999px', marginBottom: '10px',
                           }}>portfolio context</span>
                         )}
-                        <div style={{
-                          whiteSpace: 'pre-wrap', fontSize: '14px', lineHeight: 1.6,
-                          color: 'var(--color-text)',
-                        }}>{answer.answer}</div>
+                        <div
+                          class="chat-md"
+                          style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text)' }}
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(answer.answer) }}
+                        />
                       </div>
                       {answer.sources && answer.sources.length > 0 && (
                         <div style={{ marginTop: '14px' }}>
                           <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '8px', textTransform: 'uppercase' }}>
-                            Sources
+                            Sources — click to search
                           </div>
                           <ul style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                             {answer.sources.map((s, i) => (
-                              <li key={i} style={{ fontSize: '12px', color: 'var(--color-text-muted)', fontFamily: MONO }}>{s}</li>
+                              <li key={i}>
+                                <button
+                                  type="button"
+                                  onClick={() => jumpToSearch(citationHeading(s))}
+                                  title={'Search this KB for "' + citationHeading(s) + '"'}
+                                  style={{
+                                    fontSize: '12px', color: 'var(--color-text-muted)', fontFamily: MONO,
+                                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                                    textAlign: 'left',
+                                  }}
+                                  class="hover:text-[var(--color-accent)] hover:underline"
+                                >{s}</button>
+                              </li>
                             ))}
                           </ul>
                         </div>
@@ -319,17 +375,62 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
           )}
 
           {tab === 'sources' && (
-            <div style={{
-              background: 'var(--color-card)', border: '1px solid var(--color-border)',
-              borderRadius: '10px', padding: '16px',
-            }}>
-              <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--color-text)', marginBottom: '6px' }}>
-                {item.stat}
+            <>
+              <div style={{
+                background: 'var(--color-card)', border: '1px solid var(--color-border)',
+                borderRadius: '10px', padding: '16px', marginBottom: '16px',
+              }}>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--color-text)', marginBottom: '6px' }}>
+                  {sources && !sources.error
+                    ? sources.totalChunks.toLocaleString() + ' chunks · ' + sources.totalSources.toLocaleString() + ' sources'
+                    : item.stat}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                  {item.size} · updated {fmtUpdated(item.updated)}
+                  {sources?.groupBy && <> · grouped by <code style={{ fontFamily: MONO }}>{sources.groupBy}</code></>}
+                </div>
               </div>
-              <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-                {item.size} · updated {fmtUpdated(item.updated)}. Ask or Search this knowledge base above.
-              </div>
-            </div>
+
+              {sourcesLoading && <PageState loading />}
+              {sourcesErr && <PageState error={sourcesErr} />}
+              {sources?.error && (
+                <div class="p-3 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] text-[13px] text-[var(--color-text-muted)]">
+                  Breakdown unavailable: {sources.error}
+                </div>
+              )}
+
+              {sources && !sources.error && sources.groups.length > 0 && (
+                <div style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden' }}>
+                  {sources.groups.map((g, i) => {
+                    const pct = sources.totalChunks > 0 ? (g.chunks / sources.totalChunks) * 100 : 0;
+                    return (
+                      <div key={i} style={{
+                        position: 'relative', padding: '11px 14px',
+                        borderBottom: i < sources.groups.length - 1 ? '1px solid var(--color-border)' : 'none',
+                      }}>
+                        <div style={{
+                          position: 'absolute', left: 0, top: 0, bottom: 0,
+                          width: pct + '%', background: 'color-mix(in srgb, var(--color-accent) 9%, transparent)',
+                          pointerEvents: 'none',
+                        }} />
+                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <span style={{ minWidth: 0, flex: 1, fontSize: '13px', color: 'var(--color-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.name}>{g.name}</span>
+                          <span style={{ flexShrink: 0, fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
+                            {g.sources > 0 && <>{g.sources.toLocaleString()} src · </>}{g.chunks.toLocaleString()} chunks
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {sources && !sources.error && sources.groups.length === 0 && (
+                <div class="p-3 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] text-[13px] text-[var(--color-text-muted)]">
+                  No per-source breakdown available for this knowledge base.
+                </div>
+              )}
+            </>
           )}
 
         </div>
@@ -341,7 +442,26 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 // ────────────────────────────────────────────────────────────── SQL ────────
 
 interface SqlMeta { size: string; tables: { name: string; rows: number }[]; }
-interface SqlQueryResponse { columns: string[]; rows: unknown[][]; elapsed_ms: number; }
+interface SqlQueryResponse {
+  columns: string[];
+  columnTypes?: (string | null)[];
+  rows: unknown[][];
+  elapsed_ms: number;
+  capped?: boolean;
+}
+
+// Serialize a result set to CSV (RFC-4180-ish quoting) or row-objects JSON.
+function toCsv(columns: string[], rows: unknown[][]): string {
+  const esc = (v: unknown) => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  return [columns.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
+}
+function toJson(columns: string[], rows: unknown[][]): string {
+  return JSON.stringify(rows.map(r => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2);
+}
 
 function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   const [meta, setMeta] = useState<SqlMeta | null>(null);
@@ -352,6 +472,21 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   const [running, setRunning] = useState(false);
   const [queryErr, setQueryErr] = useState<string | null>(null);
   const [result, setResult] = useState<SqlQueryResponse | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  async function copyResult(fmt: 'csv' | 'json') {
+    if (!result) return;
+    const text = fmt === 'csv'
+      ? toCsv(result.columns, result.rows)
+      : toJson(result.columns, result.rows);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(fmt);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      setCopied(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -462,8 +597,31 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
           )}
 
           {result && !running && result.columns.length > 0 && (
-            <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '16px' }}>
-              {result.rows.length} rows · {result.columns.length} cols · {result.elapsed_ms}ms
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '16px' }}>
+              <span style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>
+                {result.rows.length.toLocaleString()} rows · {result.columns.length} cols · {result.elapsed_ms}ms
+              </span>
+              {result.capped && (
+                <span style={{ fontSize: '11px', fontWeight: 600, color: '#f59e0b' }}>
+                  showing first {result.rows.length.toLocaleString()} — result truncated
+                </span>
+              )}
+              <span style={{ marginLeft: 'auto', display: 'flex', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => void copyResult('csv')}
+                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
+                >
+                  <Download size={12} /> {copied === 'csv' ? 'copied' : 'CSV'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyResult('json')}
+                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
+                >
+                  <Download size={12} /> {copied === 'json' ? 'copied' : 'JSON'}
+                </button>
+              </span>
             </div>
           )}
 
@@ -472,14 +630,20 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
               <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '12px', fontFamily: MONO }}>
                 <thead>
                   <tr>
-                    {result.columns.map((c, i) => (
-                      <th key={i} style={{
-                        textAlign: 'left', padding: '8px 10px', whiteSpace: 'nowrap',
-                        borderBottom: '1px solid var(--color-border)',
-                        background: 'var(--color-elevated)', color: 'var(--color-text)',
-                        position: 'sticky', top: 0,
-                      }}>{c}</th>
-                    ))}
+                    {result.columns.map((c, i) => {
+                      const ty = result.columnTypes?.[i];
+                      return (
+                        <th key={i} title={ty ? c + ' : ' + ty : c} style={{
+                          textAlign: 'left', padding: '8px 10px', whiteSpace: 'nowrap',
+                          borderBottom: '1px solid var(--color-border)',
+                          background: 'var(--color-elevated)', color: 'var(--color-text)',
+                          position: 'sticky', top: 0,
+                        }}>
+                          {c}
+                          {ty && <span style={{ marginLeft: '6px', fontSize: '10px', fontWeight: 400, color: 'var(--color-text-faint)', textTransform: 'lowercase' }}>{ty}</span>}
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody>

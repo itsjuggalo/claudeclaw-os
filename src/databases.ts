@@ -298,6 +298,81 @@ export async function kbSearch(id: string, q: string, top = 8): Promise<KbSearch
   }
 }
 
+// ── KB sources breakdown ─────────────────────────────────────────────
+// Per-course (or per-tier) chunk + distinct-source counts, read straight from
+// the LanceDB kb_chunks table. Powers the Sources tab on the KB deep page.
+export interface KbSourceGroup {
+  name: string;
+  chunks: number;
+  sources: number;
+}
+export interface KbSourcesResult {
+  groupBy: string | null;
+  totalChunks: number;
+  totalSources: number;
+  groups: KbSourceGroup[];
+  error?: string;
+}
+
+// Grouping is schema-tolerant: trading/dalton/vibe KBs carry `course`, mc-kb
+// only has `tier`. We pick the first present column and never load `vector`.
+const PY_KB_SOURCES = `
+import sys, json, warnings
+warnings.filterwarnings("ignore")
+import lancedb
+from collections import Counter
+vdir = sys.argv[1]
+try:
+    db = lancedb.connect(vdir)
+    if 'kb_chunks' not in list(db.table_names()):
+        print(json.dumps({"error": "no kb_chunks table"})); sys.exit(0)
+    t = db.open_table('kb_chunks')
+    cols = [f.name for f in t.schema]
+    has_source = 'source' in cols
+    group_col = next((c for c in ('course', 'source_tag', 'tier') if c in cols), None)
+    want = [c for c in ('source', group_col) if c]
+    rows = t.to_arrow().select(want).to_pylist() if want else []
+    total_chunks = t.count_rows()
+    sources_all = set()
+    chunk_counter = Counter()
+    source_sets = {}
+    for r in rows:
+        if has_source:
+            sources_all.add(r.get('source'))
+        if group_col is not None:
+            raw = r.get(group_col)
+            label = ('' if raw is None else str(raw).strip()) or '(uncategorized)'
+            chunk_counter[label] += 1
+            if has_source:
+                source_sets.setdefault(label, set()).add(r.get('source'))
+    groups = [{"name": k, "chunks": v, "sources": len(source_sets.get(k, ()))}
+              for k, v in chunk_counter.items()]
+    groups.sort(key=lambda g: -g['chunks'])
+    print(json.dumps({"groupBy": group_col, "totalChunks": total_chunks,
+                      "totalSources": len(sources_all), "groups": groups}))
+except Exception as e:
+    print(json.dumps({"error": str(e)[:200]}))
+`;
+
+export async function kbSources(id: string): Promise<KbSourcesResult> {
+  const dir = getKbDir(id);
+  const empty: KbSourcesResult = { groupBy: null, totalChunks: 0, totalSources: 0, groups: [] };
+  if (!dir) return { ...empty, error: 'unknown kb' };
+  const vectors = join(dir, 'kb.vectors');
+  if (!existsSync(vectors)) return { ...empty, error: 'no vector store' };
+  try {
+    const { stdout } = await execFileAsync(
+      VENV,
+      ['-c', PY_KB_SOURCES, vectors],
+      { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const parsed = JSON.parse(stdout) as KbSourcesResult;
+    return { ...empty, ...parsed };
+  } catch (e) {
+    return { ...empty, error: String((e as Error).message || e) };
+  }
+}
+
 export interface KbAskResult {
   answer?: string;
   sources?: unknown;
@@ -365,9 +440,15 @@ export async function sqlMeta(id: string): Promise<SqlMeta | { error: string }> 
 
 export interface SqlSelectResult {
   columns: string[];
+  columnTypes: (string | null)[];
   rows: unknown[][];
   elapsed_ms: number;
+  capped: boolean;
 }
+
+// Max rows handed back to the client; anything beyond is silently dropped by
+// SQLite's full result so we flag `capped` to surface it in the UI.
+const SQL_ROW_CAP = 500;
 
 // SELECT-only guard. Rejects multi-statement, write/DDL keywords, and anything
 // that doesn't start with SELECT/WITH.
@@ -396,11 +477,19 @@ export function sqlSelect(id: string, sql: string): SqlSelectResult | { error: s
     const stmt = dbh.prepare(sql.trim());
     stmt.raw(true);
     const t0 = Date.now();
-    const rawRows = stmt.all() as unknown[][];
+    // Iterate (don't .all()) so a huge result never fully materializes in the
+    // daemon: pull one past the cap to detect truncation, then stop.
+    const rows: unknown[][] = [];
+    let capped = false;
+    for (const row of stmt.iterate() as IterableIterator<unknown[]>) {
+      if (rows.length >= SQL_ROW_CAP) { capped = true; break; }
+      rows.push(row);
+    }
     const elapsed_ms = Date.now() - t0;
-    const columns = stmt.columns().map((c) => c.name);
-    const rows = rawRows.slice(0, 500);
-    return { columns, rows, elapsed_ms };
+    const colDefs = stmt.columns();
+    const columns = colDefs.map((c) => c.name);
+    const columnTypes = colDefs.map((c) => c.type ?? null);
+    return { columns, columnTypes, rows, elapsed_ms, capped };
   } catch (err) {
     return { error: String((err as Error).message || err) };
   } finally {
