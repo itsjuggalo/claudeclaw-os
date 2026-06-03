@@ -4,7 +4,7 @@
 // /databases/:id (DatabaseDetail).
 import { useState, useEffect } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
-import { BookOpen, Table, KeyRound } from 'lucide-preact';
+import { BookOpen, Table, KeyRound, Search } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet } from '@/lib/api';
@@ -103,7 +103,7 @@ function DbCard({ item }: { item: DbItem }) {
         }}>
           <Icon size={16} />
         </span>
-        <span style={{
+        <span title={item.label} style={{
           fontSize: '14px', fontWeight: 700, color: 'var(--color-text)',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{item.label}</span>
@@ -114,7 +114,7 @@ function DbCard({ item }: { item: DbItem }) {
         }}>{item.stat}</span>
       </div>
       {item.subtitle && (
-        <div style={{
+        <div title={item.subtitle} style={{
           fontSize: '12px', color: 'var(--color-text-muted)',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{item.subtitle}</div>
@@ -135,6 +135,7 @@ export function Databases() {
   const [data, setData] = useState<CatalogResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -155,15 +156,53 @@ export function Databases() {
   }, []);
 
   const groups = data?.groups ?? [];
+  const totalCount = groups.reduce((n, g) => n + g.items.length, 0);
+
+  // Client-side live filter: match label / subtitle / id / type (case-insensitive).
+  const q = filter.trim().toLowerCase();
+  const matchesItem = (it: DbItem): boolean => {
+    if (!q) return true;
+    return (
+      it.label.toLowerCase().includes(q) ||
+      (it.subtitle ?? '').toLowerCase().includes(q) ||
+      it.id.toLowerCase().includes(q) ||
+      it.type.toLowerCase().includes(q)
+    );
+  };
+  const filteredGroups = groups
+    .map(g => ({ ...g, items: g.items.filter(matchesItem) }))
+    .filter(g => g.items.length > 0);
+
+  const headerActions = !loading && !error && totalCount > 0
+    ? <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>{totalCount} databases</span>
+    : undefined;
 
   return (
     <div class="flex flex-col h-full">
-      <PageHeader title="Databases" />
+      <PageHeader title="Databases" actions={headerActions} />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '20px 24px', maxWidth: '1400px', margin: '0 auto' }}>
-          <p style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '20px' }}>
+          <p style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '16px' }}>
             Every knowledge base, SQL store, and secret vault — organized.
           </p>
+
+          {!loading && !error && totalCount > 0 && (
+            <div style={{ position: 'relative', marginBottom: '20px', maxWidth: '360px' }}>
+              <span style={{
+                position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)',
+                color: 'var(--color-text-faint)', display: 'inline-flex', pointerEvents: 'none',
+              }}>
+                <Search size={14} />
+              </span>
+              <input
+                type="text"
+                value={filter}
+                onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
+                placeholder="Filter databases…"
+                class="w-full pl-8 pr-3 py-1.5 rounded-md bg-[var(--color-card)] border border-[var(--color-border)] text-[13px] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
+              />
+            </div>
+          )}
 
           {loading && <PageState loading />}
           {error && <PageState error={error} />}
@@ -172,7 +211,11 @@ export function Databases() {
             <PageState empty emptyTitle="No databases" emptyDescription="The catalog returned no groups." />
           )}
 
-          {!loading && !error && groups.map(group => (
+          {!loading && !error && groups.length > 0 && filteredGroups.length === 0 && (
+            <PageState empty emptyTitle="No matches" emptyDescription={'Nothing matches "' + filter.trim() + '".'} />
+          )}
+
+          {!loading && !error && filteredGroups.map(group => (
             <section key={group.id} style={{ marginBottom: '28px' }}>
               <div style={{
                 fontSize: '11px', fontWeight: 700, letterSpacing: '1.5px',

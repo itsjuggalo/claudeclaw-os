@@ -54,9 +54,9 @@ const RAW_REGISTRY: RegistryEntry[] = [
 
   // App & Agent State
   { id: 'claudeclaw', type: 'sql', group: 'state', label: 'ClaudeClaw App DB', accent: 'cyan', path: `${HOME}/03_AGENTS/claudeclaw-os/store/claudeclaw.db` },
-  { id: 'mem-boba', type: 'sql', group: 'state', label: 'Agent Memory — Boba', accent: 'cyan', path: `${HOME}/.openclaw/memory/boba.sqlite` },
-  { id: 'mem-jazzy', type: 'sql', group: 'state', label: 'Agent Memory — JazzyHazzy', accent: 'cyan', path: `${HOME}/.openclaw/memory/jazzyhazzy.sqlite` },
-  { id: 'mem-main', type: 'sql', group: 'state', label: 'Agent Memory — Main', accent: 'cyan', path: `${HOME}/.openclaw/memory/main.sqlite` },
+  { id: 'mem-boba', type: 'sql', group: 'state', label: 'Boba — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/boba.sqlite` },
+  { id: 'mem-jazzy', type: 'sql', group: 'state', label: 'JazzyHazzy — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/jazzyhazzy.sqlite` },
+  { id: 'mem-main', type: 'sql', group: 'state', label: 'Main — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/main.sqlite` },
 
   // RAG / FTS Indexes
   { id: 'claytrader-fts', type: 'sql', group: 'index', label: 'ClayTrader FTS', accent: 'amber', path: `${HOME}/claytrader-kb/fts.db` },
@@ -135,7 +135,7 @@ async function sqlTableCount(path: string): Promise<string> {
   try {
     const { stdout } = await execFileAsync('sqlite3', [path, '.tables'], { timeout: 5000 });
     const n = stdout.split(/\s+/).filter(Boolean).length;
-    return `${n} tables`;
+    return `${n} ${n === 1 ? 'table' : 'tables'}`;
   } catch {
     return '—';
   }
@@ -155,8 +155,15 @@ function kbChunkStat(dir: string): string {
 
 function secretsFileCount(): string {
   try {
-    const dir = join(HOME, '.openclaw/secrets');
-    const n = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).length;
+    // Count exactly what the deep-page listing surfaces: non-stale files across
+    // every allow-listed secret dir + each existing .env file.
+    let n = 0;
+    for (const dir of SECRET_DIRS) {
+      if (!existsSync(dir)) continue;
+      n += readdirSync(dir, { withFileTypes: true })
+        .filter((d) => d.isFile() && !STALE_SECRET.test(d.name)).length;
+    }
+    n += ENV_FILES.filter((f) => existsSync(f)).length;
     return `${n} files`;
   } catch {
     return '—';

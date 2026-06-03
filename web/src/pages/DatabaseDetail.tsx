@@ -8,7 +8,7 @@
 import type { ComponentChildren } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
 import { useRoute, useLocation } from 'wouter-preact';
-import { KeyRound, Eye, EyeOff, Copy, ArrowLeft } from 'lucide-preact';
+import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
@@ -193,6 +193,12 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
               <textarea
                 value={question}
                 onInput={(e) => setQuestion((e.target as HTMLTextAreaElement).value)}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    void runAsk();
+                  }
+                }}
                 placeholder={'Ask ' + item.label + ' anything…'}
                 rows={3}
                 class="w-full px-3 py-2 rounded-md bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
@@ -204,9 +210,21 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                   disabled={asking || !question.trim()}
                   class="px-4 py-1.5 rounded-md text-[13px] font-medium bg-[var(--color-accent)] text-white disabled:opacity-50"
                 >
-                  {asking ? 'Asking…' : 'Ask'}
+                  {asking ? 'Thinking…' : 'Ask'}
                 </button>
-                {asking && <span class="text-[12px] text-[var(--color-text-muted)]">Querying knowledge base…</span>}
+                {asking && (
+                  <span class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
+                    <span class="animate-spin" style={{
+                      width: '12px', height: '12px', borderRadius: '50%',
+                      border: '2px solid var(--color-border)', borderTopColor: 'var(--color-accent)',
+                      display: 'inline-block',
+                    }} />
+                    Thinking…
+                  </span>
+                )}
+                {!asking && (
+                  <span class="text-[11px] text-[var(--color-text-faint)]">⌘/Ctrl+Enter to ask</span>
+                )}
               </div>
 
               {askErr && (
@@ -444,7 +462,13 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
           )}
 
           {result && !running && result.columns.length > 0 && (
-            <div style={{ marginTop: '16px', overflowX: 'auto', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '16px' }}>
+              {result.rows.length} rows · {result.columns.length} cols · {result.elapsed_ms}ms
+            </div>
+          )}
+
+          {result && !running && result.columns.length > 0 && (
+            <div style={{ marginTop: '8px', overflowX: 'auto', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
               <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '12px', fontFamily: MONO }}>
                 <thead>
                   <tr>
@@ -573,6 +597,7 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
   const [data, setData] = useState<SecretsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -592,6 +617,22 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
     return () => { cancelled = true; };
   }, [item.id]);
 
+  const totalCount = data ? data.groups.reduce((n, g) => n + g.items.length, 0) : 0;
+
+  // Client-side filter on name / source / category (case-insensitive).
+  const q = filter.trim().toLowerCase();
+  const filteredGroups = (data?.groups ?? [])
+    .map(g => ({
+      category: g.category,
+      items: q
+        ? g.items.filter(s =>
+            s.name.toLowerCase().includes(q) ||
+            s.source.toLowerCase().includes(q) ||
+            g.category.toLowerCase().includes(q))
+        : g.items,
+    }))
+    .filter(g => g.items.length > 0);
+
   return (
     <>
       <PageHeader title={item.label} breadcrumb="Databases" actions={back} />
@@ -599,12 +640,31 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
         <div style={{ padding: '20px 24px', maxWidth: '900px', margin: '0 auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '16px' }}>
             <KeyRound size={14} /> Values stay masked until you reveal them.
+            {data && totalCount > 0 && <span style={{ marginLeft: 'auto' }}>{totalCount} secrets</span>}
           </div>
+
+          {data && totalCount > 0 && (
+            <div style={{ position: 'relative', marginBottom: '16px', maxWidth: '360px' }}>
+              <span style={{
+                position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)',
+                color: 'var(--color-text-faint)', display: 'inline-flex', pointerEvents: 'none',
+              }}>
+                <Search size={14} />
+              </span>
+              <input
+                type="text"
+                value={filter}
+                onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
+                placeholder="Filter secrets…"
+                class="w-full pl-8 pr-3 py-1.5 rounded-md bg-[var(--color-card)] border border-[var(--color-border)] text-[13px] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
+              />
+            </div>
+          )}
 
           {loading && <PageState loading />}
           {error && <PageState error={error} />}
 
-          {data && data.groups.map(group => (
+          {filteredGroups.map(group => (
             <section key={group.category} style={{ marginBottom: '20px' }}>
               <div style={{
                 fontSize: '11px', fontWeight: 700, letterSpacing: '1.5px',
@@ -618,6 +678,10 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
 
           {data && data.groups.length === 0 && (
             <PageState empty emptyTitle="No secrets" emptyDescription="No secret sources were found." />
+          )}
+
+          {data && totalCount > 0 && q && filteredGroups.length === 0 && (
+            <PageState empty emptyTitle="No matches" emptyDescription={'No secrets match "' + filter.trim() + '".'} />
           )}
         </div>
       </div>
