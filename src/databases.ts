@@ -7,7 +7,12 @@
 // registered `id`, so there is no path-traversal surface. SQL is SELECT-only
 // (guarded), DBs are opened readonly, and secret values are never returned by
 // the catalog/list endpoints (only by the explicit, allow-listed reveal call).
-import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, readdirSync, realpathSync } from 'node:fs';
+import { sep as pathSep } from 'node:path';
+
+// Stale / non-secret files to hide from the listing + block from reveal:
+// dotfiles (.git, .gitignore) and superseded copies (.bak / .deleted / .old).
+const STALE_SECRET = /^\.|[.-](bak|dead|deleted|old)([-.]|$)|deleted/i;
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -453,7 +458,9 @@ export function listSecrets(): SecretsResult {
     if (!existsSync(dir)) continue;
     let names: string[] = [];
     try {
-      names = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name);
+      names = readdirSync(dir, { withFileTypes: true })
+        .filter((d) => d.isFile() && !STALE_SECRET.test(d.name))
+        .map((d) => d.name);
     } catch {
       continue;
     }
@@ -490,10 +497,15 @@ export interface RevealResult {
 export function revealSecret(source: string, name: string): RevealResult {
   if (!SECRET_DIRS.includes(source)) return { error: 'forbidden' };
   if (!name || name.includes('/') || name.includes('..')) return { error: 'forbidden' };
+  if (STALE_SECRET.test(name)) return { error: 'forbidden' };
   try {
     const full = join(source, name);
     if (!existsSync(full)) return { error: 'not found' };
-    const value = readFileSync(full, 'utf-8');
+    // Resolve symlinks and confirm the target stays inside the allow-listed
+    // dir — a planted symlink (foo -> /etc/passwd) must not leak external files.
+    const real = realpathSync(full);
+    if (real !== full && !real.startsWith(source + pathSep)) return { error: 'forbidden' };
+    const value = readFileSync(real, 'utf-8');
     return { value };
   } catch {
     return { error: 'forbidden' };

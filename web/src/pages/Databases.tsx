@@ -11,6 +11,19 @@ import { apiGet } from '@/lib/api';
 
 type DbType = 'kb' | 'sql' | 'secrets';
 
+// Format an ISO timestamp in Eastern Time (operator is America/New_York).
+export function fmtUpdated(iso?: string | null): string {
+  if (!iso) return 'unknown';
+  try {
+    return new Date(iso).toLocaleString('en-US', {
+      timeZone: 'America/New_York', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    });
+  } catch {
+    return 'unknown';
+  }
+}
+
 interface DbItem {
   id: string;
   type: DbType;
@@ -112,7 +125,7 @@ function DbCard({ item }: { item: DbItem }) {
       }}>
         <span>{item.size}</span>
         <span>·</span>
-        <span>updated {item.updated}</span>
+        <span>updated {fmtUpdated(item.updated)}</span>
       </div>
     </button>
   );

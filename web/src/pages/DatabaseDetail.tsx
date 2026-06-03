@@ -13,6 +13,7 @@ import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebounce';
+import { fmtUpdated } from '@/pages/Databases';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 
@@ -308,7 +309,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 {item.stat}
               </div>
               <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-                {item.size} · updated {item.updated}. Ask or Search this knowledge base above.
+                {item.size} · updated {fmtUpdated(item.updated)}. Ask or Search this knowledge base above.
               </div>
             </div>
           )}
