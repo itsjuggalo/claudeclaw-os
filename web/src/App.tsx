@@ -23,6 +23,13 @@ import { Peon } from '@/pages/Peon';
 import { Wallets } from '@/pages/Wallets';
 import { Gallery } from '@/pages/Gallery';
 import { Create } from '@/pages/Create';
+import { Hermes } from '@/pages/Hermes';
+import { ClaudeOffice } from '@/pages/ClaudeOffice';
+import { TradeDeskPage } from '@/pages/TradeDeskPage';
+import { SignalFeedPage } from '@/pages/SignalFeedPage';
+import { FlowRankPage } from '@/pages/FlowRankPage';
+import { PortfolioAIPage } from '@/pages/PortfolioAIPage';
+import { FlowWinnersPage } from '@/pages/FlowWinnersPage';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
@@ -65,10 +72,19 @@ export function App() {
           <Route path="/wallets"><Wallets /></Route>
           <Route path="/gallery"><Gallery /></Route>
           <Route path="/create"><Create /></Route>
+          <Route path="/hermes"><Hermes /></Route>
           <Route path="/warroom"><WarRoom /></Route>
+          <Route path="/office"><ClaudeOffice /></Route>
           <Route path="/voices"><Voices /></Route>
           <Route path="/peon"><Peon /></Route>
           <Route path="/settings"><Settings /></Route>
+
+          {/* Trade Desk — live trading intelligence */}
+          <Route path="/trade-desk"><TradeDeskPage /></Route>
+          <Route path="/trade-desk/signals"><SignalFeedPage /></Route>
+          <Route path="/trade-desk/flow-rank"><FlowRankPage /></Route>
+          <Route path="/trade-desk/portfolio"><PortfolioAIPage /></Route>
+          <Route path="/trade-desk/flow-winners"><FlowWinnersPage /></Route>
 
           {/* Common alt slugs that used to point at placeholder pages */}
           <Route path="/hive-mind"><Redirect to="/hive" /></Route>

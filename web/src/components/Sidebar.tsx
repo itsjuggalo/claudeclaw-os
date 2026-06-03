@@ -16,7 +16,7 @@ import {
   modKeyLabel,
 } from '@/lib/personalization';
 
-const SECTIONS: RouteSection[] = ['workspace', 'intelligence', 'collaborate', 'configure'];
+const SECTIONS: RouteSection[] = ['workspace', 'intelligence', 'trade', 'collaborate', 'configure', 'mc'];
 
 export function Sidebar() {
   const [pathname] = useLocation();
@@ -83,18 +83,14 @@ export function Sidebar() {
                 const active = pathname === r.path || (pathname === '/' && r.path === '/mission');
                 const Icon = r.icon;
                 const unread = r.path === '/chat' ? chatUnread.value : 0;
-                return (
-                  <Link
-                    key={r.path}
-                    href={r.path}
-                    onClick={closeSidebar}
-                    class={[
-                      'flex items-center gap-2.5 px-3 py-2 rounded-md text-[14px] transition-colors',
-                      active
-                        ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
-                        : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
-                    ].join(' ')}
-                  >
+                const itemClass = [
+                  'flex items-center gap-2.5 px-3 py-2 rounded-md text-[14px] transition-colors',
+                  active
+                    ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
+                ].join(' ');
+                const inner = (
+                  <>
                     <Icon size={16} />
                     <span class="flex-1">{r.label}</span>
                     {unread > 0 && (
@@ -102,6 +98,31 @@ export function Sidebar() {
                         {unread > 99 ? '99+' : unread}
                       </span>
                     )}
+                    {r.href && (
+                      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" style="opacity:0.4;flex-shrink:0">
+                        <path d="M5 2H2a1 1 0 00-1 1v7a1 1 0 001 1h7a1 1 0 001-1V7M7 1h4m0 0v4m0-4L5 7"/>
+                      </svg>
+                    )}
+                  </>
+                );
+                return r.href ? (
+                  <a
+                    key={r.path}
+                    href={r.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class={itemClass}
+                  >
+                    {inner}
+                  </a>
+                ) : (
+                  <Link
+                    key={r.path}
+                    href={r.path}
+                    onClick={closeSidebar}
+                    class={itemClass}
+                  >
+                    {inner}
                   </Link>
                 );
               })}

@@ -22,6 +22,9 @@ const envConfig = readEnvFile([
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'OLLAMA_EMBED_URL',
+  'OLLAMA_EMBED_MODEL',
   'AGENT_TIMEOUT_MS',
   'AGENT_MAX_TURNS',
   'SECURITY_PIN_HASH',
@@ -40,6 +43,7 @@ const envConfig = readEnvFile([
   'PROTECTED_ENV_VARS',
   'WARROOM_ENABLED',
   'WARROOM_PORT',
+  'AIME_SESSION_COOKIE',
   'STREAM_STRATEGY',
   'ENABLE_ACP',
 ]);
@@ -203,6 +207,18 @@ export const DB_ENCRYPTION_KEY =
 export const GOOGLE_API_KEY =
   process.env.GOOGLE_API_KEY || envConfig.GOOGLE_API_KEY || '';
 
+// DeepSeek API key — free/cheap provider for consolidation/extraction. Default
+// provider as of 2026-05-30 after Gemini billing depleted (429). See gemini.ts.
+export const DEEPSEEK_API_KEY =
+  process.env.DEEPSEEK_API_KEY || envConfig.DEEPSEEK_API_KEY || '';
+
+// Local Ollama embeddings (truly $0). When OLLAMA_EMBED_URL is set (e.g.
+// http://localhost:11434), embeddings.ts uses it instead of depleted Gemini.
+export const OLLAMA_EMBED_URL =
+  process.env.OLLAMA_EMBED_URL || envConfig.OLLAMA_EMBED_URL || '';
+export const OLLAMA_EMBED_MODEL =
+  process.env.OLLAMA_EMBED_MODEL || envConfig.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+
 // Streaming strategy for progressive Telegram updates.
 // 'global-throttle' (default): edits a placeholder message with streamed text,
 //   rate-limited to ~24 edits/min per chat to respect Telegram limits.
@@ -282,7 +298,7 @@ export const EXFILTRATION_GUARD_ENABLED =
   (process.env.EXFILTRATION_GUARD_ENABLED || envConfig.EXFILTRATION_GUARD_ENABLED || 'true').toLowerCase() === 'true';
 export const PROTECTED_ENV_VARS = (
   process.env.PROTECTED_ENV_VARS || envConfig.PROTECTED_ENV_VARS ||
-  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY'
+  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY,DEEPSEEK_API_KEY'
 ).split(',').map((s) => s.trim()).filter(Boolean);
 
 // ── Provider Selection (BETA) ───────────────────────────────────────
@@ -300,3 +316,8 @@ export const WARROOM_PORT = parseInt(
   process.env.WARROOM_PORT || envConfig.WARROOM_PORT || '7860',
   10,
 );
+
+// AInvest/AIME session cookie for the Trade Desk AIME panel.
+// Set via .env: AIME_SESSION_COOKIE=<browser cookie string>
+export const AIME_SESSION_COOKIE: string =
+  process.env.AIME_SESSION_COOKIE || envConfig.AIME_SESSION_COOKIE || '';

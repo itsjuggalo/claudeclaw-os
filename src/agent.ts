@@ -134,6 +134,20 @@ function effortForMode(mode: ProviderRuntimeMode | undefined): 'low' | 'medium' 
   return undefined;
 }
 
+function sanitizeProviderResultText(text: string | null, provider: ProviderConfig): string | null {
+  if (!text) return text;
+  if (provider.type !== 'acp') return text;
+
+  // Some ACP backends append a transport provenance footer like `[acp]`
+  // after normal assistant content. Strip trailing footer markers so
+  // Telegram users don't see protocol metadata in every reply.
+  let cleaned = text;
+  while (/(?:\r?\n\s*)?\[acp\]\s*$/i.test(cleaned)) {
+    cleaned = cleaned.replace(/(?:\r?\n\s*)?\[acp\]\s*$/i, '');
+  }
+  return cleaned.trimEnd();
+}
+
 function thinkingForMode(
   mode: ProviderThinkingMode | undefined,
 ): { type: 'adaptive' } | { type: 'enabled'; budgetTokens?: number } | { type: 'disabled' } | undefined {
@@ -280,7 +294,7 @@ export async function runAgent(
 
       if (event.type === 'aborted') {
         return {
-          text: event.text,
+          text: sanitizeProviderResultText(event.text, provider),
           newSessionId: encodeProviderSession(provider, event.sessionId ?? newSessionId ?? providerSessionId),
           usage: event.usage,
           aborted: true,
@@ -288,7 +302,7 @@ export async function runAgent(
       }
 
       if (event.type === 'result') {
-        resultText = event.text;
+        resultText = sanitizeProviderResultText(event.text, provider);
         if (event.usage) {
           usage = event.usage;
           logger.info(

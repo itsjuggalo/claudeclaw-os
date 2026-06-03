@@ -28,10 +28,13 @@ interface AgentTokens { todayCost: number; todayTurns: number; allTimeCost: numb
 interface Health { contextPct: number; turns: number; model: string; }
 
 const QUICK_ACTIONS = [
-  { label: 'Status update', prompt: "Quick status update: what are you working on right now?" },
-  { label: "What's next", prompt: 'What should I focus on next based on context?' },
-  { label: 'Plan today', prompt: 'What does my day look like today? What are the priorities?' },
-  { label: 'Recent wins', prompt: 'What did I accomplish in the last 24 hours?' },
+  { label: 'Status update', prompt: "Quick status update: what are you working on right now?", send: true },
+  { label: "What's next", prompt: 'What should I focus on next based on context?', send: true },
+  { label: 'Plan today', prompt: 'What does my day look like today? What are the priorities?', send: true },
+  { label: 'Recent wins', prompt: 'What did I accomplish in the last 24 hours?', send: true },
+  // banana-maker prefills — user types prompt after the slash command then sends
+  { label: '/nano-banana', prompt: '/banana ', send: false },
+  { label: '/nano-banana-pro', prompt: '/banana-pro ', send: false },
 ];
 
 export function Chat() {
@@ -174,9 +177,17 @@ export function Chat() {
     try { await apiPost('/api/chat/abort'); } catch {}
   }
 
-  function quick(prompt: string) {
-    void send(prompt);
-    inputRef.current?.focus();
+  function quick(prompt: string, sendNow = true) {
+    if (sendNow) {
+      void send(prompt);
+    } else {
+      // prefill mode — fill textarea + focus so user can append and send
+      setDraft(prompt);
+      setTimeout(() => {
+        const el = inputRef.current;
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      }, 0);
+    }
   }
 
   const agentList = agents.data?.agents ?? [];
@@ -246,7 +257,7 @@ export function Chat() {
               <button
                 key={qa.label}
                 type="button"
-                onClick={() => quick(qa.prompt)}
+                onClick={() => quick(qa.prompt, qa.send !== false)}
                 disabled={processing || sending}
                 class="px-2 py-0.5 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >

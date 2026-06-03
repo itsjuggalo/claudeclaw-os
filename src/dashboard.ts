@@ -6,10 +6,12 @@ import { serve } from '@hono/node-server';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE } from './config.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
-import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache } from './gallery.js';
+import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
+import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
+import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo } from './localgen.js';
 import {
@@ -413,6 +415,309 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     await next();
   });
 
+  // Phone portal — a static landing page listing all services by Tailscale IP.
+  // Bookmark http://100.91.39.122:3141/portal on the phone.
+  app.get('/portal', (c) => {
+    const ts = '100.91.39.122';
+    const services = [
+      { name: 'ClaudeClaw',     port: 3141, path: '/',          desc: 'AI agent dashboard + gallery' },
+      { name: 'ARIES',          port: 1337, path: '/',          desc: 'Trading PWA — broker + strategy engine' },
+      { name: 'MissionCtrl V2', port: 3000, path: '/',          desc: 'Main MC trading dashboard' },
+      { name: 'Vibe Trading',   port: 5899, path: '/',          desc: 'AI trading research & backtesting' },
+      { name: 'Kronos',         port: 7070, path: '/',          desc: 'ML model training & forecast WebUI' },
+      { name: 'n8n',            port: 5678, path: '/',          desc: 'Workflow automation' },
+      { name: 'Mobile Hub',     port: 8443, path: '/',          desc: 'Mobile launchpad (HTTPS)', https: true },
+      { name: 'Uptime Kuma',    port: 3001, path: '/',          desc: 'Service health monitor' },
+      { name: 'Gallery',        port: 3141, path: '/#/gallery',      desc: 'Nano Banana generations' },
+      { name: 'Token Dashboard', port: 3141, path: '/token-dashboard', desc: 'Per-prompt cost analytics & cache stats' },
+      { name: 'CLI Tools',       port: 3141, path: '/cli-tools',       desc: 'Printing Press Library + CLI-Anything inventory' },
+    ];
+    const rows = services.map(s =>
+      `<a href="${(s as any).https ? 'https' : 'http'}://${ts}:${s.port}${s.path}" class="card">
+        <div class="name">${s.name} <span class="port">:${s.port}</span></div>
+        <div class="desc">${s.desc}</div>
+      </a>`
+    ).join('');
+    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Mission Control — Portal</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#080d12;color:#c9d1da;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;padding:20px}
+  h1{font-size:18px;font-weight:700;color:#7fd1ff;margin-bottom:4px;letter-spacing:.5px}
+  .sub{font-size:12px;color:#3d5a6e;margin-bottom:20px;font-family:monospace}
+  .grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .card{display:block;background:#0e1824;border:1px solid #1a2b38;border-radius:12px;padding:14px;text-decoration:none;transition:border-color .15s,transform .1s;-webkit-tap-highlight-color:transparent}
+  .card:active{transform:scale(.97);border-color:#7fd1ff}
+  .name{font-size:15px;font-weight:700;color:#e2e8f0;margin-bottom:4px}
+  .port{font-size:11px;color:#3d8fad;font-family:monospace;font-weight:400}
+  .desc{font-size:11px;color:#4a6070;line-height:1.4}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#22c55e;margin-right:6px;vertical-align:middle}
+  footer{margin-top:24px;font-size:11px;color:#1e3040;text-align:center;font-family:monospace}
+</style></head><body>
+<h1>&#127968; Mission Control</h1>
+<div class="sub"><span class="dot"></span>g59-wsl · ${ts} · ${new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',timeZone:'America/New_York'})} ET</div>
+<div class="grid">${rows}</div>
+<footer>Tailscale mesh · add to home screen for quick access</footer>
+</body></html>`;
+    return c.html(html);
+  });
+
+  // CLI Tools — Printing Press Library catalog + CLI-Anything inventory.
+  // Reads ~/printing-press-library/registry.json and detects installed CLIs.
+  app.get('/api/cli-tools', (c) => {
+    const HOME = os.homedir();
+    const registryPath = path.join(HOME, 'printing-press-library', 'registry.json');
+    const skillsDir = path.join(HOME, '.claude', 'skills');
+    const cliAnythingDir = path.join(HOME, 'CLI-Anything');
+
+    // Load registry
+    let entries: any[] = [];
+    try {
+      const raw = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+      entries = raw.entries || [];
+    } catch { /* repo not cloned */ }
+
+    // Installed skill names (lowercased)
+    const installedSkills = new Set<string>();
+    try {
+      fs.readdirSync(skillsDir).forEach(s => installedSkills.add(s.toLowerCase()));
+    } catch { /* ignore */ }
+
+    // Mark each entry installed if skill matches pp-<name> or <name>
+    const catalog = entries.map((e: any) => {
+      const key = (e.name || '').toLowerCase();
+      const installed = installedSkills.has(`pp-${key}`) || installedSkills.has(key);
+      return { ...e, installed };
+    });
+
+    // Scan CLI-Anything for generated CLIs (dirs with cli.py or main.py or README.md but not meta dirs)
+    const META_DIRS = new Set(['cli-anything-plugin','cli-hub','cli-hub-meta-skill','codex-skill',
+      'hermes-skill','qoder-plugin','skill_generation','skills','docs','assets','templates',
+      'commands','tests','scripts','guides','seaclip','macrocli']);
+    let cliAnythingCLIs: { name: string; hasReadme: boolean; hasCli: boolean }[] = [];
+    try {
+      cliAnythingCLIs = fs.readdirSync(cliAnythingDir)
+        .filter(d => {
+          if (META_DIRS.has(d)) return false;
+          const full = path.join(cliAnythingDir, d);
+          try { return fs.statSync(full).isDirectory(); } catch { return false; }
+        })
+        .map(d => {
+          const full = path.join(cliAnythingDir, d);
+          const hasCli = fs.existsSync(path.join(full, 'cli.py')) ||
+                         fs.existsSync(path.join(full, 'main.py')) ||
+                         fs.existsSync(path.join(full, 'cli'));
+          const hasReadme = fs.existsSync(path.join(full, 'README.md'));
+          return { name: d, hasReadme, hasCli };
+        });
+    } catch { /* ignore */ }
+
+    const installedCount = catalog.filter((e: any) => e.installed).length;
+    return c.json({ catalog, installedCount, cliAnythingCLIs });
+  });
+
+  app.get('/cli-tools', (c) => {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLI Tools — ClaudeClaw</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0f0f0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; min-height: 100vh; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #141414; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; position: sticky; top: 0; z-index: 20; }
+  .back-btn { background: none; border: 1px solid #2a2a2a; border-radius: 6px; color: #9ca3af; font-size: 12px; padding: 4px 10px; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s; }
+  .back-btn:hover { border-color: #4f46e5; color: #a5b4fc; }
+  .topbar-title { font-size: 13px; font-weight: 600; color: #e0e0e0; flex: 1; }
+  .stat-chip { font-size: 11px; color: #6b7280; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 8px; }
+  .stat-chip b { color: #a5b4fc; }
+  main { flex: 1; padding: 16px; max-width: 1200px; width: 100%; margin: 0 auto; }
+  .controls { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  .search { flex: 1; min-width: 200px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; color: #e0e0e0; font-size: 13px; padding: 8px 12px; outline: none; }
+  .search:focus { border-color: #4f46e5; }
+  .cat-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill { padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid #2a2a2a; background: #1a1a1a; color: #6b7280; transition: all 0.15s; user-select: none; }
+  .pill:hover, .pill.active { background: #312e81; border-color: #4f46e5; color: #a5b4fc; }
+  .pill.installed-filter.active { background: #064e3b; border-color: #10b981; color: #6ee7b7; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 12px; transition: border-color 0.15s; }
+  .card:hover { border-color: #3a3a4a; }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .card-name { font-size: 13px; font-weight: 700; color: #e0e0e0; }
+  .card-cat { font-size: 10px; color: #6b7280; background: #111; border: 1px solid #222; border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+  .card-desc { font-size: 11px; color: #9ca3af; line-height: 1.5; margin-bottom: 8px; }
+  .card-footer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge-mcp { font-size: 10px; background: #1e3a5f; color: #60a5fa; border-radius: 4px; padding: 2px 6px; }
+  .badge-installed { font-size: 10px; background: #064e3b; color: #6ee7b7; border-radius: 4px; padding: 2px 6px; }
+  .badge-api { font-size: 10px; background: #2a1a3a; color: #a78bfa; border-radius: 4px; padding: 2px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .install-cmd { font-size: 10px; font-family: monospace; color: #6b7280; background: #111; border: 1px solid #1e1e1e; border-radius: 4px; padding: 2px 6px; cursor: pointer; transition: color 0.15s, border-color 0.15s; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .install-cmd:hover { color: #a5b4fc; border-color: #4f46e5; }
+  .install-cmd.copied { color: #6ee7b7; border-color: #10b981; }
+  .section-title { font-size: 12px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+  .divider { border: none; border-top: 1px solid #1e1e1e; margin: 24px 0; }
+  .cli-anything-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cli-chip { background: #1a1a2a; border: 1px solid #2a2a3a; border-radius: 6px; padding: 4px 10px; font-size: 11px; color: #a5b4fc; }
+  .cli-chip.has-cli { border-color: #3a2a5a; color: #c4b5fd; }
+  .empty { text-align: center; color: #6b7280; padding: 40px; grid-column: 1/-1; font-size: 13px; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/" class="back-btn">&#8592; ClaudeClaw</a>
+  <span class="topbar-title">CLI Tools</span>
+  <span class="stat-chip" id="stat-showing"></span>
+  <span class="stat-chip"><b id="stat-installed">-</b> installed</span>
+  <span class="stat-chip"><b id="stat-total">-</b> total</span>
+</div>
+<main>
+  <div class="controls">
+    <input class="search" id="search" placeholder="Search CLIs…" oninput="applyFilters()" autocomplete="off">
+    <div class="cat-pills" id="cat-pills"></div>
+    <span class="pill installed-filter" id="pill-installed" onclick="toggleInstalled()">Installed only</span>
+  </div>
+  <div class="grid" id="grid"></div>
+  <hr class="divider">
+  <div class="section-title">CLI-Anything — locally generated CLIs</div>
+  <div class="cli-anything-grid" id="cli-anything-grid"></div>
+</main>
+<script>
+let ALL = [];
+let activeCat = 'all';
+let installedOnly = false;
+
+function copyCmd(el, cmd) {
+  navigator.clipboard.writeText(cmd).then(() => {
+    el.textContent = 'copied!';
+    el.classList.add('copied');
+    setTimeout(() => { el.textContent = cmd; el.classList.remove('copied'); }, 1500);
+  });
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderCard(e) {
+  const cmd = \`npx skills add mvanhorn/printing-press-library/cli-skills/pp-\${e.name} -g -y\`;
+  const mcp = e.mcp && e.mcp.tool_count ? \`<span class="badge-mcp">MCP \${e.mcp.tool_count} tools</span>\` : '';
+  const inst = e.installed ? '<span class="badge-installed">&#10003; installed</span>' : '';
+  const api = e.api ? \`<span class="badge-api" title="\${esc(e.api)}">\${esc(e.api)}</span>\` : '';
+  const desc = (e.description || '').length > 120 ? e.description.slice(0,117)+'…' : (e.description || '');
+  return \`<div class="card" data-name="\${esc(e.name)}" data-cat="\${esc(e.category)}" data-installed="\${e.installed}">
+  <div class="card-head">
+    <span class="card-name">\${esc(e.name)}</span>
+    <span class="card-cat">\${esc(e.category)}</span>
+  </div>
+  <div class="card-desc">\${esc(desc)}</div>
+  <div class="card-footer">
+    \${inst}\${mcp}\${api}
+    <span class="install-cmd" title="Click to copy install command" onclick="copyCmd(this, \${JSON.stringify(cmd)})">\${esc(cmd)}</span>
+  </div>
+</div>\`;
+}
+
+function applyFilters() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const grid = document.getElementById('grid');
+  let visible = 0;
+  const cards = grid.querySelectorAll('.card');
+  cards.forEach(card => {
+    const name = card.dataset.name || '';
+    const cat = card.dataset.cat || '';
+    const installed = card.dataset.installed === 'true';
+    const matchQ = !q || name.includes(q) || cat.includes(q) || card.querySelector('.card-desc').textContent.toLowerCase().includes(q);
+    const matchCat = activeCat === 'all' || cat === activeCat;
+    const matchInst = !installedOnly || installed;
+    const show = matchQ && matchCat && matchInst;
+    card.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  document.getElementById('stat-showing').innerHTML = '<b>' + visible + '</b> shown';
+}
+
+function setCat(cat) {
+  activeCat = cat;
+  document.querySelectorAll('.pill[data-cat]').forEach(p => p.classList.toggle('active', p.dataset.cat === cat));
+  applyFilters();
+}
+
+function toggleInstalled() {
+  installedOnly = !installedOnly;
+  document.getElementById('pill-installed').classList.toggle('active', installedOnly);
+  applyFilters();
+}
+
+async function init() {
+  const res = await fetch('/api/cli-tools');
+  const data = await res.json();
+  ALL = data.catalog || [];
+
+  document.getElementById('stat-total').textContent = ALL.length;
+  document.getElementById('stat-installed').textContent = data.installedCount || 0;
+  document.getElementById('stat-showing').innerHTML = '<b>' + ALL.length + '</b> shown';
+
+  // Build category pills
+  const cats = ['all', ...new Set(ALL.map(e => e.category).filter(Boolean))];
+  const pillsEl = document.getElementById('cat-pills');
+  pillsEl.innerHTML = cats.map(c =>
+    \`<span class="pill \${c==='all'?'active':''}" data-cat="\${c}" onclick="setCat('\${c}')">\${c==='all'?'All':c}</span>\`
+  ).join('');
+
+  // Render all cards
+  const grid = document.getElementById('grid');
+  grid.innerHTML = ALL.map(renderCard).join('') || '<div class="empty">Registry not found — clone mvanhorn/printing-press-library to ~/printing-press-library</div>';
+
+  // CLI-Anything chips
+  const cliGrid = document.getElementById('cli-anything-grid');
+  const clis = data.cliAnythingCLIs || [];
+  cliGrid.innerHTML = clis.length
+    ? clis.map(c => \`<span class="cli-chip \${c.hasCli?'has-cli':''}" title="\${c.hasReadme?'has README':''}">&#128295; \${esc(c.name)}</span>\`).join('')
+    : '<span style="color:#4b5563;font-size:12px">No generated CLIs found in ~/CLI-Anything</span>';
+}
+
+init();
+</script>
+</body>
+</html>`;
+    return c.html(html);
+  });
+
+  // Token Dashboard — embeds nateherkai/token-dashboard (:8080) in a full-page iframe.
+  // No auth required: the embedded service is localhost-only.
+  app.get('/token-dashboard', (c) => {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Token Dashboard — ClaudeClaw</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0f0f0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #141414; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; }
+  .back-btn { background: none; border: 1px solid #2a2a2a; border-radius: 6px; color: #9ca3af; font-size: 12px; padding: 4px 10px; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s; }
+  .back-btn:hover { border-color: #4f46e5; color: #a5b4fc; }
+  .title { font-size: 13px; font-weight: 600; color: #e0e0e0; }
+  .badge { font-size: 11px; color: #6b7280; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 7px; }
+  iframe { flex: 1; border: none; width: 100%; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/" class="back-btn">&#8592; ClaudeClaw</a>
+  <span class="title">Token Dashboard</span>
+  <span class="badge">:8080</span>
+</div>
+<iframe src="http://localhost:8080" title="Token Dashboard"></iframe>
+</body>
+</html>`;
+    return c.html(html);
+  });
+
   // Serve dashboard HTML.
   // Default: the new Vite-built Mission Control frontend at dist/web/index.html.
   // Fallback: set DASHBOARD_LEGACY=true in .env to revert to the legacy
@@ -699,6 +1004,246 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return c.json({ agents });
   });
 
+  // ── ComfyUI — status + VRAM for the local image/video generation stack ──
+  app.get('/api/comfyui/status', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      // Check if ComfyUI is responding on port 8188
+      let running = false;
+      try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
+      // VRAM via nvidia-smi
+      let vram: { total: number; used: number; free: number } | null = null;
+      try {
+        const raw = execSync('/usr/lib/wsl/lib/nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv,noheader,nounits', { stdio: 'pipe' }).toString().trim();
+        const [total, used, free] = raw.split(', ').map(Number);
+        vram = { total, used, free };
+      } catch {}
+      // Model inventory
+      const HOME = process.env.HOME || '/home/itsju';
+      const checkpointDir = `${HOME}/ComfyUI/models/checkpoints`;
+      const loraDir = `${HOME}/ComfyUI/models/loras`;
+      const checkpoints = fs.existsSync(checkpointDir) ? fs.readdirSync(checkpointDir).filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf')).map(f => ({ name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2) })) : [];
+      const loras = fs.existsSync(loraDir) ? fs.readdirSync(loraDir).filter(f => f.endsWith('.safetensors')).map(f => ({ name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1) })) : [];
+      return c.json({ running, vram, checkpoints, loras, url: running ? 'http://localhost:8188' : null });
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── ComfyUI remote control — start/stop from Tailscale or ClaudeClaw UI ──
+  app.post('/api/comfy/start', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      let running = false;
+      try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
+      if (running) return c.json({ ok: false, error: 'already running' });
+      const { spawn } = await import('child_process');
+      const HOME = process.env.HOME || '/home/itsju';
+      const child = spawn(`${HOME}/bin/comfyui-start`, [], {
+        detached: true, stdio: 'ignore', env: { ...process.env, HOME },
+      });
+      child.unref();
+      return c.json({ ok: true, pid: child.pid, message: 'ComfyUI launching — poll /api/comfyui/status for ready (30–60s)' });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/comfy/stop', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      let stopped = false;
+      try {
+        const pid = execSync('cat /tmp/comfyui.pid 2>/dev/null || true', { stdio: 'pipe' }).toString().trim();
+        if (pid) { execSync(`kill ${pid}`, { stdio: 'pipe' }); stopped = true; }
+      } catch {}
+      if (!stopped) {
+        try { execSync("pkill -f 'ComfyUI/venv/bin/python.*main.py' 2>/dev/null || true", { stdio: 'pipe' }); stopped = true; } catch {}
+      }
+      return c.json({ ok: stopped, message: stopped ? 'ComfyUI stopped' : 'ComfyUI was not running' });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/comfy/queue', async (c) => {
+    try {
+      const body = await c.req.json();
+      const res = await fetch('http://127.0.0.1:8188/prompt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (!res.ok) return c.json({ ok: false, error: `ComfyUI returned ${res.status}` }, 502);
+      return c.json({ ok: true, ...(await res.json() as object) });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.get('/api/comfy/queue/:id', async (c) => {
+    try {
+      const res = await fetch(`http://127.0.0.1:8188/history/${c.req.param('id')}`);
+      if (!res.ok) return c.json({ ok: false, error: `ComfyUI returned ${res.status}` }, 502);
+      return c.json({ ok: true, ...(await res.json() as object) });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── ComfyUI high-level generate — prompt → workflow → poll → gallery URL ──
+  // This is the endpoint the Create page calls. Handles ComfyUI startup,
+  // workflow construction, queueing, polling, and returns a gallery-file URL.
+  app.post('/api/comfy/generate', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    try {
+      const body = await c.req.json() as {
+        prompt?: string; negative_prompt?: string; steps?: number; cfg?: number;
+        width?: number; height?: number; checkpoint?: string; seed?: number;
+        loras?: Array<{ name: string; strength?: number }>;
+      };
+      const prompt = (body.prompt || '').trim();
+      if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
+
+      const { execSync, spawn } = await import('child_process');
+
+      // ── 1. Start ComfyUI if not running ─────────────────────────────────
+      let running = false;
+      try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
+      if (!running) {
+        const child = spawn(`${HOME}/bin/comfyui-start`, [], {
+          detached: true, stdio: 'ignore', env: { ...process.env, HOME },
+        });
+        child.unref();
+        // Wait up to 90s for ComfyUI to come up
+        const startMs = Date.now();
+        while (Date.now() - startMs < 90_000) {
+          await new Promise(r => setTimeout(r, 3000));
+          try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; break; } catch {}
+        }
+        if (!running) return c.json({ ok: false, error: 'ComfyUI failed to start within 90s' }, 503);
+      }
+
+      // ── 2. Build workflow from template ─────────────────────────────────
+      const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
+      const ckptFiles = fs.existsSync(ckptDir)
+        ? fs.readdirSync(ckptDir).filter((f: string) => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf'))
+        : [];
+      const checkpoint = body.checkpoint || ckptFiles[0] || 'cyberrealisticPony_v170.safetensors';
+      const seed = body.seed ?? Math.floor(Math.random() * 2 ** 32);
+      const loraList = body.loras ?? [];
+
+      // Build workflow — chain LoRA nodes between checkpoint and sampler
+      const workflow: Record<string, any> = {
+        "4": { inputs: { ckpt_name: checkpoint }, class_type: "CheckpointLoaderSimple" },
+      };
+      // LoRA chain: node ids 100, 101, 102... each feeds into the next
+      let modelRef: [string, number] = ["4", 0];
+      let clipRef:  [string, number] = ["4", 1];
+      for (let i = 0; i < loraList.length; i++) {
+        const nodeId = String(100 + i);
+        const strength = loraList[i].strength ?? 0.8;
+        workflow[nodeId] = {
+          inputs: { lora_name: loraList[i].name, strength_model: strength, strength_clip: strength, model: modelRef, clip: clipRef },
+          class_type: "LoraLoader",
+        };
+        modelRef = [nodeId, 0];
+        clipRef  = [nodeId, 1];
+      }
+      workflow["6"] = { inputs: { text: prompt, clip: clipRef }, class_type: "CLIPTextEncode" };
+      workflow["7"] = { inputs: { text: body.negative_prompt || "deformed, ugly, blurry, low quality, bad anatomy, watermark, text", clip: clipRef }, class_type: "CLIPTextEncode" };
+      workflow["5"] = { inputs: { width: body.width ?? 512, height: body.height ?? 768, batch_size: 1 }, class_type: "EmptyLatentImage" };
+      workflow["3"] = { inputs: { seed, steps: body.steps ?? 20, cfg: body.cfg ?? 7.0, sampler_name: "euler", scheduler: "normal", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" };
+      workflow["8"] = { inputs: { samples: ["3", 0], vae: ["4", 2] }, class_type: "VAEDecode" };
+      workflow["9"] = { inputs: { filename_prefix: "cc_gen", images: ["8", 0] }, class_type: "SaveImage" };
+
+      // ── 3. Queue ────────────────────────────────────────────────────────
+      const queueRes = await fetch('http://127.0.0.1:8188/prompt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow }),
+      });
+      if (!queueRes.ok) return c.json({ ok: false, error: `ComfyUI queue rejected: ${queueRes.status}` }, 502);
+      const { prompt_id } = await queueRes.json() as { prompt_id: string };
+
+      // ── 4. Poll until done (max 300s) ────────────────────────────────────
+      const comfyOutputDir = `${HOME}/ComfyUI/output`;
+      const galleryDir = `${HOME}/gallery-watched/comfyui`;
+      const startPoll = Date.now();
+      let outputFile: string | null = null;
+      // 600s: a COLD first generation after a WSL restart loads a 6.5GB checkpoint
+      // + LoRA from disk and the first sampling step can take ~60s on its own.
+      // Warm generations finish in ~2.5 min; this ceiling only matters on cold start.
+      while (Date.now() - startPoll < 600_000) {
+        await new Promise(r => setTimeout(r, 4000));
+        try {
+          const histRaw = await fetch(`http://127.0.0.1:8188/history/${prompt_id}`).then(r => r.json());
+          // Log the raw history API response so we can see the actual shape if something goes wrong
+          logger.info({ prompt_id, histRaw: JSON.stringify(histRaw) }, 'ComfyUI history API raw response');
+          const hist = histRaw as Record<string, any>;
+          const entry = hist[prompt_id];
+          if (!entry) continue;
+          // ComfyUI history API returns status.completed (boolean) and an
+          // outputs map keyed by node id. status_str is not a real field.
+          // Full shape: history[prompt_id].outputs[nodeId].images[0].filename
+          const statusMsgs: Array<[string, unknown]> = entry.status?.status_messages ?? [];
+          const hasError = statusMsgs.some(([type]) => type === 'execution_error');
+          if (hasError) return c.json({ ok: false, error: 'ComfyUI generation error' }, 500);
+          if (entry.status?.completed === true) {
+            // Extract filename + subfolder from history response outputs (node "9" = SaveImage)
+            let filename: string | null = null;
+            let subfolder: string = '';
+            const outputs = entry.outputs ?? {};
+            for (const nodeId of Object.keys(outputs)) {
+              const images: Array<{ filename: string; subfolder: string; type: string }> = outputs[nodeId]?.images ?? [];
+              if (images.length > 0) {
+                filename = images[0].filename;
+                subfolder = images[0].subfolder ?? '';
+                break;
+              }
+            }
+            logger.info({ prompt_id, filename, subfolder, outputs: JSON.stringify(outputs) }, 'ComfyUI generation completed — extracted output');
+            if (!filename) {
+              return c.json({ ok: false, error: 'ComfyUI completed but no output image found in history' }, 500);
+            }
+            // Move file from ComfyUI output dir to gallery-watched dir.
+            // Account for optional subfolder: ComfyUI/output/{subfolder}/{filename}
+            const srcPath = subfolder
+              ? `${comfyOutputDir}/${subfolder}/${filename}`
+              : `${comfyOutputDir}/${filename}`;
+            if (!fs.existsSync(galleryDir)) fs.mkdirSync(galleryDir, { recursive: true });
+            const dstPath = `${galleryDir}/${filename}`;
+            logger.info({ srcPath, dstPath }, 'ComfyUI moving output to gallery');
+            try {
+              fs.renameSync(srcPath, dstPath);
+            } catch {
+              // Cross-filesystem fallback (rename fails across WSL mount boundaries)
+              fs.copyFileSync(srcPath, dstPath);
+              try { fs.unlinkSync(srcPath); } catch {}
+            }
+            outputFile = filename;
+            break;
+          }
+        } catch (pollErr) {
+          logger.warn({ prompt_id, err: String(pollErr) }, 'ComfyUI history poll error (retrying)');
+        }
+      }
+      if (!outputFile) return c.json({ ok: false, error: 'Timed out waiting for ComfyUI output (300s)' }, 504);
+
+      const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(outputFile)}`;
+      return c.json({ ok: true, file: outputFile, url, notes: `checkpoint: ${checkpoint.replace('.safetensors', '')}` });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── System disk — always report WSL virtual AND C: physical ──
+  // C: is the true ceiling: the WSL .vhdx file expands into C: space.
+  // "df /" returns 846 GB "free" (expandable virtual) but C: has ~133 GB.
+  app.get('/api/system/disk', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      const parseDF = (raw: string) => {
+        const p = raw.trim().split(/\s+/);
+        return { fs: p[0], size: p[1], used: p[2], avail: p[3], pct: p[4] };
+      };
+      let wsl: ReturnType<typeof parseDF> | null = null;
+      let cdrive: ReturnType<typeof parseDF> | null = null;
+      try { wsl = parseDF(execSync('df -h / | tail -1', { stdio: 'pipe' }).toString()); } catch {}
+      try { cdrive = parseDF(execSync('df -h /mnt/c | tail -1', { stdio: 'pipe' }).toString()); } catch {}
+      const cPct = cdrive ? parseInt(cdrive.pct) : 0;
+      const warning = cPct >= 85 ? `C: drive ${cdrive!.pct} full — ${cdrive!.avail} free` : null;
+      return c.json({ wsl, cdrive, warning, critical: cPct >= 95, note: 'C: is the physical limit; WSL .vhdx expands into it.' });
+    } catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
   // ── Wallets — aggregated brokerage/exchange balances (moved here from
   //    MissionCtrl so sensitive balances stay on the local-only dashboard) ──
   app.get('/api/wallets', async (c) => {
@@ -708,6 +1253,66 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
+  });
+
+  // ── Trade Desk — unified trading intelligence panel (signals, flow rank,
+  //    winners, momentum, macro, brief, AIME). All read-only. Data comes from
+  //    the live pipeline DBs and firebase-signals on the laptop.
+
+  app.get('/api/trade-desk/overview', (c) => {
+    try { return c.json(getTradeDeskOverview()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/signals', (c) => {
+    const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 500);
+    try { return c.json(getSignals(limit)); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/flow-rank', (c) => {
+    try { return c.json(getFlowRank()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/flow-winners', (c) => {
+    const days = parseInt(c.req.query('days') || '7', 10);
+    const symbol = c.req.query('symbol') || undefined;
+    try { return c.json({ winners: getFlowWinners(days, symbol) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/momentum', (c) => {
+    try { return c.json({ momentum: getMomentum() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/macro', (c) => {
+    try { return c.json({ macro: getMacro() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/ledger', (c) => {
+    const hours = parseInt(c.req.query('hours') || '48', 10);
+    try { return c.json({ ledger: getTradeLedger(hours) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/brief', (c) => {
+    try { return c.json(getBrief()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.post('/api/trade-desk/aime', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const prompt = String(body.prompt || '').trim();
+      if (!prompt) return c.json({ error: 'prompt required' }, 400);
+      const cookie = AIME_SESSION_COOKIE;
+      if (!cookie) return c.json({ response: '', status: 'no_cookie', message: 'Set AIME_SESSION_COOKIE in .env to activate' });
+      const result = await queryAIME(prompt, cookie);
+      return c.json(result);
+    } catch (e) { return c.json({ error: String(e) }, 500); }
   });
 
   // ── Gallery — generated images/videos, surfaced from the same local source
@@ -745,20 +1350,74 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
     const prompt = String(body?.prompt ?? '');
     const source = typeof body?.source === 'string' ? body.source : 'banana';
-    const result = source === 'local'
-      ? await generateLocalImage({
-          prompt,
-          model: typeof body?.model === 'string' ? body.model : undefined,
-          steps: typeof body?.steps === 'number' ? body.steps : undefined,
-        })
-      : await generateImage({
+    let result;
+    if (source === 'local') {
+      result = await generateLocalImage({
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        steps: typeof body?.steps === 'number' ? body.steps : undefined,
+      });
+    } else {
+      result = await generateImage({
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        size: typeof body?.size === 'string' ? body.size : undefined,
+      });
+    }
+    if (result.ok) invalidateGalleryCache();
+    return c.json(result);
+  });
+
+  // Batch generation — generate N images in one call.
+  // Banana: runs sequentially (Gemini rate-limited, up to 5).
+  // Local: runs sequentially (single GPU, up to 3).
+  app.post('/api/gallery/batch-generate', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const prompt = String(body?.prompt ?? '');
+    const source = typeof body?.source === 'string' ? body.source : 'local';
+    const rawCount = typeof body?.count === 'number' ? body.count : 1;
+
+    const maxCounts: Record<string, number> = { banana: 5, local: 3 };
+    const count = Math.max(1, Math.min(rawCount, maxCounts[source] || 5));
+
+    const results = [];
+
+    if (source === 'banana') {
+      // sequential — Gemini rate-limited
+      for (let i = 0; i < count; i++) {
+        const r = await generateImage({
           prompt,
           model: typeof body?.model === 'string' ? body.model : undefined,
           aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
           size: typeof body?.size === 'string' ? body.size : undefined,
         });
-    if (result.ok) invalidateGalleryCache();
-    return c.json(result);
+        results.push(r);
+      }
+    } else {
+      // local — single GPU, serialize
+      for (let i = 0; i < count; i++) {
+        const r = await generateLocalImage({
+          prompt,
+          model: typeof body?.model === 'string' ? body.model : undefined,
+          steps: typeof body?.steps === 'number' ? body.steps : undefined,
+        });
+        results.push(r);
+      }
+    }
+
+    if (results.some((r) => r.ok)) invalidateGalleryCache();
+    return c.json({ results });
+  });
+
+  // Move a gallery file between declared sections (rename with cross-fs copy+delete fallback).
+  app.post('/api/gallery/move', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const result = moveGalleryFile(
+      String(body?.srcRoot ?? ''), String(body?.srcSub ?? ''), String(body?.name ?? ''),
+      String(body?.dstRoot ?? ''), String(body?.dstSub ?? ''),
+    );
+    return c.json(result, result.ok ? 200 : 400);
   });
 
   // Local FREE video (diffusers LTX-Video on the GPU) → renders/ = gallery video section.
@@ -771,6 +1430,30 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
     if (result.ok) invalidateGalleryCache();
     return c.json(result);
+  });
+
+  // ── Hermes Agent workspace ────────────────────────────────────────────────
+  app.get('/api/hermes', async (c) => {
+    try { return c.json(getHermesData()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/hermes/logs', (c) => {
+    const n = parseInt(c.req.query('n') || '60', 10);
+    try { return c.json({ lines: getHermesLogs(Math.min(n, 200)) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.post('/api/hermes/send', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const chatId = String(body?.chat_id ?? '7888676328');
+    const message = String(body?.message ?? '');
+    if (!message.trim()) return c.json({ ok: false, message: 'empty message' }, 400);
+    return c.json(hermesSend(chatId, message));
+  });
+
+  app.post('/api/hermes/restart', async (c) => {
+    return c.json(hermesRestartGateway());
   });
 
   // ── War Room meeting history & transcript persistence ──────────────
@@ -1998,7 +2681,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Memory stats
   app.get('/api/memories', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const stats = getDashboardMemoryStats(chatId);
     const fading = getDashboardLowSalienceMemories(chatId, 10);
     const topAccessed = getDashboardTopAccessedMemories(chatId, 5);
@@ -2009,7 +2692,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Memory list (for drill-down drawer)
   app.get('/api/memories/pinned', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const memories = getDashboardPinnedMemories(chatId);
     return c.json({ memories });
   });
