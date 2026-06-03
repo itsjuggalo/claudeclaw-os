@@ -6,9 +6,9 @@
 // All data comes from /api/databases/* (see src/databases.ts). Read-only:
 // the SQL runner is SELECT-only on the backend; secrets never auto-reveal.
 import type { ComponentChildren } from 'preact';
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { useRoute, useLocation } from 'wouter-preact';
-import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search, Download } from 'lucide-preact';
+import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search, Download, RefreshCw } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
@@ -17,6 +17,22 @@ import { fmtUpdated } from '@/pages/Databases';
 import { renderMarkdown } from '@/lib/markdown';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
+
+// Small refresh control placed in a deep page's header (deep pages fetch once;
+// this re-pulls on demand since the catalog's 60s SWR doesn't cover them).
+function RefreshButton({ onClick, busy }: { onClick: () => void; busy: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      title="Refresh"
+      class="flex items-center gap-1 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
+    >
+      <RefreshCw size={13} class={busy ? 'animate-spin' : undefined} /> Refresh
+    </button>
+  );
+}
 
 type DbType = 'kb' | 'sql' | 'secrets';
 
@@ -219,7 +235,12 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
       <PageHeader
         title={item.label}
         breadcrumb="Databases"
-        actions={back}
+        actions={
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            {tab === 'sources' && <RefreshButton onClick={() => setSources(null)} busy={sourcesLoading} />}
+            {back}
+          </div>
+        }
         tabs={
           <>
             {item.askable && <Tab label="Ask" active={tab === 'ask'} onClick={() => setTab('ask')} />}
@@ -488,22 +509,22 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
     }
   }
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setMetaLoading(true);
-      setMetaErr(null);
-      try {
-        const r = await apiGet<SqlMeta>('/api/databases/sql/' + item.id + '/meta');
-        if (!cancelled) setMeta(r);
-      } catch (e) {
-        if (!cancelled) setMetaErr(String((e as Error).message || e));
-      } finally {
-        if (!cancelled) setMetaLoading(false);
-      }
+  async function loadMeta() {
+    setMetaLoading(true);
+    setMetaErr(null);
+    try {
+      const r = await apiGet<SqlMeta>('/api/databases/sql/' + item.id + '/meta');
+      setMeta(r);
+    } catch (e) {
+      setMetaErr(String((e as Error).message || e));
+    } finally {
+      setMetaLoading(false);
     }
-    void load();
-    return () => { cancelled = true; };
+  }
+
+  useEffect(() => {
+    void loadMeta();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.id]);
 
   async function runQuery(sqlText: string) {
@@ -531,7 +552,16 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
   return (
     <>
-      <PageHeader title={item.label} breadcrumb="Databases" actions={back} />
+      <PageHeader
+        title={item.label}
+        breadcrumb="Databases"
+        actions={
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <RefreshButton onClick={() => void loadMeta()} busy={metaLoading} />
+            {back}
+          </div>
+        }
+      />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '20px 24px', maxWidth: '1100px', margin: '0 auto' }}>
 
@@ -762,23 +792,24 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
+
+  async function loadSecrets() {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await apiGet<SecretsResponse>('/api/databases/secrets');
+      setData(r);
+    } catch (e) {
+      setError(String((e as Error).message || e));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      setError(null);
-      try {
-        const r = await apiGet<SecretsResponse>('/api/databases/secrets');
-        if (!cancelled) setData(r);
-      } catch (e) {
-        if (!cancelled) setError(String((e as Error).message || e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    void load();
-    return () => { cancelled = true; };
+    void loadSecrets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.id]);
 
   const totalCount = data ? data.groups.reduce((n, g) => n + g.items.length, 0) : 0;
@@ -799,7 +830,16 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
 
   return (
     <>
-      <PageHeader title={item.label} breadcrumb="Databases" actions={back} />
+      <PageHeader
+        title={item.label}
+        breadcrumb="Databases"
+        actions={
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <RefreshButton onClick={() => void loadSecrets()} busy={loading} />
+            {back}
+          </div>
+        }
+      />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '20px 24px', maxWidth: '900px', margin: '0 auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '16px' }}>
@@ -825,11 +865,31 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
             </div>
           )}
 
+          {/* Category jump-nav — 200+ rows are long even filtered. */}
+          {filteredGroups.length > 1 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '18px' }}>
+              {filteredGroups.map(group => (
+                <button
+                  key={group.category}
+                  type="button"
+                  onClick={() => sectionRefs.current[group.category]?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  class="px-2.5 py-1 rounded-full text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] bg-[var(--color-card)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]"
+                >
+                  {group.category} <span style={{ opacity: 0.55 }}>{group.items.length}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           {loading && <PageState loading />}
           {error && <PageState error={error} />}
 
           {filteredGroups.map(group => (
-            <section key={group.category} style={{ marginBottom: '20px' }}>
+            <section
+              key={group.category}
+              ref={(el) => { sectionRefs.current[group.category] = el as HTMLElement | null; }}
+              style={{ marginBottom: '20px', scrollMarginTop: '12px' }}
+            >
               <div style={{
                 fontSize: '11px', fontWeight: 700, letterSpacing: '1.5px',
                 textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '8px',

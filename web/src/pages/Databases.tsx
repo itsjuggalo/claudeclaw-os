@@ -2,7 +2,7 @@
 // the laptop hub, grouped and rendered as clickable cards. Data comes from
 // GET /api/databases (see src/databases.ts). Clicking a card deep-links to
 // /databases/:id (DatabaseDetail).
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
 import { BookOpen, Table, KeyRound, Search } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
@@ -24,6 +24,16 @@ export function fmtUpdated(iso?: string | null): string {
   }
 }
 
+// Sum of per-item byte sizes → a compact human string (catalog totals).
+export function humanSize(bytes: number): string {
+  if (!bytes || bytes < 1) return '—';
+  const units = ['B', 'K', 'M', 'G', 'T'];
+  let n = bytes;
+  let u = 0;
+  while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+  return (n < 10 && u > 0 ? n.toFixed(1) : Math.round(n)) + units[u];
+}
+
 interface DbItem {
   id: string;
   type: DbType;
@@ -31,6 +41,7 @@ interface DbItem {
   subtitle?: string;
   stat: string;
   size: string;
+  bytes?: number;
   updated: string;
   accent: string;
   askable?: boolean;
@@ -44,6 +55,7 @@ interface DbGroup {
 
 interface CatalogResponse {
   groups: DbGroup[];
+  totalBytes?: number;
 }
 
 // Accent name → hex. Used for left border + hover glow on cards.
@@ -75,6 +87,7 @@ function DbCard({ item }: { item: DbItem }) {
   return (
     <button
       type="button"
+      data-db-card
       onClick={() => setLocation('/databases/' + item.id)}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -155,8 +168,34 @@ export function Databases() {
     return () => { cancelled = true; };
   }, []);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
   const groups = data?.groups ?? [];
   const totalCount = groups.reduce((n, g) => n + g.items.length, 0);
+  // De-duped total from the backend (KB dirs already include their fts.db
+  // index entries); fall back to a naive client sum if absent.
+  const totalBytes = data?.totalBytes ?? groups.reduce((n, g) => n + g.items.reduce((m, it) => m + (it.bytes ?? 0), 0), 0);
+
+  // Arrow keys move focus between cards (linear order); Home/End jump to the
+  // ends. Enter/Space activate natively (the cards are <button>s).
+  function onGridKeyDown(e: KeyboardEvent) {
+    const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'];
+    if (!keys.includes(e.key)) return;
+    // Don't hijack arrows/Home/End while the user is typing in the filter box.
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    const root = scrollRef.current;
+    if (!root) return;
+    const cards = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-db-card]'));
+    if (cards.length === 0) return;
+    const cur = cards.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = cards.length - 1;
+    else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = cur < 0 ? 0 : Math.min(cards.length - 1, cur + 1);
+    else next = cur < 0 ? 0 : Math.max(0, cur - 1);
+    e.preventDefault();
+    cards[next]?.focus();
+  }
 
   // Client-side live filter: match label / subtitle / id / type (case-insensitive).
   const q = filter.trim().toLowerCase();
@@ -174,13 +213,13 @@ export function Databases() {
     .filter(g => g.items.length > 0);
 
   const headerActions = !loading && !error && totalCount > 0
-    ? <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>{totalCount} databases</span>
+    ? <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>{totalCount} databases · {humanSize(totalBytes)}</span>
     : undefined;
 
   return (
     <div class="flex flex-col h-full">
       <PageHeader title="Databases" actions={headerActions} />
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto' }} onKeyDown={onGridKeyDown}>
         <div style={{ padding: '20px 24px', maxWidth: '1400px', margin: '0 auto' }}>
           <p style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '16px' }}>
             Every knowledge base, SQL store, and secret vault — organized.
@@ -223,6 +262,10 @@ export function Databases() {
                 marginBottom: '12px',
               }}>
                 {group.label} <span style={{ opacity: 0.6 }}>({group.items.length})</span>
+                {(() => {
+                  const gb = group.items.reduce((m, it) => m + (it.bytes ?? 0), 0);
+                  return gb > 0 ? <span style={{ opacity: 0.45, fontWeight: 400 }}> · {humanSize(gb)}</span> : null;
+                })()}
               </div>
               <div style={{
                 display: 'grid',

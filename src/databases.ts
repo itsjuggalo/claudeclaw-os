@@ -93,6 +93,7 @@ export interface CatalogItem {
   subtitle?: string;
   stat: string;
   size: string;
+  bytes: number;
   updated: string | null;
   accent?: string;
   askable?: boolean;
@@ -104,6 +105,7 @@ export interface CatalogGroup {
 }
 export interface Catalog {
   groups: CatalogGroup[];
+  totalBytes: number;
 }
 
 const GROUP_ORDER: Array<{ id: DbGroup; label: string }> = [
@@ -121,6 +123,27 @@ async function duSize(target: string): Promise<string> {
   } catch {
     return '—';
   }
+}
+
+// Apparent byte size (du -sb) so the catalog can sum per-group + total sizes
+// across mixed units. Returns 0 on failure (treated as "unknown" by the UI).
+async function duBytes(target: string): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync('du', ['-sb', target], { timeout: 5000 });
+    const n = parseInt(stdout.split(/\s+/)[0] || '', 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function formatSize(bytes: number): string {
+  if (!bytes || bytes < 1) return '—';
+  const units = ['B', 'K', 'M', 'G', 'T'];
+  let n = bytes;
+  let u = 0;
+  while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+  return (n < 10 && u > 0 ? n.toFixed(1) : Math.round(n)) + units[u];
 }
 
 function mtimeISO(target: string): string | null {
@@ -172,23 +195,23 @@ function secretsFileCount(): string {
 
 async function buildItem(e: RegistryEntry): Promise<CatalogItem> {
   let stat = '—';
-  let size = '—';
+  let bytes = 0;
   let updated: string | null = null;
 
   try {
     if (e.type === 'kb') {
-      size = await duSize(e.path);
+      bytes = await duBytes(e.path);
       updated = mtimeISO(e.path);
       stat = kbChunkStat(e.path);
     } else if (e.type === 'sql') {
-      size = await duSize(e.path);
+      bytes = await duBytes(e.path);
       updated = mtimeISO(e.path);
       stat = await sqlTableCount(e.path);
     } else {
       // secrets
       stat = secretsFileCount();
       const dir = join(HOME, '.openclaw/secrets');
-      size = await duSize(dir);
+      bytes = await duBytes(dir);
       updated = mtimeISO(dir);
     }
   } catch {
@@ -201,7 +224,8 @@ async function buildItem(e: RegistryEntry): Promise<CatalogItem> {
     label: e.label,
     subtitle: e.subtitle,
     stat,
-    size,
+    size: formatSize(bytes),
+    bytes,
     updated,
     accent: e.accent,
     askable: e.type === 'kb' ? e.askable : undefined,
@@ -218,7 +242,19 @@ async function buildCatalog(): Promise<Catalog> {
       .map((e) => byId.get(e.id))
       .filter((it): it is CatalogItem => Boolean(it)),
   })).filter((g) => g.items.length > 0);
-  return { groups };
+
+  // Grand total de-dups nested paths: a KB dir's `du` already includes its
+  // fts.db, which is ALSO registered separately under RAG/FTS Indexes — so
+  // summing every item naively would count those bytes twice. Per-group
+  // subtotals stay un-deduped on purpose (each is its own lens).
+  const withPath = items.map((it) => ({ bytes: it.bytes, path: getEntry(it.id)?.path || '' }));
+  const totalBytes = withPath.reduce((sum, a) => {
+    if (!a.path) return sum + a.bytes; // secrets / pathless
+    const nested = withPath.some((b) => b !== a && b.path && a.path.startsWith(b.path + pathSep));
+    return nested ? sum : sum + a.bytes;
+  }, 0);
+
+  return { groups, totalBytes };
 }
 
 let _cache: { catalog: Catalog; ts: number } | null = null;
