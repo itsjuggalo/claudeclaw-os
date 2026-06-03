@@ -30,6 +30,8 @@ import { SignalFeedPage } from '@/pages/SignalFeedPage';
 import { FlowRankPage } from '@/pages/FlowRankPage';
 import { PortfolioAIPage } from '@/pages/PortfolioAIPage';
 import { FlowWinnersPage } from '@/pages/FlowWinnersPage';
+import { Databases } from '@/pages/Databases';
+import { DatabaseDetail } from '@/pages/DatabaseDetail';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
@@ -66,6 +68,8 @@ export function App() {
           <Route path="/memories"><Memories /></Route>
           <Route path="/hive"><HiveMind /></Route>
           <Route path="/mckb"><McKb /></Route>
+          <Route path="/databases"><Databases /></Route>
+          <Route path="/databases/:id"><DatabaseDetail /></Route>
           <Route path="/journal"><Journal /></Route>
           <Route path="/usage"><Usage /></Route>
           <Route path="/audit"><Audit /></Route>

@@ -9,6 +9,7 @@ import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE } from './config.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
+import { getCatalog, kbSearch, kbAsk, sqlMeta, sqlSelect, listSecrets, revealSecret } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
@@ -3739,6 +3740,84 @@ init();
       return c.json(body, r.status as 200);
     } catch (e) {
       return c.json({ error: 'mc-kb server unreachable', detail: String((e as Error).message || e) }, 503);
+    }
+  });
+
+  // ── Databases — read-only catalog + query surface (KB RAG, SQL DBs,
+  //    RAG/FTS indexes, masked secrets). All local-only. ──
+  app.get('/api/databases', async (c) => {
+    try {
+      return c.json(await getCatalog());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/search', async (c) => {
+    const id = c.req.param('id');
+    const q = c.req.query('q') || '';
+    const top = parseInt(c.req.query('top') || '8', 10);
+    try {
+      return c.json(await kbSearch(id, q, top));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.post('/api/databases/kb/:id/ask', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const body = await c.req.json().catch(() => ({} as { question?: string }));
+      const question = (body as { question?: string }).question || '';
+      const result = await kbAsk(id, question);
+      if (result.error) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/sql/:id/meta', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const result = await sqlMeta(id);
+      if ('error' in result) return c.json(result, 404);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.post('/api/databases/sql/:id/query', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const body = await c.req.json().catch(() => ({} as { sql?: string }));
+      const sql = (body as { sql?: string }).sql || '';
+      const result = sqlSelect(id, sql);
+      if ('error' in result) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/secrets', (c) => {
+    try {
+      return c.json(listSecrets());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/secrets/reveal', (c) => {
+    const source = c.req.query('source') || '';
+    const name = c.req.query('name') || '';
+    try {
+      const result = revealSecret(source, name);
+      if (result.error) return c.json(result, 403);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
     }
   });
 

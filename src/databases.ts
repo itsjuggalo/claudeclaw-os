@@ -1,0 +1,501 @@
+// Databases catalog — read-only inventory + query surface for the LOCAL-ONLY
+// claudeclaw dashboard (:3141). Exposes the laptop's knowledge bases (RAG),
+// trade/pipeline/state SQLite DBs, RAG/FTS indexes, and a masked secrets view.
+//
+// SECURITY MODEL: only ids registered in REGISTRY below ever resolve to a path.
+// There is no path passed in from the client — callers reference a db by its
+// registered `id`, so there is no path-traversal surface. SQL is SELECT-only
+// (guarded), DBs are opened readonly, and secret values are never returned by
+// the catalog/list endpoints (only by the explicit, allow-listed reveal call).
+import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import Database from 'better-sqlite3';
+
+const execFileAsync = promisify(execFile);
+
+const HOME = '/home/itsju';
+const VENV = '/home/itsju/02_DATA/mc-kb/.venv/bin/python';
+
+// ── Registry ─────────────────────────────────────────────────────────
+export type DbType = 'kb' | 'sql' | 'secrets';
+export type DbGroup = 'kb' | 'sql' | 'state' | 'index' | 'secrets';
+
+export interface RegistryEntry {
+  id: string;
+  type: DbType;
+  group: DbGroup;
+  label: string;
+  subtitle?: string;
+  accent?: string;
+  path: string;      // dir (kb) or file (sql); '' for secrets
+  pyDir?: string;    // kb root dir for query.py/ask.py
+  askable?: boolean;
+}
+
+const RAW_REGISTRY: RegistryEntry[] = [
+  // Knowledge Bases (RAG)
+  { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true },
+  { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true },
+  { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`) },
+  { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: false },
+
+  // Trade & Pipeline SQL
+  { id: 'desk-pipeline', type: 'sql', group: 'sql', label: 'Desk Pipeline', accent: 'sky', path: `${HOME}/LapClaw/pipeline/desk_pipeline.sqlite` },
+  { id: 'flow', type: 'sql', group: 'sql', label: 'Flow Data (live)', accent: 'sky', path: `${HOME}/02_DATA/flow-data/flow.db` },
+  { id: 'flow-archive', type: 'sql', group: 'sql', label: 'Flow Data (archive)', accent: 'sky', path: `${HOME}/02_DATA/flow-data/flow_archive.db` },
+  { id: 'background-tasks', type: 'sql', group: 'sql', label: 'Background Tasks (watchdog)', accent: 'sky', path: `${HOME}/background_tasks.sqlite` },
+
+  // App & Agent State
+  { id: 'claudeclaw', type: 'sql', group: 'state', label: 'ClaudeClaw App DB', accent: 'cyan', path: `${HOME}/03_AGENTS/claudeclaw-os/store/claudeclaw.db` },
+  { id: 'mem-boba', type: 'sql', group: 'state', label: 'Agent Memory — Boba', accent: 'cyan', path: `${HOME}/.openclaw/memory/boba.sqlite` },
+  { id: 'mem-jazzy', type: 'sql', group: 'state', label: 'Agent Memory — JazzyHazzy', accent: 'cyan', path: `${HOME}/.openclaw/memory/jazzyhazzy.sqlite` },
+  { id: 'mem-main', type: 'sql', group: 'state', label: 'Agent Memory — Main', accent: 'cyan', path: `${HOME}/.openclaw/memory/main.sqlite` },
+
+  // RAG / FTS Indexes
+  { id: 'claytrader-fts', type: 'sql', group: 'index', label: 'ClayTrader FTS', accent: 'amber', path: `${HOME}/claytrader-kb/fts.db` },
+  { id: 'erikdalton-fts', type: 'sql', group: 'index', label: 'Erik Dalton FTS', accent: 'emerald', path: `${HOME}/erikdalton-kb/fts.db` },
+  { id: 'mckb-fts', type: 'sql', group: 'index', label: 'mc-kb FTS', accent: 'sky', path: `${HOME}/02_DATA/mc-kb/fts.db` },
+  { id: 'bible-rag', type: 'sql', group: 'index', label: 'Bible RAG index', accent: 'sky', path: `${HOME}/.bible-rag/index.sqlite` },
+
+  // Secrets
+  { id: 'secrets', type: 'secrets', group: 'secrets', label: 'Secrets & Keys', accent: 'rose', path: '' },
+];
+
+// Skip any path that doesn't exist so a missing file never crashes the catalog.
+// (secrets has no single path; its presence is handled in listSecrets.)
+export const REGISTRY: RegistryEntry[] = RAW_REGISTRY.filter(
+  (e) => e.type === 'secrets' || existsSync(e.path),
+);
+
+export function getEntry(id: string): RegistryEntry | null {
+  return REGISTRY.find((e) => e.id === id) ?? null;
+}
+
+/** kb root dir for an id, or null if not a registered kb. */
+export function getKbDir(id: string): string | null {
+  const e = getEntry(id);
+  if (!e || e.type !== 'kb' || !e.pyDir) return null;
+  return e.pyDir;
+}
+
+// ── Catalog (SWR-cached, 60s) ────────────────────────────────────────
+export interface CatalogItem {
+  id: string;
+  type: DbType;
+  label: string;
+  subtitle?: string;
+  stat: string;
+  size: string;
+  updated: string | null;
+  accent?: string;
+  askable?: boolean;
+}
+export interface CatalogGroup {
+  id: DbGroup;
+  label: string;
+  items: CatalogItem[];
+}
+export interface Catalog {
+  groups: CatalogGroup[];
+}
+
+const GROUP_ORDER: Array<{ id: DbGroup; label: string }> = [
+  { id: 'kb', label: 'Knowledge Bases' },
+  { id: 'sql', label: 'Trade & Pipeline SQL' },
+  { id: 'state', label: 'App & Agent State' },
+  { id: 'index', label: 'RAG / FTS Indexes' },
+  { id: 'secrets', label: 'Secrets & Keys' },
+];
+
+async function duSize(target: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('du', ['-sh', target], { timeout: 5000 });
+    return stdout.split('\t')[0]?.trim() || '—';
+  } catch {
+    return '—';
+  }
+}
+
+function mtimeISO(target: string): string | null {
+  try {
+    return statSync(target).mtime.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+async function sqlTableCount(path: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('sqlite3', [path, '.tables'], { timeout: 5000 });
+    const n = stdout.split(/\s+/).filter(Boolean).length;
+    return `${n} tables`;
+  } catch {
+    return '—';
+  }
+}
+
+function kbChunkStat(dir: string): string {
+  try {
+    const raw = readFileSync(join(dir, 'sync_status.json'), 'utf-8');
+    const json = JSON.parse(raw) as { reindex?: { chunks?: number }; chunks?: number };
+    const chunks = json.reindex?.chunks ?? json.chunks;
+    if (typeof chunks === 'number') return `${chunks} chunks`;
+    return '—';
+  } catch {
+    return '—';
+  }
+}
+
+function secretsFileCount(): string {
+  try {
+    const dir = join(HOME, '.openclaw/secrets');
+    const n = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).length;
+    return `${n} files`;
+  } catch {
+    return '—';
+  }
+}
+
+async function buildItem(e: RegistryEntry): Promise<CatalogItem> {
+  let stat = '—';
+  let size = '—';
+  let updated: string | null = null;
+
+  try {
+    if (e.type === 'kb') {
+      size = await duSize(e.path);
+      updated = mtimeISO(e.path);
+      stat = kbChunkStat(e.path);
+    } else if (e.type === 'sql') {
+      size = await duSize(e.path);
+      updated = mtimeISO(e.path);
+      stat = await sqlTableCount(e.path);
+    } else {
+      // secrets
+      stat = secretsFileCount();
+      const dir = join(HOME, '.openclaw/secrets');
+      size = await duSize(dir);
+      updated = mtimeISO(dir);
+    }
+  } catch {
+    // resilient: any per-item failure leaves defaults
+  }
+
+  return {
+    id: e.id,
+    type: e.type,
+    label: e.label,
+    subtitle: e.subtitle,
+    stat,
+    size,
+    updated,
+    accent: e.accent,
+    askable: e.type === 'kb' ? e.askable : undefined,
+  };
+}
+
+async function buildCatalog(): Promise<Catalog> {
+  const items = await Promise.all(REGISTRY.map(buildItem));
+  const byId = new Map<string, CatalogItem>(items.map((it) => [it.id, it]));
+  const groups: CatalogGroup[] = GROUP_ORDER.map((g) => ({
+    id: g.id,
+    label: g.label,
+    items: REGISTRY.filter((e) => e.group === g.id)
+      .map((e) => byId.get(e.id))
+      .filter((it): it is CatalogItem => Boolean(it)),
+  })).filter((g) => g.items.length > 0);
+  return { groups };
+}
+
+let _cache: { catalog: Catalog; ts: number } | null = null;
+const CACHE_TTL = 60 * 1000;
+let _building = false;
+
+export async function getCatalog(): Promise<Catalog> {
+  const now = Date.now();
+  if (_cache && now - _cache.ts < CACHE_TTL) return _cache.catalog;
+  if (_building && _cache) return _cache.catalog;
+
+  if (_cache) {
+    _building = true;
+    buildCatalog()
+      .then((cat) => { _cache = { catalog: cat, ts: Date.now() }; })
+      .catch(() => {})
+      .finally(() => { _building = false; });
+    return _cache.catalog;
+  }
+
+  _building = true;
+  try {
+    const catalog = await buildCatalog();
+    _cache = { catalog, ts: Date.now() };
+    return catalog;
+  } finally {
+    _building = false;
+  }
+}
+
+// ── KB search / ask ──────────────────────────────────────────────────
+export interface KbHit {
+  source: string;
+  heading: string;
+  course: string;
+  preview: string;
+  distance: number;
+  layer: string;
+}
+export interface KbSearchResult {
+  hits: KbHit[];
+  abstained: boolean;
+}
+
+interface RawKbHit {
+  source?: string;
+  heading?: string;
+  course?: string;
+  text?: string;
+  _distance?: number;
+  _source_layer?: string;
+}
+
+export async function kbSearch(id: string, q: string, top = 8): Promise<KbSearchResult> {
+  const dir = getKbDir(id);
+  if (!dir) return { hits: [], abstained: true };
+  const topN = String(Math.max(1, Math.min(50, Math.floor(top) || 8)));
+  try {
+    // execFile with an args array — q is never shell-interpolated.
+    const { stdout } = await execFileAsync(
+      VENV,
+      [join(dir, 'query.py'), '--json', '--top', topN, q],
+      { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const parsed = JSON.parse(stdout) as RawKbHit[];
+    const hits: KbHit[] = (Array.isArray(parsed) ? parsed : []).map((h) => ({
+      source: h.source ?? '',
+      heading: h.heading ?? '',
+      course: h.course ?? '',
+      preview: (h.text ?? '').slice(0, 400),
+      distance: typeof h._distance === 'number' ? h._distance : 0,
+      layer: h._source_layer ?? '',
+    }));
+    return { hits, abstained: hits.length === 0 };
+  } catch {
+    return { hits: [], abstained: true };
+  }
+}
+
+export interface KbAskResult {
+  answer?: string;
+  sources?: unknown;
+  abstained?: boolean;
+  used_portfolio?: boolean;
+  error?: string;
+}
+
+export async function kbAsk(id: string, question: string): Promise<KbAskResult> {
+  const entry = getEntry(id);
+  const dir = getKbDir(id);
+  if (!entry || !dir) return { error: 'unknown kb' };
+  if (!entry.askable || !existsSync(join(dir, 'ask.py'))) {
+    return { error: 'not askable' };
+  }
+  try {
+    // claytrader keeps its default portfolio context (don't pass --no-portfolio).
+    const { stdout } = await execFileAsync(
+      VENV,
+      [join(dir, 'ask.py'), '--json', question],
+      { timeout: 90_000, maxBuffer: 8 * 1024 * 1024 },
+    );
+    return JSON.parse(stdout) as KbAskResult;
+  } catch (e) {
+    return { error: String((e as Error).message || e) };
+  }
+}
+
+// ── SQL meta / select ────────────────────────────────────────────────
+export interface SqlMeta {
+  size: string;
+  tables: Array<{ name: string; rows: number }>;
+}
+
+export async function sqlMeta(id: string): Promise<SqlMeta | { error: string }> {
+  const e = getEntry(id);
+  if (!e || e.type !== 'sql') return { error: 'unknown sql db' };
+  const size = await duSize(e.path);
+  let dbh: Database.Database | null = null;
+  try {
+    dbh = new Database(e.path, { readonly: true });
+    dbh.pragma('busy_timeout = 4000');
+    const names = (dbh
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      .all() as Array<{ name: string }>)
+      .map((r) => r.name)
+      .slice(0, 60);
+    const tables = names.map((name) => {
+      let rows = -1;
+      try {
+        const r = dbh!.prepare(`SELECT COUNT(*) AS n FROM "${name.replace(/"/g, '""')}"`).get() as { n: number };
+        rows = r.n;
+      } catch {
+        rows = -1;
+      }
+      return { name, rows };
+    });
+    return { size, tables };
+  } catch (err) {
+    return { error: String((err as Error).message || err) };
+  } finally {
+    if (dbh) try { dbh.close(); } catch { /* ignore */ }
+  }
+}
+
+export interface SqlSelectResult {
+  columns: string[];
+  rows: unknown[][];
+  elapsed_ms: number;
+}
+
+// SELECT-only guard. Rejects multi-statement, write/DDL keywords, and anything
+// that doesn't start with SELECT/WITH.
+function rejectSql(sql: string): string | null {
+  const trimmed = sql.trim();
+  if (!trimmed) return 'Only a single SELECT/WITH query is allowed';
+  // Multi-statement: a ';' followed by any non-whitespace.
+  if (/;\s*\S/.test(trimmed)) return 'Only a single SELECT/WITH query is allowed';
+  if (!/^\s*(with|select)\b/i.test(trimmed)) return 'Only a single SELECT/WITH query is allowed';
+  if (/\b(insert|update|delete|drop|alter|create|attach|detach|pragma|replace|vacuum|reindex)\b/i.test(trimmed)) {
+    return 'Only a single SELECT/WITH query is allowed';
+  }
+  return null;
+}
+
+export function sqlSelect(id: string, sql: string): SqlSelectResult | { error: string } {
+  const e = getEntry(id);
+  if (!e || e.type !== 'sql') return { error: 'unknown sql db' };
+  const violation = rejectSql(sql);
+  if (violation) return { error: violation };
+
+  let dbh: Database.Database | null = null;
+  try {
+    dbh = new Database(e.path, { readonly: true });
+    dbh.pragma('busy_timeout = 4000');
+    const stmt = dbh.prepare(sql.trim());
+    stmt.raw(true);
+    const t0 = Date.now();
+    const rawRows = stmt.all() as unknown[][];
+    const elapsed_ms = Date.now() - t0;
+    const columns = stmt.columns().map((c) => c.name);
+    const rows = rawRows.slice(0, 500);
+    return { columns, rows, elapsed_ms };
+  } catch (err) {
+    return { error: String((err as Error).message || err) };
+  } finally {
+    if (dbh) try { dbh.close(); } catch { /* ignore */ }
+  }
+}
+
+// ── Secrets ──────────────────────────────────────────────────────────
+// Allow-listed secret source dirs (used by both listSecrets and revealSecret).
+const SECRET_DIRS = [
+  join(HOME, '.openclaw/secrets'),
+  join(HOME, 'scripts/keys'),
+];
+const ENV_FILES = [
+  `${HOME}/.vibe-trading/.env`,
+  `${HOME}/.hermes/.env`,
+  `${HOME}/03_AGENTS/claudeclaw-os/.env`,
+  `${HOME}/05_AUTOMATION/changelog-master/.env`,
+  `${HOME}/claude-office/backend/.env`,
+  `${HOME}/01_ACTIVE/free-video-maker/.env`,
+  `${HOME}/04_RESEARCH/banana-squad/.env`,
+];
+
+export interface SecretItem {
+  name: string;
+  source: string;
+  masked: string;
+}
+export interface SecretGroup {
+  category: string;
+  items: SecretItem[];
+}
+export interface SecretsResult {
+  groups: SecretGroup[];
+}
+
+function maskValue(value: string): string {
+  const v = value.trim();
+  if (v.length < 8) return '••••••••';
+  return `${v.slice(0, 5)}••••${v.slice(-2)}`;
+}
+
+function categorize(name: string): string {
+  const n = name.toLowerCase();
+  if (/webhook/.test(n)) return 'Discord Webhooks';
+  if (/telegram/.test(n)) return 'Telegram';
+  if (/(alpaca|robinhood|coinbase|okx|tradier|hyperliquid)/.test(n)) return 'Trading Creds';
+  if (/token/.test(n)) return 'Tokens';
+  if (/(key|secret|api)/.test(n)) return 'API Keys';
+  return 'Other';
+}
+
+export function listSecrets(): SecretsResult {
+  const byCat = new Map<string, SecretItem[]>();
+  const push = (category: string, item: SecretItem) => {
+    const arr = byCat.get(category) ?? [];
+    arr.push(item);
+    byCat.set(category, arr);
+  };
+
+  for (const dir of SECRET_DIRS) {
+    if (!existsSync(dir)) continue;
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      try {
+        const value = readFileSync(join(dir, name), 'utf-8');
+        push(categorize(name), { name, source: dir, masked: maskValue(value) });
+      } catch {
+        // unreadable file → skip
+      }
+    }
+  }
+
+  for (const file of ENV_FILES) {
+    if (!existsSync(file)) continue;
+    try {
+      // whole .env file = one entry; do not parse/mask its values here.
+      const name = file.replace(`${HOME}/`, '');
+      push('Env Files', { name, source: file, masked: '(env file)' });
+    } catch {
+      // skip
+    }
+  }
+
+  const groups: SecretGroup[] = [...byCat.entries()].map(([category, items]) => ({ category, items }));
+  return { groups };
+}
+
+export interface RevealResult {
+  value?: string;
+  error?: string;
+}
+
+export function revealSecret(source: string, name: string): RevealResult {
+  if (!SECRET_DIRS.includes(source)) return { error: 'forbidden' };
+  if (!name || name.includes('/') || name.includes('..')) return { error: 'forbidden' };
+  try {
+    const full = join(source, name);
+    if (!existsSync(full)) return { error: 'not found' };
+    const value = readFileSync(full, 'utf-8');
+    return { value };
+  } catch {
+    return { error: 'forbidden' };
+  }
+}
