@@ -55,7 +55,10 @@ export function generateImage(opts: GenInput): Promise<GenResult> {
       (err, stdout, stderr) => {
         _busy = false;
         const out = `${stdout || ''}\n${stderr || ''}`;
-        const saved = out.match(/Image saved to (.+?\.\w+)/);
+        // Greedy (.+) to capture the FULL path — a non-greedy (.+?\.\w+) stopped at
+        // the first dot-word, returning ".claude" from paths like ~/.claude/.../file.jpg
+        // (broke the result thumbnail → looked like a black image). Matches localgen.ts.
+        const saved = out.match(/Image saved to (.+)/);
         if (saved) {
           const file = path.basename(saved[1].trim());
           const notes = out.match(/Model notes:\s*([\s\S]+?)(?:\n[A-Z][a-z]+ |$)/)?.[1]?.trim();
