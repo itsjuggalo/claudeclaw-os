@@ -344,6 +344,11 @@ export function Create() {
     return (v as string) === 'pollinations' ? 'local' : v;
   });
 
+  // Simple mode (default) = pick a model → optional style → prompt → Generate.
+  // Everything else (engine/size/steps/seed/negative/strength) is auto-defaulted
+  // and good-quality tags + triggers are injected silently. Advanced shows it all.
+  const [simpleMode, setSimpleMode] = useState<boolean>(() => loadPref('simpleMode', true));
+
   // banana state
   const [prompt, setPrompt] = useState('');
   const [bnModel, setBnModel] = useState(() => loadPref('bnModel', 'flash'));
@@ -367,6 +372,9 @@ export function Create() {
 
   // ── Persist key preferences on change ────────────────────────────────────
   useEffect(() => { savePref('imgEngine', imgEngine); }, [imgEngine]);
+  useEffect(() => { savePref('simpleMode', simpleMode); }, [simpleMode]);
+  // Simple mode always uses ComfyUI (the engine with named Civitai models + LoRAs).
+  useEffect(() => { if (simpleMode && tab === 'image' && imgEngine !== 'comfyui') setImgEngine('comfyui'); }, [simpleMode, tab, imgEngine]);
   useEffect(() => { savePref('bnModel', bnModel); }, [bnModel]);
   useEffect(() => { savePref('bnAspect', bnAspect); }, [bnAspect]);
   useEffect(() => { savePref('bnSize', bnSize); }, [bnSize]);
@@ -571,10 +579,18 @@ export function Create() {
         // LoRAs, minus any the user removed, minus any already typed).
         const base = prompt.trim();
         const lc = base.toLowerCase();
-        const toAdd = effectiveTriggers.filter(t => t && !lc.includes(t.toLowerCase()));
+        const tips = FAM_TIPS[ckptFam || 'other'] ?? FAM_TIPS.other;
+        // In Simple mode, silently apply the family's recommended quality tags +
+        // negatives so the user gets good output without touching any knobs.
+        // (Advanced mode keeps the user's prompt/negative exactly as typed.)
+        const qual = (simpleMode && tips.prefix && !lc.includes(tips.prefix.toLowerCase().slice(0, 10))) ? [tips.prefix] : [];
+        const toAdd = [...qual, ...effectiveTriggers].filter(t => t && !lc.includes(t.toLowerCase()));
         const fullPrompt = toAdd.length ? [...toAdd, base].filter(Boolean).join(', ') : base;
+        const negOut = (simpleMode && tips.neg && !comfyNeg.toLowerCase().includes(tips.neg.toLowerCase().slice(0, 8)))
+          ? (comfyNeg.trim() ? comfyNeg.replace(/\s*$/, '') + ', ' : '') + tips.neg
+          : comfyNeg;
         r = await apiPost<GenResult>('/api/comfy/generate', {
-          prompt: fullPrompt, negative_prompt: comfyNeg, steps: comfySteps,
+          prompt: fullPrompt, negative_prompt: negOut, steps: comfySteps,
           width: w, height: h,
           checkpoint: comfyCheckpoint || undefined,
           loras: comfyLoras.length ? comfyLoras.map(name => ({ name, strength: comfyLoraStrength })) : undefined,
@@ -705,6 +721,123 @@ export function Create() {
 
           {tab === 'image' ? (
             <>
+              {/* ── Simple ⇄ Advanced toggle ─────────────────────────────────── */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', fontFamily: MONO }}>
+                  {simpleMode ? 'Pick a model · (optional) add a style · type what you want · Generate.' : 'All controls — engines, sizes, steps, seed, negatives, LoRA strength.'}
+                </div>
+                <button type="button" onClick={() => setSimpleMode(m => !m)}
+                  style={{ ...actBtn, color: '#7fd1ff', borderColor: 'rgba(127,209,255,0.3)' }}>
+                  {simpleMode ? '⚙ Advanced options' : '← Back to simple'}
+                </button>
+              </div>
+
+              {simpleMode ? (
+                /* ── SIMPLE MODE — model → style → prompt → Generate ──────────── */
+                <div style={S.card}>
+                  {comfyOnline === false && (
+                    <div style={{ marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', fontFamily: MONO, fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                      <span style={{ color: '#ffb347' }}>● ComfyUI is asleep.</span>
+                      <button type="button" onClick={startComfy} disabled={comfyStarting}
+                        style={{ ...actBtn, color: '#34d39a', borderColor: 'rgba(52,211,154,0.3)' }}>
+                        {comfyStarting ? <><span class="cc-spin">⟳</span> waking up…</> : '▶ Wake it up'}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 1 · MODEL */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                    <div style={{ ...S.label, marginBottom: 0 }}>1 · PICK A MODEL</div>
+                    {selectedCkpt && (
+                      <span style={{ fontSize: '10px', fontFamily: MONO, color: famInfo(ckptFam).color, border: `1px solid ${famInfo(ckptFam).color}`, borderRadius: '4px', padding: '1px 6px' }}>
+                        {famInfo(ckptFam).emoji} {famInfo(ckptFam).label}
+                      </span>
+                    )}
+                  </div>
+                  {comfyModels && !comfyModels.checkpoints?.length ? (
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
+                      No models yet — open <b>⚙ Advanced options</b> → <b>+ Add model from Civitai</b> to download one.
+                    </div>
+                  ) : (
+                    <select value={comfyCheckpoint} onChange={(e) => setComfyCheckpoint((e.target as HTMLSelectElement).value)} disabled={busy}
+                      style={{ ...S.select, width: '100%', maxWidth: '480px' }}>
+                      {comfyModels?.checkpoints?.length
+                        ? comfyModels.checkpoints.map(c => (
+                            <option key={c.name} value={c.name}>{cleanName(c.name)} · {famInfo(c.family).label}</option>
+                          ))
+                        : <option value="">Loading models…</option>}
+                    </select>
+                  )}
+
+                  {/* 2 · STYLE ADD-ON (optional, compatible only) */}
+                  {(() => {
+                    const compat = (comfyModels?.loras || []).filter(l => loraCompatible(l.family, ckptFam));
+                    if (!selectedCkpt || compat.length === 0) return null;
+                    return (
+                      <div style={{ marginTop: '16px' }}>
+                        <div style={S.label}>2 · ADD A STYLE — OPTIONAL {comfyLoras.length > 0 && <span style={{ color: '#34d39a' }}>({comfyLoras.length} on)</span>}</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          <button type="button" disabled={busy} onClick={() => setComfyLoras([])}
+                            style={{ fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer',
+                              color: comfyLoras.length === 0 ? '#06210f' : 'var(--color-text-muted)',
+                              background: comfyLoras.length === 0 ? '#34d39a' : 'var(--color-elevated)',
+                              border: '1px solid ' + (comfyLoras.length === 0 ? '#34d39a' : 'var(--color-border)') }}>
+                            {comfyLoras.length === 0 ? '✓ ' : ''}None
+                          </button>
+                          {compat.map(l => {
+                            const active = comfyLoras.includes(l.name);
+                            return (
+                              <button key={l.name} type="button" disabled={busy}
+                                onClick={() => setComfyLoras(prev => prev.includes(l.name) ? prev.filter(x => x !== l.name) : [...prev, l.name])}
+                                style={{ fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer',
+                                  color: active ? '#06210f' : 'var(--color-text-muted)',
+                                  background: active ? '#34d39a' : 'var(--color-elevated)',
+                                  border: '1px solid ' + (active ? '#34d39a' : 'var(--color-border)') }}>
+                                {active ? '✓ ' : ''}{cleanName(l.name)}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, marginTop: '6px' }}>
+                          Optional style add-ons. Only ones that match this model are shown — stack as many as you like.
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 3 · PROMPT */}
+                  <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                    <div style={S.label}>{(comfyModels?.loras || []).some(l => loraCompatible(l.family, ckptFam)) ? '3' : '2'} · DESCRIBE WHAT YOU WANT</div>
+                    {promptHist.length > 0 && (
+                      <select value="" disabled={busy}
+                        onChange={(e) => { const v = (e.target as HTMLSelectElement).value; if (v) setPrompt(v); (e.target as HTMLSelectElement).value = ''; }}
+                        style={{ ...S.select, fontSize: '11px', padding: '4px 8px', maxWidth: '220px' }}>
+                        <option value="">↩ recent…</option>
+                        {promptHist.map((p, i) => <option key={i} value={p}>{p.length > 60 ? p.slice(0, 60) + '…' : p}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  <textarea value={prompt} onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
+                    placeholder="A neon-lit candlestick chart exploding upward, cinematic…"
+                    rows={4} disabled={busy} style={S.ta} />
+                  {effectiveTriggers.length > 0 && (
+                    <div style={{ fontSize: '10px', color: '#34d39a', fontFamily: MONO, marginTop: '6px' }}>
+                      ✓ auto-adding for you: {effectiveTriggers.join(', ')}
+                    </div>
+                  )}
+
+                  {/* Generate */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '16px', flexWrap: 'wrap' }}>
+                    <button type="button" onClick={() => genImage()} disabled={!canImg} style={genBtnStyle(canImg)}>
+                      {busy ? <><span class="cc-spin">⟳</span> Generating {fmtMs(elapsedMs)}</> : '✦ Generate'}
+                    </button>
+                    {!busy && lastMs !== null && result?.ok && <span style={{ fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>✓ Generated in {fmtMs(lastMs)}</span>}
+                    {!busy && lastMs === null && selectedCkpt && <span style={{ fontSize: '11px', color: '#34d39a', fontFamily: MONO }}>free · on this laptop's GPU · best quality</span>}
+                  </div>
+                  {busy && <ProgressBar pct={imgPct} label={imgBarLabel} sub={`${fmtMs(elapsedMs)} elapsed`} />}
+                </div>
+              ) : (
+              <>
               {/* ── Plain-English explainer (collapsible, persists open/closed) ── */}
               <details style={{ marginBottom: '14px', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '8px 12px' }}>
                 <summary style={{ ...S.label, cursor: 'pointer', marginBottom: 0 }}>▸ HOW THIS WORKS</summary>
@@ -1095,8 +1228,10 @@ export function Create() {
                 </div>
                 {busy && <ProgressBar pct={imgPct} label={imgBarLabel} sub={`${fmtMs(elapsedMs)} elapsed`} />}
               </div>
+              </>
+              )}
 
-              {/* ── Results ───────────────────────────────────────────────────── */}
+              {/* ── Results (shared by Simple + Advanced) ──────────────────────── */}
               {batchResults.length > 0 && <BatchGrid results={batchResults} />}
               {result && batchResults.length === 0 && (
                 <ResultBox result={result} kind="image" prompt={prompt}
