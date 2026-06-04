@@ -44,7 +44,7 @@ const RAW_REGISTRY: RegistryEntry[] = [
   { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true },
   { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true },
   { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`) },
-  { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: false },
+  { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: existsSync(`${HOME}/02_DATA/mc-kb/ask.py`) },
 
   // Trade & Pipeline SQL
   { id: 'desk-pipeline', type: 'sql', group: 'sql', label: 'Desk Pipeline', accent: 'sky', path: `${HOME}/LapClaw/pipeline/desk_pipeline.sqlite` },
@@ -553,6 +553,7 @@ export interface SecretItem {
   name: string;
   source: string;
   masked: string;
+  modified: string | null;
 }
 export interface SecretGroup {
   category: string;
@@ -598,8 +599,9 @@ export function listSecrets(): SecretsResult {
     }
     for (const name of names) {
       try {
-        const value = readFileSync(join(dir, name), 'utf-8');
-        push(categorize(name), { name, source: dir, masked: maskValue(value) });
+        const full = join(dir, name);
+        const value = readFileSync(full, 'utf-8');
+        push(categorize(name), { name, source: dir, masked: maskValue(value), modified: mtimeISO(full) });
       } catch {
         // unreadable file → skip
       }
@@ -611,7 +613,7 @@ export function listSecrets(): SecretsResult {
     try {
       // whole .env file = one entry; do not parse/mask its values here.
       const name = file.replace(`${HOME}/`, '');
-      push('Env Files', { name, source: file, masked: '(env file)' });
+      push('Env Files', { name, source: file, masked: '(env file)', modified: mtimeISO(file) });
     } catch {
       // skip
     }

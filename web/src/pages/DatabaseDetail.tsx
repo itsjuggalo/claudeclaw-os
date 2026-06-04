@@ -386,7 +386,11 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                         {h.heading && h.heading !== '---' && (
                           <div class="font-medium text-sm mb-1 text-[var(--color-text)]">{h.heading}</div>
                         )}
-                        <pre class="text-xs whitespace-pre-wrap text-[var(--color-text-muted)]" style={{ fontFamily: 'inherit' }}>{h.preview}</pre>
+                        <div
+                          class="chat-md text-xs text-[var(--color-text-muted)]"
+                          style={{ lineHeight: 1.55 }}
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(h.preview) }}
+                        />
                       </div>
                     );
                   })}
@@ -484,6 +488,48 @@ function toJson(columns: string[], rows: unknown[][]): string {
   return JSON.stringify(rows.map(r => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2);
 }
 
+// Save text to a real file via a transient object URL (large result sets don't
+// belong on the clipboard). Filename: <dbid>-<localdatetime>.<ext>.
+function downloadText(filename: string, text: string, mime: string) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke after the click has had a tick to start the download.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportStamp(): string {
+  // YYYYMMDD-HHmmss in local (ET) time, no separators that break filenames.
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+const SQL_HISTORY_MAX = 8;
+function historyKey(id: string): string { return `claudeclaw:sqlhist:${id}`; }
+function loadHistory(id: string): string[] {
+  try {
+    const raw = localStorage.getItem(historyKey(id));
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.filter((s): s is string => typeof s === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+function pushHistory(id: string, sql: string): string[] {
+  const q = sql.trim();
+  if (!q) return loadHistory(id);
+  const prev = loadHistory(id).filter(s => s !== q);
+  const next = [q, ...prev].slice(0, SQL_HISTORY_MAX);
+  try { localStorage.setItem(historyKey(id), JSON.stringify(next)); } catch { /* quota / disabled */ }
+  return next;
+}
+
 function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   const [meta, setMeta] = useState<SqlMeta | null>(null);
   const [metaErr, setMetaErr] = useState<string | null>(null);
@@ -494,19 +540,26 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   const [queryErr, setQueryErr] = useState<string | null>(null);
   const [result, setResult] = useState<SqlQueryResponse | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [history, setHistory] = useState<string[]>(() => loadHistory(item.id));
 
-  async function copyResult(fmt: 'csv' | 'json') {
+  async function copyResult() {
     if (!result) return;
-    const text = fmt === 'csv'
-      ? toCsv(result.columns, result.rows)
-      : toJson(result.columns, result.rows);
     try {
-      await navigator.clipboard.writeText(text);
-      setCopied(fmt);
+      await navigator.clipboard.writeText(toCsv(result.columns, result.rows));
+      setCopied('copy');
       setTimeout(() => setCopied(null), 1500);
     } catch {
       setCopied(null);
     }
+  }
+
+  function downloadResult(fmt: 'csv' | 'json') {
+    if (!result) return;
+    const text = fmt === 'csv'
+      ? toCsv(result.columns, result.rows)
+      : toJson(result.columns, result.rows);
+    const mime = fmt === 'csv' ? 'text/csv' : 'application/json';
+    downloadText(`${item.id}-${exportStamp()}.${fmt}`, text, mime);
   }
 
   async function loadMeta() {
@@ -535,6 +588,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
     try {
       const r = await apiPost<SqlQueryResponse>('/api/databases/sql/' + item.id + '/query', { sql: sqlText });
       setResult(r);
+      setHistory(pushHistory(item.id, sqlText));
     } catch (e) {
       // apiPost throws ApiError; the 400 body carries { error }.
       const err = e as { body?: { error?: string }; message?: string };
@@ -620,6 +674,28 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             )}
           </div>
 
+          {history.length > 0 && (
+            <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginRight: '2px' }}>Recent</span>
+              {history.map((h, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => { setSql(h); void runQuery(h); }}
+                  title={h}
+                  style={{ maxWidth: '260px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: MONO }}
+                  class="px-2 py-0.5 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] bg-[var(--color-card)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]"
+                >{h}</button>
+              ))}
+              <button
+                type="button"
+                onClick={() => { try { localStorage.removeItem(historyKey(item.id)); } catch { /* ignore */ } setHistory([]); }}
+                title="Clear query history"
+                class="px-2 py-0.5 rounded-md text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]"
+              >clear</button>
+            </div>
+          )}
+
           {queryErr && (
             <div class="p-3 rounded-md border border-[var(--color-status-failed)] mt-3" style={{ background: 'color-mix(in srgb, var(--color-status-failed) 8%, transparent)' }}>
               <div class="text-[var(--color-status-failed)] text-[12px] font-mono">{queryErr}</div>
@@ -639,17 +715,27 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
               <span style={{ marginLeft: 'auto', display: 'flex', gap: '6px' }}>
                 <button
                   type="button"
-                  onClick={() => void copyResult('csv')}
+                  onClick={() => void copyResult()}
+                  title="Copy result as CSV to clipboard"
                   class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
                 >
-                  <Download size={12} /> {copied === 'csv' ? 'copied' : 'CSV'}
+                  <Copy size={12} /> {copied === 'copy' ? 'copied' : 'Copy'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => void copyResult('json')}
+                  onClick={() => downloadResult('csv')}
+                  title="Download as .csv file"
                   class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
                 >
-                  <Download size={12} /> {copied === 'json' ? 'copied' : 'JSON'}
+                  <Download size={12} /> CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => downloadResult('json')}
+                  title="Download as .json file"
+                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
+                >
+                  <Download size={12} /> JSON
                 </button>
               </span>
             </div>
@@ -707,11 +793,11 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
 // ─────────────────────────────────────────────────────────── SECRETS ───────
 
-interface SecretItem { name: string; source: string; masked: string; }
+interface SecretItem { name: string; source: string; masked: string; modified?: string | null; }
 interface SecretsResponse { groups: { category: string; items: SecretItem[] }[]; }
 interface RevealResponse { value: string; }
 
-function SecretRow({ source, name, masked }: SecretItem) {
+function SecretRow({ source, name, masked, modified }: SecretItem) {
   const [revealed, setRevealed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -759,7 +845,9 @@ function SecretRow({ source, name, masked }: SecretItem) {
     }}>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)', fontFamily: MONO }}>{name}</div>
-        <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source}</div>
+        <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {source}{modified && <span> · {fmtUpdated(modified)}</span>}
+        </div>
       </div>
       <div style={{
         fontSize: '12px', fontFamily: MONO, color: err ? 'var(--color-status-failed)' : 'var(--color-text-muted)',
