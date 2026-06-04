@@ -37,6 +37,7 @@ export interface RegistryEntry {
   path: string;      // dir (kb) or file (sql); '' for secrets
   pyDir?: string;    // kb root dir for query.py/ask.py
   askable?: boolean;
+  searchUrl?: string; // warm RAG server (semantic /query) — fast-path for kbSearch
 }
 
 const RAW_REGISTRY: RegistryEntry[] = [
@@ -44,7 +45,7 @@ const RAW_REGISTRY: RegistryEntry[] = [
   { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true },
   { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true },
   { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`) },
-  { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: existsSync(`${HOME}/02_DATA/mc-kb/ask.py`) },
+  { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: existsSync(`${HOME}/02_DATA/mc-kb/ask.py`), searchUrl: 'http://localhost:8091/query' },
 
   // Trade & Pipeline SQL
   { id: 'desk-pipeline', type: 'sql', group: 'sql', label: 'Desk Pipeline', accent: 'sky', path: `${HOME}/LapClaw/pipeline/desk_pipeline.sqlite` },
@@ -308,10 +309,50 @@ interface RawKbHit {
   _source_layer?: string;
 }
 
+// Fast-path: pull hits from a warm RAG HTTP server (model stays resident, so a
+// query is ~2s vs the ~40s cold load of spawning query.py). Semantic-only +
+// previews; callers fall back to query.py when this returns null.
+async function kbSearchViaServer(url: string, q: string, top: number): Promise<KbHit[] | null> {
+  try {
+    const u = `${url}?q=${encodeURIComponent(q)}&top=${top}`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    let body: { hits?: RawKbHit[] };
+    try {
+      const resp = await fetch(u, { signal: ctrl.signal });
+      if (!resp.ok) return null;
+      body = (await resp.json()) as { hits?: RawKbHit[] };
+    } finally {
+      clearTimeout(timer);
+    }
+    const raw = Array.isArray(body.hits) ? body.hits : [];
+    return raw.map((h) => ({
+      source: h.source ?? '',
+      heading: h.heading ?? '',
+      course: h.course ?? '',
+      // server hits carry `preview` (already truncated); local hits carry `text`.
+      preview: ((h as { preview?: string }).preview ?? h.text ?? '').slice(0, 400),
+      distance: typeof h._distance === 'number' ? h._distance : 0,
+      // mc-kb colours its badge by memory tier; the server omits _source_layer.
+      layer: h._source_layer ?? (h as { tier?: string }).tier ?? '',
+    }));
+  } catch {
+    return null;
+  }
+}
+
 export async function kbSearch(id: string, q: string, top = 8): Promise<KbSearchResult> {
+  const entry = getEntry(id);
   const dir = getKbDir(id);
   if (!dir) return { hits: [], abstained: true };
   const topN = String(Math.max(1, Math.min(50, Math.floor(top) || 8)));
+
+  // Warm-server fast-path (mc-kb). On any miss/failure we fall through to the
+  // query.py spawn below so search never silently breaks if the server is down.
+  if (entry?.searchUrl) {
+    const fast = await kbSearchViaServer(entry.searchUrl, q, Number(topN));
+    if (fast && fast.length > 0) return { hits: fast, abstained: false };
+  }
   try {
     // execFile with an args array — q is never shell-interpolated.
     const { stdout } = await execFileAsync(
@@ -429,7 +470,10 @@ export async function kbAsk(id: string, question: string): Promise<KbAskResult> 
     const { stdout } = await execFileAsync(
       VENV,
       [join(dir, 'ask.py'), '--json', question],
-      { timeout: 90_000, maxBuffer: 8 * 1024 * 1024 },
+      // Generous ceiling: a cold subprocess loads the embedding model (~40s)
+      // before retrieval + a Gemini call that itself retries up to 3×/60s.
+      // 90s sat right on the measured runtime; 180s gives real headroom.
+      { timeout: 180_000, maxBuffer: 8 * 1024 * 1024 },
     );
     return JSON.parse(stdout) as KbAskResult;
   } catch (e) {

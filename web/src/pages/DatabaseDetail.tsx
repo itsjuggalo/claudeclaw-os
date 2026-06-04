@@ -504,7 +504,8 @@ function downloadText(filename: string, text: string, mime: string) {
 }
 
 function exportStamp(): string {
-  // YYYYMMDD-HHmmss in local (ET) time, no separators that break filenames.
+  // YYYYMMDD-HHmmss in the browser's local time, no separators that break
+  // filenames. (The operator's laptop browser runs ET.)
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
