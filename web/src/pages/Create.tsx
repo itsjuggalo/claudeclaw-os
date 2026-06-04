@@ -151,6 +151,49 @@ const S = {
   } as JSX.CSSProperties,
 };
 
+interface SysInfo {
+  preflight: { ok: boolean; reason?: string };
+  stale: boolean;
+  staleness: number;
+  metrics: {
+    hw?: { cpu_pct?: number; ram_free_mb?: number; ram_pct?: number; gpu_temp?: number; gpu_util?: number; vram_used_mb?: number; vram_free_mb?: number } | null;
+    disk?: { c_free_gb?: number; c_pct?: number } | null;
+  };
+}
+
+// Always-visible health strip — green "Safe to generate" / red "Blocked".
+// The server gate is the real enforcement; this just lets the phone see status
+// and avoids a wasted round-trip when it's already unsafe.
+function StatusStrip({ sys }: { sys: SysInfo | null }) {
+  if (!sys) return null;
+  const ok = sys.preflight?.ok !== false;
+  const hw = sys.metrics?.hw || {};
+  const disk = sys.metrics?.disk || {};
+  const chip = (label: string, val: string) => (
+    <span style={{ fontFamily: MONO, fontSize: '11px', color: 'var(--color-text-muted)' }}>{label} <b style={{ color: 'var(--color-text)' }}>{val}</b></span>
+  );
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap',
+      padding: '8px 14px', margin: '0 24px', marginTop: '12px', borderRadius: '8px',
+      background: ok ? 'rgba(52,211,154,0.08)' : 'rgba(244,90,90,0.10)',
+      border: `1px solid ${ok ? 'rgba(52,211,154,0.35)' : 'rgba(244,90,90,0.45)'}`,
+    }}>
+      <span style={{ fontFamily: MONO, fontSize: '12px', fontWeight: 700, color: ok ? '#34d39a' : '#f45a5a' }}>
+        {ok ? '● Safe to generate' : '✕ Blocked'}
+      </span>
+      {!ok && sys.preflight?.reason && (
+        <span style={{ fontFamily: MONO, fontSize: '11px', color: '#f45a5a' }}>{sys.preflight.reason}</span>
+      )}
+      {disk.c_free_gb != null && chip('C:', `${disk.c_free_gb}G free`)}
+      {hw.ram_free_mb != null && chip('RAM', `${(hw.ram_free_mb / 1024).toFixed(1)}G free`)}
+      {hw.vram_used_mb != null && chip('VRAM', `${(hw.vram_used_mb / 1024).toFixed(1)}/8G`)}
+      {hw.gpu_temp != null && chip('GPU', `${hw.gpu_temp}°C`)}
+      {sys.stale && <span style={{ fontFamily: MONO, fontSize: '10px', color: 'var(--color-text-faint)' }}>(telemetry stale)</span>}
+    </div>
+  );
+}
+
 function genBtnStyle(enabled: boolean): JSX.CSSProperties {
   return {
     fontSize: '14px', fontWeight: 700, fontFamily: MONO, letterSpacing: '0.5px',
@@ -550,6 +593,17 @@ export function Create() {
   const [vidLastMs, setVidLastMs] = useState<number | null>(null);
   const [vidSeedVal, setVidSeedVal] = useState('');
   const [vidSeedLock, setVidSeedLock] = useState(false);
+
+  // Live system health (cpu/ram/gpu/disk) + the server's preflight verdict, so
+  // the phone can see whether it's safe to generate and Generate hard-disables
+  // when it isn't. Mirrors what the server gate actually enforces.
+  const [sys, setSys] = useState<SysInfo | null>(null);
+
+  // Civitai model download (from the phone) — disk-gated on the server.
+  const [civUrl, setCivUrl] = useState('');
+  const [civToken, setCivToken] = useState(() => loadPref('civToken', ''));
+  const [civDest, setCivDest] = useState(() => loadPref('civDest', 'checkpoints'));
+  const [civJob, setCivJob] = useState<{ pct: number; status: string; name?: string; error?: string } | null>(null);
   const vidStartRef = useRef(0);
 
   // ── Effects below ALL state declarations (dep arrays must not hit the TDZ) ──
@@ -611,9 +665,21 @@ export function Create() {
     return () => clearInterval(id);
   }, [imgEngine, comfyOnline, comfyCheckpoint]);
 
+  // Poll live system health every 10s so the strip + button-gating stay current.
+  useEffect(() => {
+    let alive = true;
+    const tick = () => fetch(withTok('/api/system/metrics')).then(r => r.json()).then((d: SysInfo) => { if (alive) setSys(d); }).catch(() => {});
+    tick();
+    const id = setInterval(tick, 10000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
   const bnSizeOpts = bnModel === 'pro' ? BANANA_SIZES.filter((s) => s !== '512') : BANANA_SIZES;
-  const canImg = prompt.trim().length > 0 && !busy;
-  const canVid = vidPrompt.trim().length > 0 && !vidBusy;
+  // safe = server preflight says go (default true until first poll returns, so
+  // the UI never blocks spuriously before health loads). The server still gates.
+  const safe = !sys || sys.preflight?.ok !== false;
+  const canImg = prompt.trim().length > 0 && !busy && safe;
+  const canVid = vidPrompt.trim().length > 0 && !vidBusy && safe;
 
   // ── Clear results when switching engine or tab ────────────────────────────
   useEffect(() => { setResult(null); setBatchResults([]); setLastMs(null); }, [tab, imgEngine]);
@@ -695,6 +761,31 @@ export function Create() {
     } finally { setVidBusy(false); }
   };
 
+  // ── Download a Civitai model from the phone — server gates on disk + cap. ──
+  const downloadCivitai = async () => {
+    if (!civUrl.trim() || (civJob && civJob.status === 'downloading')) return;
+    savePref('civToken', civToken); savePref('civDest', civDest);
+    setCivJob({ pct: 0, status: 'starting' });
+    try {
+      const r = await apiPost<{ ok: boolean; jobId?: string; error?: string }>('/api/models/download', {
+        url: civUrl.trim(), token: civToken.trim(), dest: civDest,
+      });
+      if (!r.ok || !r.jobId) { setCivJob({ pct: 0, status: 'failed', error: r.error || 'refused' }); return; }
+      const jobId = r.jobId;
+      const poll = () => {
+        fetch(withTok(`/api/models/download/${jobId}`)).then(x => x.json()).then((j: any) => {
+          if (!j.ok) { setCivJob({ pct: 0, status: 'failed', error: j.error }); return; }
+          setCivJob({ pct: j.pct, status: j.status, name: j.name, error: j.error });
+          if (j.status === 'downloading') setTimeout(poll, 2000);
+          else if (j.status === 'done') { comfyModelCache = null; }  // force model-list refresh
+        }).catch(() => setTimeout(poll, 3000));
+      };
+      poll();
+    } catch (e) {
+      setCivJob({ pct: 0, status: 'failed', error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
   // ── Start ComfyUI from the UI (when it shows ● offline), then poll to online.
   const startComfy = async () => {
     if (comfyStarting) return;
@@ -739,11 +830,41 @@ export function Create() {
           </>
         }
       />
+      <StatusStrip sys={sys} />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '24px', maxWidth: tab === 'video' && vidEngine === 'fvm' ? '1200px' : '900px', margin: '0 auto' }}>
 
           {tab === 'image' ? (
             <>
+              {/* ── Add a Civitai model (server gates on disk space + folder cap) ── */}
+              <details style={{ marginBottom: '14px', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '8px 12px' }}>
+                <summary style={{ ...S.label, cursor: 'pointer', marginBottom: 0 }}>+ ADD MODEL FROM CIVITAI</summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+                  <input type="text" placeholder="https://civitai.com/api/download/models/…" value={civUrl}
+                    onInput={(e) => setCivUrl((e.target as HTMLInputElement).value)} style={S.select} />
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <input type="password" placeholder="Civitai API token (optional)" value={civToken}
+                      onInput={(e) => setCivToken((e.target as HTMLInputElement).value)} style={{ ...S.select, flex: 1, minWidth: '160px' }} />
+                    <select value={civDest} onChange={(e) => setCivDest((e.target as HTMLSelectElement).value)} style={S.select}>
+                      <option value="checkpoints">checkpoint</option>
+                      <option value="loras">lora</option>
+                      <option value="controlnet">controlnet</option>
+                      <option value="vae">vae</option>
+                    </select>
+                    <button type="button" onClick={downloadCivitai}
+                      disabled={!civUrl.trim() || (civJob?.status === 'downloading')}
+                      style={genBtnStyle(!!civUrl.trim() && civJob?.status !== 'downloading')}>
+                      {civJob?.status === 'downloading' ? `↓ ${civJob.pct}%` : '↓ Download'}
+                    </button>
+                  </div>
+                  {civJob && civJob.status !== 'downloading' && (
+                    <div style={{ fontFamily: MONO, fontSize: '11px', color: civJob.status === 'done' ? '#34d39a' : '#f45a5a' }}>
+                      {civJob.status === 'done' ? `✓ Saved ${civJob.name || ''} — pick it in the checkpoint list` : `✕ ${civJob.error || 'failed'}`}
+                    </div>
+                  )}
+                </div>
+              </details>
+
               {/* ── Nano Banana slash-command preset buttons ───────────────────── */}
               <div style={{ marginBottom: '14px' }}>
                 <div style={S.label}>NANO BANANA PRESETS</div>
