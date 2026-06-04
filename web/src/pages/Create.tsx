@@ -103,6 +103,37 @@ function loraCompatible(loraFam?: string, ckptFam?: string): boolean {
   return loraFam === ckptFam;
 }
 
+// ── Per-FAMILY "how to get the best image" tips (keyed by family, so any future
+//    Civitai download of that family gets the right advice — no per-file upkeep).
+//    prefix = quality tags to prepend; neg = tags to add to the negative prompt.
+const FAM_TIPS: Record<string, { prefix?: string; neg?: string; steps: string; size: string; note: string }> = {
+  pony: {
+    prefix: 'score_9, score_8_up, score_7_up, score_6_up',
+    neg: 'score_4, score_5, score_6',
+    steps: '20–30', size: 'Portrait 768×1024',
+    note: 'Pony NEEDS the score_ quality tags at the START of the prompt — without them output looks washed-out. Also add score_4/5/6 to the negative.',
+  },
+  sdxl: {
+    prefix: 'RAW photo, 8k uhd, highly detailed',
+    steps: '25–35', size: 'Portrait 768×1024 (avoid 512)',
+    note: 'Write natural, descriptive prompts. SDXL is trained near 1024px, so very small sizes hurt quality.',
+  },
+  sd15: {
+    steps: '25–35', size: 'Portrait 512×768 (avoid 1024)',
+    note: 'SD 1.5 is trained at 512px — going large (1024) often duplicates/warps bodies. Best for close-up faces & skin.',
+  },
+  illustrious: {
+    prefix: 'masterpiece, best quality, highres',
+    steps: '24–32', size: 'Portrait 768×1024',
+    note: 'Illustrious / NoobAI use danbooru-style tags. Lead with quality tags, then comma-separated tags.',
+  },
+  flux: {
+    steps: '20–28', size: 'Square 512×512 / 1024',
+    note: 'Flux wants plain natural-language prompts, a LOW guidance, and ignores negatives. (Needs a Flux base model — none installed yet.)',
+  },
+  other: { steps: '20–30', size: 'Portrait 768×1024', note: 'Unknown family — use natural prompts and moderate steps.' },
+};
+
 // ── Aspect ratios ─────────────────────────────────────────────────────────────
 const BANANA_ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4', '1:4', '4:1', '1:8', '8:1'];
 const BANANA_SIZES   = ['512', '1K', '2K', '4K'];
@@ -905,6 +936,37 @@ export function Create() {
                         style={{ ...S.ta, fontSize: '12px' }}
                       />
                     </div>
+
+                    {/* Per-family "best results" tips — keyed off the base model's family */}
+                    {selectedCkpt && (() => {
+                      const tips = FAM_TIPS[ckptFam || 'other'] ?? FAM_TIPS.other;
+                      const addTag = () => { if (tips.prefix) { const lc = prompt.toLowerCase(); if (!lc.includes('score_9') && !lc.includes(tips.prefix.toLowerCase().slice(0, 10))) setPrompt(p => tips.prefix + ', ' + p); } };
+                      const addNeg = () => { if (tips.neg && !comfyNeg.toLowerCase().includes(tips.neg.toLowerCase().slice(0, 8))) setComfyNeg(n => (n.trim() ? n.replace(/\s*$/, '') + ', ' : '') + tips.neg); };
+                      return (
+                        <div style={{ marginTop: '12px', border: `1px solid ${famInfo(ckptFam).color}`, borderRadius: '8px', padding: '10px 12px', background: 'var(--color-elevated)' }}>
+                          <div style={{ ...S.label, marginBottom: '6px', color: famInfo(ckptFam).color }}>{famInfo(ckptFam).emoji} {famInfo(ckptFam).label} — BEST RESULTS</div>
+                          <div style={{ fontSize: '11px', lineHeight: '1.55', color: 'var(--color-text-muted)', fontFamily: MONO }}>{tips.note}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO, marginTop: '6px' }}>Suggested · steps {tips.steps} · {tips.size}</div>
+                          {(tips.prefix || tips.neg) && (
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>
+                              {tips.prefix && (
+                                <button type="button" disabled={busy} onClick={addTag}
+                                  style={{ fontSize: '10px', color: '#34d39a', background: 'none', border: '1px solid rgba(52,211,154,0.3)', borderRadius: '4px', padding: '3px 8px', cursor: 'pointer', fontFamily: MONO }}>
+                                  + add quality tags
+                                </button>
+                              )}
+                              {tips.neg && (
+                                <button type="button" disabled={busy} onClick={addNeg}
+                                  style={{ fontSize: '10px', color: '#ffb347', background: 'none', border: '1px solid rgba(255,179,71,0.3)', borderRadius: '4px', padding: '3px 8px', cursor: 'pointer', fontFamily: MONO }}>
+                                  + add to negative
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     {comfyModels?.loras?.length ? (
                       <div style={{ marginTop: '12px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px', flexWrap: 'wrap' }}>

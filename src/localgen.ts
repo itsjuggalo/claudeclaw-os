@@ -5,9 +5,12 @@
 // resource, so all local generations are serialized.
 //
 // SAFETY: every local gen passes preflightGate() (C:/RAM/VRAM/one-job-lock)
-// before running, and holds /tmp/heavy-gpu-job.lock for its duration so a
-// concurrent ComfyUI submit (or system-guardian) sees one job at a time. LTX
-// video additionally runs through run-video-safe.sh (gen-mode + cgroup ceiling)
+// before running. The python scripts then acquire /tmp/heavy-gpu-job.lock via
+// gpu_safety.guard() (writes their own pid, checks for OTHER live jobs, releases
+// on exit/SIGTERM) — so they, not this wrapper, own the lock. The wrapper must
+// NOT pre-write the lock: doing so makes system-guardian see the python child's
+// own pid as a foreign "heavy GPU job" and the gen blocks itself. LTX video
+// additionally runs through run-video-safe.sh (gen-mode + cgroup ceiling)
 // because it is the box-freeze vector on the 8GB GPU.
 import { execFile } from 'child_process';
 import fs from 'fs';
@@ -17,7 +20,6 @@ import { preflightGate } from './genguard.js';
 const HOME = process.env.HOME || '/home/itsju';
 const LG = `${HOME}/01_ACTIVE/local-gen`;
 const PY = `${LG}/.venv/bin/python`;
-const LOCK = '/tmp/heavy-gpu-job.lock';
 
 export interface LocalResult { ok: boolean; file?: string; url?: string; error?: string; seed?: number; }
 
@@ -40,7 +42,7 @@ function run(cmd: string, cmdArgs: string[], saveRe: RegExp, urlFor: (file: stri
       { cwd: LG, env: { ...process.env, HOME, HF_HUB_DISABLE_TELEMETRY: '1' }, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout, stderr) => {
         _busy = false;
-        try { fs.unlinkSync(LOCK); } catch { /* wrapper may have already removed it */ }
+        // NOTE: the lock is owned + released by the python gpu_safety.guard().
         const out = `${stdout || ''}\n${stderr || ''}`;
         const m = out.match(saveRe);
         if (m) {
@@ -64,9 +66,7 @@ function run(cmd: string, cmdArgs: string[], saveRe: RegExp, urlFor: (file: stri
         resolve({ ok: false, error });
       },
     );
-    // One-job concurrency lock (PID of the child). system-guardian preflight and
-    // a concurrent ComfyUI submit both honor this — so it's truly one job at a time.
-    try { if (child.pid) fs.writeFileSync(LOCK, String(child.pid)); } catch { /* best-effort */ }
+    void child;  // lock acquisition happens inside the python gpu_safety.guard()
   });
 }
 
