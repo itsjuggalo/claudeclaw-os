@@ -16,6 +16,7 @@ import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from '
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo } from './localgen.js';
 import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
+import { readManifest, metaFor, upsertMeta, normalizeFamily } from './modelmeta.js';
 import Database from 'better-sqlite3';
 import {
   getAllScheduledTasks,
@@ -1025,8 +1026,17 @@ init();
       const HOME = process.env.HOME || '/home/itsju';
       const checkpointDir = `${HOME}/ComfyUI/models/checkpoints`;
       const loraDir = `${HOME}/ComfyUI/models/loras`;
-      const checkpoints = fs.existsSync(checkpointDir) ? fs.readdirSync(checkpointDir).filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf')).map(f => ({ name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2) })) : [];
-      const loras = fs.existsSync(loraDir) ? fs.readdirSync(loraDir).filter(f => f.endsWith('.safetensors')).map(f => ({ name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1) })) : [];
+      // Attach Civitai-sourced compatibility metadata (family/triggers/verified)
+      // so the UI can lock incompatible LoRAs and inject the right trigger words.
+      const manifest = readManifest();
+      const checkpoints = fs.existsSync(checkpointDir) ? fs.readdirSync(checkpointDir).filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf')).map(f => {
+        const md = metaFor(f, manifest);
+        return { name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified };
+      }) : [];
+      const loras = fs.existsSync(loraDir) ? fs.readdirSync(loraDir).filter(f => f.endsWith('.safetensors')).map(f => {
+        const md = metaFor(f, manifest);
+        return { name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified };
+      }) : [];
       return c.json({ running, vram, checkpoints, loras, url: running ? 'http://localhost:8188' : null });
     } catch (e) {
       return c.json({ error: String(e) }, 500);
@@ -1354,6 +1364,28 @@ init();
   //   refill C:. Progress is polled via GET /api/models/download/:id.
   const modelDownloads = new Map<string, { dest: string; name: string; status: 'downloading' | 'done' | 'failed'; pct: number; error?: string }>();
   const MODEL_DEST_DIRS: Record<string, string> = { checkpoints: 'checkpoints', loras: 'loras', controlnet: 'controlnet', vae: 'vae' };
+
+  // Best-effort: after a Civitai download finishes, ask Civitai what it is and
+  // record family + trigger words in the manifest. Never throws / never blocks.
+  async function captureCivitaiMeta(url: string, token: string, name: string, dest: string) {
+    try {
+      const m = url.match(/models\/(\d+)/);
+      if (!m) return;
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      const r = await fetch(`https://civitai.com/api/v1/model-versions/${m[1]}`, { headers });
+      if (!r.ok) return;
+      const data = await r.json() as { baseModel?: string; trainedWords?: string[]; model?: { type?: string } };
+      if (!data?.baseModel) return;
+      upsertMeta(name, {
+        family: normalizeFamily(data.baseModel),
+        baseModel: data.baseModel,
+        type: dest === 'loras' ? 'lora' : dest === 'checkpoints' ? 'checkpoint' : dest,
+        triggers: Array.isArray(data.trainedWords) ? data.trainedWords : [],
+        source: 'civitai',
+        verified: true,
+      });
+    } catch { /* metadata is a nicety; download already succeeded */ }
+  }
   app.post('/api/models/download', async (c) => {
     const HOME = process.env.HOME || '/home/itsju';
     try {
@@ -1391,7 +1423,12 @@ init();
       child.stderr?.on('data', onData);
       child.on('close', (code) => {
         const j = modelDownloads.get(jobId); if (!j) return;
-        if (code === 0) { j.status = 'done'; j.pct = 100; invalidateGalleryCache(); }
+        if (code === 0) {
+          j.status = 'done'; j.pct = 100; invalidateGalleryCache();
+          // Capture compatibility metadata straight from Civitai so the new model
+          // is correctly classified (family + triggers) with no hardcoding.
+          void captureCivitaiMeta(url, token, name, dest);
+        }
         else { j.status = 'failed'; j.error = `download exited ${code} — safe-model-download may have refused (C: too low) or auth failed`; }
         notify(j.status === 'done' ? `✅ Model downloaded: ${name} → ${dest}` : `⚠️ Model download failed: ${name} — ${j.error}`);
       });

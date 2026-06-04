@@ -12,7 +12,10 @@ const withTok = (u: string) => (dashboardToken ? `${u}${u.includes('?') ? '&' : 
 const VIDEO_URL = 'http://localhost:8765/';
 
 // ── Module-level ComfyUI model cache (avoids refetch on engine toggle) ────────
-type ComfyModels = { checkpoints: {name:string;sizeGB:number}[]; loras: {name:string;sizeMB:number}[] };
+// family/baseModel/triggers/verified come from the server, sourced from Civitai
+// (see src/modelmeta.ts) — NOT guessed in the UI.
+type ModelInfo = { name: string; family?: string; baseModel?: string; triggers?: string[]; verified?: boolean };
+type ComfyModels = { checkpoints: (ModelInfo & { sizeGB: number })[]; loras: (ModelInfo & { sizeMB: number })[] };
 let comfyModelCache: ComfyModels | null = null;
 
 // ── localStorage preference helpers ──────────────────────────────────────────
@@ -79,45 +82,26 @@ const COMFY_SIZES = [
   { value: '768x1024',  label: 'Portrait 768×1024 (high-res, slower)' },
   { value: '1024x768',  label: 'Landscape 1024×768 (high-res, slower)' },
 ];
-// ── ComfyUI prompt guide ──────────────────────────────────────────────────────
-const COMFY_GUIDE: Record<string, { prefix: string; tip: string; type: 'pony' | 'sdxl' | 'sd15' }> = {
-  cyberrealisticPony_v170:        { type: 'pony',  prefix: 'score_9, score_8_up, score_7_up, score_6_up',       tip: 'Pony base — quality tags REQUIRED or output looks washed out. Pairs best with Pony-only LoRAs (Big Eyes, Cow Hybrid, Starbucks Girl).' },
-  epicellaXL_photoV1:             { type: 'sdxl',  prefix: 'photo of, RAW photo, 8k uhd, realistic, detailed',  tip: 'SDXL — female portraits and lifestyle photography. Add a subject description after the prefix, e.g. "beautiful woman, outdoor".' },
-  epicphotogasm_ultimateFidelity: { type: 'sd15',  prefix: 'photograph, professional photo, 8k, detailed skin', tip: 'SD1.5 — extreme face/skin detail. Best for close-up beauty and portrait shots. Use WITHOUT LoRAs for cleanest results.' },
-  epicrealismXL_pureFix:          { type: 'sdxl',  prefix: 'RAW photo, realistic, photorealistic, 8k uhd',      tip: 'SDXL all-rounder — most versatile, works with all SDXL LoRAs. Good default when unsure which checkpoint to pick.' },
+// ── Model-family display (label + colour). Families come from the server,
+//    sourced from Civitai's `baseModel`. `other` = couldn't be determined.
+const FAM: Record<string, { label: string; emoji: string; color: string }> = {
+  pony:        { label: 'Pony',        emoji: '🟠', color: '#ffb347' },
+  sdxl:        { label: 'SDXL',        emoji: '🔵', color: '#7fd1ff' },
+  illustrious: { label: 'Illustrious', emoji: '🟣', color: '#c08cff' },
+  sd15:        { label: 'SD 1.5',      emoji: '🔴', color: '#ef5350' },
+  flux:        { label: 'Flux',        emoji: '🟡', color: '#ffe066' },
+  other:       { label: 'Unknown',     emoji: '⚪', color: 'var(--color-text-muted)' },
 };
-// ── Checkpoint descriptive labels for dropdown ────────────────────────────────
-const COMFY_CHECKPOINT_DESC: Record<string, string> = {
-  'cyberrealisticPony_v170.safetensors':        'CyberRealistic Pony — semi-realistic humans, animal hybrids, Pony LoRAs',
-  'epicellaXL_photoV1.safetensors':             'EpicElla XL — female portraits, lifestyle, natural skin tone',
-  'epicphotogasm_ultimateFidelity.safetensors': 'EpicPhotogasm (SD1.5) — extreme skin/face detail, portrait close-ups, use without LoRAs',
-  'epicrealismXL_pureFix.safetensors':          'EpicRealism XL — versatile all-subjects, best base for SDXL LoRAs',
-};
-const COMFY_LORA_GUIDE: Record<string, { trigger: string | null; tip: string; compat: 'pony' | 'sdxl' | 'any' | 'sd15' }> = {
-  'Callie Cowgirl':                                        { trigger: 'callie',       compat: 'any',  tip: 'Character — redhead cowgirl. Trigger "callie" required. Works with Pony + SDXL.' },
-  'RLY-thot_shot-ZiB-ZiT-helena-v1-trigger-rlyhelena':   { trigger: 'rlyhelena',    compat: 'any',  tip: 'Character — specific person style. Trigger "rlyhelena" required. Works with Pony + SDXL.' },
-  'RealFeet_xl_v1':                                       { trigger: 'feet',         compat: 'sdxl', tip: 'SDXL only — foot realism enhancer. Trigger "feet" required. Use with epicrealismXL or epicellaXL.' },
-  'RealSkin_xxXL_v1':                                     { trigger: null,           compat: 'sdxl', tip: 'SDXL only — boosts skin texture and pores automatically. Stack with any SDXL checkpoint.' },
-  'bigeyes-ponyxl-v1':                                    { trigger: null,           compat: 'pony', tip: 'Pony only — adds big anime-style eyes. Will degrade output on SDXL checkpoints.' },
-  'cow-ponyxl-v1':                                        { trigger: 'c0wg1rl',      compat: 'pony', tip: 'Pony only — animal/cow hybrid features. Trigger "c0wg1rl" required. Use with cyberrealisticPony.' },
-  'feet_forward-EpicUni-V1':                              { trigger: 'feet forward', compat: 'sd15', tip: '⚠ SD1.5 LoRA — poses feet toward camera. Trigger "feet forward" (close-up) or "foot focus" (wider).' },
-  'kFeetMix101_v2-000006':                                { trigger: 'feet101',      compat: 'sd15', tip: '⚠ SD1.5 model — may produce artifacts on SDXL/Pony. Classic foot detail LoRA, trigger "feet101" required.' },
-  'starbucksgirl_Pony':                                   { trigger: 'sbgirl',       compat: 'pony', tip: 'Pony only — Starbucks barista aesthetic. Trigger "sbgirl" required. Use with cyberrealisticPony.' },
-  'zy_AmateurStyle_v2':                                   { trigger: null,           compat: 'any',  tip: 'Any base — candid/unfiltered amateur phone-photo aesthetic. No trigger, stacks well with character LoRAs.' },
-};
-// ── LoRA short display labels for toggle buttons ──────────────────────────────
-const COMFY_LORA_SHORT: Record<string, string> = {
-  'Callie Cowgirl.safetensors':                                       'Callie Cowgirl [character]',
-  'RLY-thot_shot-ZiB-ZiT-helena-v1-trigger-rlyhelena.safetensors':   'Helena [character]',
-  'RealFeet_xl_v1.safetensors':                                       'RealFeet XL [SDXL]',
-  'RealSkin_xxXL_v1.safetensors':                                     'RealSkin [SDXL]',
-  'bigeyes-ponyxl-v1.safetensors':                                    'Big Eyes [Pony only]',
-  'cow-ponyxl-v1.safetensors':                                        'Cow Hybrid [Pony only]',
-  'feet_forward-EpicUni-V1.safetensors':                              'Feet Forward Pose [SDXL]',
-  'kFeetMix101_v2-000006.safetensors':                                'K-Feet Mix [⚠ SD1.5]',
-  'starbucksgirl_Pony.safetensors':                                   'Starbucks Girl [Pony only]',
-  'zy_AmateurStyle_v2.safetensors':                                   'Amateur Style [any]',
-};
+const famInfo = (f?: string) => FAM[f || 'other'] ?? FAM.other;
+const cleanName = (n: string) => n.replace(/\.(safetensors|ckpt|gguf)$/i, '');
+
+// A LoRA is compatible unless BOTH it and the base model have a KNOWN family that
+// differ. If either family is unknown we can't prove a mismatch, so we allow it.
+function loraCompatible(loraFam?: string, ckptFam?: string): boolean {
+  if (!ckptFam || ckptFam === 'other') return true;
+  if (!loraFam || loraFam === 'other') return true;
+  return loraFam === ckptFam;
+}
 
 // ── Aspect ratios ─────────────────────────────────────────────────────────────
 const BANANA_ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4', '1:4', '4:1', '1:8', '8:1'];
@@ -211,184 +195,6 @@ function presetBtnStyle(active: boolean): JSX.CSSProperties {
     background: active ? '#34d39a' : 'var(--color-elevated)',
     border: '1px solid ' + (active ? '#34d39a' : 'var(--color-border)'),
   };
-}
-
-// ── ComfyUI full-screen guide modal ──────────────────────────────────────────
-function GuideModal({ onClose }: { onClose: () => void }) {
-  const QUICK_PICKS = [
-    { name: 'CyberRealistic Pony', badge: 'PONY', badgeColor: '#ffb347', bg: 'rgba(255,179,71,0.08)', border: 'rgba(255,179,71,0.25)', desc: 'Semi-realistic humans, anime-adjacent, animal hybrids', best: 'Pony LoRAs only' },
-    { name: 'EpicElla XL',         badge: 'SDXL', badgeColor: '#7fd1ff', bg: 'rgba(127,209,255,0.06)', border: 'rgba(127,209,255,0.2)', desc: 'Female portraits, lifestyle, natural lighting', best: 'SDXL LoRAs' },
-    { name: 'EpicRealism XL',      badge: 'SDXL', badgeColor: '#7fd1ff', bg: 'rgba(127,209,255,0.06)', border: 'rgba(127,209,255,0.2)', desc: 'Anything realistic — most versatile, best default', best: 'SDXL LoRAs' },
-    { name: 'EpicPhotogasm',       badge: 'SD1.5', badgeColor: '#ef5350', bg: 'rgba(239,83,80,0.06)',  border: 'rgba(239,83,80,0.2)',  desc: 'Extreme face/skin close-ups, beauty detail', best: 'No LoRAs' },
-  ];
-  const LORA_GROUPS = [
-    { group: 'PONY ONLY', color: '#ffb347', loras: [
-      { name: 'Big Eyes',        trigger: null,        tip: 'Anime-style large eyes — degrades on SDXL' },
-      { name: 'Cow Hybrid',      trigger: 'c0wg1rl',   tip: 'Animal/cow features. Use with CyberRealistic Pony' },
-      { name: 'Starbucks Girl',  trigger: 'sbgirl',    tip: 'Barista aesthetic, add "coffee shop"' },
-    ]},
-    { group: 'SDXL ONLY', color: '#7fd1ff', loras: [
-      { name: 'RealFeet XL',         trigger: 'feet',         tip: 'Foot realism — EpicRealism or EpicElla' },
-      { name: 'RealSkin',            trigger: null,           tip: 'Skin texture auto-boost, no trigger needed' },
-      { name: 'Feet Forward Pose',   trigger: 'feet forward', tip: '⚠ Actually SD1.5 base — use carefully on SDXL' },
-    ]},
-    { group: 'ANY BASE', color: 'var(--color-text-muted)', loras: [
-      { name: 'Callie Cowgirl', trigger: 'callie',    tip: 'Redhead cowgirl character — works everywhere' },
-      { name: 'Helena',         trigger: 'rlyhelena', tip: 'Specific person style — works everywhere' },
-      { name: 'Amateur Style',  trigger: null,        tip: 'Candid phone-photo aesthetic, no trigger' },
-    ]},
-    { group: 'SD1.5 LEGACY', color: '#ef5350', loras: [
-      { name: 'K-Feet Mix 101',       trigger: 'feet101',      tip: '⚠ SD1.5 — artifacts on SDXL/Pony, use alone' },
-      { name: 'Feet Forward EpicUni', trigger: 'feet forward', tip: '⚠ SD1.5 — best without mixing other LoRAs' },
-    ]},
-  ];
-  const RECIPES = [
-    { name: 'Cowgirl',                  checkpoint: 'CyberRealistic Pony', loras: 'Callie Cowgirl + Cow Hybrid', prompt: 'c0wg1rl, callie, 1girl' },
-    { name: 'Starbucks Barista',        checkpoint: 'CyberRealistic Pony', loras: 'Starbucks Girl + Big Eyes',   prompt: 'sbgirl, 1girl, coffee shop' },
-    { name: 'Realistic Portrait + Feet',checkpoint: 'EpicRealism XL',      loras: 'RealFeet XL + RealSkin',      prompt: 'feet, barefoot, 1girl' },
-    { name: 'Close-up Face',            checkpoint: 'EpicPhotogasm',        loras: 'none',                        prompt: 'photograph, close-up, face' },
-  ];
-  const codeChip = (text: string) => (
-    <code style={{ fontSize: '11px', color: '#34d39a', background: 'var(--color-elevated)', border: '1px solid var(--color-border-strong)', borderRadius: '4px', padding: '1px 6px', fontFamily: MONO }}>{text}</code>
-  );
-  const sectionHdr = (n: string) => (
-    <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', letterSpacing: '1.5px', marginBottom: '12px', fontFamily: MONO }}>{n}</div>
-  );
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '24px 16px' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: '12px', width: '100%', maxWidth: '680px', padding: '24px', fontFamily: MONO }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <div style={{ fontSize: '13px', color: '#34d39a', letterSpacing: '2px' }}>COMFYUI GUIDE</div>
-          <button type="button" onClick={onClose} style={{ background: 'none', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)', borderRadius: '6px', padding: '4px 10px', cursor: 'pointer', fontFamily: MONO, fontSize: '14px' }}>×</button>
-        </div>
-
-        <div style={{ marginBottom: '24px' }}>
-          {sectionHdr('1 — QUICK PICK')}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '10px' }}>
-            {QUICK_PICKS.map(c => (
-              <div key={c.name} style={{ background: c.bg, border: `1px solid ${c.border}`, borderRadius: '8px', padding: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--color-text)', fontWeight: 700, fontFamily: MONO }}>{c.name}</span>
-                  <span style={{ fontSize: '9px', color: c.badgeColor, border: `1px solid ${c.badgeColor}`, borderRadius: '4px', padding: '1px 5px', whiteSpace: 'nowrap', marginLeft: '6px', flexShrink: 0 }}>{c.badge}</span>
-                </div>
-                <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginBottom: '6px', lineHeight: '1.4', fontFamily: MONO }}>{c.desc}</div>
-                <div style={{ fontSize: '10px', color: c.badgeColor, fontFamily: MONO }}>Best for: {c.best}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div style={{ marginBottom: '24px' }}>
-          {sectionHdr('2 — LORA COMPATIBILITY MATRIX')}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {LORA_GROUPS.map(g => (
-              <div key={g.group}>
-                <div style={{ fontSize: '10px', color: g.color, letterSpacing: '1px', marginBottom: '6px', fontFamily: MONO }}>— {g.group}</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                  {g.loras.map(l => (
-                    <div key={l.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingLeft: '10px', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', minWidth: '150px', fontFamily: MONO }}>{l.name}</span>
-                      {l.trigger ? codeChip(l.trigger) : <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontStyle: 'italic', fontFamily: MONO }}>auto</span>}
-                      <span style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO }}>{l.tip}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div style={{ marginBottom: '24px' }}>
-          {sectionHdr('3 — EXAMPLE RECIPES')}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {RECIPES.map(r => (
-              <div key={r.name} style={{ background: 'var(--color-elevated)', border: '1px solid var(--color-border)', borderRadius: '6px', padding: '10px 12px' }}>
-                <div style={{ fontSize: '11px', color: '#34d39a', marginBottom: '4px', fontFamily: MONO }}>{r.name}</div>
-                <div style={{ fontSize: '10px', color: 'var(--color-text-muted)', fontFamily: MONO, marginBottom: '5px' }}>
-                  <span style={{ color: 'var(--color-text-faint)' }}>Checkpoint:</span> {r.checkpoint} &nbsp;·&nbsp;
-                  <span style={{ color: 'var(--color-text-faint)' }}>LoRAs:</span> {r.loras}
-                </div>
-                {codeChip(r.prompt)}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          {sectionHdr('4 — NEGATIVE PROMPT DEFAULTS')}
-          <div style={{ background: 'var(--color-elevated)', border: '1px solid var(--color-border)', borderRadius: '6px', padding: '12px' }}>
-            {codeChip('deformed, ugly, blurry, low quality, bad anatomy, watermark, text')}
-            <div style={{ marginTop: '10px', fontSize: '10px', color: '#ffb347', fontFamily: MONO }}>
-              ⚠ Pony models: also add{' '}
-              <code style={{ color: '#ffb347', background: 'rgba(255,179,71,0.1)', border: '1px solid rgba(255,179,71,0.25)', borderRadius: '3px', padding: '1px 5px', fontFamily: MONO }}>score_4, score_5, score_6</code>
-              {' '}to negatives for best results.
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── ComfyUI prompt guide component ───────────────────────────────────────────
-function ComfyPromptGuide({ checkpoint, loras, onInject }: { checkpoint: string; loras: string[]; onInject: (s: string) => void }) {
-  const key = checkpoint.replace(/\.(safetensors|ckpt|gguf)$/, '');
-  const guide = COMFY_GUIDE[key];
-  const activeGuides = loras.map(l => ({ name: l.replace(/\.safetensors$/, ''), info: COMFY_LORA_GUIDE[l.replace(/\.safetensors$/, '')] })).filter(x => x.info);
-  if (!guide && !activeGuides.length) return null;
-  const pony = guide?.type === 'pony';
-  const sd15cp = guide?.type === 'sd15';
-  const typeLabel = pony ? 'PONY' : sd15cp ? 'SD1.5' : 'SDXL';
-  const typeColor = pony ? '#ffb347' : sd15cp ? '#ef5350' : '#7fd1ff';
-  const mismatched = guide ? activeGuides.filter(({ info }) => {
-    const c = info.compat;
-    if (guide.type === 'sd15') return c !== 'any' && c !== 'sd15';
-    return (guide.type === 'pony' && c === 'sdxl') || (guide.type === 'sdxl' && c === 'pony') || c === 'sd15';
-  }) : [];
-  return (
-    <div style={{ marginTop: '12px', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '12px 14px', background: 'var(--color-elevated)' }}>
-      <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', letterSpacing: '1.5px', fontFamily: MONO, marginBottom: '8px' }}>PROMPT GUIDE</div>
-      {guide && (
-        <div style={{ marginBottom: activeGuides.length ? '10px' : 0 }}>
-          <div style={{ fontSize: '11px', color: typeColor, fontFamily: MONO, marginBottom: '5px' }}>
-            {typeLabel} — {guide.tip}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <code style={{ fontSize: '12px', color: 'var(--color-text)', background: 'var(--color-card)', border: '1px solid var(--color-border-strong)', borderRadius: '4px', padding: '4px 8px', fontFamily: MONO }}>{guide.prefix}</code>
-            <button type="button" onClick={() => onInject(guide.prefix + ', ')}
-              style={{ fontSize: '10px', color: '#34d39a', background: 'none', border: '1px solid rgba(52,211,154,0.3)', borderRadius: '4px', padding: '3px 8px', cursor: 'pointer', fontFamily: MONO }}>
-              + prepend
-            </button>
-          </div>
-        </div>
-      )}
-      {mismatched.length > 0 && (
-        <div style={{ marginBottom: '8px', padding: '6px 10px', background: 'rgba(255,179,71,0.08)', border: '1px solid rgba(255,179,71,0.25)', borderRadius: '6px' }}>
-          <span style={{ fontSize: '11px', color: '#ffb347', fontFamily: MONO }}>
-            ⚠ Compatibility: {mismatched.map(m => m.name).join(', ')} {mismatched.length === 1 ? 'is' : 'are'} not designed for {pony ? 'Pony' : sd15cp ? 'SD1.5' : 'SDXL'} — may produce artifacts
-          </span>
-        </div>
-      )}
-      {activeGuides.length > 0 && (
-        <div>
-          <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', letterSpacing: '1px', fontFamily: MONO, marginBottom: '6px' }}>ACTIVE LORA TRIGGERS</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {activeGuides.map(({ name, info }) => (
-              <div key={name} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '11px', color: info.compat === 'pony' ? '#ffb347' : info.compat === 'sd15' ? '#ef5350' : info.compat === 'sdxl' ? '#7fd1ff' : 'var(--color-text-muted)', fontFamily: MONO, minWidth: '0', flex: '0 0 auto', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={info.tip}>{name}</span>
-                {info.trigger
-                  ? <><code style={{ fontSize: '12px', color: '#34d39a', background: 'var(--color-card)', border: '1px solid var(--color-border-strong)', borderRadius: '4px', padding: '2px 7px', fontFamily: MONO }}>{info.trigger}</code>
-                      <button type="button" onClick={() => onInject(info.trigger! + ', ')}
-                        style={{ fontSize: '10px', color: '#34d39a', background: 'none', border: '1px solid rgba(52,211,154,0.3)', borderRadius: '4px', padding: '2px 7px', cursor: 'pointer', fontFamily: MONO }}>+ add</button></>
-                  : <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO, fontStyle: 'italic' }}>{info.tip}</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }
 
 // ── Animated progress bar (perceived estimate OR real ComfyUI step data) ──────
@@ -517,7 +323,8 @@ export function Create() {
   const [localModel, setLocalModel] = useState(() => loadPref('localModel', 'sdxl-turbo'));
 
   // comfyui state
-  const [showGuide, setShowGuide] = useState(false);
+  // Trigger words the user explicitly removed from the auto-add list.
+  const [droppedTriggers, setDroppedTriggers] = useState<string[]>([]);
   const [comfySize, setComfySize] = useState(() => loadPref('comfySize', '512x768'));
   const [comfySteps, setComfySteps] = useState(() => loadPref('comfySteps', 20));
   const [comfyNeg, setComfyNeg] = useState('deformed, ugly, blurry, low quality, bad anatomy, watermark, text');
@@ -536,6 +343,14 @@ export function Create() {
   useEffect(() => { savePref('comfySize', comfySize); }, [comfySize]);
   useEffect(() => { savePref('comfySteps', comfySteps); }, [comfySteps]);
   useEffect(() => { savePref('comfyLoraStrength', comfyLoraStrength); }, [comfyLoraStrength]);
+
+  // When the base model changes, drop any selected LoRAs whose family no longer
+  // matches — so an incompatible combo can never be submitted.
+  useEffect(() => {
+    if (imgEngine !== 'comfyui' || !comfyModels) return;
+    const fam = comfyModels.checkpoints?.find(c => c.name === comfyCheckpoint)?.family;
+    setComfyLoras(prev => prev.filter(n => loraCompatible(comfyModels!.loras?.find(x => x.name === n)?.family, fam)));
+  }, [comfyCheckpoint, comfyModels, imgEngine]);
 
   // ── Fetch ComfyUI models (cached at module level to avoid re-fetch on toggle)
   useEffect(() => {
@@ -678,7 +493,7 @@ export function Create() {
   // safe = server preflight says go (default true until first poll returns, so
   // the UI never blocks spuriously before health loads). The server still gates.
   const safe = !sys || sys.preflight?.ok !== false;
-  const canImg = prompt.trim().length > 0 && !busy && safe;
+  const canImg = prompt.trim().length > 0 && !busy && safe && (imgEngine !== 'comfyui' || comfyCheckpoint !== '');
   const canVid = vidPrompt.trim().length > 0 && !vidBusy && safe;
 
   // ── Clear results when switching engine or tab ────────────────────────────
@@ -692,6 +507,16 @@ export function Create() {
   // ── Max batch counts per engine
   const maxBatch = imgEngine === 'banana' ? 5 : imgEngine === 'comfyui' ? 1 : 3;
 
+  // ── Selected base model + the trigger words we'll auto-add ─────────────────
+  const selectedCkpt = comfyModels?.checkpoints?.find(c => c.name === comfyCheckpoint);
+  const ckptFam = selectedCkpt?.family;
+  const activeLoraObjs = (comfyModels?.loras || []).filter(l => comfyLoras.includes(l.name));
+  const activeTriggers = Array.from(new Set([
+    ...(selectedCkpt?.triggers || []),
+    ...activeLoraObjs.flatMap(l => l.triggers || []),
+  ].map(t => (t || '').trim()).filter(Boolean)));
+  const effectiveTriggers = activeTriggers.filter(t => !droppedTriggers.includes(t));
+
   // ── Generate (single or batch). `override.seed` lets "New seed" force-randomize.
   const genImage = async (override?: { seed?: number }) => {
     if (!canImg) return;
@@ -704,8 +529,14 @@ export function Create() {
     try {
       if (imgEngine === 'comfyui') {
         const [w, h] = comfySize.split('x').map(Number);
+        // Auto-prepend the active trigger words (from the selected checkpoint +
+        // LoRAs, minus any the user removed, minus any already typed).
+        const base = prompt.trim();
+        const lc = base.toLowerCase();
+        const toAdd = effectiveTriggers.filter(t => t && !lc.includes(t.toLowerCase()));
+        const fullPrompt = toAdd.length ? [...toAdd, base].filter(Boolean).join(', ') : base;
         r = await apiPost<GenResult>('/api/comfy/generate', {
-          prompt: prompt.trim(), negative_prompt: comfyNeg, steps: comfySteps,
+          prompt: fullPrompt, negative_prompt: comfyNeg, steps: comfySteps,
           width: w, height: h,
           checkpoint: comfyCheckpoint || undefined,
           loras: comfyLoras.length ? comfyLoras.map(name => ({ name, strength: comfyLoraStrength })) : undefined,
@@ -836,6 +667,18 @@ export function Create() {
 
           {tab === 'image' ? (
             <>
+              {/* ── Plain-English explainer (collapsible, persists open/closed) ── */}
+              <details style={{ marginBottom: '14px', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '8px 12px' }}>
+                <summary style={{ ...S.label, cursor: 'pointer', marginBottom: 0 }}>▸ HOW THIS WORKS</summary>
+                <div style={{ marginTop: '10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--color-text-muted)', fontFamily: MONO }}>
+                  <b style={{ color: 'var(--color-text)' }}>Engine</b> — where the image is made. <b>ComfyUI</b> uses your downloaded Civitai models (best quality, runs on this laptop). <b>Quick preview</b> is fast and local. <b>Nano Banana</b> is Google's cloud — no load on the laptop.<br />
+                  <b style={{ color: 'var(--color-text)' }}>Base model</b> — the foundation everything is built on. It has a family (🟠 Pony, 🔵 SDXL, 🔴 SD 1.5, …).<br />
+                  <b style={{ color: 'var(--color-text)' }}>LoRAs (style add-ons)</b> — optional extras layered on top of the base model. You can stack several. Only add-ons that match your base model's family can be selected — the rest are locked 🔒 so nothing comes out broken.<br />
+                  <b style={{ color: 'var(--color-text)' }}>Trigger words</b> — some add-ons need a magic word to activate; we add those to your prompt automatically (you can remove any with ×).<br />
+                  <b style={{ color: '#34d39a' }}>● Safe to generate</b> at the top means the laptop has room. If it turns red, Generate is disabled until it's safe — so you can run this from your phone without watching the laptop.
+                </div>
+              </details>
+
               {/* ── Add a Civitai model (server gates on disk space + folder cap) ── */}
               <details style={{ marginBottom: '14px', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '8px 12px' }}>
                 <summary style={{ ...S.label, cursor: 'pointer', marginBottom: 0 }}>+ ADD MODEL FROM CIVITAI</summary>
@@ -907,7 +750,7 @@ export function Create() {
                     <select value={imgEngine} onChange={(e) => setImgEngine((e.target as HTMLSelectElement).value as ImgEngine)} disabled={busy} style={{ ...S.select, minWidth: '260px' }}>
                       <option value="local">Local — SDXL-Turbo (free, on-GPU)</option>
                       <option value="banana">Nano Banana — Gemini (paid)</option>
-                      <option value="comfyui">ComfyUI — CyberRealistic Pony (free, on-GPU, best quality)</option>
+                      <option value="comfyui">ComfyUI — your Civitai models (free, on-GPU, best quality)</option>
                     </select>
                   </div>
 
@@ -942,19 +785,22 @@ export function Create() {
                     <>
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                          <div style={{ ...S.label, marginBottom: 0 }}>CHECKPOINT</div>
-                          <button type="button" onClick={() => setShowGuide(true)}
-                            style={{ fontSize: '10px', fontFamily: MONO, letterSpacing: '1px', padding: '2px 8px', borderRadius: '4px', cursor: 'pointer', color: '#34d39a', background: 'none', border: '1px solid rgba(52,211,154,0.3)' }}>
-                            ? Guide
-                          </button>
+                          <div style={{ ...S.label, marginBottom: 0 }}>BASE MODEL</div>
+                          {selectedCkpt && (
+                            <span style={{ fontSize: '10px', fontFamily: MONO, color: famInfo(ckptFam).color, border: `1px solid ${famInfo(ckptFam).color}`, borderRadius: '4px', padding: '1px 6px' }}
+                              title={selectedCkpt.baseModel ? `Civitai base model: ${selectedCkpt.baseModel}` : 'family guessed from filename'}>
+                              {famInfo(ckptFam).emoji} {famInfo(ckptFam).label}{selectedCkpt.verified === false ? ' ?' : ''}
+                            </span>
+                          )}
                         </div>
-                        <select value={comfyCheckpoint} onChange={(e) => setComfyCheckpoint((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '280px' }}>
+                        <select value={comfyCheckpoint} onChange={(e) => setComfyCheckpoint((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '300px' }}>
                           {comfyModels?.checkpoints?.length
                             ? comfyModels.checkpoints.map(c => (
-                                <option key={c.name} value={c.name}>{COMFY_CHECKPOINT_DESC[c.name] ?? c.name.replace(/\.(safetensors|ckpt|gguf)$/, '')} ({c.sizeGB}GB)</option>
+                                <option key={c.name} value={c.name}>{cleanName(c.name)} · {famInfo(c.family).label} ({c.sizeGB}GB)</option>
                               ))
                             : <option value="">Loading…</option>}
                         </select>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, marginTop: '4px' }}>The foundation — every add-on must match this family.</div>
                       </div>
                       <div>
                         <div style={S.label}>SIZE</div>
@@ -1061,8 +907,8 @@ export function Create() {
                     </div>
                     {comfyModels?.loras?.length ? (
                       <div style={{ marginTop: '12px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '6px', flexWrap: 'wrap' }}>
-                          <div style={S.label}>LORAS {comfyLoras.length > 0 && <span style={{ color: '#34d39a' }}>({comfyLoras.length} active)</span>}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                          <div style={S.label}>STYLE ADD-ONS · LORAS {comfyLoras.length > 0 && <span style={{ color: '#34d39a' }}>({comfyLoras.length} active)</span>}</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                             <span style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO }}>STRENGTH</span>
                             <input
@@ -1073,6 +919,7 @@ export function Create() {
                               style={{ width: '90px', accentColor: '#34d39a' }}
                             />
                             <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', fontFamily: MONO, minWidth: '28px' }}>{comfyLoraStrength.toFixed(2)}</span>
+                            <span style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO }}>higher = stronger</span>
                           </div>
                           {comfyLoras.length > 0 && (
                             <button type="button" onClick={() => setComfyLoras([])} disabled={busy}
@@ -1081,9 +928,27 @@ export function Create() {
                             </button>
                           )}
                         </div>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, marginBottom: '8px' }}>
+                          Layered on the base model — stack as many as you like. Locked 🔒 ones don't match {famInfo(ckptFam).label} and would produce artifacts.
+                        </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                           {comfyModels.loras.map(l => {
                             const active = comfyLoras.includes(l.name);
+                            const compatible = loraCompatible(l.family, ckptFam);
+                            const fi = famInfo(l.family);
+                            if (!compatible) {
+                              return (
+                                <span key={l.name}
+                                  title={`${cleanName(l.name)} — trained for ${fi.label}, not ${famInfo(ckptFam).label}. Pick a ${fi.label} base model to use it.`}
+                                  style={{
+                                    fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px',
+                                    cursor: 'not-allowed', color: 'var(--color-text-faint)',
+                                    background: 'var(--color-elevated)', border: '1px dashed var(--color-border)', opacity: 0.55,
+                                  }}>
+                                  🔒 {cleanName(l.name)} · {fi.label}
+                                </span>
+                              );
+                            }
                             return (
                               <button
                                 key={l.name}
@@ -1099,17 +964,45 @@ export function Create() {
                                   background: active ? '#34d39a' : 'var(--color-elevated)',
                                   border: '1px solid ' + (active ? '#34d39a' : 'var(--color-border)'),
                                 }}
-                                title={`${l.name} — ${l.sizeMB}MB`}
+                                title={`${l.name} — ${l.sizeMB}MB${l.baseModel ? ` · Civitai: ${l.baseModel}` : ''}`}
                               >
-                                {COMFY_LORA_SHORT[l.name] ?? l.name.replace(/\.safetensors$/, '')}
+                                {active ? '✓ ' : ''}{cleanName(l.name)}{l.verified === false ? ' ?' : ''}
                               </button>
                             );
                           })}
                         </div>
                       </div>
                     ) : null}
-                    <ComfyPromptGuide checkpoint={comfyCheckpoint} loras={comfyLoras} onInject={(s) => setPrompt(prev => s + prev)} />
-                    {showGuide && <GuideModal onClose={() => setShowGuide(false)} />}
+
+                    {/* Trigger words — added to the prompt automatically; tap × to drop one */}
+                    {activeTriggers.length > 0 && (
+                      <div style={{ marginTop: '12px', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '10px 12px', background: 'var(--color-elevated)' }}>
+                        <div style={{ ...S.label, marginBottom: '8px' }}>TRIGGER WORDS — ADDED FOR YOU</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {activeTriggers.map(t => {
+                            const dropped = droppedTriggers.includes(t);
+                            return (
+                              <span key={t} style={{
+                                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                fontSize: '11px', fontFamily: MONO, padding: '2px 4px 2px 8px', borderRadius: '6px',
+                                color: dropped ? 'var(--color-text-faint)' : '#34d39a',
+                                background: 'var(--color-card)',
+                                border: '1px solid ' + (dropped ? 'var(--color-border)' : 'rgba(52,211,154,0.3)'),
+                                textDecoration: dropped ? 'line-through' : 'none',
+                              }}>
+                                {t}
+                                <button type="button" disabled={busy}
+                                  onClick={() => setDroppedTriggers(prev => dropped ? prev.filter(x => x !== t) : [...prev, t])}
+                                  title={dropped ? 'add back' : 'remove from prompt'}
+                                  style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontFamily: MONO, fontSize: '12px', padding: '0 2px' }}>
+                                  {dropped ? '+' : '×'}
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
 

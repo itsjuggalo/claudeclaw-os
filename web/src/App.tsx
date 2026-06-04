@@ -22,6 +22,7 @@ import { AgentFiles } from '@/pages/AgentFiles';
 import { Peon } from '@/pages/Peon';
 import { Wallets } from '@/pages/Wallets';
 import { Gallery } from '@/pages/Gallery';
+import { SkoolBuilds } from '@/pages/SkoolBuilds';
 import { Create } from '@/pages/Create';
 import { Hermes } from '@/pages/Hermes';
 import { ClaudeOffice } from '@/pages/ClaudeOffice';
@@ -75,6 +76,7 @@ export function App() {
           <Route path="/audit"><Audit /></Route>
           <Route path="/wallets"><Wallets /></Route>
           <Route path="/gallery"><Gallery /></Route>
+          <Route path="/skool-builds"><SkoolBuilds /></Route>
           <Route path="/create"><Create /></Route>
           <Route path="/hermes"><Hermes /></Route>
           <Route path="/warroom"><WarRoom /></Route>

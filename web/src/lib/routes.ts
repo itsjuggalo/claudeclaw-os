@@ -4,7 +4,7 @@ import {
   Swords, Database, BookOpen,
   Settings, Smartphone, Wallet, Images, Wand2,
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
-  BarChart2, Briefcase, Trophy,
+  BarChart2, Briefcase, Trophy, GraduationCap,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -39,6 +39,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/audit',      label: 'Audit',           section: 'intelligence', icon: ShieldCheck                   },
   { path: '/wallets',    label: 'Wallets',         section: 'intelligence', icon: Wallet,        shortcut: 'g $' },
   { path: '/gallery',    label: 'Gallery',         section: 'intelligence', icon: Images,        shortcut: 'g i' },
+  { path: '/skool-builds', label: 'Skool Builds',  section: 'intelligence', icon: GraduationCap                 },
   { path: '/hermes',     label: 'Hermes',          section: 'intelligence', icon: Bot,           shortcut: 'g r' },
 
   { path: '/warroom',    label: 'War Room',        section: 'collaborate',  icon: Swords,        shortcut: 'g w' },
