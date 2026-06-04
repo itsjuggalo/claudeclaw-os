@@ -3,7 +3,7 @@
 //   Video: Local LTX-Video (free, on-GPU) OR the embedded Free Video Maker app.
 // Everything saves into gallery-watched folders, so output appears in /gallery automatically.
 import type { JSX } from 'preact';
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { apiPost, dashboardToken } from '@/lib/api';
 
@@ -23,7 +23,40 @@ function savePref<T>(key: string, val: T) {
   try { localStorage.setItem(`create.${key}`, JSON.stringify(val)); } catch {}
 }
 
-interface GenResult { ok: boolean; file?: string; url?: string; notes?: string; error?: string; }
+interface GenResult { ok: boolean; file?: string; url?: string; notes?: string; error?: string; seed?: number; }
+
+// ── Progress + UX helpers ─────────────────────────────────────────────────────
+const fmtMs = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+// Expected durations (ms) used to ease the perceived-progress bar toward ~95%.
+// Generous (cold-load) values so the bar keeps creeping instead of stalling at 95%.
+const EST_MS: Record<string, number> = { 'sdxl-turbo': 16000, 'sd-turbo': 10000, banana: 25000, comfyui: 75000, ltx: 200000 };
+// Asymptotic ease toward 0.95 over the engine's expected duration (never hits 1 until done).
+const estProgress = (elapsedMs: number, tauMs: number) => 0.95 * (1 - Math.exp(-elapsedMs / (tauMs * 0.6)));
+
+function friendlyError(raw?: string): { msg: string; hint?: string } {
+  const e = (raw || '').toString();
+  if (/CUDA out of memory|OutOfMemory|GPU out of memory|free VRAM/i.test(e)) return { msg: 'GPU ran out of memory.', hint: 'Close BlueStacks/WSA (or any other GPU app) to free VRAM, then retry.' };
+  if (/credits are depleted|RESOURCE_EXHAUSTED|\b429\b|billing/i.test(e)) return { msg: 'Gemini image credits are depleted.', hint: 'Add credits at ai.studio, or switch to the free Local / ComfyUI engine.' };
+  if (/preflight|GPU-SAFETY BLOCKED|another GPU job/i.test(e)) return { msg: 'Blocked by the GPU safety guard.', hint: 'Another GPU job is running, or disk/VRAM is low — wait for it to finish, then retry.' };
+  if (/ComfyUI failed to start|\b503\b/i.test(e)) return { msg: 'ComfyUI didn’t start in time.', hint: 'Click “Start ComfyUI”, wait for ● online (~30–60s), then generate.' };
+  if (/timed out|timeout|killed/i.test(e)) return { msg: 'Generation timed out.', hint: 'First run loads the model (slow). Retry once it’s warm, or lower steps/size.' };
+  if (/still downloading/i.test(e)) return { msg: 'Model is still downloading.', hint: 'One-time multi-GB download — try again in a few minutes.' };
+  if (/not installed|INSTALL/i.test(e)) return { msg: 'Local generator isn’t ready yet.', hint: 'Dependencies are still installing — try again shortly.' };
+  return { msg: e || 'Generation failed.' };
+}
+
+// ── Prompt history (localStorage, last 10) ────────────────────────────────────
+const PROMPT_HIST_KEY = 'promptHistory';
+const loadPromptHistory = (): string[] => loadPref<string[]>(PROMPT_HIST_KEY, []);
+function pushPromptHistory(p: string) {
+  const t = (p || '').trim(); if (!t) return;
+  const cur = loadPromptHistory().filter((x) => x !== t);
+  cur.unshift(t);
+  savePref(PROMPT_HIST_KEY, cur.slice(0, 10));
+}
+
+// One-time keyframes for the spinner + progress shimmer.
+const CC_ANIM_CSS = '@keyframes cc-spin{to{transform:rotate(360deg)}}.cc-spin{display:inline-block;animation:cc-spin 0.9s linear infinite}';
 
 // ── Banana models ────────────────────────────────────────────────────────────
 const BANANA_MODELS = [
@@ -315,28 +348,67 @@ function ComfyPromptGuide({ checkpoint, loras, onInject }: { checkpoint: string;
   );
 }
 
-// ── Result display ────────────────────────────────────────────────────────────
-function ResultBox({ result, kind }: { result: GenResult; kind: 'image' | 'video' }) {
+// ── Animated progress bar (perceived estimate OR real ComfyUI step data) ──────
+function ProgressBar({ pct, label, sub }: { pct: number; label: string; sub?: string }) {
+  const p = Math.max(2, Math.min(100, Math.round(pct * 100)));
+  return (
+    <div style={{ marginTop: '14px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '5px' }}>
+        <span style={{ fontSize: '12px', color: '#34d39a', fontFamily: MONO }}><span class="cc-spin">⟳</span> {label}</span>
+        {sub && <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO }}>{sub}</span>}
+      </div>
+      <div style={{ height: '6px', background: 'var(--color-elevated)', borderRadius: '4px', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${p}%`, background: '#34d39a', borderRadius: '4px', transition: 'width 0.4s ease' }} />
+      </div>
+    </div>
+  );
+}
+
+const actBtn: JSX.CSSProperties = {
+  fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px',
+  cursor: 'pointer', color: 'var(--color-text-muted)', background: 'var(--color-elevated)',
+  border: '1px solid var(--color-border)', textDecoration: 'none', display: 'inline-block',
+};
+
+// ── Result display (with download / copy / regenerate / new-seed / send-to-video)
+function ResultBox({ result, kind, prompt, onRegenerate, onNewSeed, onSendToVideo }: {
+  result: GenResult; kind: 'image' | 'video'; prompt?: string;
+  onRegenerate?: () => void; onNewSeed?: () => void; onSendToVideo?: () => void;
+}) {
   if (result.ok && result.url) {
+    const dl = withTok(result.url);
     return (
       <div style={{ marginTop: '12px', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden', background: 'var(--color-card)' }}>
         <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>
           ✓ Saved · {result.file}
+          {result.seed !== undefined && <span style={{ color: 'var(--color-text-faint)' }}> · seed {result.seed}</span>}
           {result.notes && <div style={{ color: 'var(--color-text-muted)', marginTop: '2px' }}>{result.notes}</div>}
         </div>
         <div style={{ display: 'flex', justifyContent: 'center', padding: '14px', background: 'var(--color-bg)' }}>
           {kind === 'video'
-            ? <video src={withTok(result.url)} controls autoPlay loop style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: '6px' }} />
-            : <img src={withTok(result.url)} alt={result.file} style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: '6px' }} />}
+            ? <video src={dl} controls autoPlay loop style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: '6px' }} />
+            : <img src={dl} alt={result.file} style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: '6px' }} />}
         </div>
-        <div style={{ padding: '8px 14px' }}><a href="/gallery" style={{ fontSize: '12px', color: '#7fd1ff', fontFamily: MONO }}>→ Gallery</a></div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', padding: '10px 14px' }}>
+          <a href={dl} download={result.file} style={actBtn}>↓ Download</a>
+          {prompt && <button type="button" style={actBtn} onClick={() => { try { navigator.clipboard.writeText(prompt); } catch {} }}>⧉ Copy prompt</button>}
+          {onRegenerate && <button type="button" style={actBtn} onClick={onRegenerate}>↻ Regenerate</button>}
+          {onNewSeed && <button type="button" style={actBtn} onClick={onNewSeed}>🎲 New seed</button>}
+          {kind === 'image' && onSendToVideo && <button type="button" style={actBtn} onClick={onSendToVideo}>🎬 To video</button>}
+          <a href="/gallery" style={{ ...actBtn, color: '#7fd1ff', borderColor: 'rgba(127,209,255,0.3)' }}>→ Gallery</a>
+        </div>
       </div>
     );
   }
+  const fe = friendlyError(result.error);
   return (
     <div style={{ marginTop: '12px', border: '1px solid rgba(239,83,80,0.3)', background: 'rgba(239,83,80,0.08)', borderRadius: '10px', padding: '12px 16px' }}>
-      <div style={{ fontSize: '12px', fontWeight: 600, color: '#ef5350', fontFamily: MONO, marginBottom: '4px' }}>Generation failed</div>
-      <div style={{ fontSize: '13px', color: '#e0a0a0', fontFamily: MONO }}>{result.error}</div>
+      <div style={{ fontSize: '12px', fontWeight: 600, color: '#ef5350', fontFamily: MONO, marginBottom: '4px' }}>{fe.msg}</div>
+      {fe.hint && <div style={{ fontSize: '12px', color: '#e0a0a0', fontFamily: MONO, marginBottom: result.error ? '6px' : 0 }}>{fe.hint}</div>}
+      {result.error && fe.msg !== result.error && <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO }}>{result.error}</div>}
+      <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        {onRegenerate && <button type="button" style={actBtn} onClick={onRegenerate}>↻ Retry</button>}
+      </div>
     </div>
   );
 }
@@ -444,6 +516,64 @@ export function Create() {
     }
   }, [imgEngine]);
 
+  useEffect(() => { savePref('localSteps', localSteps); }, [localSteps]);
+
+  // Image: drive the perceived-progress bar + elapsed timer while generating.
+  useEffect(() => {
+    if (!busy) { setProgress(0); setComfyStep(null); return; }
+    genStartRef.current = Date.now();
+    setElapsedMs(0); setProgress(0);
+    const key = imgEngine === 'local' ? localModel : imgEngine;
+    const tau = EST_MS[key] ?? 30000;
+    const id = setInterval(() => {
+      const el = Date.now() - genStartRef.current;
+      setElapsedMs(el);
+      setProgress(estProgress(el, tau));
+    }, 250);
+    return () => clearInterval(id);
+  }, [busy, imgEngine, localModel]);
+
+  // Image: subscribe to REAL ComfyUI step progress over SSE during a comfy gen.
+  useEffect(() => {
+    if (!busy || imgEngine !== 'comfyui') return;
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource(withTok('/api/comfy/progress'));
+      es.onmessage = (ev: MessageEvent) => {
+        try { const m = JSON.parse(ev.data); if (m.type === 'progress' && m.max) setComfyStep({ value: m.value, max: m.max }); } catch {}
+      };
+    } catch {}
+    return () => { try { es?.close(); } catch {} };
+  }, [busy, imgEngine]);
+
+  // Video: perceived-progress bar + elapsed timer.
+  useEffect(() => {
+    if (!vidBusy) { setVidProgress(0); return; }
+    vidStartRef.current = Date.now();
+    setVidElapsedMs(0); setVidProgress(0);
+    const id = setInterval(() => {
+      const el = Date.now() - vidStartRef.current;
+      setVidElapsedMs(el);
+      setVidProgress(estProgress(el, EST_MS.ltx));
+    }, 250);
+    return () => clearInterval(id);
+  }, [vidBusy]);
+
+  // ComfyUI: auto re-poll status while offline so it flips to online on its own.
+  useEffect(() => {
+    if (imgEngine !== 'comfyui' || comfyOnline) return;
+    const id = setInterval(() => {
+      fetch('/api/comfyui/status').then(r => r.json()).then((d: any) => {
+        if (d && (d.checkpoints || d.loras)) {
+          comfyModelCache = d; setComfyModels(d);
+          if (d.checkpoints?.length && !comfyCheckpoint) setComfyCheckpoint(d.checkpoints[0].name);
+          setComfyOnline(true);
+        }
+      }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(id);
+  }, [imgEngine, comfyOnline, comfyCheckpoint]);
+
   // batch state
   const [batchCount, setBatchCount] = useState(1);
 
@@ -452,18 +582,40 @@ export function Create() {
   const [result, setResult] = useState<GenResult | null>(null);
   const [batchResults, setBatchResults] = useState<GenResult[]>([]);
 
+  // ── progress + timing (image) ─────────────────────────────────────────────
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [lastMs, setLastMs] = useState<number | null>(null);
+  const [progress, setProgress] = useState(0);                 // perceived estimate 0..1
+  const [comfyStep, setComfyStep] = useState<{ value: number; max: number } | null>(null);
+  const genStartRef = useRef(0);
+
+  // ── seed + quality (image) ────────────────────────────────────────────────
+  const [seedVal, setSeedVal] = useState('');                  // '' = random each run
+  const [seedLock, setSeedLock] = useState(false);             // reuse last result's seed
+  const [localSteps, setLocalSteps] = useState<number>(() => loadPref('localSteps', 3));
+
+  // ── ComfyUI start + prompt history ────────────────────────────────────────
+  const [comfyStarting, setComfyStarting] = useState(false);
+  const [promptHist, setPromptHist] = useState<string[]>(loadPromptHistory());
+
   // video state
   const [vidEngine, setVidEngine] = useState<'local' | 'fvm'>('local');
   const [vidPrompt, setVidPrompt] = useState('');
   const [vidBusy, setVidBusy] = useState(false);
   const [vidResult, setVidResult] = useState<GenResult | null>(null);
+  const [vidElapsedMs, setVidElapsedMs] = useState(0);
+  const [vidProgress, setVidProgress] = useState(0);
+  const [vidLastMs, setVidLastMs] = useState<number | null>(null);
+  const [vidSeedVal, setVidSeedVal] = useState('');
+  const [vidSeedLock, setVidSeedLock] = useState(false);
+  const vidStartRef = useRef(0);
 
   const bnSizeOpts = bnModel === 'pro' ? BANANA_SIZES.filter((s) => s !== '512') : BANANA_SIZES;
   const canImg = prompt.trim().length > 0 && !busy;
   const canVid = vidPrompt.trim().length > 0 && !vidBusy;
 
   // ── Clear results when switching engine or tab ────────────────────────────
-  useEffect(() => { setResult(null); setBatchResults([]); }, [tab, imgEngine]);
+  useEffect(() => { setResult(null); setBatchResults([]); setLastMs(null); }, [tab, imgEngine]);
 
   function applyBananaPreset(model: string) {
     setImgEngine('banana');
@@ -473,66 +625,102 @@ export function Create() {
   // ── Max batch counts per engine
   const maxBatch = imgEngine === 'banana' ? 5 : imgEngine === 'comfyui' ? 1 : 3;
 
-  // ── Generate (single or batch)
-  const genImage = async () => {
+  // ── Generate (single or batch). `override.seed` lets "New seed" force-randomize.
+  const genImage = async (override?: { seed?: number }) => {
     if (!canImg) return;
     setBusy(true); setResult(null); setBatchResults([]);
+    const start = Date.now();
+    const seedNum = override && 'seed' in override
+      ? override.seed
+      : (seedVal.trim() !== '' && Number.isFinite(Number(seedVal)) ? Number(seedVal) : undefined);
+    let r: GenResult = { ok: false, error: 'no result' };
     try {
       if (imgEngine === 'comfyui') {
         const [w, h] = comfySize.split('x').map(Number);
-        const r = await apiPost<GenResult>('/api/comfy/generate', {
+        r = await apiPost<GenResult>('/api/comfy/generate', {
           prompt: prompt.trim(), negative_prompt: comfyNeg, steps: comfySteps,
           width: w, height: h,
           checkpoint: comfyCheckpoint || undefined,
           loras: comfyLoras.length ? comfyLoras.map(name => ({ name, strength: comfyLoraStrength })) : undefined,
+          ...(seedNum !== undefined ? { seed: seedNum } : {}),
         });
         setResult(r);
       } else if (batchCount > 1) {
         const body: Record<string, unknown> = { prompt: prompt.trim(), count: batchCount };
-        if (imgEngine === 'banana') {
-          body.source = 'banana'; body.model = bnModel; body.aspectRatio = bnAspect; body.size = bnSize;
-        } else {
-          body.source = 'local'; body.model = localModel; body.steps = 3;
-        }
-        const r = await apiPost<{ results: GenResult[] }>('/api/gallery/batch-generate', body);
-        setBatchResults(r.results || []);
+        if (imgEngine === 'banana') { body.source = 'banana'; body.model = bnModel; body.aspectRatio = bnAspect; body.size = bnSize; }
+        else { body.source = 'local'; body.model = localModel; body.steps = localSteps; }
+        const br = await apiPost<{ results: GenResult[] }>('/api/gallery/batch-generate', body);
+        setBatchResults(br.results || []);
+        r = br.results?.find((x) => x.ok) ?? br.results?.[0] ?? r;
       } else {
         let body: Record<string, unknown> = { prompt: prompt.trim() };
         if (imgEngine === 'banana') {
           body = { ...body, model: bnModel, aspectRatio: bnAspect, size: bnModel === 'pro' && bnSize === '512' ? '1K' : bnSize };
         } else {
-          body = { ...body, source: 'local', model: localModel, steps: 3 };
+          body = { ...body, source: 'local', model: localModel, steps: localSteps, ...(seedNum !== undefined ? { seed: seedNum } : {}) };
         }
-        setResult(await apiPost<GenResult>('/api/gallery/generate', body));
+        r = await apiPost<GenResult>('/api/gallery/generate', body);
+        setResult(r);
+      }
+      if (r.ok) {
+        setLastMs(Date.now() - start);
+        pushPromptHistory(prompt); setPromptHist(loadPromptHistory());
+        if (r.seed !== undefined && seedLock) setSeedVal(String(r.seed));
       }
     } catch (e) {
       setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally { setBusy(false); }
   };
 
-  const genVideo = async () => {
+  const genVideo = async (override?: { seed?: number }) => {
     if (!canVid) return;
     setVidBusy(true); setVidResult(null);
+    const start = Date.now();
+    const seedNum = override && 'seed' in override
+      ? override.seed
+      : (vidSeedVal.trim() !== '' && Number.isFinite(Number(vidSeedVal)) ? Number(vidSeedVal) : undefined);
     try {
-      setVidResult(await apiPost<GenResult>('/api/gallery/generate-video', { prompt: vidPrompt.trim() }));
+      const r = await apiPost<GenResult>('/api/gallery/generate-video', {
+        prompt: vidPrompt.trim(), ...(seedNum !== undefined ? { seed: seedNum } : {}),
+      });
+      setVidResult(r);
+      if (r.ok) {
+        setVidLastMs(Date.now() - start);
+        pushPromptHistory(vidPrompt); setPromptHist(loadPromptHistory());
+        if (r.seed !== undefined && vidSeedLock) setVidSeedVal(String(r.seed));
+      }
     } catch (e) {
       setVidResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally { setVidBusy(false); }
   };
 
-  // ── Busy message
-  function busyMsg() {
-    if (!busy) return null;
-    const msgs: Record<ImgEngine, string> = {
-      banana: batchCount > 1 ? `Nano Banana generating ${batchCount}× sequentially…` : 'Nano Banana working (~10–40s)…',
-      local: 'Running on the GPU — first use downloads the model once.',
-      comfyui: `ComfyUI generating (${comfySteps} steps, ${comfySize}) — model load ~30s then ~10s sampling…`,
+  // ── Start ComfyUI from the UI (when it shows ● offline), then poll to online.
+  const startComfy = async () => {
+    if (comfyStarting) return;
+    setComfyStarting(true);
+    try { await apiPost('/api/comfy/start', {}); } catch {}
+    const t0 = Date.now();
+    const poll = () => {
+      fetch('/api/comfyui/status').then(r => r.json()).then((d: any) => {
+        if (d && (d.checkpoints || d.loras)) {
+          comfyModelCache = d; setComfyModels(d);
+          if (d.checkpoints?.length && !comfyCheckpoint) setComfyCheckpoint(d.checkpoints[0].name);
+          setComfyOnline(true); setComfyStarting(false);
+        } else if (Date.now() - t0 < 90_000) { setTimeout(poll, 4000); } else { setComfyStarting(false); }
+      }).catch(() => { if (Date.now() - t0 < 90_000) setTimeout(poll, 4000); else setComfyStarting(false); });
     };
-    return <span style={{ fontSize: '12px', color: 'var(--color-text-faint)', fontFamily: MONO }}>{msgs[imgEngine]}</span>;
-  }
+    setTimeout(poll, 4000);
+  };
+
+  // ── Live progress bar label/sublabel for the image tab.
+  const imgPct = comfyStep ? comfyStep.value / comfyStep.max : progress;
+  const imgBarLabel = imgEngine === 'comfyui'
+    ? (comfyStep ? `Sampling… Step ${comfyStep.value}/${comfyStep.max}` : 'ComfyUI starting…')
+    : imgEngine === 'banana' ? 'Nano Banana working…' : 'Generating on the GPU…';
 
   return (
     <div class="flex flex-col h-full">
+      <style>{CC_ANIM_CSS}</style>
       <PageHeader
         title="Create"
         tabs={
@@ -585,7 +773,13 @@ export function Create() {
                           ? <span style={{ fontSize: '10px', color: '#ffb347', fontFamily: MONO }}>connecting…</span>
                           : comfyOnline
                             ? <span style={{ fontSize: '10px', color: '#34d39a', fontFamily: MONO }}>● online</span>
-                            : <span style={{ fontSize: '10px', color: '#ef5350', fontFamily: MONO }}>● offline</span>
+                            : <>
+                                <span style={{ fontSize: '10px', color: '#ef5350', fontFamily: MONO }}>● offline</span>
+                                <button type="button" onClick={startComfy} disabled={comfyStarting}
+                                  style={{ fontSize: '10px', fontFamily: MONO, padding: '2px 8px', borderRadius: '4px', cursor: comfyStarting ? 'wait' : 'pointer', color: '#34d39a', background: 'none', border: '1px solid rgba(52,211,154,0.3)' }}>
+                                  {comfyStarting ? <><span class="cc-spin">⟳</span> starting…</> : '▶ Start ComfyUI'}
+                                </button>
+                              </>
                       )}
                     </div>
                     <select value={imgEngine} onChange={(e) => setImgEngine((e.target as HTMLSelectElement).value as ImgEngine)} disabled={busy} style={{ ...S.select, minWidth: '260px' }}>
@@ -605,12 +799,22 @@ export function Create() {
                     </div>
                   )}
                   {imgEngine === 'local' && (
-                    <div>
-                      <div style={S.label}>MODEL</div>
-                      <select value={localModel} onChange={(e) => setLocalModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '240px' }}>
-                        {LOCAL_IMG_MODELS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                      </select>
-                    </div>
+                    <>
+                      <div>
+                        <div style={S.label}>MODEL</div>
+                        <select value={localModel} onChange={(e) => setLocalModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '240px' }}>
+                          {LOCAL_IMG_MODELS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <div style={S.label}>QUALITY</div>
+                        <select value={localSteps} onChange={(e) => setLocalSteps(Number((e.target as HTMLSelectElement).value))} disabled={busy} style={{ ...S.select, minWidth: '150px' }}>
+                          <option value={1}>Fast (1 step)</option>
+                          <option value={3}>Balanced (3)</option>
+                          <option value={6}>Quality (6)</option>
+                        </select>
+                      </div>
+                    </>
                   )}
                   {imgEngine === 'comfyui' && (
                     <>
@@ -679,10 +883,35 @@ export function Create() {
                       </select>
                     </div>
                   )}
+
+                  {/* Seed — reproduce/vary an output (Banana has no seed control) */}
+                  {imgEngine !== 'banana' && (
+                    <div>
+                      <div style={S.label}>SEED</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <input type="text" inputMode="numeric" value={seedVal} placeholder="random"
+                          onInput={(e) => setSeedVal((e.target as HTMLInputElement).value.replace(/[^0-9]/g, ''))}
+                          disabled={busy} style={{ ...S.select, width: '108px', cursor: 'text' }} />
+                        <button type="button" title="Randomize each run" disabled={busy} onClick={() => { setSeedVal(''); setSeedLock(false); }} style={{ ...actBtn, padding: '6px 8px' }}>🎲</button>
+                        <button type="button" title="Lock last seed (reproduce)" disabled={busy} onClick={() => setSeedLock((v) => !v)}
+                          style={{ ...actBtn, padding: '6px 8px', color: seedLock ? '#06210f' : 'var(--color-text-muted)', background: seedLock ? '#34d39a' : 'var(--color-elevated)', border: '1px solid ' + (seedLock ? '#34d39a' : 'var(--color-border)') }}>{seedLock ? '🔒' : '🔓'}</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Prompt */}
-                <div style={S.label}>PROMPT</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                  <div style={S.label}>PROMPT</div>
+                  {promptHist.length > 0 && (
+                    <select value="" disabled={busy}
+                      onChange={(e) => { const v = (e.target as HTMLSelectElement).value; if (v) setPrompt(v); (e.target as HTMLSelectElement).value = ''; }}
+                      style={{ ...S.select, fontSize: '11px', padding: '4px 8px', maxWidth: '260px' }}>
+                      <option value="">↩ recent prompts…</option>
+                      {promptHist.map((p, i) => <option key={i} value={p}>{p.length > 60 ? p.slice(0, 60) + '…' : p}</option>)}
+                    </select>
+                  )}
+                </div>
                 <textarea
                   value={prompt}
                   onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
@@ -763,24 +992,35 @@ export function Create() {
                 )}
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '16px', flexWrap: 'wrap' }}>
-                  <button type="button" onClick={genImage} disabled={!canImg} style={genBtnStyle(canImg)}>
-                    {busy ? (batchCount > 1 ? `Generating ${batchCount}×…` : 'Generating…') : (batchCount > 1 ? `✦ Generate ${batchCount}×` : '✦ Generate')}
+                  <button type="button" onClick={() => genImage()} disabled={!canImg} style={genBtnStyle(canImg)}>
+                    {busy
+                      ? <><span class="cc-spin">⟳</span> {batchCount > 1 ? `Generating ${batchCount}…` : 'Generating'} {fmtMs(elapsedMs)}</>
+                      : (batchCount > 1 ? `✦ Generate ${batchCount}×` : '✦ Generate')}
                   </button>
-                  {busyMsg()}
-                  {!busy && imgEngine === 'local' && (
+                  {!busy && lastMs !== null && (result?.ok || batchResults.some(r => r.ok)) && (
+                    <span style={{ fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>✓ Generated in {fmtMs(lastMs)}</span>
+                  )}
+                  {!busy && lastMs === null && imgEngine === 'local' && (
                     <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO }}>free · needs GPU VRAM (close BlueStacks/WSA)</span>
                   )}
-                  {!busy && imgEngine === 'comfyui' && (
+                  {!busy && lastMs === null && imgEngine === 'comfyui' && (
                     <span style={{ fontSize: '11px', color: '#34d39a', fontFamily: MONO }}>
-                      free · GPU · {comfyCheckpoint ? comfyCheckpoint.replace(/\.(safetensors|ckpt|gguf)$/, '') : 'ComfyUI'}{comfyLoras.length ? ` + ${comfyLoras.length} LoRA${comfyLoras.length > 1 ? 's' : ''}` : ''} · ~60s
+                      free · GPU · {comfyCheckpoint ? comfyCheckpoint.replace(/\.(safetensors|ckpt|gguf)$/, '') : 'ComfyUI'}{comfyLoras.length ? ` + ${comfyLoras.length} LoRA${comfyLoras.length > 1 ? 's' : ''}` : ''}
                     </span>
                   )}
                 </div>
+                {busy && <ProgressBar pct={imgPct} label={imgBarLabel} sub={`${fmtMs(elapsedMs)} elapsed`} />}
               </div>
 
               {/* ── Results ───────────────────────────────────────────────────── */}
               {batchResults.length > 0 && <BatchGrid results={batchResults} />}
-              {result && batchResults.length === 0 && <ResultBox result={result} kind="image" />}
+              {result && batchResults.length === 0 && (
+                <ResultBox result={result} kind="image" prompt={prompt}
+                  onRegenerate={() => genImage()}
+                  onNewSeed={() => genImage({ seed: undefined })}
+                  onSendToVideo={() => { setVidPrompt(prompt); setTab('video'); try { history.replaceState(null, '', '#video'); } catch {} }}
+                />
+              )}
             </>
           ) : (
             /* ── Video tab ───────────────────────────────────────────────────── */
@@ -798,16 +1038,45 @@ export function Create() {
               {vidEngine === 'local' ? (
                 <>
                   <div style={S.card}>
-                    <div style={S.label}>PROMPT</div>
-                    <textarea value={vidPrompt} onInput={(e) => setVidPrompt((e.target as HTMLTextAreaElement).value)} placeholder="A golden bull charging through a glowing stock chart, cinematic, smooth motion" rows={4} disabled={vidBusy} style={S.ta} />
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '16px' }}>
-                      <button type="button" onClick={genVideo} disabled={!canVid} style={genBtnStyle(canVid)}>{vidBusy ? 'Rendering…' : '✦ Generate Video'}</button>
-                      <span style={{ fontSize: '12px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
-                        {vidBusy ? 'Rendering on the GPU — this takes a few minutes.' : 'Free, on-GPU. Needs free VRAM (close BlueStacks/WSA if it errors).'}
-                      </span>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                      <div style={S.label}>PROMPT</div>
+                      {promptHist.length > 0 && (
+                        <select value="" disabled={vidBusy}
+                          onChange={(e) => { const v = (e.target as HTMLSelectElement).value; if (v) setVidPrompt(v); (e.target as HTMLSelectElement).value = ''; }}
+                          style={{ ...S.select, fontSize: '11px', padding: '4px 8px', maxWidth: '260px' }}>
+                          <option value="">↩ recent prompts…</option>
+                          {promptHist.map((p, i) => <option key={i} value={p}>{p.length > 60 ? p.slice(0, 60) + '…' : p}</option>)}
+                        </select>
+                      )}
                     </div>
+                    <textarea value={vidPrompt} onInput={(e) => setVidPrompt((e.target as HTMLTextAreaElement).value)} placeholder="A golden bull charging through a glowing stock chart, cinematic, smooth motion" rows={4} disabled={vidBusy} style={S.ta} />
+                    <div style={{ marginTop: '10px' }}>
+                      <div style={S.label}>SEED</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <input type="text" inputMode="numeric" value={vidSeedVal} placeholder="random"
+                          onInput={(e) => setVidSeedVal((e.target as HTMLInputElement).value.replace(/[^0-9]/g, ''))}
+                          disabled={vidBusy} style={{ ...S.select, width: '108px', cursor: 'text' }} />
+                        <button type="button" title="Randomize each run" disabled={vidBusy} onClick={() => { setVidSeedVal(''); setVidSeedLock(false); }} style={{ ...actBtn, padding: '6px 8px' }}>🎲</button>
+                        <button type="button" title="Lock last seed (reproduce)" disabled={vidBusy} onClick={() => setVidSeedLock((v) => !v)}
+                          style={{ ...actBtn, padding: '6px 8px', color: vidSeedLock ? '#06210f' : 'var(--color-text-muted)', background: vidSeedLock ? '#34d39a' : 'var(--color-elevated)', border: '1px solid ' + (vidSeedLock ? '#34d39a' : 'var(--color-border)') }}>{vidSeedLock ? '🔒' : '🔓'}</button>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '16px' }}>
+                      <button type="button" onClick={() => genVideo()} disabled={!canVid} style={genBtnStyle(canVid)}>{vidBusy ? <><span class="cc-spin">⟳</span> Rendering {fmtMs(vidElapsedMs)}</> : '✦ Generate Video'}</button>
+                      {!vidBusy && vidLastMs !== null && vidResult?.ok
+                        ? <span style={{ fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>✓ Rendered in {fmtMs(vidLastMs)}</span>
+                        : <span style={{ fontSize: '12px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
+                            {vidBusy ? 'Rendering on the GPU — a few minutes (model loads first).' : 'Free, on-GPU. Needs free VRAM (close BlueStacks/WSA if it errors).'}
+                          </span>}
+                    </div>
+                    {vidBusy && <ProgressBar pct={vidProgress} label="Rendering video on the GPU…" sub={`${fmtMs(vidElapsedMs)} elapsed`} />}
                   </div>
-                  {vidResult && <ResultBox result={vidResult} kind="video" />}
+                  {vidResult && (
+                    <ResultBox result={vidResult} kind="video" prompt={vidPrompt}
+                      onRegenerate={() => genVideo()}
+                      onNewSeed={() => genVideo({ seed: undefined })}
+                    />
+                  )}
                 </>
               ) : (
                 <>

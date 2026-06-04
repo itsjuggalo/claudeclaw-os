@@ -11,7 +11,7 @@ const HOME = process.env.HOME || '/home/itsju';
 const LG = `${HOME}/01_ACTIVE/local-gen`;
 const PY = `${LG}/.venv/bin/python`;
 
-export interface LocalResult { ok: boolean; file?: string; url?: string; error?: string; }
+export interface LocalResult { ok: boolean; file?: string; url?: string; error?: string; seed?: number; }
 
 let _busy = false;
 
@@ -32,7 +32,9 @@ function run(script: string, args: string[], saveRe: RegExp, urlFor: (file: stri
         const m = out.match(saveRe);
         if (m) {
           const file = path.basename(m[1].trim());
-          return resolve({ ok: true, file, url: urlFor(file) });
+          const seedM = out.match(/Seed:\s*(\d+)/);
+          const seed = seedM ? Number(seedM[1]) : undefined;
+          return resolve({ ok: true, file, url: urlFor(file), seed });
         }
         let error = 'Local generation failed.';
         if (err && (err as NodeJS.ErrnoException & { killed?: boolean }).killed) {
@@ -52,20 +54,24 @@ function run(script: string, args: string[], saveRe: RegExp, urlFor: (file: stri
   });
 }
 
-export function generateLocalImage(opts: { prompt: string; model?: string; steps?: number }): Promise<LocalResult> {
+export function generateLocalImage(opts: { prompt: string; model?: string; steps?: number; seed?: number }): Promise<LocalResult> {
   const prompt = (opts.prompt || '').trim();
   if (!prompt) return Promise.resolve({ ok: false, error: 'Prompt is required.' });
   const model = opts.model === 'sd-turbo' ? 'sd-turbo' : 'sdxl-turbo';
   const steps = opts.steps && opts.steps > 0 ? Math.min(8, opts.steps) : 3;
-  const args = ['--model', model, '--steps', String(steps), '--', prompt];
+  const args = ['--model', model, '--steps', String(steps)];
+  if (Number.isFinite(opts.seed as number)) args.push('--seed', String(opts.seed));
+  args.push('--', prompt);
   return run(`${LG}/generate_image_local.py`, args, /Image saved to (.+)/, (f) => `/api/gallery/file?root=generated&sub=&name=${encodeURIComponent(f)}`, 600_000, `${LG}/SDXL_READY`, 'SDXL-Turbo image');
 }
 
-export function generateLocalVideo(opts: { prompt: string; frames?: number; steps?: number }): Promise<LocalResult> {
+export function generateLocalVideo(opts: { prompt: string; frames?: number; steps?: number; seed?: number }): Promise<LocalResult> {
   const prompt = (opts.prompt || '').trim();
   if (!prompt) return Promise.resolve({ ok: false, error: 'Prompt is required.' });
   const frames = opts.frames && opts.frames > 0 ? Math.min(161, opts.frames) : 97;
   const steps = opts.steps && opts.steps > 0 ? Math.min(60, opts.steps) : 40;
-  const args = ['--frames', String(frames), '--steps', String(steps), '--', prompt];
+  const args = ['--frames', String(frames), '--steps', String(steps)];
+  if (Number.isFinite(opts.seed as number)) args.push('--seed', String(opts.seed));
+  args.push('--', prompt);
   return run(`${LG}/generate_video.py`, args, /Video saved to (.+)/, (f) => `/api/gallery/file?root=video&sub=&name=${encodeURIComponent(f)}`, 1_200_000, `${LG}/LTX_READY`, 'LTX-Video');
 }

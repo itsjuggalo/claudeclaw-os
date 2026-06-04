@@ -487,6 +487,52 @@ export async function kbAsk(id: string, question: string): Promise<KbAskResult> 
   }
 }
 
+// ── Anatomy image layer (KBs that ship an anatomy/index.json) ──────────
+// e.g. erikdalton: cached BodyParts3D / Wikimedia muscle renders + an alias
+// table so the client can map a topic/answer to its muscle image(s).
+export interface AnatomyMuscle {
+  name: string;
+  slug: string;
+  fma?: string[];
+  parts?: string[];
+  aliases?: string[];
+  images?: Record<string, string>; // view -> relative path (img/<slug>-front.png)
+  viewer_url?: string | null;
+  source?: string | null;
+  attribution?: string | null;
+}
+export interface AnatomyIndex { muscles: Record<string, AnatomyMuscle>; }
+
+export function kbAnatomy(id: string): AnatomyIndex {
+  const dir = getKbDir(id);
+  if (!dir) return { muscles: {} };
+  const idxFile = join(dir, 'anatomy', 'index.json');
+  if (!existsSync(idxFile)) return { muscles: {} };
+  try {
+    return { muscles: JSON.parse(readFileSync(idxFile, 'utf8')) as Record<string, AnatomyMuscle> };
+  } catch {
+    return { muscles: {} };
+  }
+}
+
+// Serve a cached anatomy image. Hard-locked to anatomy/img/<sanitized>.png —
+// the filename is regex-gated AND realpath-confirmed to stay inside the dir, so
+// there is no traversal surface even though the client supplies the name.
+export function kbAnatomyImage(id: string, file: string): { data: Buffer; mime: string } | { error: string } {
+  const dir = getKbDir(id);
+  if (!dir) return { error: 'unknown kb' };
+  if (!/^[a-z0-9-]+\.png$/.test(file)) return { error: 'bad filename' };
+  const imgDir = join(dir, 'anatomy', 'img');
+  const full = join(imgDir, file);
+  try {
+    if (!existsSync(full)) return { error: 'not found' };
+    if (!realpathSync(full).startsWith(realpathSync(imgDir) + pathSep)) return { error: 'denied' };
+    return { data: readFileSync(full), mime: 'image/png' };
+  } catch (e) {
+    return { error: String((e as Error).message || e) };
+  }
+}
+
 // ── SQL meta / select ────────────────────────────────────────────────
 export interface SqlMeta {
   size: string;

@@ -9,7 +9,7 @@ import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE } from './config.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
-import { getCatalog, kbSearch, kbAsk, kbSources, sqlMeta, sqlSelect, listSecrets, revealSecret } from './databases.js';
+import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlMeta, sqlSelect, listSecrets, revealSecret } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
@@ -1065,6 +1065,52 @@ init();
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
   });
 
+  // ── Live ComfyUI step progress (SSE) ─────────────────────────────────────────
+  // Relays ComfyUI's native /ws `progress` (step k of N) so the Create page can
+  // show a REAL progress bar instead of a guessed estimate. Only ONE GPU gen runs
+  // at a time (shared lock), so whatever ComfyUI emits is the user's current gen.
+  app.get('/api/comfy/progress', (c) => {
+    return streamSSE(c, async (stream) => {
+      const wsModule: any = await import('ws').catch(() => null);
+      const WS = wsModule ? (wsModule.default?.WebSocket ?? wsModule.WebSocket) : null;
+      let writeChain: Promise<void> = Promise.resolve();
+      const send = (obj: unknown) => {
+        writeChain = writeChain.then(async () => {
+          try { await stream.writeSSE({ event: 'message', data: JSON.stringify(obj) }); } catch {}
+        });
+      };
+      if (!WS) { send({ type: 'error', error: 'ws unavailable' }); return; }
+
+      let ws: any = null;
+      try {
+        ws = new WS('ws://127.0.0.1:8188/ws');
+        ws.on('message', (raw: Buffer, isBinary: boolean) => {
+          if (isBinary) return; // preview-image frames — ignore
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === 'progress' && msg.data) {
+              send({ type: 'progress', value: msg.data.value, max: msg.data.max, node: msg.data.node ?? null });
+            } else if (msg.type === 'executing') {
+              send({ type: 'executing', node: msg.data?.node ?? null });
+            } else if (msg.type === 'executed') {
+              send({ type: 'executed', node: msg.data?.node ?? null });
+            }
+          } catch { /* non-JSON frame */ }
+        });
+        ws.on('error', () => send({ type: 'error', error: 'comfy ws error' }));
+      } catch { send({ type: 'error', error: 'comfy ws connect failed' }); }
+
+      const ping = setInterval(async () => {
+        try { await stream.writeSSE({ event: 'ping', data: '' }); } catch { clearInterval(ping); }
+      }, 30_000);
+
+      try {
+        await new Promise<void>((_, reject) => { stream.onAbort(() => reject(new Error('aborted'))); });
+      } catch { /* client disconnected */ }
+      finally { clearInterval(ping); try { ws?.close(); } catch {} }
+    });
+  });
+
   app.post('/api/comfy/queue', async (c) => {
     try {
       const body = await c.req.json();
@@ -1225,7 +1271,7 @@ init();
       if (!outputFile) return c.json({ ok: false, error: 'Timed out waiting for ComfyUI output (300s)' }, 504);
 
       const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(outputFile)}`;
-      return c.json({ ok: true, file: outputFile, url, notes: `checkpoint: ${checkpoint.replace('.safetensors', '')}` });
+      return c.json({ ok: true, file: outputFile, url, seed, notes: `checkpoint: ${checkpoint.replace('.safetensors', '')}` });
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
   });
 
@@ -1361,6 +1407,7 @@ init();
         prompt,
         model: typeof body?.model === 'string' ? body.model : undefined,
         steps: typeof body?.steps === 'number' ? body.steps : undefined,
+        seed: typeof body?.seed === 'number' ? body.seed : undefined,
       });
     } else {
       result = await generateImage({
@@ -1432,6 +1479,7 @@ init();
       prompt: String(body?.prompt ?? ''),
       frames: typeof body?.frames === 'number' ? body.frames : undefined,
       steps: typeof body?.steps === 'number' ? body.steps : undefined,
+      seed: typeof body?.seed === 'number' ? body.seed : undefined,
     });
     if (result.ok) invalidateGalleryCache();
     return c.json(result);
@@ -3775,6 +3823,21 @@ init();
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
+  });
+
+  app.get('/api/databases/kb/:id/anatomy', (c) => {
+    try {
+      return c.json(kbAnatomy(c.req.param('id')));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/anatomy/img/:file', (c) => {
+    const res = kbAnatomyImage(c.req.param('id'), c.req.param('file'));
+    if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+    const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
+    return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
   });
 
   app.post('/api/databases/kb/:id/ask', async (c) => {

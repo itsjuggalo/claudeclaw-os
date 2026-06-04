@@ -6,7 +6,7 @@
 // All data comes from /api/databases/* (see src/databases.ts). Read-only:
 // the SQL runner is SELECT-only on the backend; secrets never auto-reveal.
 import type { ComponentChildren } from 'preact';
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect, useRef, useMemo } from 'preact/hooks';
 import { useRoute, useLocation } from 'wouter-preact';
 import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search, Download, RefreshCw } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
@@ -145,6 +145,100 @@ const LAYER_COLOR: Record<string, string> = {
   identity: '#a78bfa', critical: '#f59e0b', working: '#10b981', episodic: '#5eb6ff',
 };
 
+// ── Anatomy image layer (KBs that ship anatomy/index.json, e.g. erikdalton) ──
+interface AnatomyMuscle {
+  name: string;
+  slug: string;
+  images?: Record<string, string>; // view -> "img/<slug>-front.png"
+  viewer_url?: string | null;
+  source?: string | null;
+  attribution?: string | null;
+  aliases?: string[];
+}
+
+// One muscle: front render, hover-swaps to back, links out to the full 3D view.
+function MuscleCard({ m, itemId }: { m: AnatomyMuscle; itemId: string }) {
+  const [back, setBack] = useState(false);
+  const imgUrl = (rel?: string) =>
+    rel ? '/api/databases/kb/' + itemId + '/anatomy/img/' + rel.split('/').pop() : '';
+  const front = m.images?.front;
+  const rear = m.images?.back;
+  const shown = back && rear ? rear : front;
+  if (!shown) return null;
+  return (
+    <div
+      onMouseEnter={() => setBack(true)}
+      onMouseLeave={() => setBack(false)}
+      style={{
+        width: '108px', flex: '0 0 auto', textAlign: 'center',
+        background: 'var(--color-bg)', border: '1px solid var(--color-border)',
+        borderRadius: '8px', padding: '6px',
+      }}
+      title={m.name + (rear ? ' — hover for posterior view' : '')}
+    >
+      <div style={{ position: 'relative' }}>
+        <img
+          src={imgUrl(shown)}
+          alt={m.name}
+          loading="lazy"
+          style={{ width: '96px', height: '96px', objectFit: 'contain' }}
+        />
+        {rear && (
+          <span style={{
+            position: 'absolute', bottom: 0, right: 0, fontSize: '8px', fontWeight: 700,
+            color: 'var(--color-text-faint)', background: 'var(--color-card)',
+            padding: '1px 4px', borderRadius: '4px',
+          }}>{back ? 'back' : 'front'}</span>
+        )}
+      </div>
+      <div style={{ fontSize: '11px', color: 'var(--color-text)', marginTop: '4px', lineHeight: 1.2, textTransform: 'capitalize' }}>
+        {m.name}
+      </div>
+      {m.viewer_url && (
+        <a href={m.viewer_url} target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: '10px', color: 'var(--color-accent)' }}
+          class="hover:underline">view 3D ↗</a>
+      )}
+    </div>
+  );
+}
+
+// A horizontal strip of muscle cards for a set of slugs.
+function MuscleStrip({ slugs, anatomy, itemId }: {
+  slugs: string[]; anatomy: Record<string, AnatomyMuscle>; itemId: string;
+}) {
+  const muscles = slugs.map((s) => anatomy[s]).filter(Boolean);
+  if (muscles.length === 0) return null;
+  return (
+    <div style={{ marginTop: '12px' }}>
+      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
+        Anatomy · {muscles.length} muscle{muscles.length > 1 ? 's' : ''}
+      </div>
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        {muscles.map((m) => <MuscleCard key={m.slug} m={m} itemId={itemId} />)}
+      </div>
+      <div style={{ fontSize: '9px', color: 'var(--color-text-faint)', marginTop: '6px' }}>
+        BodyParts3D © DBCLS, CC BY-SA 2.1 JP · Wikimedia Commons
+      </div>
+    </div>
+  );
+}
+
+// Tag arbitrary text with the muscle slugs it references, using the KB's alias
+// table. Longest alias first so "teres major" beats a bare "teres"; left-edge
+// guarded so "lat " doesn't fire inside "plate".
+function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
+  if (!text) return [];
+  const low = ' ' + text.toLowerCase() + ' ';
+  const found: string[] = [];
+  for (const [alias, slug] of aliasPairs) {
+    if (found.includes(slug)) continue;
+    const idx = low.indexOf(alias);
+    if (idx > 0 && !/[a-z]/.test(low[idx - 1])) found.push(slug);
+  }
+  return found;
+}
+
 function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   type KbTab = 'ask' | 'search' | 'sources';
   const [tab, setTab] = useState<KbTab>(item.askable ? 'ask' : 'search');
@@ -166,6 +260,22 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   const [sources, setSources] = useState<KbSourcesResponse | null>(null);
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [sourcesErr, setSourcesErr] = useState<string | null>(null);
+
+  // Anatomy image layer — loaded once; empty {} for KBs without one.
+  const [anatomy, setAnatomy] = useState<Record<string, AnatomyMuscle>>({});
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ muscles: Record<string, AnatomyMuscle> }>('/api/databases/kb/' + item.id + '/anatomy')
+      .then((r) => { if (!cancelled) setAnatomy(r.muscles || {}); })
+      .catch(() => { /* no anatomy layer for this KB */ });
+    return () => { cancelled = true; };
+  }, [item.id]);
+  const aliasPairs = useMemo<[string, string][]>(() => {
+    const pairs: [string, string][] = [];
+    for (const [slug, m] of Object.entries(anatomy))
+      for (const a of m.aliases || []) pairs.push([a.toLowerCase(), slug]);
+    return pairs.sort((x, y) => y[0].length - x[0].length);
+  }, [anatomy]);
 
   // Jump from a citation to the Search tab, pre-filled with the lesson heading.
   function jumpToSearch(heading: string) {
@@ -346,6 +456,11 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                           </ul>
                         </div>
                       )}
+                      <MuscleStrip
+                        slugs={tagMuscles(answer.answer + ' ' + (answer.sources || []).join(' '), aliasPairs)}
+                        anatomy={anatomy}
+                        itemId={item.id}
+                      />
                     </>
                   )}
                 </div>
@@ -390,6 +505,11 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                           class="chat-md text-xs text-[var(--color-text-muted)]"
                           style={{ lineHeight: 1.55 }}
                           dangerouslySetInnerHTML={{ __html: renderMarkdown(h.preview) }}
+                        />
+                        <MuscleStrip
+                          slugs={tagMuscles((h.heading || '') + ' ' + h.preview, aliasPairs)}
+                          anatomy={anatomy}
+                          itemId={item.id}
                         />
                       </div>
                     );
