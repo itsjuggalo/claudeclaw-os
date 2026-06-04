@@ -42,9 +42,9 @@ export interface RegistryEntry {
 
 const RAW_REGISTRY: RegistryEntry[] = [
   // Knowledge Bases (RAG)
-  { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true },
-  { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true },
-  { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`) },
+  { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true, searchUrl: 'http://localhost:8095/query?kb=claytrader' },
+  { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true, searchUrl: 'http://localhost:8095/query?kb=erikdalton' },
+  { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`), searchUrl: 'http://localhost:8095/query?kb=vibecoding' },
   { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: existsSync(`${HOME}/02_DATA/mc-kb/ask.py`), searchUrl: 'http://localhost:8091/query' },
 
   // Trade & Pipeline SQL
@@ -314,7 +314,11 @@ interface RawKbHit {
 // previews; callers fall back to query.py when this returns null.
 async function kbSearchViaServer(url: string, q: string, top: number): Promise<KbHit[] | null> {
   try {
-    const u = `${url}?q=${encodeURIComponent(q)}&top=${top}`;
+    // URL API so a searchUrl that already carries params (e.g. ?kb=claytrader
+    // for the shared :8095 server) merges cleanly with q/top.
+    const u = new URL(url);
+    u.searchParams.set('q', q);
+    u.searchParams.set('top', String(top));
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);
     let body: { hits?: RawKbHit[] };
@@ -347,11 +351,13 @@ export async function kbSearch(id: string, q: string, top = 8): Promise<KbSearch
   if (!dir) return { hits: [], abstained: true };
   const topN = String(Math.max(1, Math.min(50, Math.floor(top) || 8)));
 
-  // Warm-server fast-path (mc-kb). On any miss/failure we fall through to the
-  // query.py spawn below so search never silently breaks if the server is down.
+  // Warm-server fast-path. The server applies the same relevance gate as
+  // query.py, so an empty response is a real abstain — trust it. Only a null
+  // (server unreachable/error) falls through to the query.py spawn below, so
+  // search never silently breaks if the server is down.
   if (entry?.searchUrl) {
     const fast = await kbSearchViaServer(entry.searchUrl, q, Number(topN));
-    if (fast && fast.length > 0) return { hits: fast, abstained: false };
+    if (fast !== null) return { hits: fast, abstained: fast.length === 0 };
   }
   try {
     // execFile with an args array — q is never shell-interpolated.
