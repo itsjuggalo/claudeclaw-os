@@ -542,10 +542,17 @@ export function Create() {
   const selectedCkpt = comfyModels?.checkpoints?.find(c => c.name === comfyCheckpoint);
   const ckptFam = selectedCkpt?.family;
   const activeLoraObjs = (comfyModels?.loras || []).filter(l => comfyLoras.includes(l.name));
-  const activeTriggers = Array.from(new Set([
-    ...(selectedCkpt?.triggers || []),
-    ...activeLoraObjs.flatMap(l => l.triggers || []),
-  ].map(t => (t || '').trim()).filter(Boolean)));
+  // Civitai trainedWords often lists a model's whole caption vocab, not just the
+  // trigger. Auto-add ONLY the primary activation word (the first non-blank one)
+  // per source — injecting all would bloat the prompt and hurt the image. The
+  // rest stay available for the user to type by hand.
+  const primaryTrigger = (arr?: string[]): string | null => {
+    const list = (arr || []).map(t => (t || '').trim()).filter(Boolean);
+    return list.length ? list[0] : null;
+  };
+  const activeTriggers = Array.from(new Set(
+    [primaryTrigger(selectedCkpt?.triggers), ...activeLoraObjs.map(l => primaryTrigger(l.triggers))].filter(Boolean) as string[],
+  ));
   const effectiveTriggers = activeTriggers.filter(t => !droppedTriggers.includes(t));
 
   // ── Generate (single or batch). `override.seed` lets "New seed" force-randomize.
