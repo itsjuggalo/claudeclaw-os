@@ -1056,9 +1056,11 @@ init();
         const pid = execSync('cat /tmp/comfyui.pid 2>/dev/null || true', { stdio: 'pipe' }).toString().trim();
         if (pid) { execSync(`kill ${pid}`, { stdio: 'pipe' }); stopped = true; }
       } catch {}
-      if (!stopped) {
-        try { execSync("pkill -f 'ComfyUI/venv/bin/python.*main.py' 2>/dev/null || true", { stdio: 'pipe' }); stopped = true; } catch {}
-      }
+      // ALWAYS sweep the real python child — the pidfile can be stale or (pre-fix)
+      // hold the wrong pid, which would leave ComfyUI orphaned holding VRAM on the
+      // 8GB GPU. Then clear the shared lock so the next gen isn't falsely blocked.
+      try { execSync("pkill -f 'ComfyUI/venv/bin/python.*main.py' 2>/dev/null || true", { stdio: 'pipe' }); stopped = true; } catch {}
+      try { execSync('rm -f /tmp/heavy-gpu-job.lock 2>/dev/null || true', { stdio: 'pipe' }); } catch {}
       return c.json({ ok: stopped, message: stopped ? 'ComfyUI stopped' : 'ComfyUI was not running' });
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
   });
@@ -1108,11 +1110,13 @@ init();
         child.unref();
         // Wait up to 90s for ComfyUI to come up
         const startMs = Date.now();
-        while (Date.now() - startMs < 90_000) {
+        // Cold WSL ComfyUI + a large SDXL/Pony checkpoint load can exceed 90s,
+        // so the route used to false-503 while the process kept coming up fine.
+        while (Date.now() - startMs < 180_000) {
           await new Promise(r => setTimeout(r, 3000));
           try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; break; } catch {}
         }
-        if (!running) return c.json({ ok: false, error: 'ComfyUI failed to start within 90s' }, 503);
+        if (!running) return c.json({ ok: false, error: 'ComfyUI failed to start within 180s' }, 503);
       }
 
       // ── 2. Build workflow from template ─────────────────────────────────
