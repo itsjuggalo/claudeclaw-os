@@ -286,6 +286,57 @@ export async function getCatalog(): Promise<Catalog> {
   }
 }
 
+// ── Warm caches (stale-while-revalidate) ─────────────────────────────
+// Serve precomputed values so repeat loads hit memory (single-digit ms) instead
+// of re-spawning a Python/LanceDB subprocess or re-opening a SQLite DB per call.
+// A stale entry is returned instantly while a fresh value recomputes in the
+// background. `sig` is a cheap mtime:size fingerprint — when the underlying data
+// changes (rows written, KB reindexed) the next call refreshes. Errors throw out
+// of `compute`, so they are never cached.
+interface WarmEntry { value: unknown; ts: number; sig: string; building: boolean; }
+const _warm = new Map<string, WarmEntry>();
+
+function statSig(path: string): string {
+  try { const s = statSync(path); return `${s.mtimeMs}:${s.size}`; } catch { return 'na'; }
+}
+
+async function warmAsync<T>(key: string, sig: string, ttl: number, compute: () => Promise<T>): Promise<T> {
+  const e = _warm.get(key);
+  if (e) {
+    const fresh = Date.now() - e.ts < ttl && e.sig === sig;
+    if (!fresh && !e.building) {
+      e.building = true;
+      compute()
+        .then((v) => _warm.set(key, { value: v, ts: Date.now(), sig, building: false }))
+        .catch(() => { e.building = false; });
+    }
+    return e.value as T; // SWR: serve last good immediately
+  }
+  const value = await compute(); // first ever: pay full cost (uncached on throw)
+  _warm.set(key, { value, ts: Date.now(), sig, building: false });
+  return value;
+}
+
+function warmSync<T>(key: string, sig: string, ttl: number, compute: () => T): T {
+  const e = _warm.get(key);
+  if (e && Date.now() - e.ts < ttl && e.sig === sig) return e.value as T;
+  const value = compute();
+  _warm.set(key, { value, ts: Date.now(), sig, building: false });
+  return value;
+}
+
+// Prime every cache on boot so the operator's first load is already warm.
+export async function warmupDatabases(): Promise<void> {
+  try { await getCatalog(); } catch { /* ignore */ }
+  await Promise.all(REGISTRY.map(async (e) => {
+    try {
+      if (e.type === 'sql') await sqlMeta(e.id);
+      else if (e.type === 'kb' && existsSync(join(e.path, 'kb.vectors'))) await kbSources(e.id);
+    } catch { /* ignore */ }
+  }));
+  try { listSecrets(); } catch { /* ignore */ }
+}
+
 // ── KB search / ask ──────────────────────────────────────────────────
 export interface KbHit {
   source: string;
@@ -444,13 +495,24 @@ export async function kbSources(id: string): Promise<KbSourcesResult> {
   const vectors = join(dir, 'kb.vectors');
   if (!existsSync(vectors)) return { ...empty, error: 'no vector store' };
   try {
-    const { stdout } = await execFileAsync(
-      VENV,
-      ['-c', PY_KB_SOURCES, vectors],
-      { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
-    );
-    const parsed = JSON.parse(stdout) as KbSourcesResult;
-    return { ...empty, ...parsed };
+    // Static unless the KB reindexes; warm-cache 5min (turns a ~3.5s subprocess
+    // spawn into a ~2ms read). A reindex rewrites sync_status.json, which is a
+    // far more reliable change-signal than the kb.vectors dir mtime (LanceDB
+    // writes new files in subdirs without touching the top dir); the 5min TTL is
+    // the backstop. The Python helper prints {"error":...} on failure — detect
+    // and throw so a transient error is NEVER pinned in cache for 5min.
+    const statusFile = join(dir, 'sync_status.json');
+    const sigPath = existsSync(statusFile) ? statusFile : vectors;
+    return await warmAsync(`kbsources:${id}`, statSig(sigPath), 5 * 60_000, async () => {
+      const { stdout } = await execFileAsync(
+        VENV,
+        ['-c', PY_KB_SOURCES, vectors],
+        { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+      );
+      const parsed = JSON.parse(stdout) as KbSourcesResult & { error?: string };
+      if (parsed.error) throw new Error(parsed.error);
+      return { ...empty, ...parsed };
+    });
   } catch (e) {
     return { ...empty, error: String((e as Error).message || e) };
   }
@@ -542,31 +604,40 @@ export interface SqlMeta {
 export async function sqlMeta(id: string): Promise<SqlMeta | { error: string }> {
   const e = getEntry(id);
   if (!e || e.type !== 'sql') return { error: 'unknown sql db' };
-  const size = await duSize(e.path);
-  let dbh: Database.Database | null = null;
   try {
-    dbh = new Database(e.path, { readonly: true });
-    dbh.pragma('busy_timeout = 4000');
-    const names = (dbh
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-      .all() as Array<{ name: string }>)
-      .map((r) => r.name)
-      .slice(0, 60);
-    const tables = names.map((name) => {
-      let rows = -1;
+    // Counts change as rows are written. These DBs run in WAL mode, so committed
+    // writes land in the `-wal` sibling and the MAIN file's mtime/size don't move
+    // until a checkpoint — fingerprint BOTH so a write actually invalidates the
+    // entry (60s TTL is the backstop between checkpoints).
+    const sig = `${statSig(e.path)}|${statSig(e.path + '-wal')}`;
+    return await warmAsync(`sqlmeta:${id}`, sig, 60_000, async () => {
+      const size = await duSize(e.path);
+      let dbh: Database.Database | null = null;
       try {
-        const r = dbh!.prepare(`SELECT COUNT(*) AS n FROM "${name.replace(/"/g, '""')}"`).get() as { n: number };
-        rows = r.n;
-      } catch {
-        rows = -1;
+        dbh = new Database(e.path, { readonly: true });
+        dbh.pragma('busy_timeout = 4000');
+        const names = (dbh
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+          .all() as Array<{ name: string }>)
+          .map((r) => r.name)
+          .slice(0, 60);
+        const tables = names.map((name) => {
+          let rows = -1;
+          try {
+            const r = dbh!.prepare(`SELECT COUNT(*) AS n FROM "${name.replace(/"/g, '""')}"`).get() as { n: number };
+            rows = r.n;
+          } catch {
+            rows = -1;
+          }
+          return { name, rows };
+        });
+        return { size, tables };
+      } finally {
+        if (dbh) try { dbh.close(); } catch { /* ignore */ }
       }
-      return { name, rows };
     });
-    return { size, tables };
   } catch (err) {
     return { error: String((err as Error).message || err) };
-  } finally {
-    if (dbh) try { dbh.close(); } catch { /* ignore */ }
   }
 }
 
@@ -676,6 +747,12 @@ function categorize(name: string): string {
 }
 
 export function listSecrets(): SecretsResult {
+  // Filesystem scan of every secret dir + .env; cheap-ish but sync-blocking.
+  // Warm-cache 30s (a TTL — no single mtime spans all dirs); reveal is uncached.
+  return warmSync('secrets', '', 30_000, _listSecrets);
+}
+
+function _listSecrets(): SecretsResult {
   const byCat = new Map<string, SecretItem[]>();
   const push = (category: string, item: SecretItem) => {
     const arr = byCat.get(category) ?? [];

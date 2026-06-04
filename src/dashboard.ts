@@ -9,7 +9,7 @@ import path from 'path';
 import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE } from './config.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
-import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlMeta, sqlSelect, listSecrets, revealSecret } from './databases.js';
+import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
@@ -3804,6 +3804,10 @@ init();
       return c.json({ error: String(e) }, 500);
     }
   });
+
+  // Prime all database caches on boot so the operator's first load is warm
+  // (no cold catalog du-walk, no cold KB-sources subprocess). Fire-and-forget.
+  void warmupDatabases();
 
   app.get('/api/databases/kb/:id/search', async (c) => {
     const id = c.req.param('id');
