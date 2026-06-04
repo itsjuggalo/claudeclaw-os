@@ -15,6 +15,8 @@ import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, mo
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo } from './localgen.js';
+import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
+import Database from 'better-sqlite3';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -1113,6 +1115,11 @@ init();
 
   app.post('/api/comfy/queue', async (c) => {
     try {
+      // Safety gate — the raw passthrough is a bypass door for the high-level
+      // /api/comfy/generate gate, so it must enforce the same checks.
+      const gate = preflightGate();
+      if (!gate.ok) { notify(`🛑 ComfyUI queue blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+      if (await comfyQueueDepth() >= 1) return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
       const body = await c.req.json();
       const res = await fetch('http://127.0.0.1:8188/prompt', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -1135,6 +1142,7 @@ init();
   // workflow construction, queueing, polling, and returns a gallery-file URL.
   app.post('/api/comfy/generate', async (c) => {
     const HOME = process.env.HOME || '/home/itsju';
+    let queued = false;  // only flush VRAM (/free) if THIS request queued a job
     try {
       const body = await c.req.json() as {
         prompt?: string; negative_prompt?: string; steps?: number; cfg?: number;
@@ -1143,6 +1151,12 @@ init();
       };
       const prompt = (body.prompt || '').trim();
       if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
+
+      // ── 0. Safety gate — refuse if unsafe, no matter the trigger source ──
+      // (phone, dashboard, or raw API). Closes the warm-ComfyUI gap: cold start
+      // runs preflight via comfyui-start, but a warm instance had no gate.
+      const gate = preflightGate();
+      if (!gate.ok) { notify(`🛑 Image gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
 
       const { execSync, spawn } = await import('child_process');
 
@@ -1163,6 +1177,11 @@ init();
           try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; break; } catch {}
         }
         if (!running) return c.json({ ok: false, error: 'ComfyUI failed to start within 180s' }, 503);
+      }
+
+      // ── 1b. Queue-depth cap — one heavy job at a time on the 8GB GPU ────
+      if (await comfyQueueDepth() >= 1) {
+        return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
       }
 
       // ── 2. Build workflow from template ─────────────────────────────────
@@ -1204,6 +1223,7 @@ init();
         body: JSON.stringify({ prompt: workflow }),
       });
       if (!queueRes.ok) return c.json({ ok: false, error: `ComfyUI queue rejected: ${queueRes.status}` }, 502);
+      queued = true;  // a job is now on the GPU — VRAM must be flushed in finally
       const { prompt_id } = await queueRes.json() as { prompt_id: string };
 
       // ── 4. Poll until done (max 300s) ────────────────────────────────────
@@ -1271,8 +1291,15 @@ init();
       if (!outputFile) return c.json({ ok: false, error: 'Timed out waiting for ComfyUI output (600s)' }, 504);
 
       const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(outputFile)}`;
+      notify(`✅ Image ready: ${outputFile} (${checkpoint.replace('.safetensors', '')})`);
       return c.json({ ok: true, file: outputFile, url, seed, notes: `checkpoint: ${checkpoint.replace('.safetensors', '')}` });
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+    finally {
+      // Flush ComfyUI VRAM after every gen that actually ran (memory Hard Rule 2),
+      // including timeout/error paths. Guarded by `queued` so a blocked/queue-busy
+      // request never frees VRAM out from under another job's running generation.
+      if (queued) void comfyFree();
+    }
   });
 
   // ── System disk — always report WSL virtual AND C: physical ──
@@ -1293,6 +1320,89 @@ init();
       const warning = cPct >= 85 ? `C: drive ${cdrive!.pct} full — ${cdrive!.avail} free` : null;
       return c.json({ wsl, cdrive, warning, critical: cPct >= 95, note: 'C: is the physical limit; WSL .vhdx expands into it.' });
     } catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // ── System metrics for the phone — surfaces ~/metrics/metrics.db (cpu/ram/
+  //    gpu/disk/protection health, collected every 60s by metrics/collector.py)
+  //    PLUS a LIVE system-guardian preflight verdict, so the Create page can show
+  //    health and hard-disable Generate when unsafe. Read-only; never recollects.
+  app.get('/api/system/metrics', (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const dbPath = `${HOME}/metrics/metrics.db`;
+    let metrics: Record<string, unknown> = {};
+    let staleness = -1;
+    try {
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        const hw = db.prepare('SELECT * FROM hw_metrics ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        const disk = db.prepare('SELECT * FROM disk_metrics ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        const prot = db.prepare('SELECT * FROM protection_health ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        metrics = { hw: hw ?? null, disk: disk ?? null, protection: prot ?? null };
+        const latestTs = Math.max(hw?.ts ?? 0, disk?.ts ?? 0, prot?.ts ?? 0);
+        if (latestTs > 0) staleness = Math.floor(Date.now() / 1000) - latestTs;
+      } finally { db.close(); }
+    } catch (e) { metrics = { error: String(e) }; }
+    // Live preflight = the exact gate the server enforces, so the UI verdict can
+    // never disagree with what the server will actually allow.
+    const preflight = preflightGate();
+    return c.json({ metrics, preflight, staleness, stale: staleness < 0 || staleness > 180 });
+  });
+
+  // ── Model manager — download a Civitai model from the phone, disk-gated ──
+  //   Every download goes through model-cap-check (hard folder ceiling) and
+  //   safe-model-download (refuses if C: <= 30G), so models can never silently
+  //   refill C:. Progress is polled via GET /api/models/download/:id.
+  const modelDownloads = new Map<string, { dest: string; name: string; status: 'downloading' | 'done' | 'failed'; pct: number; error?: string }>();
+  const MODEL_DEST_DIRS: Record<string, string> = { checkpoints: 'checkpoints', loras: 'loras', controlnet: 'controlnet', vae: 'vae' };
+  app.post('/api/models/download', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    try {
+      const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const url = String(body?.url ?? '').trim();
+      const token = String(body?.token ?? '').trim();
+      const dest = String(body?.dest ?? '').trim();
+      let name = String(body?.filename ?? '').trim();
+      let host = '';
+      try { host = new URL(url).host; } catch { return c.json({ ok: false, error: 'invalid url' }, 400); }
+      if (!/(^|\.)civitai\.com$/.test(host)) return c.json({ ok: false, error: 'only civitai.com downloads are allowed' }, 400);
+      if (!MODEL_DEST_DIRS[dest]) return c.json({ ok: false, error: `dest must be one of: ${Object.keys(MODEL_DEST_DIRS).join(', ')}` }, 400);
+      if (!name) { const m = url.match(/models\/(\d+)/); name = `civitai-${m ? m[1] : 'model'}.safetensors`; }
+      name = name.replace(/[^\w.\-]/g, '_');  // sanitize — block path traversal
+      if (!/\.(safetensors|ckpt|pt|gguf)$/i.test(name)) name += '.safetensors';
+
+      const { execSync, spawn } = await import('child_process');
+      // Hard model-folder cap — refuse before we even start.
+      try { execSync(`${HOME}/05_AUTOMATION/bin/model-cap-check`, { stdio: 'pipe' }); }
+      catch (e) {
+        const out = (e as { stdout?: Buffer }).stdout?.toString().trim() || 'model folder cap exceeded';
+        notify(`🛑 Model download refused (cap): ${out}`);
+        return c.json({ ok: false, blocked: true, error: out }, 409);
+      }
+
+      const destDir = `${HOME}/ComfyUI/models/${MODEL_DEST_DIRS[dest]}`;
+      const jobId = crypto.randomUUID();
+      modelDownloads.set(jobId, { dest, name, status: 'downloading', pct: 0 });
+      const args = ['aria2c', '-x8', '-s8', '--summary-interval=1', '--auto-file-renaming=false', '--allow-overwrite=false', '-d', destDir, '-o', name];
+      if (token) args.push(`--header=Authorization: Bearer ${token}`);
+      args.push(url);
+      const child = spawn(`${HOME}/05_AUTOMATION/bin/safe-model-download`, args, { env: { ...process.env, HOME } });
+      const onData = (buf: Buffer) => { const m = buf.toString().match(/\((\d+)%\)/); if (m) { const j = modelDownloads.get(jobId); if (j) j.pct = Number(m[1]); } };
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+      child.on('close', (code) => {
+        const j = modelDownloads.get(jobId); if (!j) return;
+        if (code === 0) { j.status = 'done'; j.pct = 100; invalidateGalleryCache(); }
+        else { j.status = 'failed'; j.error = `download exited ${code} — safe-model-download may have refused (C: too low) or auth failed`; }
+        notify(j.status === 'done' ? `✅ Model downloaded: ${name} → ${dest}` : `⚠️ Model download failed: ${name} — ${j.error}`);
+      });
+      return c.json({ ok: true, jobId, name, dest });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.get('/api/models/download/:id', (c) => {
+    const j = modelDownloads.get(c.req.param('id'));
+    if (!j) return c.json({ ok: false, error: 'unknown job' }, 404);
+    return c.json({ ok: true, ...j });
   });
 
   // ── Wallets — aggregated brokerage/exchange balances (moved here from
@@ -1475,6 +1585,11 @@ init();
   // Local FREE video (diffusers LTX-Video on the GPU) → renders/ = gallery video section.
   app.post('/api/gallery/generate-video', async (c) => {
     const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    // Safety gate BEFORE spawning the long (up to 20-min) LTX subprocess so the
+    // phone gets an instant "blocked: <reason>" instead of waiting. LTX on the
+    // 8GB GPU is the box-freeze vector — localgen.ts also gates + locks it.
+    const gate = preflightGate();
+    if (!gate.ok) { notify(`🛑 Video gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
     const result = await generateLocalVideo({
       prompt: String(body?.prompt ?? ''),
       frames: typeof body?.frames === 'number' ? body.frames : undefined,
@@ -1482,6 +1597,7 @@ init();
       seed: typeof body?.seed === 'number' ? body.seed : undefined,
     });
     if (result.ok) invalidateGalleryCache();
+    notify(result.ok ? `✅ Video ready: ${result.file}` : `⚠️ Video gen failed: ${result.error}`);
     return c.json(result);
   });
 
