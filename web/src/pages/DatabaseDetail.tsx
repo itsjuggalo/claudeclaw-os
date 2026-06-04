@@ -225,18 +225,35 @@ function MuscleStrip({ slugs, anatomy, itemId }: {
 }
 
 // Tag arbitrary text with the muscle slugs it references, using the KB's alias
-// table. Longest alias first so "teres major" beats a bare "teres"; left-edge
-// guarded so "lat " doesn't fire inside "plate".
+// table. This MUST stay equivalent to tag_text() in erikdalton-kb/anatomy_tags.py
+// (both read the same alias table): longest alias first, full word boundary
+// (plural-aware), all occurrences tried, result ordered by position in the text.
+const isAlpha = (ch: string) => ch >= 'a' && ch <= 'z';
+function boundaryOk(left: string, right: string, right2: string): boolean {
+  if (isAlpha(left)) return false;
+  if (!isAlpha(right)) return true;
+  return right === 's' && !isAlpha(right2); // plural: "rhomboids" yes, "psoasxyz" no
+}
 function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
   if (!text) return [];
   const low = ' ' + text.toLowerCase() + ' ';
-  const found: string[] = [];
+  const n = low.length;
+  const pos: Record<string, number> = {};
   for (const [alias, slug] of aliasPairs) {
-    if (found.includes(slug)) continue;
-    const idx = low.indexOf(alias);
-    if (idx > 0 && !/[a-z]/.test(low[idx - 1])) found.push(slug);
+    if (slug in pos) continue;
+    let start = 0;
+    for (;;) {
+      const idx = low.indexOf(alias, start);
+      if (idx < 0) break;
+      const e = idx + alias.length;
+      const left = low[idx - 1];
+      const right = e < n ? low[e] : ' ';
+      const right2 = e + 1 < n ? low[e + 1] : ' ';
+      if (boundaryOk(left, right, right2)) { pos[slug] = idx; break; }
+      start = idx + 1;
+    }
   }
-  return found;
+  return Object.keys(pos).sort((a, b) => pos[a] - pos[b]);
 }
 
 function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
