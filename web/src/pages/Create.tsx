@@ -14,7 +14,7 @@ const VIDEO_URL = 'http://localhost:8765/';
 // ── Module-level ComfyUI model cache (avoids refetch on engine toggle) ────────
 // family/baseModel/triggers/verified come from the server, sourced from Civitai
 // (see src/modelmeta.ts) — NOT guessed in the UI.
-type ModelInfo = { name: string; family?: string; baseModel?: string; triggers?: string[]; verified?: boolean };
+type ModelInfo = { name: string; family?: string; baseModel?: string; triggers?: string[]; verified?: boolean; thumb?: string };
 type ComfyModels = { checkpoints: (ModelInfo & { sizeGB: number })[]; loras: (ModelInfo & { sizeMB: number })[] };
 let comfyModelCache: ComfyModels | null = null;
 
@@ -733,55 +733,78 @@ export function Create() {
               </div>
 
               {simpleMode ? (
-                /* ── SIMPLE MODE — model → style → prompt → Generate ──────────── */
+                /* ── SIMPLE MODE — visual model gallery → style → prompt → Generate ── */
                 <div style={S.card}>
                   {comfyOnline === false && (
-                    <div style={{ marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', fontFamily: MONO, fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                    <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', fontFamily: MONO, fontSize: '13px', color: 'var(--color-text-muted)' }}>
                       <span style={{ color: '#ffb347' }}>● ComfyUI is asleep.</span>
                       <button type="button" onClick={startComfy} disabled={comfyStarting}
-                        style={{ ...actBtn, color: '#34d39a', borderColor: 'rgba(52,211,154,0.3)' }}>
+                        style={{ ...actBtn, fontSize: '13px', padding: '8px 14px', color: '#34d39a', borderColor: 'rgba(52,211,154,0.3)' }}>
                         {comfyStarting ? <><span class="cc-spin">⟳</span> waking up…</> : '▶ Wake it up'}
                       </button>
                     </div>
                   )}
 
-                  {/* 1 · MODEL */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                    <div style={{ ...S.label, marginBottom: 0 }}>1 · PICK A MODEL</div>
-                    {selectedCkpt && (
-                      <span style={{ fontSize: '10px', fontFamily: MONO, color: famInfo(ckptFam).color, border: `1px solid ${famInfo(ckptFam).color}`, borderRadius: '4px', padding: '1px 6px' }}>
-                        {famInfo(ckptFam).emoji} {famInfo(ckptFam).label}
-                      </span>
-                    )}
-                  </div>
+                  {/* ── CHOOSE A MODEL — tappable picture cards ──────────────────── */}
+                  <div style={{ ...S.label, fontSize: '12px', marginBottom: '10px' }}>CHOOSE A MODEL</div>
                   {comfyModels && !comfyModels.checkpoints?.length ? (
-                    <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
-                      No models yet — open <b>⚙ Advanced options</b> → <b>+ Add model from Civitai</b> to download one.
+                    <div style={{ fontSize: '13px', color: 'var(--color-text-faint)', fontFamily: MONO, lineHeight: 1.6 }}>
+                      No models yet — tap <b>⚙ Advanced options</b> → <b>+ Add model from Civitai</b> to download one.
                     </div>
+                  ) : !comfyModels?.checkpoints?.length ? (
+                    <div style={{ fontSize: '13px', color: 'var(--color-text-faint)', fontFamily: MONO }}><span class="cc-spin">⟳</span> Loading models…</div>
                   ) : (
-                    <select value={comfyCheckpoint} onChange={(e) => setComfyCheckpoint((e.target as HTMLSelectElement).value)} disabled={busy}
-                      style={{ ...S.select, width: '100%', maxWidth: '480px' }}>
-                      {comfyModels?.checkpoints?.length
-                        ? comfyModels.checkpoints.map(c => (
-                            <option key={c.name} value={c.name}>{cleanName(c.name)} · {famInfo(c.family).label}</option>
-                          ))
-                        : <option value="">Loading models…</option>}
-                    </select>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px' }}>
+                      {comfyModels.checkpoints.map(c => {
+                        const active = c.name === comfyCheckpoint;
+                        const fi = famInfo(c.family);
+                        return (
+                          <button key={c.name} type="button" disabled={busy}
+                            onClick={() => setComfyCheckpoint(c.name)}
+                            style={{
+                              position: 'relative', textAlign: 'left', cursor: busy ? 'not-allowed' : 'pointer',
+                              borderRadius: '12px', padding: '0', overflow: 'hidden', minHeight: '112px',
+                              display: 'flex', flexDirection: 'column', fontFamily: MONO,
+                              border: active ? '2px solid #34d39a' : '1px solid var(--color-border)',
+                              background: 'var(--color-card)', color: 'var(--color-text)',
+                              boxShadow: active ? '0 0 0 3px rgba(52,211,154,0.18)' : 'none',
+                            }}>
+                            {/* picture area (family-colored tile until real Civitai thumbs are wired) */}
+                            <div style={{
+                              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: '34px', minHeight: '64px',
+                              background: `linear-gradient(135deg, ${fi.color}33, ${fi.color}11)`,
+                            }}>
+                              {c.thumb ? <img src={c.thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0 }} /> : fi.emoji}
+                              {active && <span style={{ position: 'absolute', top: '6px', right: '8px', fontSize: '14px', color: '#34d39a' }}>✓</span>}
+                            </div>
+                            {/* caption */}
+                            <div style={{ padding: '8px 10px' }}>
+                              <div style={{ fontSize: '12px', fontWeight: 700, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cleanName(c.name)}</div>
+                              <div style={{ fontSize: '10px', color: fi.color, marginTop: '2px' }}>{fi.emoji} {fi.label}</div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
 
-                  {/* 2 · STYLE ADD-ON (optional, compatible only) */}
+                  {/* ── ADD A STYLE — optional, compatible add-ons only ──────────── */}
                   {(() => {
                     const compat = (comfyModels?.loras || []).filter(l => loraCompatible(l.family, ckptFam));
                     if (!selectedCkpt || compat.length === 0) return null;
+                    const pill = (active: boolean): JSX.CSSProperties => ({
+                      fontSize: '13px', fontFamily: MONO, padding: '9px 14px', borderRadius: '999px',
+                      cursor: busy ? 'not-allowed' : 'pointer', minHeight: '40px',
+                      color: active ? '#06210f' : 'var(--color-text)',
+                      background: active ? '#34d39a' : 'var(--color-elevated)',
+                      border: '1px solid ' + (active ? '#34d39a' : 'var(--color-border)'),
+                    });
                     return (
-                      <div style={{ marginTop: '16px' }}>
-                        <div style={S.label}>2 · ADD A STYLE — OPTIONAL {comfyLoras.length > 0 && <span style={{ color: '#34d39a' }}>({comfyLoras.length} on)</span>}</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                          <button type="button" disabled={busy} onClick={() => setComfyLoras([])}
-                            style={{ fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer',
-                              color: comfyLoras.length === 0 ? '#06210f' : 'var(--color-text-muted)',
-                              background: comfyLoras.length === 0 ? '#34d39a' : 'var(--color-elevated)',
-                              border: '1px solid ' + (comfyLoras.length === 0 ? '#34d39a' : 'var(--color-border)') }}>
+                      <div style={{ marginTop: '20px' }}>
+                        <div style={{ ...S.label, fontSize: '12px', marginBottom: '10px' }}>ADD A STYLE — OPTIONAL {comfyLoras.length > 0 && <span style={{ color: '#34d39a' }}>({comfyLoras.length} on)</span>}</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          <button type="button" disabled={busy} onClick={() => setComfyLoras([])} style={pill(comfyLoras.length === 0)}>
                             {comfyLoras.length === 0 ? '✓ ' : ''}None
                           </button>
                           {compat.map(l => {
@@ -789,29 +812,23 @@ export function Create() {
                             return (
                               <button key={l.name} type="button" disabled={busy}
                                 onClick={() => setComfyLoras(prev => prev.includes(l.name) ? prev.filter(x => x !== l.name) : [...prev, l.name])}
-                                style={{ fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer',
-                                  color: active ? '#06210f' : 'var(--color-text-muted)',
-                                  background: active ? '#34d39a' : 'var(--color-elevated)',
-                                  border: '1px solid ' + (active ? '#34d39a' : 'var(--color-border)') }}>
+                                style={pill(active)}>
                                 {active ? '✓ ' : ''}{cleanName(l.name)}
                               </button>
                             );
                           })}
                         </div>
-                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, marginTop: '6px' }}>
-                          Optional style add-ons. Only ones that match this model are shown — stack as many as you like.
-                        </div>
                       </div>
                     );
                   })()}
 
-                  {/* 3 · PROMPT */}
-                  <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
-                    <div style={S.label}>{(comfyModels?.loras || []).some(l => loraCompatible(l.family, ckptFam)) ? '3' : '2'} · DESCRIBE WHAT YOU WANT</div>
+                  {/* ── DESCRIBE IT ──────────────────────────────────────────────── */}
+                  <div style={{ marginTop: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                    <div style={{ ...S.label, fontSize: '12px', marginBottom: 0 }}>DESCRIBE IT</div>
                     {promptHist.length > 0 && (
                       <select value="" disabled={busy}
                         onChange={(e) => { const v = (e.target as HTMLSelectElement).value; if (v) setPrompt(v); (e.target as HTMLSelectElement).value = ''; }}
-                        style={{ ...S.select, fontSize: '11px', padding: '4px 8px', maxWidth: '220px' }}>
+                        style={{ ...S.select, fontSize: '12px', padding: '6px 8px', maxWidth: '200px' }}>
                         <option value="">↩ recent…</option>
                         {promptHist.map((p, i) => <option key={i} value={p}>{p.length > 60 ? p.slice(0, 60) + '…' : p}</option>)}
                       </select>
@@ -819,20 +836,22 @@ export function Create() {
                   </div>
                   <textarea value={prompt} onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
                     placeholder="A neon-lit candlestick chart exploding upward, cinematic…"
-                    rows={4} disabled={busy} style={S.ta} />
+                    rows={4} disabled={busy} style={{ ...S.ta, marginTop: '8px', fontSize: '15px' }} />
                   {effectiveTriggers.length > 0 && (
-                    <div style={{ fontSize: '10px', color: '#34d39a', fontFamily: MONO, marginTop: '6px' }}>
+                    <div style={{ fontSize: '11px', color: '#34d39a', fontFamily: MONO, marginTop: '6px' }}>
                       ✓ auto-adding for you: {effectiveTriggers.join(', ')}
                     </div>
                   )}
 
-                  {/* Generate */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '16px', flexWrap: 'wrap' }}>
-                    <button type="button" onClick={() => genImage()} disabled={!canImg} style={genBtnStyle(canImg)}>
-                      {busy ? <><span class="cc-spin">⟳</span> Generating {fmtMs(elapsedMs)}</> : '✦ Generate'}
-                    </button>
-                    {!busy && lastMs !== null && result?.ok && <span style={{ fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>✓ Generated in {fmtMs(lastMs)}</span>}
-                    {!busy && lastMs === null && selectedCkpt && <span style={{ fontSize: '11px', color: '#34d39a', fontFamily: MONO }}>free · on this laptop's GPU · best quality</span>}
+                  {/* ── GENERATE — full-width, phone-friendly ────────────────────── */}
+                  <button type="button" onClick={() => genImage()} disabled={!canImg}
+                    style={{ ...genBtnStyle(canImg), width: '100%', padding: '16px', fontSize: '16px', marginTop: '18px' }}>
+                    {busy ? <><span class="cc-spin">⟳</span> Generating… {fmtMs(elapsedMs)}</> : '✦ Generate'}
+                  </button>
+                  <div style={{ textAlign: 'center', marginTop: '8px', minHeight: '16px' }}>
+                    {!busy && lastMs !== null && result?.ok
+                      ? <span style={{ fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>✓ Generated in {fmtMs(lastMs)}</span>
+                      : !busy && selectedCkpt && <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO }}>free · runs on this laptop's GPU · best quality</span>}
                   </div>
                   {busy && <ProgressBar pct={imgPct} label={imgBarLabel} sub={`${fmtMs(elapsedMs)} elapsed`} />}
                 </div>
