@@ -516,6 +516,43 @@ export function Create() {
     }
   }, [imgEngine]);
 
+  // batch state
+  const [batchCount, setBatchCount] = useState(1);
+
+  // generation state
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<GenResult | null>(null);
+  const [batchResults, setBatchResults] = useState<GenResult[]>([]);
+
+  // ── progress + timing (image) ─────────────────────────────────────────────
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [lastMs, setLastMs] = useState<number | null>(null);
+  const [progress, setProgress] = useState(0);                 // perceived estimate 0..1
+  const [comfyStep, setComfyStep] = useState<{ value: number; max: number } | null>(null);
+  const genStartRef = useRef(0);
+
+  // ── seed + quality (image) ────────────────────────────────────────────────
+  const [seedVal, setSeedVal] = useState('');                  // '' = random each run
+  const [seedLock, setSeedLock] = useState(false);             // reuse last result's seed
+  const [localSteps, setLocalSteps] = useState<number>(() => loadPref('localSteps', 3));
+
+  // ── ComfyUI start + prompt history ────────────────────────────────────────
+  const [comfyStarting, setComfyStarting] = useState(false);
+  const [promptHist, setPromptHist] = useState<string[]>(loadPromptHistory());
+
+  // video state
+  const [vidEngine, setVidEngine] = useState<'local' | 'fvm'>('local');
+  const [vidPrompt, setVidPrompt] = useState('');
+  const [vidBusy, setVidBusy] = useState(false);
+  const [vidResult, setVidResult] = useState<GenResult | null>(null);
+  const [vidElapsedMs, setVidElapsedMs] = useState(0);
+  const [vidProgress, setVidProgress] = useState(0);
+  const [vidLastMs, setVidLastMs] = useState<number | null>(null);
+  const [vidSeedVal, setVidSeedVal] = useState('');
+  const [vidSeedLock, setVidSeedLock] = useState(false);
+  const vidStartRef = useRef(0);
+
+  // ── Effects below ALL state declarations (dep arrays must not hit the TDZ) ──
   useEffect(() => { savePref('localSteps', localSteps); }, [localSteps]);
 
   // Image: drive the perceived-progress bar + elapsed timer while generating.
@@ -573,42 +610,6 @@ export function Create() {
     }, 5000);
     return () => clearInterval(id);
   }, [imgEngine, comfyOnline, comfyCheckpoint]);
-
-  // batch state
-  const [batchCount, setBatchCount] = useState(1);
-
-  // generation state
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<GenResult | null>(null);
-  const [batchResults, setBatchResults] = useState<GenResult[]>([]);
-
-  // ── progress + timing (image) ─────────────────────────────────────────────
-  const [elapsedMs, setElapsedMs] = useState(0);
-  const [lastMs, setLastMs] = useState<number | null>(null);
-  const [progress, setProgress] = useState(0);                 // perceived estimate 0..1
-  const [comfyStep, setComfyStep] = useState<{ value: number; max: number } | null>(null);
-  const genStartRef = useRef(0);
-
-  // ── seed + quality (image) ────────────────────────────────────────────────
-  const [seedVal, setSeedVal] = useState('');                  // '' = random each run
-  const [seedLock, setSeedLock] = useState(false);             // reuse last result's seed
-  const [localSteps, setLocalSteps] = useState<number>(() => loadPref('localSteps', 3));
-
-  // ── ComfyUI start + prompt history ────────────────────────────────────────
-  const [comfyStarting, setComfyStarting] = useState(false);
-  const [promptHist, setPromptHist] = useState<string[]>(loadPromptHistory());
-
-  // video state
-  const [vidEngine, setVidEngine] = useState<'local' | 'fvm'>('local');
-  const [vidPrompt, setVidPrompt] = useState('');
-  const [vidBusy, setVidBusy] = useState(false);
-  const [vidResult, setVidResult] = useState<GenResult | null>(null);
-  const [vidElapsedMs, setVidElapsedMs] = useState(0);
-  const [vidProgress, setVidProgress] = useState(0);
-  const [vidLastMs, setVidLastMs] = useState<number | null>(null);
-  const [vidSeedVal, setVidSeedVal] = useState('');
-  const [vidSeedLock, setVidSeedLock] = useState(false);
-  const vidStartRef = useRef(0);
 
   const bnSizeOpts = bnModel === 'pro' ? BANANA_SIZES.filter((s) => s !== '512') : BANANA_SIZES;
   const canImg = prompt.trim().length > 0 && !busy;

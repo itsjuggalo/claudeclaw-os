@@ -1268,7 +1268,7 @@ init();
           logger.warn({ prompt_id, err: String(pollErr) }, 'ComfyUI history poll error (retrying)');
         }
       }
-      if (!outputFile) return c.json({ ok: false, error: 'Timed out waiting for ComfyUI output (300s)' }, 504);
+      if (!outputFile) return c.json({ ok: false, error: 'Timed out waiting for ComfyUI output (600s)' }, 504);
 
       const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(outputFile)}`;
       return c.json({ ok: true, file: outputFile, url, seed, notes: `checkpoint: ${checkpoint.replace('.safetensors', '')}` });
