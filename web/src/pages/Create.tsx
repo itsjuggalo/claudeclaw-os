@@ -563,6 +563,31 @@ export function Create() {
   ));
   const effectiveTriggers = activeTriggers.filter(t => !droppedTriggers.includes(t));
 
+  // ── Poll a queued ComfyUI job until it reports done. Uses plain fetch so a
+  // single transient socket blip doesn't abort the whole generation.
+  const pollComfy = (promptId: string, seed?: number): Promise<GenResult> => new Promise((resolve) => {
+    const t0 = Date.now();
+    const tick = () => {
+      fetch(withTok(`/api/comfy/generate/${promptId}`))
+        .then(x => x.json())
+        .then((j: any) => {
+          if (j.done) {
+            resolve(j.ok
+              ? { ok: true, file: j.file, url: j.url, seed: j.seed ?? seed, notes: j.notes }
+              : { ok: false, error: j.error || 'generation failed', seed: j.seed ?? seed });
+            return;
+          }
+          if (Date.now() - t0 > 620_000) { resolve({ ok: false, error: 'timed out waiting for ComfyUI output' }); return; }
+          setTimeout(tick, 2000);
+        })
+        .catch(() => {
+          if (Date.now() - t0 > 620_000) resolve({ ok: false, error: 'lost connection to server' });
+          else setTimeout(tick, 3000);
+        });
+    };
+    tick();
+  });
+
   // ── Generate (single or batch). `override.seed` lets "New seed" force-randomize.
   const genImage = async (override?: { seed?: number }) => {
     if (!canImg) return;
@@ -589,13 +614,18 @@ export function Create() {
         const negOut = (simpleMode && tips.neg && !comfyNeg.toLowerCase().includes(tips.neg.toLowerCase().slice(0, 8)))
           ? (comfyNeg.trim() ? comfyNeg.replace(/\s*$/, '') + ', ' : '') + tips.neg
           : comfyNeg;
-        r = await apiPost<GenResult>('/api/comfy/generate', {
-          prompt: fullPrompt, negative_prompt: negOut, steps: comfySteps,
-          width: w, height: h,
-          checkpoint: comfyCheckpoint || undefined,
-          loras: comfyLoras.length ? comfyLoras.map(name => ({ name, strength: comfyLoraStrength })) : undefined,
-          ...(seedNum !== undefined ? { seed: seedNum } : {}),
-        });
+        const kick = await apiPost<{ ok: boolean; prompt_id?: string; seed?: number; error?: string }>(
+          '/api/comfy/generate', {
+            prompt: fullPrompt, negative_prompt: negOut, steps: comfySteps,
+            width: w, height: h, checkpoint: comfyCheckpoint || undefined,
+            loras: comfyLoras.length ? comfyLoras.map(name => ({ name, strength: comfyLoraStrength })) : undefined,
+            ...(seedNum !== undefined ? { seed: seedNum } : {}),
+          });
+        if (!kick.ok || !kick.prompt_id) {
+          r = { ok: false, error: kick.error || 'failed to queue generation' };
+        } else {
+          r = await pollComfy(kick.prompt_id, kick.seed);
+        }
         setResult(r);
       } else if (batchCount > 1) {
         const body: Record<string, unknown> = { prompt: prompt.trim(), count: batchCount };

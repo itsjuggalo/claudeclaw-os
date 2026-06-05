@@ -16,7 +16,7 @@ import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from '
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo } from './localgen.js';
 import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
-import { readManifest, metaFor, upsertMeta, normalizeFamily } from './modelmeta.js';
+import { readManifest, metaFor, upsertMeta, normalizeFamily, ModelMeta } from './modelmeta.js';
 import Database from 'better-sqlite3';
 import {
   getAllScheduledTasks,
@@ -1147,12 +1147,30 @@ init();
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
   });
 
-  // ── ComfyUI high-level generate — prompt → workflow → poll → gallery URL ──
+  // Backend mirror of the client loraCompatible(): a combo is incompatible only when
+  // BOTH families are KNOWN and differ. If either is 'other'/unknown we can't prove a
+  // mismatch, so we allow it (matches the permissive UI lock). Returns first offender.
+  function validateLoraFamilies(
+    checkpoint: string,
+    loras: Array<{ name: string }>,
+    manifest: Record<string, ModelMeta>,
+  ): { lora: string; loraFam: string; ckptFam: string } | null {
+    const ckptFam = metaFor(checkpoint, manifest).family;
+    if (!ckptFam || ckptFam === 'other') return null;
+    for (const l of loras) {
+      const loraFam = metaFor(l.name, manifest).family;
+      if (!loraFam || loraFam === 'other') continue;
+      if (loraFam !== ckptFam) return { lora: l.name, loraFam, ckptFam };
+    }
+    return null;
+  }
+
+  // ── ComfyUI high-level generate — prompt → workflow → queue → job id ──
   // This is the endpoint the Create page calls. Handles ComfyUI startup,
-  // workflow construction, queueing, polling, and returns a gallery-file URL.
+  // workflow construction, and queueing, then returns a prompt_id the client
+  // polls via GET /api/comfy/generate/:prompt_id.
   app.post('/api/comfy/generate', async (c) => {
     const HOME = process.env.HOME || '/home/itsju';
-    let queued = false;  // only flush VRAM (/free) if THIS request queued a job
     try {
       const body = await c.req.json() as {
         prompt?: string; negative_prompt?: string; steps?: number; cfg?: number;
@@ -1167,6 +1185,21 @@ init();
       // runs preflight via comfyui-start, but a warm instance had no gate.
       const gate = preflightGate();
       if (!gate.ok) { notify(`🛑 Image gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+
+      // ── 0b. Resolve checkpoint + LoRAs and validate family compatibility BEFORE
+      // the (slow) ComfyUI startup, so a known-mismatched combo fails instantly
+      // regardless of whether ComfyUI is up.
+      const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
+      const ckptFiles = fs.existsSync(ckptDir)
+        ? fs.readdirSync(ckptDir).filter((f: string) => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf'))
+        : [];
+      const checkpoint = body.checkpoint || ckptFiles[0] || 'cyberrealisticPony_v170.safetensors';
+      const loraList = body.loras ?? [];
+      const manifest = readManifest();
+      const bad = validateLoraFamilies(checkpoint, loraList, manifest);
+      if (bad) return c.json({ ok: false, error:
+        `Incompatible LoRA "${bad.lora.replace(/\.(safetensors|ckpt|gguf)$/i,'')}" (${bad.loraFam}) `
+        + `for a ${bad.ckptFam} checkpoint. Pick a ${bad.ckptFam} LoRA or a matching checkpoint.` }, 400);
 
       const { execSync, spawn } = await import('child_process');
 
@@ -1195,13 +1228,7 @@ init();
       }
 
       // ── 2. Build workflow from template ─────────────────────────────────
-      const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
-      const ckptFiles = fs.existsSync(ckptDir)
-        ? fs.readdirSync(ckptDir).filter((f: string) => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf'))
-        : [];
-      const checkpoint = body.checkpoint || ckptFiles[0] || 'cyberrealisticPony_v170.safetensors';
       const seed = body.seed ?? Math.floor(Math.random() * 2 ** 32);
-      const loraList = body.loras ?? [];
 
       // Build workflow — chain LoRA nodes between checkpoint and sampler
       const workflow: Record<string, any> = {
@@ -1233,82 +1260,69 @@ init();
         body: JSON.stringify({ prompt: workflow }),
       });
       if (!queueRes.ok) return c.json({ ok: false, error: `ComfyUI queue rejected: ${queueRes.status}` }, 502);
-      queued = true;  // a job is now on the GPU — VRAM must be flushed in finally
       const { prompt_id } = await queueRes.json() as { prompt_id: string };
 
-      // ── 4. Poll until done (max 300s) ────────────────────────────────────
-      const comfyOutputDir = `${HOME}/ComfyUI/output`;
-      const galleryDir = `${HOME}/gallery-watched/comfyui`;
-      const startPoll = Date.now();
-      let outputFile: string | null = null;
-      // 600s: a COLD first generation after a WSL restart loads a 6.5GB checkpoint
-      // + LoRA from disk and the first sampling step can take ~60s on its own.
-      // Warm generations finish in ~2.5 min; this ceiling only matters on cold start.
-      while (Date.now() - startPoll < 600_000) {
-        await new Promise(r => setTimeout(r, 4000));
-        try {
-          const histRaw = await fetch(`http://127.0.0.1:8188/history/${prompt_id}`).then(r => r.json());
-          // Log the raw history API response so we can see the actual shape if something goes wrong
-          logger.info({ prompt_id, histRaw: JSON.stringify(histRaw) }, 'ComfyUI history API raw response');
-          const hist = histRaw as Record<string, any>;
-          const entry = hist[prompt_id];
-          if (!entry) continue;
-          // ComfyUI history API returns status.completed (boolean) and an
-          // outputs map keyed by node id. status_str is not a real field.
-          // Full shape: history[prompt_id].outputs[nodeId].images[0].filename
-          const statusMsgs: Array<[string, unknown]> = entry.status?.status_messages ?? [];
-          const hasError = statusMsgs.some(([type]) => type === 'execution_error');
-          if (hasError) return c.json({ ok: false, error: 'ComfyUI generation error' }, 500);
-          if (entry.status?.completed === true) {
-            // Extract filename + subfolder from history response outputs (node "9" = SaveImage)
-            let filename: string | null = null;
-            let subfolder: string = '';
-            const outputs = entry.outputs ?? {};
-            for (const nodeId of Object.keys(outputs)) {
-              const images: Array<{ filename: string; subfolder: string; type: string }> = outputs[nodeId]?.images ?? [];
-              if (images.length > 0) {
-                filename = images[0].filename;
-                subfolder = images[0].subfolder ?? '';
-                break;
-              }
-            }
-            logger.info({ prompt_id, filename, subfolder, outputs: JSON.stringify(outputs) }, 'ComfyUI generation completed — extracted output');
-            if (!filename) {
-              return c.json({ ok: false, error: 'ComfyUI completed but no output image found in history' }, 500);
-            }
-            // Move file from ComfyUI output dir to gallery-watched dir.
-            // Account for optional subfolder: ComfyUI/output/{subfolder}/{filename}
-            const srcPath = subfolder
-              ? `${comfyOutputDir}/${subfolder}/${filename}`
-              : `${comfyOutputDir}/${filename}`;
-            if (!fs.existsSync(galleryDir)) fs.mkdirSync(galleryDir, { recursive: true });
-            const dstPath = `${galleryDir}/${filename}`;
-            logger.info({ srcPath, dstPath }, 'ComfyUI moving output to gallery');
-            try {
-              fs.renameSync(srcPath, dstPath);
-            } catch {
-              // Cross-filesystem fallback (rename fails across WSL mount boundaries)
-              fs.copyFileSync(srcPath, dstPath);
-              try { fs.unlinkSync(srcPath); } catch {}
-            }
-            outputFile = filename;
-            break;
-          }
-        } catch (pollErr) {
-          logger.warn({ prompt_id, err: String(pollErr) }, 'ComfyUI history poll error (retrying)');
-        }
-      }
-      if (!outputFile) return c.json({ ok: false, error: 'Timed out waiting for ComfyUI output (600s)' }, 504);
-
-      const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(outputFile)}`;
-      notify(`✅ Image ready: ${outputFile} (${checkpoint.replace('.safetensors', '')})`);
-      return c.json({ ok: true, file: outputFile, url, seed, notes: `checkpoint: ${checkpoint.replace('.safetensors', '')}` });
+      // ── 4. Register job + return immediately — client polls for the result ─
+      logger.info({ prompt_id, seed, checkpoint }, 'ComfyUI job queued (async)');
+      comfyJobs.set(prompt_id, { seed, checkpoint, done: false, queuedAt: Date.now() });
+      return c.json({ ok: true, prompt_id, seed });
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
-    finally {
-      // Flush ComfyUI VRAM after every gen that actually ran (memory Hard Rule 2),
-      // including timeout/error paths. Guarded by `queued` so a blocked/queue-busy
-      // request never frees VRAM out from under another job's running generation.
-      if (queued) void comfyFree();
+  });
+
+  // ── ComfyUI generate — poll one job by prompt_id ──────────────────────────
+  // Single (non-looping) history check. On a terminal state it moves the output
+  // into the gallery, surfaces real ComfyUI errors, and flushes VRAM exactly once.
+  app.get('/api/comfy/generate/:prompt_id', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const prompt_id = c.req.param('prompt_id');
+    const job = comfyJobs.get(prompt_id);
+    const seed = job?.seed;
+    if (job?.done) {
+      return job.error
+        ? c.json({ ok: false, done: true, error: job.error, seed })
+        : c.json({ ok: true, done: true, file: job.file, url: job.url, seed,
+                   notes: `checkpoint: ${(job.checkpoint||'').replace('.safetensors','')}` });
+    }
+    const finish = (patch: { file?: string; url?: string; error?: string }) => {
+      const j = comfyJobs.get(prompt_id) || { seed: seed ?? 0, checkpoint: job?.checkpoint || '', done: false, queuedAt: Date.now() };
+      comfyJobs.set(prompt_id, { ...j, ...patch, done: true });
+    };
+    try {
+      const histRaw = await fetch(`http://127.0.0.1:8188/history/${prompt_id}`).then(r => r.json());
+      const entry = (histRaw as Record<string, any>)[prompt_id];
+      if (!entry) return c.json({ ok: true, done: false });
+      const statusMsgs: Array<[string, any]> = entry.status?.status_messages ?? [];
+      const errMsg = statusMsgs.find(([t]) => t === 'execution_error');
+      if (errMsg) {
+        const d = errMsg[1] || {};
+        const detail = [d.node_type, d.exception_type, d.exception_message].filter(Boolean).join(': ') || 'ComfyUI execution error';
+        finish({ error: detail });
+        void comfyFree();
+        return c.json({ ok: false, done: true, error: detail, seed });
+      }
+      if (entry.status?.completed === true) {
+        const comfyOutputDir = `${HOME}/ComfyUI/output`;
+        const galleryDir = `${HOME}/gallery-watched/comfyui`;
+        let filename: string | null = null; let subfolder = '';
+        const outputs = entry.outputs ?? {};
+        for (const nodeId of Object.keys(outputs)) {
+          const images: Array<{ filename: string; subfolder: string; type: string }> = outputs[nodeId]?.images ?? [];
+          if (images.length > 0) { filename = images[0].filename; subfolder = images[0].subfolder ?? ''; break; }
+        }
+        if (!filename) { finish({ error: 'ComfyUI completed but no output image found' }); void comfyFree(); return c.json({ ok: false, done: true, error: 'ComfyUI completed but no output image found', seed }); }
+        const srcPath = subfolder ? `${comfyOutputDir}/${subfolder}/${filename}` : `${comfyOutputDir}/${filename}`;
+        if (!fs.existsSync(galleryDir)) fs.mkdirSync(galleryDir, { recursive: true });
+        const dstPath = `${galleryDir}/${filename}`;
+        try { fs.renameSync(srcPath, dstPath); } catch { fs.copyFileSync(srcPath, dstPath); try { fs.unlinkSync(srcPath); } catch {} }
+        const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(filename)}`;
+        finish({ file: filename, url });
+        void comfyFree();
+        notify(`✅ Image ready: ${filename} (${(job?.checkpoint||'').replace('.safetensors','')})`);
+        return c.json({ ok: true, done: true, file: filename, url, seed, notes: `checkpoint: ${(job?.checkpoint||'').replace('.safetensors','')}` });
+      }
+      return c.json({ ok: true, done: false });
+    } catch (e) {
+      return c.json({ ok: true, done: false, transient: String(e) });
     }
   });
 
@@ -1362,6 +1376,8 @@ init();
   //   Every download goes through model-cap-check (hard folder ceiling) and
   //   safe-model-download (refuses if C: <= 30G), so models can never silently
   //   refill C:. Progress is polled via GET /api/models/download/:id.
+  const comfyJobs = new Map<string, { seed: number; checkpoint: string; done: boolean;
+    file?: string; url?: string; error?: string; queuedAt: number }>();
   const modelDownloads = new Map<string, { dest: string; name: string; status: 'downloading' | 'done' | 'failed'; pct: number; error?: string }>();
   const MODEL_DEST_DIRS: Record<string, string> = { checkpoints: 'checkpoints', loras: 'loras', controlnet: 'controlnet', vae: 'vae' };
 
