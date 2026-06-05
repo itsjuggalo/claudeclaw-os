@@ -1031,11 +1031,11 @@ init();
       const manifest = readManifest();
       const checkpoints = fs.existsSync(checkpointDir) ? fs.readdirSync(checkpointDir).filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf')).map(f => {
         const md = metaFor(f, manifest);
-        return { name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified };
+        return { name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw };
       }) : [];
       const loras = fs.existsSync(loraDir) ? fs.readdirSync(loraDir).filter(f => f.endsWith('.safetensors')).map(f => {
         const md = metaFor(f, manifest);
-        return { name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified };
+        return { name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw };
       }) : [];
       return c.json({ running, vram, checkpoints, loras, url: running ? 'http://localhost:8188' : null });
     } catch (e) {
@@ -1441,6 +1441,75 @@ init();
       });
     } catch { /* metadata is a nicety; download already succeeded */ }
   }
+
+  // ── Civitai thumbnails — look up each model's preview image by file hash ──
+  // Cards show a family-colored tile until this runs; it hashes each model file
+  // (sha256, cached so it never re-hashes the GBs) and asks Civitai for that
+  // version's images, storing the primary image URL + its nsfwLevel. NSFW images
+  // need a Civitai token (the same one used for downloads); without it Civitai
+  // returns only the SFW previews. One job at a time; progress polled via GET.
+  const thumbJobs = new Map<string, { total: number; processed: number; updated: number; current: string; done: boolean; error?: string }>();
+  async function fetchThumbForFile(absPath: string, name: string, type: 'checkpoint' | 'lora', token: string): Promise<boolean> {
+    const { execFileSync } = await import('child_process');
+    const manifest = readManifest();
+    const existing = manifest[name] || metaFor(name, manifest);
+    if (existing.thumb) return false;                       // already have one
+    let sha = existing.sha256;
+    if (!sha) { try { sha = execFileSync('sha256sum', [absPath]).toString().split(' ')[0]; } catch { return false; } }
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    let data: any = null;
+    try {
+      const r = await fetch(`https://civitai.com/api/v1/model-versions/by-hash/${sha}`, { headers });
+      if (r.ok) data = await r.json();
+    } catch { /* offline / not found */ }
+    const imgs: any[] = (data?.images || []).filter((i: any) => (i?.type === 'image' || !i?.type) && i?.url);
+    // Cache the sha even on a miss so a re-run never re-hashes this file.
+    if (!imgs.length) { upsertMeta(name, { ...existing, sha256: sha }); return false; }
+    const primary = imgs[0];
+    // Normalize the Civitai transform segment to a light thumbnail width.
+    const thumb = String(primary.url).replace(/(\/[0-9a-f-]{36}\/)(?:[^/]*=[^/]*)\//i, '$1width=350,quality=80/');
+    upsertMeta(name, {
+      ...existing, sha256: sha, thumb, thumbNsfw: primary.nsfwLevel ?? 1,
+      // Opportunistically backfill family/triggers from the same response if we
+      // only had a filename guess before (gives 'other' LoRAs a real family).
+      ...(existing.verified ? {} : {
+        family: normalizeFamily(data.baseModel), baseModel: data.baseModel,
+        triggers: Array.isArray(data.trainedWords) ? data.trainedWords : [],
+        type, source: 'civitai', verified: true,
+      }),
+    });
+    return true;
+  }
+  app.post('/api/comfy/thumbs/refresh', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const token = String((body as any)?.token ?? '').trim();
+    if ([...thumbJobs.values()].some(j => !j.done)) return c.json({ ok: false, error: 'a thumbnail refresh is already running' }, 429);
+    const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
+    const loraDir = `${HOME}/ComfyUI/models/loras`;
+    const list = (dir: string, type: 'checkpoint' | 'lora') => (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
+      .filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf'))
+      .map(f => ({ name: f, abs: `${dir}/${f}`, type }));
+    const all = [...list(ckptDir, 'checkpoint'), ...list(loraDir, 'lora')];
+    const jobId = `thumbs-${Date.now()}`;
+    const job = { total: all.length, processed: 0, updated: 0, current: '', done: false };
+    thumbJobs.set(jobId, job);
+    void (async () => {
+      for (const f of all) {
+        job.current = f.name;
+        try { if (await fetchThumbForFile(f.abs, f.name, f.type, token)) job.updated++; } catch { /* skip */ }
+        job.processed++;
+      }
+      job.current = ''; job.done = true;
+      logger.info({ updated: job.updated, total: job.total }, 'Civitai thumbnail refresh complete');
+    })();
+    return c.json({ ok: true, jobId, total: all.length });
+  });
+  app.get('/api/comfy/thumbs/refresh/:id', (c) => {
+    const j = thumbJobs.get(c.req.param('id'));
+    return j ? c.json({ ok: true, ...j }) : c.json({ ok: false, error: 'unknown job' }, 404);
+  });
+
   app.post('/api/models/download', async (c) => {
     const HOME = process.env.HOME || '/home/itsju';
     try {

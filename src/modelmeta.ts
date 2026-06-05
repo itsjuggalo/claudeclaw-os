@@ -23,6 +23,9 @@ export interface ModelMeta {
   triggers?: string[];       // trainedWords
   source?: string;           // civitai | hash-backfill | filename-heuristic
   verified?: boolean;        // true only when it came from Civitai
+  thumb?: string;            // Civitai preview image URL (looked up by file sha256)
+  thumbNsfw?: number;        // Civitai nsfwLevel of that image: 1=PG 2=PG13 4=R 8=X 16=XXX
+  sha256?: string;           // cached file hash, so a thumb refresh never re-hashes GBs
 }
 
 // Normalize Civitai's `baseModel` string into a small fixed family set.
