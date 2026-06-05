@@ -54,6 +54,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/trade-desk/flow-rank',label: 'Flow Rank',     section: 'trade', icon: BarChart2              },
   { path: '/trade-desk/portfolio',label: 'Portfolio AI',  section: 'trade', icon: Briefcase              },
   { path: '/trade-desk/flow-winners', label: 'Flow Winners', section: 'trade', icon: Trophy             },
+  { path: '/lewis-trading',       label: 'Lewis Trading', section: 'trade', icon: GraduationCap           },
 
   // Mission Control quick-launch (external links, open in new tab)
   { path: '/ext-aries',    label: 'ARIES',           section: 'mc', icon: Rocket,      href: 'https://g59-wsl.taile1328b.ts.net' },

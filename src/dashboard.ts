@@ -12,6 +12,7 @@ import { getWallets } from './wallets.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
+import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo } from './localgen.js';
@@ -1576,6 +1577,22 @@ init();
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
+  });
+
+  // ── Lewis Trading — integrations harvested from Lewis Jackson's "YouTube
+  //    Video Prompts" course (zero-one Skool). Kept separate from Skool Builds.
+  //    Read-only: manifest at ~/.claudeclaw/lewis-trading.json; only
+  //    manifest-declared files are readable (see src/lewistrading.ts).
+  app.get('/api/lewis-trading', (c) => {
+    try { return c.json(getLewisIntegrations()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+  app.get('/api/lewis-trading/file', (c) => {
+    const id = c.req.query('id') || '';
+    const name = c.req.query('name') || '';
+    const out = readLewisFile(id, name);
+    if (!out) return c.json({ error: 'not found' }, 404);
+    return c.json(out);
   });
 
   // ── Trade Desk — unified trading intelligence panel (signals, flow rank,
