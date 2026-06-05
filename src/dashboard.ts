@@ -1449,11 +1449,11 @@ init();
   // need a Civitai token (the same one used for downloads); without it Civitai
   // returns only the SFW previews. One job at a time; progress polled via GET.
   const thumbJobs = new Map<string, { total: number; processed: number; updated: number; current: string; done: boolean; error?: string }>();
-  async function fetchThumbForFile(absPath: string, name: string, type: 'checkpoint' | 'lora', token: string): Promise<boolean> {
+  async function fetchThumbForFile(absPath: string, name: string, type: 'checkpoint' | 'lora', token: string, force = false): Promise<boolean> {
     const { execFileSync } = await import('child_process');
     const manifest = readManifest();
     const existing = manifest[name] || metaFor(name, manifest);
-    if (existing.thumb) return false;                       // already have one
+    if (existing.thumb && !force) return false;             // already have one (force re-fetches, e.g. to pull NSFW previews with a token)
     let sha = existing.sha256;
     if (!sha) { try { sha = execFileSync('sha256sum', [absPath]).toString().split(' ')[0]; } catch { return false; } }
     const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
@@ -1484,6 +1484,7 @@ init();
     const HOME = process.env.HOME || '/home/itsju';
     const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
     const token = String((body as any)?.token ?? '').trim();
+    const force = !!(body as any)?.force;
     if ([...thumbJobs.values()].some(j => !j.done)) return c.json({ ok: false, error: 'a thumbnail refresh is already running' }, 429);
     const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
     const loraDir = `${HOME}/ComfyUI/models/loras`;
@@ -1497,7 +1498,7 @@ init();
     void (async () => {
       for (const f of all) {
         job.current = f.name;
-        try { if (await fetchThumbForFile(f.abs, f.name, f.type, token)) job.updated++; } catch { /* skip */ }
+        try { if (await fetchThumbForFile(f.abs, f.name, f.type, token, force)) job.updated++; } catch { /* skip */ }
         job.processed++;
       }
       job.current = ''; job.done = true;

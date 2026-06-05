@@ -14,7 +14,7 @@ const VIDEO_URL = 'http://localhost:8765/';
 // ── Module-level ComfyUI model cache (avoids refetch on engine toggle) ────────
 // family/baseModel/triggers/verified come from the server, sourced from Civitai
 // (see src/modelmeta.ts) — NOT guessed in the UI.
-type ModelInfo = { name: string; family?: string; baseModel?: string; triggers?: string[]; verified?: boolean; thumb?: string };
+type ModelInfo = { name: string; family?: string; baseModel?: string; triggers?: string[]; verified?: boolean; thumb?: string; thumbNsfw?: number };
 type ComfyModels = { checkpoints: (ModelInfo & { sizeGB: number })[]; loras: (ModelInfo & { sizeMB: number })[] };
 let comfyModelCache: ComfyModels | null = null;
 
@@ -370,6 +370,12 @@ export function Create() {
   const [comfyLoraStrength, setComfyLoraStrength] = useState(() => loadPref('comfyLoraStrength', 0.8));
   const [comfyModels, setComfyModels] = useState<ComfyModels | null>(comfyModelCache);
   const [comfyOnline, setComfyOnline] = useState<boolean | null>(comfyModelCache ? true : null);
+  // Thumbnails: safe-mode blurs Mature+ (nsfwLevel >= 4) previews; per-card reveal
+  // un-blurs one card. `thumbJob` drives the "Load thumbnails" progress pill.
+  const [safeMode, setSafeMode] = useState(() => loadPref('imgSafeMode', true));
+  const [revealedThumbs, setRevealedThumbs] = useState<Record<string, boolean>>({});
+  const [thumbJob, setThumbJob] = useState<{ processed: number; total: number; updated: number; running: boolean } | null>(null);
+  useEffect(() => { savePref('imgSafeMode', safeMode); }, [safeMode]);
 
   // ── Persist key preferences on change ────────────────────────────────────
   useEffect(() => { savePref('imgEngine', imgEngine); }, [imgEngine]);
@@ -681,6 +687,37 @@ export function Create() {
     } finally { setBusy(false); }
   };
 
+  // ── Blur Mature+ (nsfwLevel >= 4) thumbnails when safe-mode is on, unless this
+  // card was individually revealed. PG / PG-13 previews always show.
+  const thumbBlurred = (m: ModelInfo) => safeMode && (m.thumbNsfw ?? 1) >= 4 && !revealedThumbs[m.name];
+  const missingThumbs = (comfyModels?.checkpoints || []).some(c => !c.thumb);
+
+  // ── Fetch real Civitai preview images for every model (hashes each file once,
+  // then asks Civitai by-hash). Uses the saved Civitai token so NSFW previews
+  // come back too. Polls progress, then reloads the model list to show them.
+  const refreshThumbs = async (force = false) => {
+    if (thumbJob?.running) return;
+    setThumbJob({ processed: 0, total: 0, updated: 0, running: true });
+    try {
+      const r = await apiPost<{ ok: boolean; jobId?: string; total?: number; error?: string }>(
+        '/api/comfy/thumbs/refresh', { token: loadPref('civToken', ''), force });
+      if (!r.ok || !r.jobId) { setThumbJob(null); return; }
+      const jobId = r.jobId;
+      const poll = () => {
+        fetch(withTok(`/api/comfy/thumbs/refresh/${jobId}`)).then(x => x.json()).then((j: any) => {
+          if (!j.ok) { setThumbJob(null); return; }
+          setThumbJob({ processed: j.processed, total: j.total, updated: j.updated, running: !j.done });
+          if (!j.done) { setTimeout(poll, 1500); return; }
+          fetch(withTok('/api/comfyui/status')).then(x => x.json()).then((d: any) => {
+            if (d && (d.checkpoints || d.loras)) { comfyModelCache = d; setComfyModels(d); }
+          }).catch(() => {});
+          setTimeout(() => setThumbJob(null), 4000);
+        }).catch(() => setTimeout(poll, 2500));
+      };
+      poll();
+    } catch { setThumbJob(null); }
+  };
+
   const genVideo = async (override?: { seed?: number }) => {
     if (!canVid) return;
     setVidBusy(true); setVidResult(null);
@@ -803,7 +840,25 @@ export function Create() {
                   )}
 
                   {/* ── CHOOSE A MODEL — tappable picture cards ──────────────────── */}
-                  <div style={{ ...S.label, fontSize: '12px', marginBottom: '10px' }}>CHOOSE A MODEL</div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                    <div style={{ ...S.label, fontSize: '12px', margin: 0 }}>CHOOSE A MODEL</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => refreshThumbs(!missingThumbs)} disabled={!!thumbJob?.running}
+                        title={missingThumbs ? 'Fetch Civitai preview images' : 'Re-fetch previews (uses your saved Civitai token to pull NSFW previews)'}
+                        style={{ ...actBtn, fontSize: '11px', padding: '5px 10px', color: '#c08cff', borderColor: 'rgba(192,140,255,0.3)' }}>
+                        {thumbJob?.running
+                          ? <><span class="cc-spin">⟳</span> thumbnails {thumbJob.processed}/{thumbJob.total}</>
+                          : thumbJob ? `✓ ${thumbJob.updated} updated`
+                          : missingThumbs ? '🖼 Load thumbnails' : '↻ Refresh previews'}
+                      </button>
+                      <button type="button" onClick={() => setSafeMode(s => !s)} title="Blur Mature+ preview images"
+                        style={{ ...actBtn, fontSize: '11px', padding: '5px 10px',
+                          color: safeMode ? '#34d39a' : 'var(--color-text-muted)',
+                          borderColor: safeMode ? 'rgba(52,211,154,0.3)' : 'var(--color-border)' }}>
+                        {safeMode ? '🛡 safe mode on' : '🔞 safe mode off'}
+                      </button>
+                    </div>
+                  </div>
                   {comfyModels && !comfyModels.checkpoints?.length ? (
                     <div style={{ fontSize: '13px', color: 'var(--color-text-faint)', fontFamily: MONO, lineHeight: 1.6 }}>
                       No models yet — tap <b>⚙ Advanced options</b> → <b>+ Add model from Civitai</b> to download one.
@@ -826,14 +881,20 @@ export function Create() {
                               background: 'var(--color-card)', color: 'var(--color-text)',
                               boxShadow: active ? '0 0 0 3px rgba(52,211,154,0.18)' : 'none',
                             }}>
-                            {/* picture area (family-colored tile until real Civitai thumbs are wired) */}
+                            {/* picture area — real Civitai preview if loaded, else family-colored tile */}
                             <div style={{
                               flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
                               fontSize: '34px', minHeight: '64px',
                               background: `linear-gradient(135deg, ${fi.color}33, ${fi.color}11)`,
                             }}>
-                              {c.thumb ? <img src={c.thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0 }} /> : fi.emoji}
-                              {active && <span style={{ position: 'absolute', top: '6px', right: '8px', fontSize: '14px', color: '#34d39a' }}>✓</span>}
+                              {c.thumb ? <img src={c.thumb} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0, filter: thumbBlurred(c) ? 'blur(18px)' : 'none' }} /> : fi.emoji}
+                              {c.thumb && thumbBlurred(c) && (
+                                <span onClick={(e) => { e.stopPropagation(); setRevealedThumbs(r => ({ ...r, [c.name]: true })); }}
+                                  style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontFamily: MONO, color: '#fff', background: 'rgba(0,0,0,0.35)', cursor: 'pointer' }}>
+                                  🔞 tap to reveal
+                                </span>
+                              )}
+                              {active && <span style={{ position: 'absolute', top: '6px', right: '8px', fontSize: '14px', color: '#34d39a', textShadow: '0 1px 3px #000' }}>✓</span>}
                             </div>
                             {/* caption */}
                             <div style={{ padding: '8px 10px' }}>
