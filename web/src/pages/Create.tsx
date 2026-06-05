@@ -5,7 +5,7 @@
 import type { JSX } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { PageHeader, Tab } from '@/components/PageHeader';
-import { apiPost, dashboardToken } from '@/lib/api';
+import { apiPost, dashboardToken, ApiError } from '@/lib/api';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 const withTok = (u: string) => (dashboardToken ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}` : u);
@@ -40,6 +40,7 @@ function friendlyError(raw?: string): { msg: string; hint?: string } {
   const e = (raw || '').toString();
   if (/CUDA out of memory|OutOfMemory|GPU out of memory|free VRAM/i.test(e)) return { msg: 'GPU ran out of memory.', hint: 'Close BlueStacks/WSA (or any other GPU app) to free VRAM, then retry.' };
   if (/credits are depleted|RESOURCE_EXHAUSTED|\b429\b|billing/i.test(e)) return { msg: 'Gemini image credits are depleted.', hint: 'Add credits at ai.studio, or switch to the free Local / ComfyUI engine.' };
+  if (/Incompatible LoRA/i.test(e)) return { msg: e, hint: 'Each add-on (LoRA) only works with its own base-model family — the matching ones are color-coded; the rest are locked 🔒.' };
   if (/preflight|GPU-SAFETY BLOCKED|another GPU job/i.test(e)) return { msg: 'Blocked by the GPU safety guard.', hint: 'Another GPU job is running, or disk/VRAM is low — wait for it to finish, then retry.' };
   if (/ComfyUI failed to start|\b503\b/i.test(e)) return { msg: 'ComfyUI didn’t start in time.', hint: 'Click “Start ComfyUI”, wait for ● online (~30–60s), then generate.' };
   if (/timed out|timeout|killed/i.test(e)) return { msg: 'Generation timed out.', hint: 'First run loads the model (slow). Retry once it’s warm, or lower steps/size.' };
@@ -577,11 +578,11 @@ export function Create() {
               : { ok: false, error: j.error || 'generation failed', seed: j.seed ?? seed });
             return;
           }
-          if (Date.now() - t0 > 620_000) { resolve({ ok: false, error: 'timed out waiting for ComfyUI output' }); return; }
+          if (Date.now() - t0 > 620_000) { resolve({ ok: false, error: 'timed out waiting for ComfyUI output', seed }); return; }
           setTimeout(tick, 2000);
         })
         .catch(() => {
-          if (Date.now() - t0 > 620_000) resolve({ ok: false, error: 'lost connection to server' });
+          if (Date.now() - t0 > 620_000) resolve({ ok: false, error: 'lost connection to server', seed });
           else setTimeout(tick, 3000);
         });
     };
@@ -614,14 +615,27 @@ export function Create() {
         const negOut = (simpleMode && tips.neg && !comfyNeg.toLowerCase().includes(tips.neg.toLowerCase().slice(0, 8)))
           ? (comfyNeg.trim() ? comfyNeg.replace(/\s*$/, '') + ', ' : '') + tips.neg
           : comfyNeg;
-        const kick = await apiPost<{ ok: boolean; prompt_id?: string; seed?: number; error?: string }>(
-          '/api/comfy/generate', {
-            prompt: fullPrompt, negative_prompt: negOut, steps: comfySteps,
-            width: w, height: h, checkpoint: comfyCheckpoint || undefined,
-            loras: comfyLoras.length ? comfyLoras.map(name => ({ name, strength: comfyLoraStrength })) : undefined,
-            ...(seedNum !== undefined ? { seed: seedNum } : {}),
-          });
-        if (!kick.ok || !kick.prompt_id) {
+        const body = {
+          prompt: fullPrompt, negative_prompt: negOut, steps: comfySteps,
+          width: w, height: h, checkpoint: comfyCheckpoint || undefined,
+          loras: comfyLoras.length ? comfyLoras.map(name => ({ name, strength: comfyLoraStrength })) : undefined,
+          ...(seedNum !== undefined ? { seed: seedNum } : {}),
+        };
+        // Cold ComfyUI returns { starting:true } fast instead of blocking the
+        // request for the full boot — re-kick every few seconds until it queues
+        // (the model loads on the first real gen). Keeps every request short.
+        type Kick = { ok: boolean; prompt_id?: string; seed?: number; error?: string; starting?: boolean };
+        const warmStart = Date.now();
+        let kick: Kick;
+        for (;;) {
+          kick = await apiPost<Kick>('/api/comfy/generate', body);
+          if (!kick.starting || Date.now() - warmStart > 180_000) break;
+          setComfyStep(null);
+          await new Promise(res => setTimeout(res, 4000));
+        }
+        if (kick.starting) {
+          r = { ok: false, error: 'ComfyUI failed to start in time' };
+        } else if (!kick.ok || !kick.prompt_id) {
           r = { ok: false, error: kick.error || 'failed to queue generation' };
         } else {
           r = await pollComfy(kick.prompt_id, kick.seed);
@@ -650,7 +664,11 @@ export function Create() {
         if (r.seed !== undefined && seedLock) setSeedVal(String(r.seed));
       }
     } catch (e) {
-      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      // ApiError (e.g. a 400 incompatible-LoRA reject) carries the server's JSON
+      // body — surface its `error` message instead of the generic "failed: 400".
+      const msg = e instanceof ApiError ? (((e.body as { error?: string })?.error) || e.message)
+        : (e instanceof Error ? e.message : String(e));
+      setResult({ ok: false, error: msg });
     } finally { setBusy(false); }
   };
 

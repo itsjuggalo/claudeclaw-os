@@ -1203,23 +1203,29 @@ init();
 
       const { execSync, spawn } = await import('child_process');
 
-      // ── 1. Start ComfyUI if not running ─────────────────────────────────
+      // ── 1. Ensure ComfyUI is up — but DON'T block the request for the full
+      // cold boot. A cold WSL ComfyUI takes ~30–90s to load; holding the HTTP
+      // request open that long is exactly what produced "failed to fetch". So
+      // we kick off startup (once per boot window), wait only a few seconds in
+      // case it's nearly ready, then hand back `{ starting: true }` and let the
+      // client re-kick. Each request stays short, so no intermediary can drop it.
       let running = false;
       try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
       if (!running) {
-        const child = spawn(`${HOME}/bin/comfyui-start`, [], {
-          detached: true, stdio: 'ignore', env: { ...process.env, HOME },
-        });
-        child.unref();
-        // Wait up to 90s for ComfyUI to come up
+        if (Date.now() - comfyStartedAt > 180_000) {
+          comfyStartedAt = Date.now();
+          const child = spawn(`${HOME}/bin/comfyui-start`, [], {
+            detached: true, stdio: 'ignore', env: { ...process.env, HOME },
+          });
+          child.unref();
+          logger.info('ComfyUI cold start kicked off (async)');
+        }
         const startMs = Date.now();
-        // Cold WSL ComfyUI + a large SDXL/Pony checkpoint load can exceed 90s,
-        // so the route used to false-503 while the process kept coming up fine.
-        while (Date.now() - startMs < 180_000) {
-          await new Promise(r => setTimeout(r, 3000));
+        while (Date.now() - startMs < 8000) {
+          await new Promise(r => setTimeout(r, 2000));
           try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; break; } catch {}
         }
-        if (!running) return c.json({ ok: false, error: 'ComfyUI failed to start within 180s' }, 503);
+        if (!running) return c.json({ ok: true, starting: true });
       }
 
       // ── 1b. Queue-depth cap — one heavy job at a time on the 8GB GPU ────
@@ -1283,14 +1289,20 @@ init();
         : c.json({ ok: true, done: true, file: job.file, url: job.url, seed,
                    notes: `checkpoint: ${(job.checkpoint||'').replace('.safetensors','')}` });
     }
+    // Concurrency claim: if another poll for this id is already finalizing (moving
+    // the file / freeing VRAM), don't re-enter the terminal branch and double-free.
+    // The get→set below is synchronous (no await between), so it's atomic per tick.
+    if (job?.settling) return c.json({ ok: true, done: false });
+    if (job) job.settling = true;
+    const release = () => { const j = comfyJobs.get(prompt_id); if (j && !j.done) j.settling = false; };
     const finish = (patch: { file?: string; url?: string; error?: string }) => {
       const j = comfyJobs.get(prompt_id) || { seed: seed ?? 0, checkpoint: job?.checkpoint || '', done: false, queuedAt: Date.now() };
-      comfyJobs.set(prompt_id, { ...j, ...patch, done: true });
+      comfyJobs.set(prompt_id, { ...j, ...patch, done: true, settling: false });
     };
     try {
       const histRaw = await fetch(`http://127.0.0.1:8188/history/${prompt_id}`).then(r => r.json());
       const entry = (histRaw as Record<string, any>)[prompt_id];
-      if (!entry) return c.json({ ok: true, done: false });
+      if (!entry) { release(); return c.json({ ok: true, done: false }); }
       const statusMsgs: Array<[string, any]> = entry.status?.status_messages ?? [];
       const errMsg = statusMsgs.find(([t]) => t === 'execution_error');
       if (errMsg) {
@@ -1313,15 +1325,27 @@ init();
         const srcPath = subfolder ? `${comfyOutputDir}/${subfolder}/${filename}` : `${comfyOutputDir}/${filename}`;
         if (!fs.existsSync(galleryDir)) fs.mkdirSync(galleryDir, { recursive: true });
         const dstPath = `${galleryDir}/${filename}`;
-        try { fs.renameSync(srcPath, dstPath); } catch { fs.copyFileSync(srcPath, dstPath); try { fs.unlinkSync(srcPath); } catch {} }
+        // Move output → gallery. A move failure is TERMINAL (don't leave the client
+        // polling forever): mark the job failed with the real error and free VRAM.
+        try {
+          try { fs.renameSync(srcPath, dstPath); }
+          catch { fs.copyFileSync(srcPath, dstPath); try { fs.unlinkSync(srcPath); } catch {} }
+        } catch (moveErr) {
+          logger.warn({ srcPath, dstPath, err: String(moveErr) }, 'ComfyUI output move to gallery failed');
+          finish({ error: `couldn't save the image to the gallery: ${String(moveErr)}` });
+          void comfyFree();
+          return c.json({ ok: false, done: true, error: `couldn't save the image to the gallery: ${String(moveErr)}`, seed });
+        }
         const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(filename)}`;
         finish({ file: filename, url });
         void comfyFree();
         notify(`✅ Image ready: ${filename} (${(job?.checkpoint||'').replace('.safetensors','')})`);
         return c.json({ ok: true, done: true, file: filename, url, seed, notes: `checkpoint: ${(job?.checkpoint||'').replace('.safetensors','')}` });
       }
+      release();
       return c.json({ ok: true, done: false });
     } catch (e) {
+      release();
       return c.json({ ok: true, done: false, transient: String(e) });
     }
   });
@@ -1377,7 +1401,20 @@ init();
   //   safe-model-download (refuses if C: <= 30G), so models can never silently
   //   refill C:. Progress is polled via GET /api/models/download/:id.
   const comfyJobs = new Map<string, { seed: number; checkpoint: string; done: boolean;
-    file?: string; url?: string; error?: string; queuedAt: number }>();
+    settling?: boolean; file?: string; url?: string; error?: string; queuedAt: number }>();
+  // Sweep finished jobs (free RAM) and reclaim VRAM from abandoned ones (browser
+  // closed mid-gen → its poll never reached the terminal comfyFree). Runs every
+  // 10 min; unref'd so it never keeps the process alive on its own.
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, j] of comfyJobs) {
+      if (j.done && now - j.queuedAt > 30 * 60_000) comfyJobs.delete(id);
+      else if (!j.done && now - j.queuedAt > 20 * 60_000) { void comfyFree(); comfyJobs.delete(id); }
+    }
+  }, 10 * 60_000).unref?.();
+  // Last time we spawned comfyui-start, so a burst of "still starting" re-kicks
+  // from the client doesn't spawn a launcher storm during the cold-boot window.
+  let comfyStartedAt = 0;
   const modelDownloads = new Map<string, { dest: string; name: string; status: 'downloading' | 'done' | 'failed'; pct: number; error?: string }>();
   const MODEL_DEST_DIRS: Record<string, string> = { checkpoints: 'checkpoints', loras: 'loras', controlnet: 'controlnet', vae: 'vae' };
 
