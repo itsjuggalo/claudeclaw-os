@@ -626,9 +626,18 @@ export function Create() {
         // (the model loads on the first real gen). Keeps every request short.
         type Kick = { ok: boolean; prompt_id?: string; seed?: number; error?: string; starting?: boolean };
         const warmStart = Date.now();
-        let kick: Kick;
+        let kick: Kick = { ok: false, starting: true };
         for (;;) {
-          kick = await apiPost<Kick>('/api/comfy/generate', body);
+          try {
+            kick = await apiPost<Kick>('/api/comfy/generate', body);
+          } catch (err) {
+            // A transient socket blip during a re-kick must NOT abort the gen —
+            // ApiError (a real 400/429/5xx) IS terminal, so re-throw it.
+            if (err instanceof ApiError) throw err;
+            if (Date.now() - warmStart > 180_000) { kick = { ok: false, error: 'lost connection while starting ComfyUI' }; break; }
+            await new Promise(res => setTimeout(res, 4000));
+            continue;
+          }
           if (!kick.starting || Date.now() - warmStart > 180_000) break;
           setComfyStep(null);
           await new Promise(res => setTimeout(res, 4000));

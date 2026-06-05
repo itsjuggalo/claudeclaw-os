@@ -1052,7 +1052,8 @@ init();
       if (running) return c.json({ ok: false, error: 'already running' });
       const { spawn } = await import('child_process');
       const HOME = process.env.HOME || '/home/itsju';
-      const child = spawn(`${HOME}/bin/comfyui-start`, [], {
+      // Spawn via `bash` so a missing execute bit on comfyui-start can't EACCES.
+      const child = spawn('bash', [`${HOME}/bin/comfyui-start`], {
         detached: true, stdio: 'ignore', env: { ...process.env, HOME },
       });
       child.unref();
@@ -1214,7 +1215,8 @@ init();
       if (!running) {
         if (Date.now() - comfyStartedAt > 180_000) {
           comfyStartedAt = Date.now();
-          const child = spawn(`${HOME}/bin/comfyui-start`, [], {
+          // Spawn via `bash` so a missing execute bit can't EACCES the cold start.
+          const child = spawn('bash', [`${HOME}/bin/comfyui-start`], {
             detached: true, stdio: 'ignore', env: { ...process.env, HOME },
           });
           child.unref();
