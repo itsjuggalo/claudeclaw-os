@@ -364,6 +364,26 @@ function safeTokenEqual(provided: string | null | undefined, expected: string | 
 export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const app = new Hono();
 
+  // Hosts always trusted for CORS reflection + CSRF, on top of the
+  // configured DASHBOARD_URL host. Loopback plus the Tailscale mesh
+  // (CGNAT IP + MagicDNS) — both tailnet-scoped, so a foreign web origin
+  // can never present them. This is how the dashboard is opened from phone/LAN.
+  const allowedOriginHost = (() => {
+    const raw = (DASHBOARD_URL || '').trim();
+    if (!raw) return '';
+    try { return new URL(raw).hostname; } catch { return ''; }
+  })();
+  const STATIC_TRUSTED_HOSTS = new Set([
+    'localhost',
+    '127.0.0.1',
+    '[::1]',
+    '100.91.39.122',              // Tailscale IP
+    'g59-wsl.taile1328b.ts.net',  // Tailscale MagicDNS
+  ]);
+  const isTrustedHost = (host: string): boolean =>
+    STATIC_TRUSTED_HOSTS.has(host) ||
+    (!!allowedOriginHost && host === allowedOriginHost);
+
   // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers).
   // Reflect Origin only when it matches a known-good host (audit fix A4E-3,
   // ported from fork). Wildcard `*` is functionally equivalent to "trust
@@ -375,12 +395,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (origin) {
       try {
         const host = new URL(origin).hostname;
-        const dashHost = DASHBOARD_URL ? new URL(DASHBOARD_URL).hostname : '';
         const allowed =
-          host === 'localhost' ||
-          host === '127.0.0.1' ||
-          host === '[::1]' ||
-          (!!dashHost && host === dashHost) ||
+          isTrustedHost(host) ||
           host.endsWith('.trycloudflare.com');
         if (allowed) {
           c.header('Access-Control-Allow-Origin', origin);
@@ -560,11 +576,6 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // is empty under the production daemon — meaning every cross-origin
   // POST 403'd from the Cloudflare tunnel even though .env had the
   // right URL.
-  const allowedOriginHost = (() => {
-    const raw = (DASHBOARD_URL || '').trim();
-    if (!raw) return '';
-    try { return new URL(raw).hostname; } catch { return ''; }
-  })();
   app.use('*', async (c, next) => {
     const method = c.req.method;
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
@@ -578,11 +589,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       // Note: 0.0.0.0 was previously in this allowlist but is a bind
       // address, never a valid Origin header any browser would send.
       // Removed (audit fix A4E-3 follow-on, ported from fork-side review).
-      const allowed =
-        host === 'localhost' ||
-        host === '127.0.0.1' ||
-        host === '[::1]' ||
-        (!!allowedOriginHost && host === allowedOriginHost);
+      const allowed = isTrustedHost(host);
       if (!allowed) {
         logger.warn({ origin, method, path: new URL(c.req.url).pathname }, 'CSRF: rejected cross-origin request');
         return c.json({ error: 'cross-origin request rejected' }, 403);
