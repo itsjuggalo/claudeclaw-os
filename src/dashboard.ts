@@ -15,6 +15,7 @@ import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlM
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
+import { getSkoolBuilds, readSkoolArtifact } from './skoolbuilds.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo } from './localgen.js';
@@ -1761,6 +1762,21 @@ init();
     const id = c.req.query('id') || '';
     const name = c.req.query('name') || '';
     const out = readLewisFile(id, name);
+    if (!out) return c.json({ error: 'not found' }, 404);
+    return c.json(out);
+  });
+
+  // ── Skool Builds — artifacts generated from running Skool classroom prompts.
+  //    Read-only; manifest at ~/.claudeclaw/skool-builds.json; only manifest-
+  //    declared files are readable (see src/skoolbuilds.ts).
+  app.get('/api/skool-builds', (c) => {
+    try { return c.json(getSkoolBuilds()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+  app.get('/api/skool-builds/file', (c) => {
+    const id = c.req.query('id') || '';
+    const name = c.req.query('name') || '';
+    const out = readSkoolArtifact(id, name);
     if (!out) return c.json({ error: 'not found' }, 404);
     return c.json(out);
   });
