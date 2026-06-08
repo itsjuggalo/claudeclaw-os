@@ -7,8 +7,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE } from './config.js';
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig } from './provider.js';
+import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
@@ -82,7 +82,7 @@ import {
 import { computeNextRun } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
-import { AGENT_ID_RE, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel } from './agent-config.js';
+import { AGENT_ID_RE, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel, setAgentProvider } from './agent-config.js';
 import {
   resolveAgentAvatar,
   avatarEtag,
@@ -3441,6 +3441,163 @@ init();
       return c.json({ ok: true, agent: agentId, model, restartRequired: true });
     } catch (err) {
       return c.json({ error: 'Failed to update model' }, 500);
+    }
+  });
+
+  // ── Provider / model config (config-driven providers) ───────────────
+  app.get('/api/provider/status', (c) => {
+    return c.json(getProviderStatus());
+  });
+
+  app.get('/api/providers/models', (c) => {
+    const provider = (c.req.query('provider') || '').toLowerCase();
+    const current = getMainProviderConfig();
+    if (!ENABLE_ACP && provider !== 'claude') {
+      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    }
+    if (provider === 'claude') {
+      return c.json({
+        provider,
+        models: CLAUDE_MODEL_OPTIONS,
+        defaultModel: current.type === 'claude' ? (current.model ?? DEFAULT_CLAUDE_MODEL) : DEFAULT_CLAUDE_MODEL,
+        selectable: true,
+        allowCustom: true,
+      });
+    }
+    if (provider === 'opencode') {
+      const models = getOpenCodeModels();
+      const configuredModel = getOpenCodeDefaultModel();
+      const currentModel = current.type === 'opencode' ? current.model : undefined;
+      return c.json({
+        provider,
+        models: models.length ? models : [{ id: 'opencode-default', label: 'OpenCode default' }],
+        defaultModel: currentModel ?? (configuredModel && models.some((m) => m.id === configuredModel)
+          ? configuredModel
+          : models[0]?.id ?? configuredModel ?? 'opencode-default'),
+        selectable: models.length > 0,
+        allowCustom: true,
+        note: 'OpenCode model selection is sent through ACP session/set_model when the provider supports it.',
+      });
+    }
+    if (provider === 'gemini') {
+      return c.json({
+        provider,
+        models: GEMINI_MODEL_OPTIONS,
+        defaultModel: current.type === 'gemini' ? (current.model ?? GEMINI_MODEL_OPTIONS[0].id) : GEMINI_MODEL_OPTIONS[0].id,
+        selectable: true,
+        allowCustom: true,
+        note: 'Gemini model selection is sent through ACP session/set_model when supported.',
+      });
+    }
+    if (provider === 'codex') {
+      return c.json({
+        provider,
+        models: CODEX_MODEL_OPTIONS,
+        defaultModel: current.type === 'codex' ? (current.model ?? DEFAULT_CODEX_MODEL) : DEFAULT_CODEX_MODEL,
+        selectable: true,
+        allowCustom: true,
+        note: 'Codex model selection is sent through the codex-acp adapter via ACP session/set_model when supported.',
+      });
+    }
+    if (provider === 'acp') {
+      return c.json({
+        provider,
+        models: CUSTOM_ACP_MODEL_OPTIONS,
+        defaultModel: current.type === 'acp' ? (current.model ?? 'provider-default') : 'provider-default',
+        selectable: true,
+        allowCustom: true,
+        note: 'Custom ACP model ids are provider-specific. Use provider-default to skip session/set_model.',
+      });
+    }
+    return c.json({ error: 'Invalid provider' }, 400);
+  });
+
+  app.get('/api/providers/runtime-options', async (c) => {
+    const providerType = (c.req.query('provider') || '').toLowerCase();
+    if (!ENABLE_ACP && providerType !== 'claude') {
+      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    }
+    const current = getMainProviderConfig();
+    const hasCommandOverride = c.req.query('command') !== undefined || c.req.query('args') !== undefined;
+    const base: ProviderConfig = providerType === current.type && !hasCommandOverride
+      ? current
+      : normalizeProviderConfig({
+        type: providerType,
+        command: c.req.query('command'),
+        args: parseProviderArgsQuery(c.req.query('args')),
+      });
+
+    if (base.type === 'claude') {
+      return c.json({
+        provider: base.type,
+        modeOptions: CLAUDE_RUNTIME_OPTIONS,
+        thinkingOptions: CLAUDE_THINKING_OPTIONS,
+        rawConfigOptions: [],
+        source: 'static',
+      });
+    }
+    if (base.type !== 'opencode' && base.type !== 'gemini' && base.type !== 'codex' && base.type !== 'acp') {
+      return c.json({ error: 'Invalid provider' }, 400);
+    }
+    if (base.type === 'acp' && !base.command?.trim()) {
+      return c.json({ ...fallbackRuntimeOptions(base), error: 'Custom ACP provider requires a command' });
+    }
+
+    try {
+      const inspected = await inspectAcpProviderRuntimeOptions(base, PROJECT_ROOT, 5000);
+      if (inspected.modeOptions.length || inspected.thinkingOptions.length) return c.json(inspected);
+      return c.json({
+        ...fallbackRuntimeOptions(base),
+        error: 'Provider did not advertise runtime options',
+      });
+    } catch (err) {
+      const fallback = fallbackRuntimeOptions(base);
+      return c.json({
+        ...fallback,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  app.patch('/api/agents/:id/provider', async (c) => {
+    const agentId = c.req.param('id');
+    const body = await c.req.json<{ provider?: ProviderConfig; type?: string; model?: string; command?: string; args?: string[] }>();
+    const candidate = body.provider ?? {
+      type: body.type,
+      model: body.model,
+      command: body.command,
+      args: body.args,
+    };
+    const provider = normalizeProviderConfig(candidate);
+    if (!ENABLE_ACP && provider.type !== 'claude') {
+      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    }
+    const validationError = validateProviderConfig(provider);
+    if (validationError) return c.json({ error: validationError }, 400);
+
+    // Preflight: if the provider's CLI is not installed, fail fast with an
+    // actionable response so the user can install it before the next chat
+    // turn crashes with a spawn ENOENT they can't easily decode.
+    const availability = checkProviderAvailability(provider);
+    if (!availability.ok) {
+      return c.json({
+        error: availability.error,
+        installCommand: availability.installCommand,
+        setupHint: availability.setupHint,
+        docsUrl: availability.docsUrl,
+      }, 400);
+    }
+
+    try {
+      if (agentId === 'main') {
+        setMainProviderConfig(provider);
+        updateAgentProvider(provider);
+      } else {
+        setAgentProvider(agentId, provider);
+      }
+      return c.json({ ok: true, agent: agentId, provider, restartRequired: agentId !== 'main' });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to update provider' }, 500);
     }
   });
 
