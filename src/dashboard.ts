@@ -3832,6 +3832,7 @@ init();
       name?: string;
       description?: string;
       model?: string;
+      provider?: ProviderConfig;
       template?: string;
       botToken?: string;
     }>();
