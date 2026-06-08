@@ -171,8 +171,11 @@ export const AGENT_MAX_TURNS = parseInt(
   10,
 );
 
-// Context window limit for the model. Opus 4.6 (1M context) = 1,000,000.
-// Override via CONTEXT_LIMIT in .env if using a different model variant.
+// Fallback context-window limit (tokens). The context gauge and warnings now
+// prefer the active model's REAL window as reported by the SDK per turn
+// (Opus 4.8 = 1M, Sonnet 4.6 = 200k). This value is only used when the engine
+// doesn't report one — e.g. ACP providers, or rows from before the upgrade.
+// Override via CONTEXT_LIMIT in .env to change that fallback.
 export const CONTEXT_LIMIT = parseInt(
   process.env.CONTEXT_LIMIT || envConfig.CONTEXT_LIMIT || '1000000',
   10,
@@ -258,6 +261,23 @@ export const SMART_ROUTING_ENABLED =
   (process.env.SMART_ROUTING_ENABLED || envConfig.SMART_ROUTING_ENABLED || 'false').toLowerCase() === 'true';
 export const SMART_ROUTING_CHEAP_MODEL =
   process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'claude-haiku-4-5';
+
+// ── Claude model selection ──────────────────────────────────────────
+// The /model opus|sonnet|haiku Telegram shortcuts and the fresh-install
+// default all resolve through these. Defaults track the current Claude
+// lineup; override any of them in .env so a new model release is picked
+// up on the next restart WITHOUT a code change or a new release.
+// Example: CLAUDE_MODEL_OPUS=claude-opus-4-9
+export const CLAUDE_MODEL_OPUS =
+  process.env.CLAUDE_MODEL_OPUS || envConfig.CLAUDE_MODEL_OPUS || 'claude-opus-4-8';
+export const CLAUDE_MODEL_SONNET =
+  process.env.CLAUDE_MODEL_SONNET || envConfig.CLAUDE_MODEL_SONNET || 'claude-sonnet-4-6';
+export const CLAUDE_MODEL_HAIKU =
+  process.env.CLAUDE_MODEL_HAIKU || envConfig.CLAUDE_MODEL_HAIKU || 'claude-haiku-4-5';
+// Default Claude model when no provider/agent model is configured (e.g. fresh installs).
+// Falls back to the Opus alias above so it tracks the same single source of truth.
+export const DEFAULT_CLAUDE_MODEL =
+  process.env.DEFAULT_CLAUDE_MODEL || envConfig.DEFAULT_CLAUDE_MODEL || CLAUDE_MODEL_OPUS;
 
 // Cost footer on every response.
 // compact = model only, verbose = model + tokens, cost = model + $, full = everything

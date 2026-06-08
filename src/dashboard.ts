@@ -120,10 +120,178 @@ import {
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
-import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
+import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
+import { inspectAcpProviderRuntimeOptions, type AcpProviderRuntimeOptions } from './agent-engine/acp-adapter.js';
+
+// Selectable/valid Claude models for the dashboard pickers and the model-set
+// endpoints. The current lineup is derived from the CLAUDE_MODEL_* config
+// constants (see config.ts) so an env-driven model bump is picked up here
+// without editing this file; older pinned IDs stay valid for agents still on
+// them. Deduped so a config value matching a legacy literal isn't listed twice.
+const VALID_CLAUDE_MODELS = Array.from(new Set([
+  CLAUDE_MODEL_OPUS,
+  CLAUDE_MODEL_SONNET,
+  CLAUDE_MODEL_HAIKU,
+  'claude-opus-4-6',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-5',
+  'claude-haiku-4-5',
+]));
+
+const CLAUDE_MODEL_LABELS: Record<string, string> = {
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-sonnet-4-5': 'Sonnet 4.5',
+  'claude-haiku-4-5': 'Haiku 4.5',
+};
+
+const CLAUDE_MODEL_OPTIONS = VALID_CLAUDE_MODELS.map((id) => ({
+  id,
+  label: CLAUDE_MODEL_LABELS[id] ?? id,
+}));
+
+const GEMINI_MODEL_OPTIONS = [
+  { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+  { id: 'gemini-3-flash', label: 'Gemini 3 Flash' },
+  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+];
+
+const CODEX_MODEL_OPTIONS = [
+  { id: DEFAULT_CODEX_MODEL, label: 'GPT-5.5' },
+  { id: 'gpt-5.4', label: 'GPT-5.4' },
+  { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+  { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
+  { id: 'gpt-5.2', label: 'GPT-5.2' },
+];
+
+const CUSTOM_ACP_MODEL_OPTIONS = [
+  { id: 'provider-default', label: 'Provider default' },
+];
+
+const CLAUDE_RUNTIME_OPTIONS = [
+  { id: 'fast', label: 'Low / fast' },
+  { id: 'normal', label: 'Medium / normal' },
+  { id: 'deep', label: 'High / deep' },
+  { id: 'max', label: 'Max' },
+];
+
+const CLAUDE_THINKING_OPTIONS = [
+  { id: 'auto', label: 'Auto' },
+  { id: 'off', label: 'Off' },
+  { id: 'on', label: 'On' },
+];
+
+const CODEX_THINKING_FALLBACK_OPTIONS = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra high' },
+];
+
+function fallbackRuntimeOptions(provider: ProviderConfig): AcpProviderRuntimeOptions {
+  if (provider.type === 'codex') {
+    return {
+      provider: provider.type,
+      modeOptions: [],
+      thinkingOptions: CODEX_THINKING_FALLBACK_OPTIONS,
+      rawConfigOptions: [],
+      source: 'fallback',
+    };
+  }
+  return {
+    provider: provider.type,
+    modeOptions: [],
+    thinkingOptions: [
+      { id: 'auto', label: 'Auto' },
+      { id: 'off', label: 'Off' },
+      { id: 'on', label: 'On' },
+    ],
+    rawConfigOptions: [],
+    source: 'fallback',
+  };
+}
+
+function parseProviderArgsQuery(value: string | undefined): string[] | undefined {
+  if (!value?.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string');
+  } catch { /* fall through to shell-ish split */ }
+  return value.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) => part.replace(/^["']|["']$/g, '')) ?? [];
+}
+
+function stripAnsi(s: string): string {
+  return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function getOpenCodeModels(): Array<{ id: string; label: string }> {
+  const result = spawnSync('opencode', ['models'], { stdio: 'pipe', encoding: 'utf-8' });
+  if (result.status !== 0) return [];
+  return stripAnsi(result.stdout)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(line))
+    .map((id) => ({ id, label: id }));
+}
+
+function getOpenCodeDefaultModel(): string | undefined {
+  const configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.jsonc');
+  if (!fs.existsSync(configPath)) return undefined;
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    const raw = JSON.parse(content) as Record<string, unknown>;
+    return typeof raw.model === 'string' ? raw.model : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getProviderStatus() {
+  const provider = getMainProviderConfig();
+  const model = provider.type === 'claude'
+    ? (getMainModelOverride() ?? provider.model ?? agentDefaultModel ?? DEFAULT_CLAUDE_MODEL)
+    : provider.type === 'opencode'
+      ? (provider.model ?? getOpenCodeDefaultModel() ?? 'OpenCode default')
+      : provider.type === 'gemini'
+        ? (provider.model ?? 'Gemini CLI default')
+        : provider.type === 'codex'
+          ? (provider.model ?? DEFAULT_CODEX_MODEL)
+      : (provider.model ?? (provider.command ? `${provider.command}${provider.args?.length ? ` ${provider.args.join(' ')}` : ''}` : 'Provider default'));
+
+  return {
+    provider,
+    providerType: provider.type,
+    label: provider.type === 'claude'
+      ? 'Claude'
+      : provider.type === 'opencode'
+        ? 'OpenCode'
+        : provider.type === 'gemini'
+          ? 'Gemini'
+          : provider.type === 'codex'
+            ? 'Codex'
+            : 'ACP',
+    runtime: getProviderDisplay(provider),
+    model,
+    // Surfaced so the dashboard can hide the provider picker when the
+    // beta ACP feature is off. Single source of truth for the UI.
+    acpEnabled: ENABLE_ACP,
+  };
+}
+
+function validateProviderConfig(provider: ProviderConfig): string | null {
+  if (provider.type === 'acp' && !provider.command?.trim()) {
+    return 'Custom ACP provider requires a command';
+  }
+  return null;
+}
 
 async function classifyTaskAgent(prompt: string): Promise<string | null> {
   const agentIds = listAgentIds();
@@ -3069,7 +3237,10 @@ init();
         turns = summary.turns;
         compactions = summary.compactions;
         const contextTokens = (summary.lastContextTokens || 0) + (summary.lastCacheRead || 0);
-        contextPct = contextTokens > 0 ? Math.round((contextTokens / CONTEXT_LIMIT) * 100) : 0;
+        // Size the gauge against the model's real window when the SDK reported
+        // one (e.g. Opus 4.8 = 1M, Sonnet 4.6 = 200k); fall back to CONTEXT_LIMIT.
+        const contextLimit = summary.lastContextWindow || CONTEXT_LIMIT;
+        contextPct = contextTokens > 0 ? Math.round((contextTokens / contextLimit) * 100) : 0;
         const ageSec = Math.floor(Date.now() / 1000) - summary.firstTurnAt;
         if (ageSec < 3600) sessionAge = Math.floor(ageSec / 60) + 'm';
         else if (ageSec < 86400) sessionAge = Math.floor(ageSec / 3600) + 'h';
@@ -3224,7 +3395,7 @@ init();
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    const validModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+    const validModels = VALID_CLAUDE_MODELS;
     if (!validModels.includes(model)) return c.json({ error: `Invalid model` }, 400);
 
     const agentIds = listAgentIds();
@@ -3249,7 +3420,7 @@ init();
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    const validModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+    const validModels = VALID_CLAUDE_MODELS;
     if (!validModels.includes(model)) return c.json({ error: `Invalid model. Valid: ${validModels.join(', ')}` }, 400);
 
     try {
@@ -3674,11 +3845,29 @@ init();
     if (!botToken) return c.json({ error: 'botToken required' }, 400);
 
     try {
+      const provider = body?.provider ? normalizeProviderConfig(body.provider, body?.model?.trim() || undefined) : undefined;
+      if (provider) {
+        if (!ENABLE_ACP && provider.type !== 'claude') {
+          return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+        }
+        const validationError = validateProviderConfig(provider);
+        if (validationError) return c.json({ error: validationError }, 400);
+        const availability = checkProviderAvailability(provider);
+        if (!availability.ok) {
+          return c.json({
+            error: availability.error,
+            installCommand: availability.installCommand,
+            setupHint: availability.setupHint,
+            docsUrl: availability.docsUrl,
+          }, 400);
+        }
+      }
       const result = await createAgent({
         id,
         name,
         description,
         model: body?.model?.trim() || undefined,
+        provider,
         template: body?.template?.trim() || undefined,
         botToken,
       });

@@ -31,6 +31,9 @@ import {
   HOURLY_TOKEN_BUDGET,
   MEMORY_NOTIFY,
   PROJECT_ROOT,
+  CLAUDE_MODEL_OPUS,
+  CLAUDE_MODEL_SONNET,
+  CLAUDE_MODEL_HAIKU,
 } from './config.js';
 import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount } from './db.js';
 import { logger } from './logger.js';
@@ -41,6 +44,7 @@ import { scanForSecrets, redactSecrets } from './exfiltration-guard.js';
 import { trackUsage, getRateStatus } from './rate-tracker.js';
 import { buildCostFooter } from './cost-footer.js';
 import { DEFAULT_CLAUDE_MODEL, getMainProviderConfig, getProviderDisplay, ProviderConfig } from './provider.js';
+import { engineSupportsSystemPrompt } from './agent-engine/index.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents, classifyAndAssignAgent } from './orchestrator.js';
@@ -79,7 +83,9 @@ const GLOBAL_STREAM_INTERVAL_MS = 2500;
 // ── Context window tracking ──────────────────────────────────────────
 // Uses input_tokens from the last API call (= actual context window size:
 // system prompt + conversation history + tool results for that call).
-// Compares against CONTEXT_LIMIT (default 1M for Opus 4.6 1M, configurable).
+// Compares against the active model's real context window reported by the SDK
+// (e.g. Opus 4.8 = 1M, Sonnet 4.6 = 200k), falling back to CONTEXT_LIMIT when
+// the engine doesn't report one (e.g. ACP providers).
 //
 // On a fresh session the base overhead (system prompt, skills, CLAUDE.md,
 // MCP tools) can be 200-400k+ tokens. We track that baseline per session
@@ -111,7 +117,8 @@ function checkContextWarning(chatId: string, sessionId: string | undefined, usag
   }
 
   const baseline = sessionBaseline.get(baseKey)!;
-  const available = CONTEXT_LIMIT - baseline;
+  const contextLimit = usage.contextWindow ?? CONTEXT_LIMIT;
+  const available = contextLimit - baseline;
   if (available <= 0) return null;
 
   const conversationTokens = contextTokens - baseline;
@@ -126,6 +133,17 @@ function checkContextWarning(chatId: string, sessionId: string | undefined, usag
 
 function activeProvider(): ProviderConfig {
   return agentProvider ?? getMainProviderConfig();
+}
+
+export function modelStatusLine(provider: ProviderConfig, chatId: string): string {
+  if (provider.type === 'claude') {
+    return `Model: ${chatModelOverride.get(chatId) ?? agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL}`;
+  }
+  if (provider.model) return `Model: ${provider.model}`;
+  if (provider.type === 'codex') return 'Model: Codex default';
+  if (provider.type === 'gemini') return 'Model: Gemini CLI default';
+  if (provider.type === 'opencode') return 'Model: OpenCode default';
+  return 'Model: Provider default';
 }
 
 function canUseTelegramUrlButton(rawUrl: string): boolean {
@@ -155,10 +173,13 @@ const voiceEnabledChats = new Set<string>();
 // When not set, uses CLI default (Opus via Max/OAuth)
 const chatModelOverride = new Map<string, string>();
 
+// Label → model ID for the /model opus|sonnet|haiku shortcuts. IDs resolve
+// from env/config (see config.ts) so they track new model releases without a
+// code change — set CLAUDE_MODEL_OPUS etc. in .env and restart.
 const AVAILABLE_MODELS: Record<string, string> = {
-  opus: 'claude-opus-4-6',
-  sonnet: 'claude-sonnet-4-5',
-  haiku: 'claude-haiku-4-5',
+  opus: CLAUDE_MODEL_OPUS,
+  sonnet: CLAUDE_MODEL_SONNET,
+  haiku: CLAUDE_MODEL_HAIKU,
 };
 const DEFAULT_MODEL_LABEL = 'opus';
 
@@ -554,7 +575,10 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   // Build memory context and prepend to message
   const { contextText: memCtx, surfacedMemoryIds, surfacedMemorySummaries } = await buildMemoryContext(chatIdStr, message, AGENT_ID);
   const parts: string[] = [];
-  if (agentSystemPrompt && !sessionId) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+  // Only inject the persona in-band for engines that can't carry it in a system
+  // prompt (ACP). On the Claude SDK path it's already pinned there every turn, so
+  // injecting again would just duplicate it on the first turn.
+  if (agentSystemPrompt && !sessionId && !engineSupportsSystemPrompt(agentProvider)) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
   if (memCtx) parts.push(memCtx);
 
   // Inject recent scheduled task outputs so the user can reply to them naturally.
@@ -825,6 +849,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
           result.usage.totalCostUsd,
           result.usage.didCompact,
           AGENT_ID,
+          result.usage.contextWindow,
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');
@@ -1176,9 +1201,7 @@ export function createBot(): Bot {
   bot.command('provider', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
     const provider = activeProvider();
-    const modelLine = provider.type === 'claude'
-      ? `Model: ${chatModelOverride.get(ctx.chat!.id.toString()) ?? agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL}`
-      : 'Model: OpenCode/provider default config';
+    const modelLine = modelStatusLine(provider, ctx.chat!.id.toString());
     await ctx.reply(`Provider: ${getProviderDisplay(provider)}\n${modelLine}`);
   });
 
@@ -1773,7 +1796,7 @@ async function processDashboardMessage(
 
     const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, AGENT_ID);
     const dashParts: string[] = [];
-    if (agentSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+    if (agentSystemPrompt && !sessionId && !engineSupportsSystemPrompt(agentProvider)) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
 
     const recentDashTasks = getRecentTaskOutputs(AGENT_ID, 30);
@@ -1919,6 +1942,7 @@ async function processDashboardMessage(
           result.usage.totalCostUsd,
           result.usage.didCompact,
           AGENT_ID,
+          result.usage.contextWindow,
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');

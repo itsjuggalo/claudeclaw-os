@@ -14,7 +14,12 @@ vi.mock('./config.js', () => ({
   AGENT_MAX_TURNS: 30,
   PROJECT_ROOT: '/tmp/test',
   agentCwd: undefined,
+  agentSystemPrompt: undefined,
   ENABLE_ACP: true,
+  DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
+  CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
+  CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
+  CLAUDE_MODEL_HAIKU: 'claude-haiku-4-5',
 }));
 
 vi.mock('./logger.js', () => ({

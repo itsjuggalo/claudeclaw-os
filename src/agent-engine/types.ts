@@ -15,6 +15,12 @@ export interface AgentEngineUsage {
   preCompactTokens: number | null;
   lastCallCacheRead: number;
   lastCallInputTokens: number;
+  /**
+   * The active model's real context window (tokens), as reported by the SDK in
+   * `result.modelUsage[model].contextWindow`. Null when the engine doesn't
+   * report one (e.g. ACP providers) — consumers fall back to CONTEXT_LIMIT.
+   */
+  contextWindow: number | null;
 }
 
 export interface AgentEngineProgressEvent {
@@ -50,6 +56,16 @@ export interface AgentTurnInput {
   env?: Record<string, string | undefined>;
   settingSources?: string[];
   includePartialMessages?: boolean;
+  /**
+   * Agent persona (CLAUDE.md) to use as the system prompt. When set, the Claude
+   * SDK engine passes it as a plain-string `systemPrompt`, pinning identity and
+   * boundaries into the system layer so they are present on every turn and
+   * survive compaction. This is the persona alone — no `claude_code` preset is
+   * applied (the preset was never part of this runtime). Ignored by engines that
+   * don't model a system prompt (e.g. ACP), which must deliver the persona
+   * in-band instead.
+   */
+  systemPrompt?: string;
 }
 
 export type AgentEngineEvent =
@@ -76,5 +92,6 @@ export function emptyUsage(): AgentEngineUsage {
     preCompactTokens: null,
     lastCallCacheRead: 0,
     lastCallInputTokens: 0,
+    contextWindow: null,
   };
 }
