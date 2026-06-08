@@ -606,7 +606,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       { name: 'ClaudeClaw',     port: 3141, path: '/',          desc: 'AI agent dashboard + gallery' },
       { name: 'ARIES',          port: 1337, path: '/',          desc: 'Trading PWA — broker + strategy engine' },
       { name: 'MissionCtrl V2', port: 3000, path: '/',          desc: 'Main MC trading dashboard' },
-      { name: 'Vibe Trading',   port: 5899, path: '/',          desc: 'AI trading research & backtesting' },
+      { name: 'Vibe Trading',   port: 8899, path: '/',          desc: 'AI trading research & backtesting' },
       { name: 'Kronos',         port: 7070, path: '/',          desc: 'ML model training & forecast WebUI' },
       { name: 'n8n',            port: 5678, path: '/',          desc: 'Workflow automation' },
       { name: 'Mobile Hub',     port: 8443, path: '/',          desc: 'Mobile launchpad (HTTPS)', https: true },
