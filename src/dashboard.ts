@@ -1,6 +1,7 @@
 import { Api, RawApi } from 'grammy';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { getCookie, setCookie } from 'hono/cookie';
 import { serve } from '@hono/node-server';
 
 import fs from 'fs';
@@ -500,13 +501,47 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // / under DASHBOARD_LEGACY=true) call requireToken() inline.
   app.use('*', async (c, next) => {
     const path = new URL(c.req.url).pathname;
+    // Persist a valid ?token= as an HttpOnly cookie so the dashboard JUST
+    // WORKS after a reboot / browser restart without re-pasting the token.
+    // sessionStorage (the SPA's old store) is wiped on browser close; this
+    // cookie survives. Runs on EVERY path (incl. the SPA shell `/`) so the
+    // first `?token=` visit on any device sets it. We only ever write the
+    // cookie when the query token already matches DASHBOARD_TOKEN, so an
+    // unauthenticated visitor never receives it. HttpOnly = JS/XSS can't
+    // read it; no Secure flag because :3141 is plain HTTP over the Tailscale
+    // WG tunnel (Secure would drop the cookie). SameSite=Lax is fine for a
+    // same-origin SPA.
+    //
+    // SLIDING REFRESH: re-stamp the cookie on EVERY authenticated request
+    // (token from query OR an existing valid cookie). maxAge is pinned to
+    // 34560000s = 400 days, which is the hard ceiling — Chrome/Safari clamp
+    // ANY cookie to 400 days and Hono's setCookie THROWS above it (a larger
+    // value 500s every request). Re-stamping on each use means the 400-day
+    // clock resets on every visit, so for any device used within a 400-day
+    // window the login is effectively permanent (survives reboot, browser
+    // close, cache-clear). Only a deliberate cookies/site-data wipe or a
+    // 400-day cold gap removes it — and the SPA re-auth overlay covers both.
+    if (!DASHBOARD_AUTH_DISABLED) {
+      const provided = c.req.query('token') || getCookie(c, 'claudeclaw_token');
+      if (provided && safeTokenEqual(provided, DASHBOARD_TOKEN)) {
+        setCookie(c, 'claudeclaw_token', DASHBOARD_TOKEN, {
+          httpOnly: true,
+          sameSite: 'Lax',
+          path: '/',
+          maxAge: 34560000,
+        });
+      }
+    }
     // Only gate the API surface. Static and HTML pass through.
     if (!path.startsWith('/api/')) {
       await next();
       return;
     }
     if (!DASHBOARD_AUTH_DISABLED) {
-      const token = c.req.query('token');
+      // Accept the token from the query param OR the persisted cookie.
+      // Same-origin fetch()/EventSource auto-send the cookie, so once set
+      // the bare URL authenticates every /api/* call across reboots.
+      const token = c.req.query('token') || getCookie(c, 'claudeclaw_token');
       if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -519,7 +554,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // by legacy fallbacks that DO embed the token in the page source.
   function requireToken(c: any): Response | null {
     if (DASHBOARD_AUTH_DISABLED) return null;
-    const token = c.req.query('token');
+    const token = c.req.query('token') || getCookie(c, 'claudeclaw_token');
     if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401) as Response;
     }
