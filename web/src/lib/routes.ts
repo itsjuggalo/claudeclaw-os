@@ -32,7 +32,6 @@ export const ROUTES: RouteDef[] = [
 
   { path: '/memories',   label: 'Memories',        section: 'intelligence', icon: Brain,         shortcut: 'g e' },
   { path: '/hive',       label: 'Hive Mind',       section: 'intelligence', icon: Network,       shortcut: 'g h' },
-  { path: '/mckb',       label: 'mc-kb',           section: 'intelligence', icon: Database,      shortcut: 'g k' },
   { path: '/databases',  label: 'Databases',       section: 'intelligence', icon: Database                      },
   { path: '/journal',    label: 'Journal',         section: 'intelligence', icon: BookOpen,      shortcut: 'g j' },
   { path: '/usage',      label: 'Usage',           section: 'intelligence', icon: Activity,      shortcut: 'g u' },
@@ -57,7 +56,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/lewis-trading',       label: 'Lewis Trading', section: 'trade', icon: GraduationCap           },
 
   // Mission Control quick-launch (external links, open in new tab)
-  { path: '/ext-aries',    label: 'ARIES',           section: 'mc', icon: Rocket,      href: 'https://g59-wsl.taile1328b.ts.net' },
+  { path: '/ext-aries',    label: 'ARIES',           section: 'mc', icon: Rocket,      href: 'http://100.91.39.122:1337' },
   { path: '/ext-mcv2',     label: 'MissionCtrl V2',  section: 'mc', icon: LayoutGrid,  href: 'http://100.91.39.122:3000' },
   { path: '/ext-kronos',   label: 'Kronos',          section: 'mc', icon: TrendingUp,  href: 'http://100.91.39.122:7070' },
   { path: '/ext-vibe',     label: 'Vibe Trading',    section: 'mc', icon: Workflow,    href: 'http://100.91.39.122:8899' },
