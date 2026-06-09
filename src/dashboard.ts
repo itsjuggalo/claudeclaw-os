@@ -594,6 +594,18 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         logger.warn({ origin, method, path: new URL(c.req.url).pathname }, 'CSRF: rejected cross-origin request');
         return c.json({ error: 'cross-origin request rejected' }, 403);
       }
+    } else {
+      // No Origin header. Browsers ALWAYS send Origin on cross-origin
+      // state-changing requests, so a missing Origin is normally a
+      // same-origin post or a non-browser client (curl/CLI). Honor
+      // Sec-Fetch-Site so a browser request that stripped Origin can't
+      // slip past: if the browser says this came cross-site, reject it.
+      // curl/CLI send no Sec-Fetch-Site, so they still pass.
+      const sfs = (c.req.header('sec-fetch-site') || '').toLowerCase();
+      if (sfs === 'cross-site' || sfs === 'cross-origin') {
+        logger.warn({ method, sfs, path: new URL(c.req.url).pathname }, 'CSRF: rejected cross-site request (no Origin)');
+        return c.json({ error: 'cross-origin request rejected' }, 403);
+      }
     }
     await next();
   });
