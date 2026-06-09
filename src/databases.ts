@@ -54,7 +54,7 @@ const RAW_REGISTRY: RegistryEntry[] = [
   { id: 'background-tasks', type: 'sql', group: 'sql', label: 'Background Tasks (watchdog)', accent: 'sky', path: `${HOME}/background_tasks.sqlite` },
 
   // App & Agent State
-  { id: 'claudeclaw', type: 'sql', group: 'state', label: 'ClaudeClaw App DB', accent: 'cyan', path: `${HOME}/03_AGENTS/claudeclaw-os/store/claudeclaw.db` },
+  { id: 'claudeclaw', type: 'sql', group: 'state', label: 'ClaudeClaw App DB', accent: 'cyan', path: `${HOME}/claudeclaw-os/store/claudeclaw.db` },
   { id: 'mem-boba', type: 'sql', group: 'state', label: 'Boba — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/boba.sqlite` },
   { id: 'mem-jazzy', type: 'sql', group: 'state', label: 'JazzyHazzy — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/jazzyhazzy.sqlite` },
   { id: 'mem-main', type: 'sql', group: 'state', label: 'Main — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/main.sqlite` },

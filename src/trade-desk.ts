@@ -9,9 +9,9 @@ import { join } from 'node:path';
 const HOME = process.env.HOME || '/home/itsju';
 
 const FLOW_DB     = join(HOME, '02_DATA/flow-data/flow.db');
-const PIPELINE_DB = join(HOME, '01_ACTIVE/LapClaw/pipeline/desk_pipeline.sqlite');
-const LEDGER_DB   = join(HOME, '01_ACTIVE/LapClaw/pipeline/trade_ledger.sqlite');
-const SIGNALS_FILE = join(HOME, '01_ACTIVE/LapClaw/firebase-signals/latest.json');
+const PIPELINE_DB = join(HOME, 'LapClaw/pipeline/desk_pipeline.sqlite');
+const LEDGER_DB   = join(HOME, 'LapClaw/pipeline/trade_ledger.sqlite');
+const SIGNALS_FILE = join(HOME, 'LapClaw/firebase-signals/latest.json');
 const BRIEF_CACHE  = join(HOME, '02_DATA/trade-brief-cache.json');
 
 // Priority feeds for the signal panel (flow data first, then alerts)
