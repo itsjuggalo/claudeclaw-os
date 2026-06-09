@@ -168,7 +168,7 @@ export function McKb() {
           <PageState
             icon={Database}
             title="Search the knowledge base"
-            description={`Type a question above to query ${health?.chunks?.toLocaleString() ?? '26,000+'} chunks across the bible, your memory files, Mark Kashef's skool community, and your second-brain notes.`}
+            description="Type a question above to query 357+ chunks across the bible, your memory files, Mark Kashef's skool community, and your second-brain notes."
           />
         )}
         {error && (

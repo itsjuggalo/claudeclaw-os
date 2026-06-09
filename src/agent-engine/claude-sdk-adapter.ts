@@ -88,12 +88,18 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
       input.allowDangerouslySkipPermissions ??
       (permissionMode === 'bypassPermissions' ? true : undefined);
 
+    const isStaleSession = (e: unknown): boolean =>
+      /No conversation found with session ID/i.test(e instanceof Error ? e.message : String(e));
+    let resumeSessionId = input.sessionId;
+    let attemptedFreshRetry = false;
+
+    while (true) {
     try {
       for await (const event of query({
         prompt: singleTurn(input.prompt),
         options: {
           cwd: input.cwd,
-          resume: input.sessionId,
+          resume: resumeSessionId,
           settingSources: input.settingSources ?? ['project', 'user'],
           // Persona-only system prompt (plain string = no claude_code preset).
           // Pins identity/boundaries in the system layer, present every turn and
@@ -244,6 +250,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         emittedResult = true;
       }
       }
+      break;
     } catch (err) {
       if (emittedResult) {
         logger.warn(
@@ -252,7 +259,23 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         );
         return;
       }
+      if (resumeSessionId && !attemptedFreshRetry && isStaleSession(err)) {
+        attemptedFreshRetry = true;
+        resumeSessionId = undefined;
+        didCompact = false;
+        preCompactTokens = null;
+        lastCallCacheRead = 0;
+        lastCallInputTokens = 0;
+        streamedText = '';
+        turnTextBlocks.length = 0;
+        logger.warn(
+          { staleSessionId: input.sessionId },
+          'Resume session not found on disk; retrying once with a fresh session',
+        );
+        continue;
+      }
       throw err;
+    }
     }
   }
 }

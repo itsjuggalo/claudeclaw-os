@@ -371,8 +371,8 @@ export function PortfolioAIPage() {
   const flowPicks: FlowPick[] = flowRaw?.picks ?? [];
   const momentum: MomentumEntry[] = momRaw?.momentum ?? [];
 
-  const flowMap = new Map<string, FlowPick>(flowPicks.filter(p => p.ticker).map(p => [p.ticker.toUpperCase(), p]));
-  const momMap = new Map<string, MomentumEntry>(momentum.filter(m => m.ticker).map(m => [m.ticker.toUpperCase(), m]));
+  const flowMap = new Map<string, FlowPick>(flowPicks.map(p => [p.ticker.toUpperCase(), p]));
+  const momMap = new Map<string, MomentumEntry>(momentum.map(m => [m.ticker.toUpperCase(), m]));
 
   const handleRefresh = useCallback(() => {
     refreshWallets();
