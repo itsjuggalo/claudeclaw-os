@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import {
-  BookOpen, RefreshCw, ChevronRight, ChevronLeft, ChevronDown, Calendar,
+  RefreshCw, ChevronRight, ChevronLeft, ChevronDown, Calendar,
 } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
