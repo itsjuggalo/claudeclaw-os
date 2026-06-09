@@ -89,6 +89,7 @@ export function Hermes() {
   };
 
   const handleRestart = async () => {
+    if (!confirm('Restart the Hermes gateway? This bounces Telegram and interrupts any in-flight agent or cron job.')) return;
     setRestarting(true);
     try {
       const res = await apiPost<{ ok: boolean; message: string }>('/api/hermes/restart', {});
