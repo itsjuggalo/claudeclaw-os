@@ -5,6 +5,7 @@ import {
   Settings, Smartphone, Wallet, Images, Wand2,
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
+  Coins,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -35,6 +36,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/databases',  label: 'Databases',       section: 'intelligence', icon: Database                      },
   { path: '/journal',    label: 'Journal',         section: 'intelligence', icon: BookOpen,      shortcut: 'g j' },
   { path: '/usage',      label: 'Usage',           section: 'intelligence', icon: Activity,      shortcut: 'g u' },
+  { path: '/token-usage', label: 'Token Usage',    section: 'intelligence', icon: Coins,         shortcut: 'g k' },
   { path: '/audit',      label: 'Audit',           section: 'intelligence', icon: ShieldCheck                   },
   { path: '/wallets',    label: 'Wallets',         section: 'intelligence', icon: Wallet,        shortcut: 'g $' },
   { path: '/gallery',    label: 'Gallery',         section: 'intelligence', icon: Images,        shortcut: 'g i' },
