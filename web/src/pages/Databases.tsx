@@ -4,7 +4,7 @@
 // /databases/:id (DatabaseDetail).
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
-import { BookOpen, Table, KeyRound, Search } from 'lucide-preact';
+import { BookOpen, Table, KeyRound, Search, ChevronRight } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet } from '@/lib/api';
@@ -149,6 +149,18 @@ export function Databases() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  // Internals (FTS indexes, empty agent memories, watchdog state) stay
+  // collapsed by default — page-local preference, same localStorage idiom
+  // as the SQL editor's query history.
+  const [showInternals, setShowInternals] = useState<boolean>(() => {
+    try { return localStorage.getItem('claudeclaw.db.showInternals') === 'on'; } catch { return false; }
+  });
+  function toggleInternals() {
+    setShowInternals((v) => {
+      try { localStorage.setItem('claudeclaw.db.showInternals', v ? 'off' : 'on'); } catch { /* ignore */ }
+      return !v;
+    });
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -212,8 +224,19 @@ export function Databases() {
     .map(g => ({ ...g, items: g.items.filter(matchesItem) }))
     .filter(g => g.items.length > 0);
 
+  // Internals render behind a collapsed toggle. An active filter query
+  // searches them regardless (typing "boba" must surface mem-boba instead
+  // of a confusing "No matches").
+  const internalsGroup = filteredGroups.find(g => g.id === 'internals');
+  const mainGroups = filteredGroups.filter(g => g.id !== 'internals');
+  const internalsVisible = Boolean(internalsGroup) && (showInternals || q.length > 0);
+  const internalCount = groups.find(g => g.id === 'internals')?.items.length ?? 0;
+  const mainCount = totalCount - internalCount;
+
   const headerActions = !loading && !error && totalCount > 0
-    ? <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>{totalCount} databases · {humanSize(totalBytes)}</span>
+    ? <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>
+        {mainCount} databases{internalCount > 0 ? ` (+${internalCount} internal)` : ''} · {humanSize(totalBytes)}
+      </span>
     : undefined;
 
   return (
@@ -254,28 +277,54 @@ export function Databases() {
             <PageState empty emptyTitle="No matches" emptyDescription={'Nothing matches "' + filter.trim() + '".'} />
           )}
 
-          {!loading && !error && filteredGroups.map(group => (
-            <section key={group.id} style={{ marginBottom: '28px' }}>
-              <div style={{
-                fontSize: '11px', fontWeight: 700, letterSpacing: '1.5px',
-                textTransform: 'uppercase', color: 'var(--color-text-faint)',
-                marginBottom: '12px',
-              }}>
-                {group.label} <span style={{ opacity: 0.6 }}>({group.items.length})</span>
-                {(() => {
-                  const gb = group.items.reduce((m, it) => m + (it.bytes ?? 0), 0);
-                  return gb > 0 ? <span style={{ opacity: 0.45, fontWeight: 400 }}> · {humanSize(gb)}</span> : null;
-                })()}
-              </div>
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-                gap: '12px',
-              }}>
-                {group.items.map(item => <DbCard key={item.id} item={item} />)}
-              </div>
-            </section>
-          ))}
+          {!loading && !error && (() => {
+            const renderGroup = (group: typeof filteredGroups[number]) => (
+              <section key={group.id} style={{ marginBottom: '28px' }}>
+                <div style={{
+                  fontSize: '11px', fontWeight: 700, letterSpacing: '1.5px',
+                  textTransform: 'uppercase', color: 'var(--color-text-faint)',
+                  marginBottom: '12px',
+                }}>
+                  {group.label} <span style={{ opacity: 0.6 }}>({group.items.length})</span>
+                  {(() => {
+                    const gb = group.items.reduce((m, it) => m + (it.bytes ?? 0), 0);
+                    return gb > 0 ? <span style={{ opacity: 0.45, fontWeight: 400 }}> · {humanSize(gb)}</span> : null;
+                  })()}
+                  {group.id === 'internals' && (
+                    <span style={{ opacity: 0.45, fontWeight: 400, textTransform: 'none', letterSpacing: 'normal' }}>
+                      {' '}· FTS indexes, agent memories, watchdog state
+                    </span>
+                  )}
+                </div>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))',
+                  gap: '12px',
+                }}>
+                  {group.items.map(item => <DbCard key={item.id} item={item} />)}
+                </div>
+              </section>
+            );
+            return (
+              <>
+                {mainGroups.map(renderGroup)}
+                {internalCount > 0 && q.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={toggleInternals}
+                    class="flex items-center gap-1.5 py-2 mb-3 text-[11.5px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)] transition-colors"
+                  >
+                    <ChevronRight
+                      size={13}
+                      style={{ transition: 'transform 0.15s', transform: showInternals ? 'rotate(90deg)' : 'none' }}
+                    />
+                    {showInternals ? 'Hide internals' : `Show internals (${internalCount})`}
+                  </button>
+                )}
+                {internalsVisible && internalsGroup && renderGroup(internalsGroup)}
+              </>
+            );
+          })()}
         </div>
       </div>
     </div>

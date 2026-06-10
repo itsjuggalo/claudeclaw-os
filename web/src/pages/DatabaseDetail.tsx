@@ -766,10 +766,13 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 {meta.size} · {meta.tables.length} tables
               </div>
               <div style={{
-                display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(200px, 100%), 1fr))',
                 gap: '8px', marginBottom: '20px',
               }}>
-                {meta.tables.map(t => (
+                {/* Empty tables sort last and render dimmed — schema leftovers
+                    shouldn't visually compete with live tables. Stable sort
+                    keeps the server's alphabetical order within each half. */}
+                {[...meta.tables].sort((a, b) => Number(a.rows === 0) - Number(b.rows === 0)).map(t => (
                   <button
                     key={t.name}
                     type="button"
@@ -778,10 +781,13 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                       textAlign: 'left', background: 'var(--color-card)',
                       border: '1px solid var(--color-border)', borderRadius: '8px',
                       padding: '10px 12px', cursor: 'pointer',
+                      opacity: t.rows === 0 ? 0.55 : 1,
                     }}
                   >
                     <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '3px' }}>{t.rows.toLocaleString()} rows</div>
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '3px' }}>
+                      {t.rows === 0 ? '0 rows · empty' : `${t.rows.toLocaleString()} rows`}
+                    </div>
                   </button>
                 ))}
               </div>
