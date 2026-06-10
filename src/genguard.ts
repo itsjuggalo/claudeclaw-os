@@ -10,8 +10,11 @@
 //     the /tmp/heavy-gpu-job.lock one-job concurrency lock).
 //   • ping_mike.py (Telegram) + the Discord pipeline-alerts webhook = the
 //     existing alert channels Mike already watches.
-import { execSync, spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import { promisify } from 'util';
 import fs from 'fs';
+
+const execFileAsync = promisify(execFile);
 
 const HOME = process.env.HOME || '/home/itsju';
 const COMFY = 'http://127.0.0.1:8188';
@@ -20,15 +23,19 @@ export interface GateResult { ok: boolean; reason?: string; }
 
 // Run `system-guardian preflight`. exit 0 => safe (reason carries the OK line);
 // non-zero => blocked (reason carries why). Absolute path: PM2's env may not
-// have ~/bin on PATH.
-export function preflightGate(): GateResult {
+// have ~/bin on PATH. Async — the old execSync blocked the Node event loop
+// (every other route stalled) for the duration of the preflight, and
+// /api/system/metrics runs this on every dashboard poll.
+export async function preflightGate(): Promise<GateResult> {
   try {
-    const out = execSync(`${HOME}/bin/system-guardian preflight 2>&1`, {
-      stdio: 'pipe', timeout: 15_000,
-    }).toString().trim();
+    const { stdout, stderr } = await execFileAsync(
+      '/bin/sh', ['-c', `${HOME}/bin/system-guardian preflight 2>&1`],
+      { timeout: 15_000 },
+    );
+    const out = `${stdout || ''}${stderr || ''}`.trim();
     return { ok: true, reason: out.slice(0, 300) };
   } catch (e) {
-    const err = e as { stdout?: Buffer; stderr?: Buffer; message?: string };
+    const err = e as { stdout?: string | Buffer; stderr?: string | Buffer; message?: string };
     const out = (err.stdout?.toString() || err.stderr?.toString() || err.message || 'preflight failed').trim();
     // Keep the last few lines — that's where the BLOCKED/FAIL reason lives.
     return { ok: false, reason: out.split('\n').slice(-3).join(' ').replace(/\s+/g, ' ').slice(0, 300) };

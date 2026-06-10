@@ -1243,15 +1243,25 @@ init();
   // ── ComfyUI — status + VRAM for the local image/video generation stack ──
   app.get('/api/comfyui/status', async (c) => {
     try {
-      const { execSync } = await import('child_process');
-      // Check if ComfyUI is responding on port 8188
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      // Check if ComfyUI is responding on port 8188 — native fetch; the old
+      // curl-via-execSync blocked the event loop for up to 2s per poll.
       let running = false;
-      try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
-      // VRAM via nvidia-smi
+      try {
+        const probe = await fetch('http://127.0.0.1:8188/system_stats', { signal: AbortSignal.timeout(2000) });
+        running = probe.ok;
+      } catch {}
+      // VRAM via nvidia-smi (async for the same reason)
       let vram: { total: number; used: number; free: number } | null = null;
       try {
-        const raw = execSync('/usr/lib/wsl/lib/nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv,noheader,nounits', { stdio: 'pipe' }).toString().trim();
-        const [total, used, free] = raw.split(', ').map(Number);
+        const { stdout } = await execFileAsync(
+          '/usr/lib/wsl/lib/nvidia-smi',
+          ['--query-gpu=memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
+          { timeout: 5000 },
+        );
+        const [total, used, free] = stdout.trim().split(', ').map(Number);
         vram = { total, used, free };
       } catch {}
       // Model inventory
@@ -1369,7 +1379,7 @@ init();
     try {
       // Safety gate — the raw passthrough is a bypass door for the high-level
       // /api/comfy/generate gate, so it must enforce the same checks.
-      const gate = preflightGate();
+      const gate = await preflightGate();
       if (!gate.ok) { notify(`🛑 ComfyUI queue blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
       if (await comfyQueueDepth() >= 1) return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
       const body = await c.req.json();
@@ -1431,7 +1441,7 @@ init();
       // ── 0. Safety gate — refuse if unsafe, no matter the trigger source ──
       // (phone, dashboard, or raw API). Closes the warm-ComfyUI gap: cold start
       // runs preflight via comfyui-start, but a warm instance had no gate.
-      const gate = preflightGate();
+      const gate = await preflightGate();
       if (!gate.ok) { notify(`🛑 Image gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
 
       // ── 0b. Resolve checkpoint + LoRAs and validate family compatibility BEFORE
@@ -1652,7 +1662,7 @@ init();
   //    gpu/disk/protection health, collected every 60s by metrics/collector.py)
   //    PLUS a LIVE system-guardian preflight verdict, so the Create page can show
   //    health and hard-disable Generate when unsafe. Read-only; never recollects.
-  app.get('/api/system/metrics', (c) => {
+  app.get('/api/system/metrics', async (c) => {
     const HOME = process.env.HOME || '/home/itsju';
     const dbPath = `${HOME}/metrics/metrics.db`;
     let metrics: Record<string, unknown> = {};
@@ -1670,7 +1680,7 @@ init();
     } catch (e) { metrics = { error: String(e) }; }
     // Live preflight = the exact gate the server enforces, so the UI verdict can
     // never disagree with what the server will actually allow.
-    const preflight = preflightGate();
+    const preflight = await preflightGate();
     return c.json({ metrics, preflight, staleness, stale: staleness < 0 || staleness > 180 });
   });
 
@@ -2116,7 +2126,7 @@ init();
     // Safety gate BEFORE spawning the long (up to 20-min) LTX subprocess so the
     // phone gets an instant "blocked: <reason>" instead of waiting. LTX on the
     // 8GB GPU is the box-freeze vector — localgen.ts also gates + locks it.
-    const gate = preflightGate();
+    const gate = await preflightGate();
     if (!gate.ok) { notify(`🛑 Video gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
     const result = await generateLocalVideo({
       prompt: String(body?.prompt ?? ''),

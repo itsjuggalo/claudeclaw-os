@@ -25,17 +25,17 @@ export interface LocalResult { ok: boolean; file?: string; url?: string; error?:
 
 let _busy = false;
 
-function run(cmd: string, cmdArgs: string[], saveRe: RegExp, urlFor: (file: string) => string, timeoutMs: number, readyMarker: string, label: string): Promise<LocalResult> {
+async function run(cmd: string, cmdArgs: string[], saveRe: RegExp, urlFor: (file: string) => string, timeoutMs: number, readyMarker: string, label: string): Promise<LocalResult> {
+  if (!fs.existsSync(PY)) return { ok: false, error: 'Local generator is not installed yet.' };
+  if (!fs.existsSync(`${LG}/INSTALL_DONE`)) return { ok: false, error: 'Local generator is still installing dependencies — try again shortly.' };
+  if (!fs.existsSync(readyMarker)) return { ok: false, error: `${label} model is still downloading (one-time, several GB) — try again in a few minutes.` };
+  if (_busy) return { ok: false, error: 'A local generation is already running (GPU busy) — wait for it to finish.' };
+  // ── Safety gate — refuse if C:/RAM/VRAM unsafe or another heavy GPU job
+  //    holds the lock. Same gate ComfyUI uses, so phone triggers can't crash.
+  const gate = await preflightGate();
+  if (!gate.ok) return { ok: false, error: `blocked: ${gate.reason}` };
+  _busy = true;
   return new Promise((resolve) => {
-    if (!fs.existsSync(PY)) return resolve({ ok: false, error: 'Local generator is not installed yet.' });
-    if (!fs.existsSync(`${LG}/INSTALL_DONE`)) return resolve({ ok: false, error: 'Local generator is still installing dependencies — try again shortly.' });
-    if (!fs.existsSync(readyMarker)) return resolve({ ok: false, error: `${label} model is still downloading (one-time, several GB) — try again in a few minutes.` });
-    if (_busy) return resolve({ ok: false, error: 'A local generation is already running (GPU busy) — wait for it to finish.' });
-    // ── Safety gate — refuse if C:/RAM/VRAM unsafe or another heavy GPU job
-    //    holds the lock. Same gate ComfyUI uses, so phone triggers can't crash.
-    const gate = preflightGate();
-    if (!gate.ok) return resolve({ ok: false, error: `blocked: ${gate.reason}` });
-    _busy = true;
     const child = execFile(
       cmd,
       cmdArgs,
