@@ -4,11 +4,18 @@
 // src/wallets.ts). The password "vault" gate and the stock-detail drawer from
 // the original were dropped — this dashboard is already token-gated and local.
 import { useState, useEffect } from 'preact/hooks';
+import { Link } from 'wouter-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
+
+const ACTION_BTN = {
+  fontSize: '11px', color: '#4fc3f7', padding: '5px 14px', background: 'transparent',
+  border: '1px solid #1a3a4a', borderRadius: '4px', cursor: 'pointer', fontFamily: MONO,
+  textDecoration: 'none', display: 'inline-block',
+} as const;
 
 const fmt = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtFull = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
@@ -73,7 +80,7 @@ const mergeRobinhood = (wallets: any[]): any[] => {
 };
 
 export function Wallets() {
-  const { data, loading, error } = useFetch<any[]>('/api/wallets', 60_000);
+  const { data, loading, error, refresh } = useFetch<any[]>('/api/wallets', 60_000);
   const wallets: any[] = Array.isArray(data) ? data : [];
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -106,14 +113,28 @@ export function Wallets() {
       <div class="flex flex-col h-full">
         <PageHeader title="Wallets" />
         <PageState error={error} />
+        <div style={{ textAlign: 'center', marginTop: '12px' }}>
+          <button onClick={refresh} style={ACTION_BTN}>Retry</button>
+        </div>
       </div>
     );
   }
   if (loading && wallets.length === 0) {
+    // Skeleton mirrors the real layout (command bar + wallet cards) so the
+    // page doesn't jump when data lands.
     return (
       <div class="flex flex-col h-full">
         <PageHeader title="Wallets" />
-        <PageState loading />
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
+            <div class="animate-pulse" style={{ height: '130px', background: 'linear-gradient(180deg, #0d1420 0%, #0a1115 100%)', border: '1px solid #1a2332', borderRadius: '10px', marginBottom: '20px' }} />
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} class="animate-pulse" style={{ height: '110px', background: 'linear-gradient(180deg, #0a1929 0%, #0d1420 100%)', border: '1px solid #1a3a4a', borderRadius: '8px' }} />
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -147,7 +168,12 @@ export function Wallets() {
 
   return (
     <div class="flex flex-col h-full">
-      <PageHeader title="Wallets" />
+      <PageHeader title="Wallets" actions={
+        <>
+          <Link href="/equity" style={ACTION_BTN}>Equity Mgmt →</Link>
+          <button onClick={refresh} style={ACTION_BTN}>Refresh</button>
+        </>
+      } />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
 
@@ -393,7 +419,9 @@ function PositionSection({ title, positions, expanded, setExpanded, symColor }: 
   return (
     <>
       <div style={{ fontSize: '9px', color: '#607d8b', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: MONO }}>{title}</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '6px' }}>
+      {/* min(100%, …) caps the track at the container width so position
+          cards can't overflow the viewport on narrow phones. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 200px), 1fr))', gap: '6px' }}>
         {shown.map((p: any, i: number) => {
           const isStock = p.type !== 'crypto';
           const price = Number(p.price || 0);

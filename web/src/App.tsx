@@ -29,6 +29,7 @@ import { Hermes } from '@/pages/Hermes';
 import { ClaudeOffice } from '@/pages/ClaudeOffice';
 import { TokenUsage } from '@/pages/TokenUsage';
 import { TradeDeskPage } from '@/pages/TradeDeskPage';
+import { EquityManagement } from '@/pages/EquityManagement';
 import { SignalFeedPage } from '@/pages/SignalFeedPage';
 import { FlowRankPage } from '@/pages/FlowRankPage';
 import { PortfolioAIPage } from '@/pages/PortfolioAIPage';
@@ -91,6 +92,7 @@ export function App() {
 
           {/* Trade Desk — live trading intelligence */}
           <Route path="/trade-desk"><TradeDeskPage /></Route>
+          <Route path="/equity"><EquityManagement /></Route>
           <Route path="/trade-desk/signals"><SignalFeedPage /></Route>
           <Route path="/trade-desk/flow-rank"><FlowRankPage /></Route>
           <Route path="/trade-desk/portfolio"><PortfolioAIPage /></Route>

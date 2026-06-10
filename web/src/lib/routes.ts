@@ -5,7 +5,7 @@ import {
   Settings, Smartphone, Wallet, Images, Wand2,
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
-  Coins,
+  Coins, Gauge,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -51,6 +51,7 @@ export const ROUTES: RouteDef[] = [
 
   // Trade Desk — live trading intelligence
   { path: '/trade-desk',          label: 'Trade Desk',    section: 'trade', icon: TrendingUp,  shortcut: 'g t' },
+  { path: '/equity',              label: 'Equity Mgmt',   section: 'trade', icon: Gauge,       shortcut: 'g q' },
   { path: '/trade-desk/signals',  label: 'Signal Feed',   section: 'trade', icon: Activity               },
   { path: '/trade-desk/flow-rank',label: 'Flow Rank',     section: 'trade', icon: BarChart2              },
   { path: '/trade-desk/portfolio',label: 'Portfolio AI',  section: 'trade', icon: Briefcase              },
