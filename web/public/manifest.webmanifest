@@ -1,0 +1,11 @@
+{
+  "name": "ClaudeClaw Mission Control",
+  "short_name": "ClaudeClaw",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e0e10",
+  "theme_color": "#0e0e10",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

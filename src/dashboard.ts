@@ -998,7 +998,7 @@ init();
   // Top-level static files copied from web/public/ at build time
   // (e.g. /brain.glb for the 3D Hive Mind view). These have stable
   // names so they sit at the root rather than under /assets/.
-  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm)}', (c) => {
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico)}', (c) => {
     const filename = c.req.param('filename');
     const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
     const root = path.join(PROJECT_ROOT, 'dist', 'web');
@@ -1009,6 +1009,10 @@ init();
     const ctype = ext === '.glb' ? 'model/gltf-binary'
       : ext === '.gltf' ? 'model/gltf+json'
       : ext === '.wasm' ? 'application/wasm'
+      : ext === '.svg' ? 'image/svg+xml'
+      : ext === '.webmanifest' ? 'application/manifest+json'
+      : ext === '.png' ? 'image/png'
+      : ext === '.ico' ? 'image/x-icon'
       : 'application/octet-stream';
     return new Response(new Uint8Array(data), {
       headers: {

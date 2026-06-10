@@ -170,6 +170,11 @@ function findWallet(wallets: Wallet[], keyword: string): Wallet | null {
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function SummaryCard({ label, total, asOf, color }: { label: string; total: number; asOf?: string; color: string }) {
+  // Snapshot age. >24h = stale: a trader glancing at money figures must not
+  // mistake a 3-week-old snapshot for live data.
+  const ageH = asOf ? (Date.now() - new Date(asOf).getTime()) / 3_600_000 : null;
+  const stale = ageH != null && ageH > 24;
+  const staleLabel = stale ? (ageH! >= 48 ? `STALE ${Math.floor(ageH! / 24)}d` : 'STALE') : null;
   return (
     <div style={{
       background: '#0a1929',
@@ -179,9 +184,18 @@ function SummaryCard({ label, total, asOf, color }: { label: string; total: numb
       padding: '16px 20px',
       minWidth: 0,
     }}>
-      <div style={{ fontSize: '10px', color: '#607d8b', letterSpacing: '2px', fontFamily: MONO, marginBottom: '10px' }}>{label}</div>
-      <div style={{ fontSize: '32px', fontWeight: 800, color: '#e0e0e0', fontFamily: MONO, lineHeight: 1 }}>${fmtInt(total)}</div>
-      <div style={{ fontSize: '11px', color: '#607d8b', marginTop: '8px', fontFamily: MONO }}>as of: {asOf ? timeSince(asOf) : '—'}</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '10px' }}>
+        <span style={{ fontSize: '10px', color: '#607d8b', letterSpacing: '2px', fontFamily: MONO }}>{label}</span>
+        {staleLabel && (
+          <span style={{
+            fontSize: '9px', fontWeight: 800, fontFamily: MONO, letterSpacing: '1px',
+            color: '#ffb74d', background: '#ffb74d1a', border: '1px solid #ffb74d55',
+            borderRadius: '3px', padding: '2px 7px', whiteSpace: 'nowrap',
+          }}>{staleLabel}</span>
+        )}
+      </div>
+      <div style={{ fontSize: '32px', fontWeight: 800, color: stale ? '#90a4ae' : '#e0e0e0', fontFamily: MONO, lineHeight: 1 }}>${fmtInt(total)}</div>
+      <div style={{ fontSize: '11px', color: stale ? '#ffb74d' : '#607d8b', marginTop: '8px', fontFamily: MONO }}>as of: {asOf ? timeSince(asOf) : '—'}</div>
     </div>
   );
 }

@@ -303,6 +303,16 @@ function WalletCard({ w, live, collapsed, toggleCollapse, expanded, toggleExpand
               <span style={{ fontSize: '14px', fontWeight: 700, color: '#e0e0e0', fontFamily: MONO }}>{w.name}</span>
               {w.badge && <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '3px', fontFamily: MONO, letterSpacing: '1px', background: w.badge === 'LIVE' ? '#66bb6a22' : '#ff980022', color: w.badge === 'LIVE' ? '#66bb6a' : '#ff9800', border: '1px solid ' + (w.badge === 'LIVE' ? '#66bb6a44' : '#ff980044') }}>{w.badge}</span>}
               {isError && <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '3px', fontFamily: MONO, background: '#ef535022', color: '#ef5350', border: '1px solid #ef535044' }}>ERROR</span>}
+              {(() => {
+                // Snapshot-fed wallets (Coinbase CSV, Robinhood) carry as_of;
+                // older than 24h gets a stale chip so old money figures
+                // can't pass as live.
+                const ageH = w.as_of ? (Date.now() - new Date(w.as_of as string).getTime()) / 3_600_000 : null;
+                if (ageH == null || !(ageH > 24)) return null;
+                return <span style={{ fontSize: '9px', fontWeight: 800, padding: '2px 7px', borderRadius: '3px', fontFamily: MONO, letterSpacing: '1px', background: '#ffb74d1a', color: '#ffb74d', border: '1px solid #ffb74d55' }}>
+                  {ageH >= 48 ? `STALE ${Math.floor(ageH / 24)}d` : 'STALE'}
+                </span>;
+              })()}
             </div>
             <div style={{ fontSize: '10px', color: '#607d8b', fontFamily: MONO }}>
               {w.type}{hasPositions ? ' · ' + positions.length + ' positions' : ''}
