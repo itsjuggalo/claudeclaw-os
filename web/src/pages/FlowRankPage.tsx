@@ -226,7 +226,7 @@ export function FlowRankPage() {
                     <thead>
                       <tr style={{ borderBottom: `1px solid ${C.border}` }}>
                         {['RANK', 'TICKER', 'BAND', 'CONFIDENCE', 'ACCOUNT', 'THESIS'].map(h => (
-                          <th key={h} style={{
+                          <th key={h} class={h === 'ACCOUNT' ? 'hidden sm:table-cell' : h === 'THESIS' ? 'hidden md:table-cell' : undefined} style={{
                             padding: '8px 12px', textAlign: 'left',
                             fontSize: 10, fontFamily: MONO, fontWeight: 700,
                             color: C.muted, letterSpacing: 1,
@@ -285,7 +285,7 @@ export function FlowRankPage() {
                               }}>{pick.final_confidence}%</span>
                             </td>
                             {/* ACCOUNT */}
-                            <td style={{ padding: '10px 12px' }}>
+                            <td class="hidden sm:table-cell" style={{ padding: '10px 12px' }}>
                               <span style={{
                                 padding: '2px 8px', borderRadius: 4, fontSize: 10,
                                 fontFamily: MONO, background: 'rgba(79,195,247,0.1)',
@@ -293,7 +293,7 @@ export function FlowRankPage() {
                               }}>{pick.target_account}</span>
                             </td>
                             {/* THESIS */}
-                            <td style={{ padding: '10px 12px', maxWidth: 280 }}>
+                            <td class="hidden md:table-cell" style={{ padding: '10px 12px', maxWidth: 280 }}>
                               <span style={{ fontSize: 12, color: C.text, lineHeight: 1.5 }}>
                                 {isExpanded ? thesis : truncated}
                               </span>
@@ -310,6 +310,30 @@ export function FlowRankPage() {
                               )}
                             </td>
                           </tr>,
+                          // mobile-only thesis row (THESIS column is hidden < md)
+                          thesis ? (
+                            <tr key={`mob-${pick.rank}`} class="md:hidden" style={{
+                              borderBottom: `1px solid ${C.border}`,
+                              borderLeft: `3px solid ${bandBorder(pick.final_band)}`,
+                            }}>
+                              <td colSpan={4} style={{ padding: '0 12px 10px' }}>
+                                <span style={{ fontSize: 11.5, color: C.text, lineHeight: 1.5 }}>
+                                  {isExpanded ? thesis : truncated}
+                                </span>
+                                {needsExpand && (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleExpand(pick.rank)}
+                                    style={{
+                                      marginLeft: 6, fontSize: 10, color: C.blue,
+                                      background: 'none', border: 'none', cursor: 'pointer',
+                                      padding: 0, fontFamily: MONO,
+                                    }}
+                                  >{isExpanded ? '▲ less' : '▼ more'}</button>
+                                )}
+                              </td>
+                            </tr>
+                          ) : null,
                           // expanded sub-row
                           isExpanded && (
                             <tr key={`expand-${pick.rank}`} style={{

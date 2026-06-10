@@ -108,10 +108,9 @@ export function Hermes() {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
-          {/* ── STATUS BAR ──────────────────────────────────────── */}
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr',
-            gap: '12px', padding: '20px 24px',
+          {/* ── STATUS BAR — 2×2 on phones, 4-up from lg ────────── */}
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" style={{
+            padding: '20px 24px',
             background: 'linear-gradient(180deg, #0d1420 0%, #0a1115 100%)',
             border: '1px solid ' + CARD_BORDER, borderRadius: '10px',
           }}>
@@ -157,8 +156,8 @@ export function Hermes() {
             </div>
           </div>
 
-          {/* ── TWO-COLUMN MAIN ─────────────────────────────────── */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          {/* ── TWO-COLUMN MAIN — single column on phones ───────── */}
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
             {/* LEFT: Send + Sessions + Crons */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>

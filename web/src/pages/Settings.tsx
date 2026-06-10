@@ -785,13 +785,16 @@ function Card({ children }: { children: any }) {
 }
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: any }) {
+  // Stacks label-above-control on phones; side-by-side from sm: up.
+  // The inline row used to squeeze the label to a sliver and let wide
+  // controls (theme chips, scale buttons) overlap the hint text.
   return (
-    <div class="flex items-center gap-4 py-1.5">
+    <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 py-2 sm:py-1.5">
       <div class="flex-1 min-w-0">
         <div class="text-[13px] text-[var(--color-text)]">{label}</div>
         {hint && <div class="text-[11px] text-[var(--color-text-faint)] mt-0.5">{hint}</div>}
       </div>
-      {children}
+      <div class="flex flex-wrap items-center gap-2 sm:justify-end sm:shrink-0 sm:max-w-[60%]">{children}</div>
     </div>
   );
 }

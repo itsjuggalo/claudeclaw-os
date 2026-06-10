@@ -131,7 +131,7 @@ export function MissionControl() {
         title={headerTitle}
         actions={
           <>
-            <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
+            <span class="hidden lg:inline text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
               {totalActive} active · {inbox.length} unassigned · {tasks.data?.tasks?.length ?? 0} total
             </span>
             <LayoutMenu agents={orderedAgents} />

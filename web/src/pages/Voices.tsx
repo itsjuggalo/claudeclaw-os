@@ -124,7 +124,7 @@ export function VoicesPane({ embedded }: VoicesPaneProps) {
                 <div
                   key={r.agent}
                   class={[
-                    'flex items-center gap-3 px-4 py-3 rounded-lg border transition-colors',
+                    'flex flex-wrap items-center gap-3 px-4 py-3 rounded-lg border transition-colors',
                     isDirty
                       ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)]'
                       : 'bg-[var(--color-card)] border-[var(--color-border)]',
@@ -138,7 +138,7 @@ export function VoicesPane({ embedded }: VoicesPaneProps) {
                   <select
                     value={effective(r.agent)}
                     onChange={(e) => changeVoice(r.agent, (e.target as HTMLSelectElement).value)}
-                    class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                    class="w-full sm:w-auto bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
                   >
                     {catalog.map((c) => (
                       <option key={c.name} value={c.name}>

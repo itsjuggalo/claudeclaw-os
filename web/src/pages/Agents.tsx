@@ -74,7 +74,7 @@ export function Agents() {
         title="Agents"
         actions={
           <>
-            <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
+            <span class="hidden sm:inline text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
               {agents.filter((a) => a.running).length} live · {agents.length} total
             </span>
             {suggestions.length > 0 ? (

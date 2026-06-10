@@ -493,15 +493,15 @@ export function PortfolioAIPage() {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '20px 24px', maxWidth: '1400px', margin: '0 auto' }}>
 
-          {/* SUMMARY BAR */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '14px', marginBottom: '20px' }}>
+          {/* SUMMARY BAR — stacks on phones so the dollar figures never clip */}
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3.5" style={{ marginBottom: '20px' }}>
             <SummaryCard label="ROBINHOOD EQUITY" total={rhTotal} asOf={rhWallet?.as_of ?? latestAsOf} color="#4fc3f7" />
             <SummaryCard label="COINBASE CRYPTO" total={cbTotal} asOf={cbWallet?.as_of ?? latestAsOf} color="#ce93d8" />
             <SummaryCard label="PAPER TRADING" total={apTotal} asOf={apWallet?.as_of ?? latestAsOf} color="#ff9800" />
           </div>
 
           {/* TAB BAR */}
-          <div style={{ display: 'flex', gap: '4px', marginBottom: '16px', borderBottom: '1px solid #1a2332', paddingBottom: '8px' }}>
+          <div style={{ display: 'flex', gap: '4px', marginBottom: '16px', borderBottom: '1px solid #1a2332', paddingBottom: '8px', flexWrap: 'wrap' }}>
             {(['robinhood', 'coinbase', 'alpaca'] as const).map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab)} style={{
                 padding: '6px 16px', borderRadius: '5px', border: 'none', cursor: 'pointer',
@@ -567,7 +567,7 @@ export function PortfolioAIPage() {
               No positions match the current filter.
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px', marginBottom: '24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: '12px', marginBottom: '24px' }}>
               {currentPositions.map((p, i) => (
                 <PositionCard
                   key={p.symbol + i}

@@ -151,10 +151,8 @@ export function Wallets() {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
 
-          {/* COMMAND BAR */}
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
-            gap: '24px', alignItems: 'center',
+          {/* COMMAND BAR — stacks to one column on phones */}
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 lg:gap-6 items-center" style={{
             marginBottom: '20px', padding: '22px 26px',
             background: 'linear-gradient(180deg, #0d1420 0%, #0a1115 100%)',
             border: '1px solid #1a2332', borderRadius: '10px',
@@ -172,7 +170,7 @@ export function Wallets() {
                 )}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: '32px', justifyContent: 'center', padding: '0 24px', borderLeft: '1px solid #1a2332', borderRight: '1px solid #1a2332' }}>
+            <div class="flex flex-wrap gap-x-8 gap-y-3 justify-start lg:justify-center lg:px-6 lg:border-x lg:border-[#1a2332]">
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: '11px', color: '#607d8b', letterSpacing: '2px', marginBottom: '8px', fontFamily: MONO }}>PAPER</div>
                 <div style={{ fontSize: '24px', fontWeight: 700, color: '#90a4ae', lineHeight: 1, fontFamily: MONO }}>${fmt(paperTotal)}</div>
@@ -211,8 +209,8 @@ export function Wallets() {
             </div>
           </div>
 
-          {/* TWO-COLUMN WALLET LAYOUT */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+          {/* TWO-COLUMN WALLET LAYOUT — single column on phones */}
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <WalletColumn label="PAPER" total={paperTotal} accentColor="#90a4ae" wallets={paperWallets} showGlow={false}
               collapsed={collapsed} toggleCollapse={toggleCollapse} expanded={expanded} toggleExpanded={toggleExpanded} />
             <WalletColumn label="LIVE" total={liveTotal} accentColor="#66bb6a" wallets={liveWallets} showGlow={true}
