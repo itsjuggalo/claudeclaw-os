@@ -25,7 +25,7 @@ const VENV = '/home/itsju/02_DATA/mc-kb/.venv/bin/python';
 
 // ── Registry ─────────────────────────────────────────────────────────
 export type DbType = 'kb' | 'sql' | 'secrets';
-export type DbGroup = 'kb' | 'sql' | 'state' | 'index' | 'secrets';
+export type DbGroup = 'kb' | 'sql' | 'state' | 'index' | 'secrets' | 'internals';
 
 export interface RegistryEntry {
   id: string;
@@ -38,6 +38,10 @@ export interface RegistryEntry {
   pyDir?: string;    // kb root dir for query.py/ask.py
   askable?: boolean;
   searchUrl?: string; // warm RAG server (semantic /query) — fast-path for kbSearch
+  /** Plumbing the operator rarely needs (FTS indexes, empty agent memories,
+   *  watchdog state). Collected into a collapsed "Internals" group instead of
+   *  the main catalog sections. Deep links still resolve normally. */
+  infra?: boolean;
 }
 
 const RAW_REGISTRY: RegistryEntry[] = [
@@ -51,19 +55,19 @@ const RAW_REGISTRY: RegistryEntry[] = [
   { id: 'desk-pipeline', type: 'sql', group: 'sql', label: 'Desk Pipeline', accent: 'sky', path: `${HOME}/LapClaw/pipeline/desk_pipeline.sqlite` },
   { id: 'flow', type: 'sql', group: 'sql', label: 'Flow Data (live)', accent: 'sky', path: `${HOME}/02_DATA/flow-data/flow.db` },
   { id: 'flow-archive', type: 'sql', group: 'sql', label: 'Flow Data (archive)', accent: 'sky', path: `${HOME}/02_DATA/flow-data/flow_archive.db` },
-  { id: 'background-tasks', type: 'sql', group: 'sql', label: 'Background Tasks (watchdog)', accent: 'sky', path: `${HOME}/background_tasks.sqlite` },
+  { id: 'background-tasks', type: 'sql', group: 'sql', label: 'Background Tasks (watchdog)', accent: 'sky', path: `${HOME}/background_tasks.sqlite`, infra: true },
 
   // App & Agent State
   { id: 'claudeclaw', type: 'sql', group: 'state', label: 'ClaudeClaw App DB', accent: 'cyan', path: `${HOME}/claudeclaw-os/store/claudeclaw.db` },
-  { id: 'mem-boba', type: 'sql', group: 'state', label: 'Boba — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/boba.sqlite` },
-  { id: 'mem-jazzy', type: 'sql', group: 'state', label: 'JazzyHazzy — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/jazzyhazzy.sqlite` },
-  { id: 'mem-main', type: 'sql', group: 'state', label: 'Main — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/main.sqlite` },
+  { id: 'mem-boba', type: 'sql', group: 'state', label: 'Boba — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/boba.sqlite`, infra: true },
+  { id: 'mem-jazzy', type: 'sql', group: 'state', label: 'JazzyHazzy — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/jazzyhazzy.sqlite`, infra: true },
+  { id: 'mem-main', type: 'sql', group: 'state', label: 'Main — agent memory', accent: 'cyan', path: `${HOME}/.openclaw/memory/main.sqlite`, infra: true },
 
   // RAG / FTS Indexes
-  { id: 'claytrader-fts', type: 'sql', group: 'index', label: 'ClayTrader FTS', accent: 'amber', path: `${HOME}/claytrader-kb/fts.db` },
-  { id: 'erikdalton-fts', type: 'sql', group: 'index', label: 'Erik Dalton FTS', accent: 'emerald', path: `${HOME}/erikdalton-kb/fts.db` },
-  { id: 'mckb-fts', type: 'sql', group: 'index', label: 'mc-kb FTS', accent: 'sky', path: `${HOME}/02_DATA/mc-kb/fts.db` },
-  { id: 'bible-rag', type: 'sql', group: 'index', label: 'Bible RAG index', accent: 'sky', path: `${HOME}/.bible-rag/index.sqlite` },
+  { id: 'claytrader-fts', type: 'sql', group: 'index', label: 'ClayTrader FTS', accent: 'amber', path: `${HOME}/claytrader-kb/fts.db`, infra: true },
+  { id: 'erikdalton-fts', type: 'sql', group: 'index', label: 'Erik Dalton FTS', accent: 'emerald', path: `${HOME}/erikdalton-kb/fts.db`, infra: true },
+  { id: 'mckb-fts', type: 'sql', group: 'index', label: 'mc-kb FTS', accent: 'sky', path: `${HOME}/02_DATA/mc-kb/fts.db`, infra: true },
+  { id: 'bible-rag', type: 'sql', group: 'index', label: 'Bible RAG index', accent: 'sky', path: `${HOME}/.bible-rag/index.sqlite`, infra: true },
 
   // Secrets
   { id: 'secrets', type: 'secrets', group: 'secrets', label: 'Secrets & Keys', accent: 'rose', path: '' },
@@ -155,13 +159,37 @@ function mtimeISO(target: string): string | null {
   }
 }
 
-async function sqlTableCount(path: string): Promise<string> {
+/** List user-meaningful tables: skips sqlite_* plus FTS5 shadow tables
+ *  (<vt>_data/_idx/_docsize/_config/_content) — the virtual table itself
+ *  stays listed. Shadow tables remain queryable via the SQL editor; they
+ *  are only hidden from listings so counts and grids reflect real schema. */
+function listUserTables(dbh: Database.Database): string[] {
+  const rows = dbh
+    .prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all() as Array<{ name: string; sql: string | null }>;
+  const ftsVirtual = new Set(
+    rows.filter((r) => /CREATE\s+VIRTUAL\s+TABLE\b[\s\S]*\bUSING\s+fts/i.test(r.sql || '')).map((r) => r.name),
+  );
+  const shadow = /^(.*)_(data|idx|docsize|config|content)$/;
+  return rows
+    .filter((r) => {
+      const m = shadow.exec(r.name);
+      return !(m && ftsVirtual.has(m[1]));
+    })
+    .map((r) => r.name);
+}
+
+function sqlTableCount(path: string): string {
+  let dbh: Database.Database | null = null;
   try {
-    const { stdout } = await execFileAsync('sqlite3', [path, '.tables'], { timeout: 5000 });
-    const n = stdout.split(/\s+/).filter(Boolean).length;
+    dbh = new Database(path, { readonly: true });
+    dbh.pragma('busy_timeout = 4000');
+    const n = listUserTables(dbh).length;
     return `${n} ${n === 1 ? 'table' : 'tables'}`;
   } catch {
     return '—';
+  } finally {
+    if (dbh) try { dbh.close(); } catch { /* ignore */ }
   }
 }
 
@@ -171,9 +199,22 @@ function kbChunkStat(dir: string): string {
     const json = JSON.parse(raw) as { reindex?: { chunks?: number }; chunks?: number };
     const chunks = json.reindex?.chunks ?? json.chunks;
     if (typeof chunks === 'number') return `${chunks} chunks`;
+  } catch { /* fall through to fts.db */ }
+  // Fallback: every KB's fts.db carries a meta table with chunk_count
+  // (mc-kb's sync_status.json has no chunk field at all).
+  let dbh: Database.Database | null = null;
+  try {
+    const fts = join(dir, 'fts.db');
+    if (!existsSync(fts)) return '—';
+    dbh = new Database(fts, { readonly: true });
+    const r = dbh.prepare("SELECT value FROM meta WHERE key='chunk_count'").get() as { value?: string } | undefined;
+    const n = Number(r?.value);
+    if (Number.isFinite(n) && n > 0) return `${n} chunks`;
     return '—';
   } catch {
     return '—';
+  } finally {
+    if (dbh) try { dbh.close(); } catch { /* ignore */ }
   }
 }
 
@@ -207,7 +248,7 @@ async function buildItem(e: RegistryEntry): Promise<CatalogItem> {
     } else if (e.type === 'sql') {
       bytes = await duBytes(e.path);
       updated = mtimeISO(e.path);
-      stat = await sqlTableCount(e.path);
+      stat = sqlTableCount(e.path);
     } else {
       // secrets
       stat = secretsFileCount();
@@ -239,10 +280,19 @@ async function buildCatalog(): Promise<Catalog> {
   const groups: CatalogGroup[] = GROUP_ORDER.map((g) => ({
     id: g.id,
     label: g.label,
-    items: REGISTRY.filter((e) => e.group === g.id)
+    items: REGISTRY.filter((e) => e.group === g.id && !e.infra)
       .map((e) => byId.get(e.id))
       .filter((it): it is CatalogItem => Boolean(it)),
   })).filter((g) => g.items.length > 0);
+
+  // Infra entries (FTS indexes, empty agent memories, watchdog state) live in
+  // one trailing group the client renders behind a "Show internals" toggle.
+  const internals = REGISTRY.filter((e) => e.infra)
+    .map((e) => byId.get(e.id))
+    .filter((it): it is CatalogItem => Boolean(it));
+  if (internals.length > 0) {
+    groups.push({ id: 'internals', label: 'Internals', items: internals });
+  }
 
   // Grand total de-dups nested paths: a KB dir's `du` already includes its
   // fts.db, which is ALSO registered separately under RAG/FTS Indexes — so
@@ -616,11 +666,7 @@ export async function sqlMeta(id: string): Promise<SqlMeta | { error: string }> 
       try {
         dbh = new Database(e.path, { readonly: true });
         dbh.pragma('busy_timeout = 4000');
-        const names = (dbh
-          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-          .all() as Array<{ name: string }>)
-          .map((r) => r.name)
-          .slice(0, 60);
+        const names = listUserTables(dbh).slice(0, 60);
         const tables = names.map((name) => {
           let rows = -1;
           try {
