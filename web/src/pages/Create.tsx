@@ -395,6 +395,9 @@ export function Create() {
   // Everything else (engine/size/steps/seed/negative/strength) is auto-defaulted
   // and good-quality tags + triggers are injected silently. Advanced shows it all.
   const [simpleMode, setSimpleMode] = useState<boolean>(() => loadPref('simpleMode', true));
+  // ⚡ Fast gen = DMD2 4-step distillation (server falls back silently on
+  // non-SDXL-family checkpoints). Default ON — ~4x faster, near-same quality.
+  const [fastGen, setFastGen] = useState<boolean>(() => loadPref('fastGen', true));
 
   // banana state
   const [prompt, setPrompt] = useState('');
@@ -444,6 +447,7 @@ export function Create() {
   // ── Persist key preferences on change ────────────────────────────────────
   useEffect(() => { savePref('imgEngine', imgEngine); }, [imgEngine]);
   useEffect(() => { savePref('simpleMode', simpleMode); }, [simpleMode]);
+  useEffect(() => { savePref('fastGen', fastGen); }, [fastGen]);
   // Simple mode always uses ComfyUI (the engine with named Civitai models + LoRAs).
   useEffect(() => { if (simpleMode && tab === 'image' && imgEngine !== 'comfyui') setImgEngine('comfyui'); }, [simpleMode, tab, imgEngine]);
   useEffect(() => { savePref('bnModel', bnModel); }, [bnModel]);
@@ -706,6 +710,7 @@ export function Create() {
             loras: lk.loras?.length ? lk.loras : undefined,
             ...(lk.cfg !== undefined ? { cfg: lk.cfg } : {}),
             ...(seedNum !== undefined ? { seed: seedNum } : {}),
+            ...(fastGen ? { fast: true } : {}),
           };
         } else {
           // ── Custom path — auto-prepend the active trigger words (from the
@@ -738,6 +743,7 @@ export function Create() {
             }) : undefined,
             ...(hasConfirmedUnknown ? { allowUnknownCompat: true } : {}),
             ...(seedNum !== undefined ? { seed: seedNum } : {}),
+            ...(fastGen ? { fast: true } : {}),
           };
         }
         // Cold ComfyUI returns { starting:true } fast instead of blocking the
@@ -990,12 +996,19 @@ export function Create() {
               {/* ── Simple ⇄ Advanced toggle ─────────────────────────────────── */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
                 <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', fontFamily: MONO }}>
-                  {simpleMode ? 'Pick a model · (optional) add a style · type what you want · Generate.' : 'All controls — engines, sizes, steps, seed, negatives, LoRA strength.'}
+                  {simpleMode ? 'Pick a Look · describe it · Generate. The Look picks the right model, add-ons and settings.' : 'All controls — engines, sizes, steps, seed, negatives, LoRA strength.'}
                 </div>
-                <button type="button" onClick={() => setSimpleMode(m => !m)}
-                  style={{ ...actBtn, color: '#7fd1ff', borderColor: 'rgba(127,209,255,0.3)' }}>
-                  {simpleMode ? '⚙ Advanced options' : '← Back to simple'}
-                </button>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button type="button" onClick={() => setFastGen(f => !f)}
+                    title="DMD2 4-step distillation — ~4x faster sampling, near-identical quality. SDXL/Pony models only (others fall back to normal)."
+                    style={{ ...actBtn, color: fastGen ? '#34d39a' : 'var(--color-text-faint)', borderColor: fastGen ? 'rgba(52,211,154,0.35)' : 'var(--color-border)' }}>
+                    ⚡ Fast {fastGen ? 'ON' : 'OFF'}
+                  </button>
+                  <button type="button" onClick={() => setSimpleMode(m => !m)}
+                    style={{ ...actBtn, color: '#7fd1ff', borderColor: 'rgba(127,209,255,0.3)' }}>
+                    {simpleMode ? '⚙ Advanced options' : '← Back to simple'}
+                  </button>
+                </div>
               </div>
 
               {simpleMode ? (

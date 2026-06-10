@@ -1311,7 +1311,9 @@ init();
       // ALWAYS sweep the real python child — the pidfile can be stale or (pre-fix)
       // hold the wrong pid, which would leave ComfyUI orphaned holding VRAM on the
       // 8GB GPU. Then clear the shared lock so the next gen isn't falsely blocked.
-      try { execSync("pkill -f 'ComfyUI/venv/bin/python.*main.py' 2>/dev/null || true", { stdio: 'pipe' }); stopped = true; } catch {}
+      // Pattern covers both the legacy ~/ComfyUI path and the 2026-06-07
+      // restructure home /AIWorkWSL/tools/comfyui (case differs between them).
+      try { execSync("pkill -f '[Cc]omfy[Uu][Ii]/venv/bin/python.*main.py' 2>/dev/null || true", { stdio: 'pipe' }); stopped = true; } catch {}
       try { execSync('rm -f /tmp/heavy-gpu-job.lock 2>/dev/null || true', { stdio: 'pipe' }); } catch {}
       return c.json({ ok: stopped, message: stopped ? 'ComfyUI stopped' : 'ComfyUI was not running' });
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
