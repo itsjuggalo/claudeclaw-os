@@ -590,7 +590,7 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
             />
           </Field>
 
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Template">
               <select
                 value={template}

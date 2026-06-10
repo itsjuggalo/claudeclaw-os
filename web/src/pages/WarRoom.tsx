@@ -52,7 +52,7 @@ export function WarRoom() {
               Pull all agents into one conversation. Voice rooms speak in real-time via Pipecat + Gemini Live.
               Text rooms work async with full transcript and per-agent pinning.
             </p>
-            <div class="grid grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <ModeCard
                 icon={<Mic size={22} />}
                 title="Voice"
@@ -500,7 +500,7 @@ function DispatchForm({ onChange }: { onChange: () => void }) {
           <DispatchTab label="Daily.co (Pipecat + Gemini)" active={tab === 'daily'} onClick={() => setTab('daily')} />
         </div>
         <div class="p-4 space-y-3">
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Agent">
               <select
                 value={agent}

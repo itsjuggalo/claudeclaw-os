@@ -1,8 +1,10 @@
 import { Link, useLocation } from 'wouter-preact';
-import { Search, ChevronDown, X } from 'lucide-preact';
+import { Search, ChevronDown, X, Monitor, Smartphone } from 'lucide-preact';
 import { useState } from 'preact/hooks';
 import { ROUTES, SECTION_LABEL, type RouteSection } from '@/lib/routes';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
+import { Toggle } from './Toggle';
+import { viewMode, setViewMode } from '@/lib/view-mode';
 import { commandPaletteOpen } from '@/lib/command-palette';
 import { chatUnread } from '@/lib/chat-stream';
 import { invalidateFetchCache, useFetch } from '@/lib/useFetch';
@@ -211,6 +213,22 @@ function SidebarFooter() {
           <span class="text-[var(--color-text-faint)]">Model</span>{' '}
           <span class="break-all">{provider.data?.model ?? 'claude-opus-4-8'}</span>
         </div>
+      </div>
+
+      {/* Always rendered — never gate this on a breakpoint: forcing
+          desktop makes `md:` match and a breakpoint-hidden toggle would
+          strand the user in desktop view. No-op on real desktops. */}
+      <div class="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
+          {viewMode.value === 'desktop' ? <Monitor size={14} /> : <Smartphone size={14} />}
+          <span>Desktop view</span>
+        </div>
+        <Toggle
+          size="sm"
+          on={viewMode.value === 'desktop'}
+          onChange={() => setViewMode(viewMode.value === 'desktop' ? 'auto' : 'desktop')}
+          ariaLabel="Toggle desktop view"
+        />
       </div>
 
       <Link

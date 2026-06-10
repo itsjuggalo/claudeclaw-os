@@ -208,7 +208,7 @@ function InboxColumn({ tasks, agents, onChange }: { tasks: MissionTask[]; agents
   const [draggingId, setDraggingId] = useState<string | null>(null);
   return (
     <div
-      class="w-[300px] shrink-0 flex flex-col bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg overflow-hidden"
+      class="w-[min(300px,85vw)] shrink-0 flex flex-col bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg overflow-hidden"
       onDragOver={(e) => e.preventDefault()}
     >
       <div class="px-3 py-3 border-b border-[var(--color-border)] flex items-center gap-2">
@@ -764,7 +764,7 @@ function TaskDetailsModal({
             </div>
           </div>
         )}
-        <div class="grid grid-cols-3 gap-3 pt-1">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
           <Stat label="Created" value={formatRelativeTime(task.created_at)} />
           <Stat label="Priority" value={task.priority > 0 ? 'P' + task.priority : '—'} />
           <Stat label="Created by" value={task.created_by || 'dashboard'} />
@@ -956,7 +956,7 @@ function CreateTaskModal({
           />
           <div class="text-[10px] text-[var(--color-text-faint)] mt-0.5 tabular-nums">{prompt.length} / 10000</div>
         </div>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Assign</label>
             <select

@@ -49,7 +49,7 @@ export function Usage() {
 
       {stats && (
         <div class="flex-1 overflow-y-auto p-6 space-y-4">
-          <div class={(showCosts.value ? 'grid-cols-4' : 'grid-cols-2') + ' grid gap-3'}>
+          <div class={(showCosts.value ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-2') + ' grid gap-3'}>
             <KpiCard label="Today turns" value={formatNumber(stats.todayTurns)} />
             <KpiCard label="Today tokens" value={formatNumber(stats.todayInput + stats.todayOutput)} />
             {showCosts.value && <KpiCard label="Today cost" value={formatCost(stats.todayCost)} />}
@@ -83,7 +83,7 @@ export function Usage() {
           })()}
 
           {health.data && (
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4">
                 <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-3">System health</div>
                 <div class="grid grid-cols-2 gap-3">

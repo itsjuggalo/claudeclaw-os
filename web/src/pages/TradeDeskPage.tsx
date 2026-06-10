@@ -321,6 +321,7 @@ function WinnersPanel({ winners }: { winners: any[] }) {
           No winners yet
         </div>
       ) : (
+        <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: MONO }}>
           <thead>
             <tr>
@@ -357,6 +358,7 @@ function WinnersPanel({ winners }: { winners: any[] }) {
             })}
           </tbody>
         </table>
+        </div>
       )}
     </PanelCard>
   );
