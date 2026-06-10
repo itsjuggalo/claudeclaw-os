@@ -12,6 +12,7 @@ import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, 
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
+import { getEquity } from './equity.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
@@ -1803,6 +1804,17 @@ init();
     try {
       const wallets = await getWallets();
       return c.json(wallets);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Equity Management — per-agent Alpaca analytics (boba + jazzy):
+  //    equity curves, risk metrics, and trading-discipline guardrail flags.
+  //    Read-only; same local-only stance as /api/wallets. See src/equity.ts.
+  app.get('/api/equity', async (c) => {
+    try {
+      return c.json(await getEquity());
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
