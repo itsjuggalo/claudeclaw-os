@@ -5,6 +5,7 @@
 import type { JSX } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { PageHeader, Tab } from '@/components/PageHeader';
+import { ConfirmModal } from '@/components/ConfirmModal';
 import { apiPost, dashboardToken, ApiError } from '@/lib/api';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
@@ -13,10 +14,26 @@ const VIDEO_URL = 'http://localhost:8765/';
 
 // ── Module-level ComfyUI model cache (avoids refetch on engine toggle) ────────
 // family/baseModel/triggers/verified come from the server, sourced from Civitai
-// (see src/modelmeta.ts) — NOT guessed in the UI.
-type ModelInfo = { name: string; family?: string; baseModel?: string; triggers?: string[]; verified?: boolean; thumb?: string; thumbNsfw?: number };
+// (see src/modelmeta.ts) — NOT guessed in the UI. label/description/category are
+// the friendly layer; compatibleCheckpoints/unknownCheckpoints are the server's
+// precomputed compatibility verdicts (the UI does lookups only, no rule logic).
+type ModelInfo = {
+  name: string; family?: string; baseModel?: string; triggers?: string[]; verified?: boolean; thumb?: string; thumbNsfw?: number;
+  label?: string; description?: string; category?: string; recommendedStrength?: number;
+  compatibleCheckpoints?: string[]; unknownCheckpoints?: string[];
+};
 type ComfyModels = { checkpoints: (ModelInfo & { sizeGB: number })[]; loras: (ModelInfo & { sizeMB: number })[] };
 let comfyModelCache: ComfyModels | null = null;
+
+// ── Looks — curated checkpoint+LoRA presets from /api/looks ──────────────────
+type Look = {
+  id: string; label: string; description: string; emoji?: string; thumb?: string; thumbNsfw?: number;
+  category?: string; checkpoint: string; loras: { name: string; strength: number }[];
+  promptPrefix?: string; negative?: string; triggers?: string[];
+  size: { width: number; height: number }; steps: number; cfg?: number;
+  builtin?: boolean; available: boolean; missing: string[];
+};
+let looksCache: Look[] | null = null;
 
 // ── localStorage preference helpers ──────────────────────────────────────────
 function loadPref<T>(key: string, def: T): T {
@@ -91,48 +108,77 @@ const FAM: Record<string, { label: string; emoji: string; color: string }> = {
   illustrious: { label: 'Illustrious', emoji: '🟣', color: '#c08cff' },
   sd15:        { label: 'SD 1.5',      emoji: '🔴', color: '#ef5350' },
   flux:        { label: 'Flux',        emoji: '🟡', color: '#ffe066' },
+  zimage:      { label: 'Z-Image',     emoji: '🟢', color: '#7dd87d' },
   other:       { label: 'Unknown',     emoji: '⚪', color: 'var(--color-text-muted)' },
 };
 const famInfo = (f?: string) => FAM[f || 'other'] ?? FAM.other;
 const cleanName = (n: string) => n.replace(/\.(safetensors|ckpt|gguf)$/i, '');
+const loraLabel = (l: ModelInfo) => l.label || cleanName(l.name);
 
-// A LoRA is compatible unless BOTH it and the base model have a KNOWN family that
-// differ. If either family is unknown we can't prove a mismatch, so we allow it.
-function loraCompatible(loraFam?: string, ckptFam?: string): boolean {
-  if (!ckptFam || ckptFam === 'other') return true;
-  if (!loraFam || loraFam === 'other') return true;
-  return loraFam === ckptFam;
+// Compatibility verdict for a LoRA against the selected checkpoint, looked up
+// from the server-computed arrays (rule lives in src/modelmeta.ts only).
+// 'unknown' = can't prove a match either way — hidden in Simple, confirm-gated
+// in Advanced. A stale cached payload without the arrays counts as unknown.
+type LoraCompat = 'ok' | 'unknown' | 'mismatch';
+function loraCompatWith(l: ModelInfo, ckpt?: string): LoraCompat {
+  if (!ckpt) return 'unknown';
+  if (l.compatibleCheckpoints?.includes(ckpt)) return 'ok';
+  if (l.unknownCheckpoints?.includes(ckpt)) return 'unknown';
+  if (!l.compatibleCheckpoints && !l.unknownCheckpoints) return 'unknown';
+  return 'mismatch';
 }
+// A LoRA with no usable checkpoint installed at all → "needs <family> model".
+const loraOrphaned = (l: ModelInfo) =>
+  (l.compatibleCheckpoints?.length ?? 0) === 0 && (l.unknownCheckpoints?.length ?? 0) === 0 && !!l.compatibleCheckpoints;
+
+// Feature-chip display names per Look/LoRA category ("what do you want?" row).
+const CAT_LABEL: Record<string, { label: string; emoji: string }> = {
+  photo:     { label: 'Just a Photo', emoji: '📷' },
+  feet:      { label: 'Real Feet',    emoji: '🦶' },
+  cow:       { label: 'Cow Girl',     emoji: '🐄' },
+  style:     { label: 'Photo Style',  emoji: '📼' },
+  eyes:      { label: 'Big Eyes',     emoji: '👁️' },
+  skin:      { label: 'Real Skin',    emoji: '🧴' },
+  character: { label: 'Character',    emoji: '👤' },
+  custom:    { label: 'My Looks',     emoji: '⭐' },
+};
+const catInfo = (c?: string) => CAT_LABEL[c || ''] ?? { label: c || 'More', emoji: '✨' };
 
 // ── Per-FAMILY "how to get the best image" tips (keyed by family, so any future
 //    Civitai download of that family gets the right advice — no per-file upkeep).
 //    prefix = quality tags to prepend; neg = tags to add to the negative prompt.
-const FAM_TIPS: Record<string, { prefix?: string; neg?: string; steps: string; size: string; note: string }> = {
+//    defaultSize/defaultSteps drive Simple Mode automatically (the saved size
+//    pref is Advanced-only — SD1.5 at 1024 warps bodies, SDXL at 512 looks bad).
+const FAM_TIPS: Record<string, { prefix?: string; neg?: string; steps: string; size: string; note: string; defaultSize: [number, number]; defaultSteps: number }> = {
   pony: {
     prefix: 'score_9, score_8_up, score_7_up, score_6_up',
     neg: 'score_4, score_5, score_6',
-    steps: '20–30', size: 'Portrait 768×1024',
+    steps: '20–30', size: 'Portrait 768×1024', defaultSize: [768, 1024], defaultSteps: 25,
     note: 'Pony NEEDS the score_ quality tags at the START of the prompt — without them output looks washed-out. Also add score_4/5/6 to the negative.',
   },
   sdxl: {
     prefix: 'RAW photo, 8k uhd, highly detailed',
-    steps: '25–35', size: 'Portrait 768×1024 (avoid 512)',
+    steps: '25–35', size: 'Portrait 768×1024 (avoid 512)', defaultSize: [768, 1024], defaultSteps: 30,
     note: 'Write natural, descriptive prompts. SDXL is trained near 1024px, so very small sizes hurt quality.',
   },
   sd15: {
-    steps: '25–35', size: 'Portrait 512×768 (avoid 1024)',
+    steps: '25–35', size: 'Portrait 512×768 (avoid 1024)', defaultSize: [512, 768], defaultSteps: 30,
     note: 'SD 1.5 is trained at 512px — going large (1024) often duplicates/warps bodies. Best for close-up faces & skin.',
   },
   illustrious: {
     prefix: 'masterpiece, best quality, highres',
-    steps: '24–32', size: 'Portrait 768×1024',
+    steps: '24–32', size: 'Portrait 768×1024', defaultSize: [768, 1024], defaultSteps: 28,
     note: 'Illustrious / NoobAI use danbooru-style tags. Lead with quality tags, then comma-separated tags.',
   },
   flux: {
-    steps: '20–28', size: 'Square 512×512 / 1024',
+    steps: '20–28', size: 'Square 512×512 / 1024', defaultSize: [512, 512], defaultSteps: 24,
     note: 'Flux wants plain natural-language prompts, a LOW guidance, and ignores negatives. (Needs a Flux base model — none installed yet.)',
   },
-  other: { steps: '20–30', size: 'Portrait 768×1024', note: 'Unknown family — use natural prompts and moderate steps.' },
+  zimage: {
+    steps: '8–12', size: 'Portrait 768×1024', defaultSize: [768, 1024], defaultSteps: 10,
+    note: 'Z-Image Turbo uses plain natural-language prompts and very few steps. (Needs a Z-Image base model — none installed yet.)',
+  },
+  other: { steps: '20–30', size: 'Portrait 768×1024', defaultSize: [768, 1024], defaultSteps: 25, note: 'Unknown family — use natural prompts and moderate steps.' },
 };
 
 // ── Aspect ratios ─────────────────────────────────────────────────────────────
@@ -370,6 +416,24 @@ export function Create() {
   const [comfyLoraStrength, setComfyLoraStrength] = useState(() => loadPref('comfyLoraStrength', 0.8));
   const [comfyModels, setComfyModels] = useState<ComfyModels | null>(comfyModelCache);
   const [comfyOnline, setComfyOnline] = useState<boolean | null>(comfyModelCache ? true : null);
+  // Looks (presets) + Simple Mode selection. '' = Custom (the classic
+  // model-gallery flow). Persisted so the phone reopens on the same Look.
+  const [looks, setLooks] = useState<Look[] | null>(looksCache);
+  const [selectedLookId, setSelectedLookId] = useState<string>(() => loadPref('selectedLook', ''));
+  // Unknown-compat LoRAs the user explicitly confirmed this session (Advanced).
+  const [unknownConfirmed, setUnknownConfirmed] = useState<string[]>([]);
+  const [confirmLora, setConfirmLora] = useState<ModelInfo | null>(null);
+  // Simple-mode 2-add-on cap hint.
+  const [loraHint, setLoraHint] = useState('');
+  // "Save these settings as a Look" (Advanced) state.
+  const [saveLookOpen, setSaveLookOpen] = useState(false);
+  const [lookName, setLookName] = useState('');
+  const [lookDesc, setLookDesc] = useState('');
+  const [lookSaveMsg, setLookSaveMsg] = useState('');
+  // Post-download "name this model" mini-form state.
+  const [metaLabel, setMetaLabel] = useState('');
+  const [metaCategory, setMetaCategory] = useState('');
+  const [metaSaved, setMetaSaved] = useState(false);
   // Thumbnails: safe-mode blurs Mature+ (nsfwLevel >= 4) previews; per-card reveal
   // un-blurs one card. `thumbJob` drives the "Load thumbnails" progress pill.
   const [safeMode, setSafeMode] = useState(() => loadPref('imgSafeMode', true));
@@ -390,13 +454,28 @@ export function Create() {
   useEffect(() => { savePref('comfySteps', comfySteps); }, [comfySteps]);
   useEffect(() => { savePref('comfyLoraStrength', comfyLoraStrength); }, [comfyLoraStrength]);
 
-  // When the base model changes, drop any selected LoRAs whose family no longer
-  // matches — so an incompatible combo can never be submitted.
+  // When the base model changes, drop any selected LoRAs that aren't a proven
+  // match for it — so an incompatible combo can never be submitted. Unknown-
+  // compat confirmations don't carry across checkpoints.
   useEffect(() => {
     if (imgEngine !== 'comfyui' || !comfyModels) return;
-    const fam = comfyModels.checkpoints?.find(c => c.name === comfyCheckpoint)?.family;
-    setComfyLoras(prev => prev.filter(n => loraCompatible(comfyModels!.loras?.find(x => x.name === n)?.family, fam)));
+    setComfyLoras(prev => prev.filter(n => {
+      const l = comfyModels!.loras?.find(x => x.name === n);
+      return !!l && loraCompatWith(l, comfyCheckpoint) === 'ok';
+    }));
+    setUnknownConfirmed([]);
   }, [comfyCheckpoint, comfyModels, imgEngine]);
+
+  useEffect(() => { savePref('selectedLook', selectedLookId); }, [selectedLookId]);
+
+  // Fetch Looks once per page load (module-cached like the model list).
+  useEffect(() => {
+    if (tab !== 'image') return;
+    if (looksCache) { setLooks(looksCache); return; }
+    fetch(withTok('/api/looks')).then(r => r.json()).then((d: { ok?: boolean; looks?: Look[] }) => {
+      if (d?.looks) { looksCache = d.looks; setLooks(d.looks); }
+    }).catch(() => {});
+  }, [tab]);
 
   // ── Fetch ComfyUI models (cached at module level to avoid re-fetch on toggle)
   useEffect(() => {
@@ -536,10 +615,15 @@ export function Create() {
   }, []);
 
   const bnSizeOpts = bnModel === 'pro' ? BANANA_SIZES.filter((s) => s !== '512') : BANANA_SIZES;
+  // The active Look (Simple Mode only) — when set, it supplies checkpoint,
+  // LoRAs, sizes, steps and triggers; the user just describes the subject.
+  const activeLook = simpleMode && imgEngine === 'comfyui'
+    ? (looks || []).find(lk => lk.id === selectedLookId && lk.available)
+    : undefined;
   // safe = server preflight says go (default true until first poll returns, so
   // the UI never blocks spuriously before health loads). The server still gates.
   const safe = !sys || sys.preflight?.ok !== false;
-  const canImg = prompt.trim().length > 0 && !busy && safe && (imgEngine !== 'comfyui' || comfyCheckpoint !== '');
+  const canImg = prompt.trim().length > 0 && !busy && safe && (imgEngine !== 'comfyui' || comfyCheckpoint !== '' || !!activeLook);
   const canVid = vidPrompt.trim().length > 0 && !vidBusy && safe;
 
   // ── Clear results when switching engine or tab ────────────────────────────
@@ -606,27 +690,56 @@ export function Create() {
     let r: GenResult = { ok: false, error: 'no result' };
     try {
       if (imgEngine === 'comfyui') {
-        const [w, h] = comfySize.split('x').map(Number);
-        // Auto-prepend the active trigger words (from the selected checkpoint +
-        // LoRAs, minus any the user removed, minus any already typed).
         const base = prompt.trim();
         const lc = base.toLowerCase();
-        const tips = FAM_TIPS[ckptFam || 'other'] ?? FAM_TIPS.other;
-        // In Simple mode, silently apply the family's recommended quality tags +
-        // negatives so the user gets good output without touching any knobs.
-        // (Advanced mode keeps the user's prompt/negative exactly as typed.)
-        const qual = (simpleMode && tips.prefix && !lc.includes(tips.prefix.toLowerCase().slice(0, 10))) ? [tips.prefix] : [];
-        const toAdd = [...qual, ...effectiveTriggers].filter(t => t && !lc.includes(t.toLowerCase()));
-        const fullPrompt = toAdd.length ? [...toAdd, base].filter(Boolean).join(', ') : base;
-        const negOut = (simpleMode && tips.neg && !comfyNeg.toLowerCase().includes(tips.neg.toLowerCase().slice(0, 8)))
-          ? (comfyNeg.trim() ? comfyNeg.replace(/\s*$/, '') + ', ' : '') + tips.neg
-          : comfyNeg;
-        const body = {
-          prompt: fullPrompt, negative_prompt: negOut, steps: comfySteps,
-          width: w, height: h, checkpoint: comfyCheckpoint || undefined,
-          loras: comfyLoras.length ? comfyLoras.map(name => ({ name, strength: comfyLoraStrength })) : undefined,
-          ...(seedNum !== undefined ? { seed: seedNum } : {}),
-        };
+        let body: Record<string, unknown>;
+        if (activeLook) {
+          // ── Look path — the preset supplies everything except the subject. ──
+          const lk = activeLook;
+          const toAdd = [lk.promptPrefix, ...(lk.triggers || [])]
+            .map(t => (t || '').trim()).filter(t => t && !lc.includes(t.toLowerCase()));
+          body = {
+            prompt: [...toAdd, base].filter(Boolean).join(', '),
+            negative_prompt: lk.negative || comfyNeg,
+            steps: lk.steps, width: lk.size.width, height: lk.size.height,
+            checkpoint: lk.checkpoint,
+            loras: lk.loras?.length ? lk.loras : undefined,
+            ...(lk.cfg !== undefined ? { cfg: lk.cfg } : {}),
+            ...(seedNum !== undefined ? { seed: seedNum } : {}),
+          };
+        } else {
+          // ── Custom path — auto-prepend the active trigger words (from the
+          // selected checkpoint + LoRAs, minus removed, minus already typed).
+          const tips = FAM_TIPS[ckptFam || 'other'] ?? FAM_TIPS.other;
+          // Simple Mode derives size/steps from the FAMILY (SD1.5 must stay
+          // small, SDXL/Pony want 768×1024) — the saved size pref is Advanced-only.
+          const [w, h] = simpleMode ? tips.defaultSize : comfySize.split('x').map(Number);
+          const steps = simpleMode ? tips.defaultSteps : comfySteps;
+          // In Simple mode, silently apply the family's recommended quality tags +
+          // negatives so the user gets good output without touching any knobs.
+          // (Advanced mode keeps the user's prompt/negative exactly as typed.)
+          const qual = (simpleMode && tips.prefix && !lc.includes(tips.prefix.toLowerCase().slice(0, 10))) ? [tips.prefix] : [];
+          const toAdd = [...qual, ...effectiveTriggers].filter(t => t && !lc.includes(t.toLowerCase()));
+          const fullPrompt = toAdd.length ? [...toAdd, base].filter(Boolean).join(', ') : base;
+          const negOut = (simpleMode && tips.neg && !comfyNeg.toLowerCase().includes(tips.neg.toLowerCase().slice(0, 8)))
+            ? (comfyNeg.trim() ? comfyNeg.replace(/\s*$/, '') + ', ' : '') + tips.neg
+            : comfyNeg;
+          // Simple uses each add-on's recommended strength; Advanced uses the slider.
+          // Confirmed unknown-compat add-ons (Advanced confirm dialog) set the
+          // server override flag — the server rejects them without it.
+          const hasConfirmedUnknown = !simpleMode && activeLoraObjs.some(l =>
+            loraCompatWith(l, comfyCheckpoint) === 'unknown' && unknownConfirmed.includes(l.name));
+          body = {
+            prompt: fullPrompt, negative_prompt: negOut, steps,
+            width: w, height: h, checkpoint: comfyCheckpoint || undefined,
+            loras: comfyLoras.length ? comfyLoras.map(name => {
+              const l = comfyModels?.loras?.find(x => x.name === name);
+              return { name, strength: simpleMode ? (l?.recommendedStrength ?? comfyLoraStrength) : comfyLoraStrength };
+            }) : undefined,
+            ...(hasConfirmedUnknown ? { allowUnknownCompat: true } : {}),
+            ...(seedNum !== undefined ? { seed: seedNum } : {}),
+          };
+        }
         // Cold ComfyUI returns { starting:true } fast instead of blocking the
         // request for the full boot — re-kick every few seconds until it queues
         // (the model loads on the first real gen). Keeps every request short.
@@ -783,6 +896,65 @@ export function Create() {
     setTimeout(poll, 4000);
   };
 
+  // ── Open a Look in Advanced mode with every field prefilled — the bridge
+  // from grandma mode to full control.
+  const customizeLook = (lk: Look) => {
+    setComfyCheckpoint(lk.checkpoint);
+    setComfyLoras((lk.loras || []).map(l => l.name));
+    if (lk.loras?.[0]) setComfyLoraStrength(lk.loras[0].strength);
+    setComfySize(`${lk.size.width}x${lk.size.height}`);
+    setComfySteps(lk.steps);
+    if (lk.negative) setComfyNeg(lk.negative);
+    setPrompt(p => {
+      const subject = p.trim();
+      return [lk.promptPrefix, ...(lk.triggers || []), subject].map(t => (t || '').trim()).filter(Boolean).join(', ');
+    });
+    setImgEngine('comfyui');
+    setSelectedLookId('');
+    setSimpleMode(false);
+  };
+
+  // ── Save the current Advanced settings as a user Look (appears in Simple). ──
+  const saveLook = async () => {
+    if (!lookName.trim() || !comfyCheckpoint) return;
+    setLookSaveMsg('');
+    const [w, h] = comfySize.split('x').map(Number);
+    try {
+      const r = await apiPost<{ ok: boolean; look?: Look; error?: string }>('/api/looks', {
+        label: lookName.trim(), description: lookDesc.trim(), category: 'custom', emoji: '⭐',
+        checkpoint: comfyCheckpoint,
+        loras: comfyLoras.map(n => ({ name: n, strength: comfyLoraStrength })),
+        negative: comfyNeg, triggers: effectiveTriggers,
+        size: { width: w, height: h }, steps: comfySteps,
+      });
+      if (!r.ok) { setLookSaveMsg(r.error || 'failed'); return; }
+      looksCache = null;
+      const d = await fetch(withTok('/api/looks')).then(x => x.json()).catch(() => null);
+      if (d?.looks) { looksCache = d.looks; setLooks(d.looks); }
+      setLookSaveMsg(`✓ saved "${r.look?.label}" — it's now a card in Simple mode`);
+      setLookName(''); setLookDesc('');
+      setTimeout(() => { setSaveLookOpen(false); setLookSaveMsg(''); }, 3500);
+    } catch (e) {
+      setLookSaveMsg(e instanceof ApiError ? (((e.body as { error?: string })?.error) || e.message) : String(e));
+    }
+  };
+
+  // ── Name a freshly-downloaded model (label + feature category). ───────────
+  const saveModelMeta = async () => {
+    const name = civJob?.name; if (!name) return;
+    try {
+      await apiPost('/api/models/meta', {
+        name, ...(metaLabel.trim() ? { label: metaLabel.trim() } : {}),
+        ...(metaCategory ? { category: metaCategory } : {}),
+      });
+      setMetaSaved(true);
+      comfyModelCache = null;  // force the friendly name into the model list
+      fetch(withTok('/api/comfyui/status')).then(x => x.json()).then((d: any) => {
+        if (d && (d.checkpoints || d.loras)) { comfyModelCache = d; setComfyModels(d); }
+      }).catch(() => {});
+    } catch { /* keep the form visible so they can retry */ }
+  };
+
   // ── Live progress bar label/sublabel for the image tab.
   const imgPct = comfyStep ? comfyStep.value / comfyStep.max : progress;
   const imgBarLabel = imgEngine === 'comfyui'
@@ -839,9 +1011,45 @@ export function Create() {
                     </div>
                   )}
 
-                  {/* ── CHOOSE A MODEL — tappable picture cards ──────────────────── */}
+                  {/* ── WHAT DO YOU WANT? — feature chips built from Look categories ── */}
+                  {(() => {
+                    const avail = (looks || []).filter(lk => lk.available);
+                    if (!avail.length) return null;
+                    const cats = Array.from(new Set(avail.map(lk => lk.category || 'custom')));
+                    const activeCat = activeLook ? (activeLook.category || 'custom') : '';
+                    const chip = (on: boolean): JSX.CSSProperties => ({
+                      fontSize: '13px', fontFamily: MONO, padding: '8px 14px', borderRadius: '999px',
+                      cursor: busy ? 'not-allowed' : 'pointer', minHeight: '38px',
+                      color: on ? '#06210f' : 'var(--color-text)',
+                      background: on ? '#34d39a' : 'var(--color-elevated)',
+                      border: '1px solid ' + (on ? '#34d39a' : 'var(--color-border)'),
+                    });
+                    return (
+                      <div style={{ marginBottom: '16px' }}>
+                        <div style={{ ...S.label, fontSize: '12px', marginBottom: '10px' }}>WHAT DO YOU WANT?</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          {cats.map(cat => {
+                            const ci = catInfo(cat);
+                            const first = avail.find(lk => (lk.category || 'custom') === cat)!;
+                            return (
+                              <button key={cat} type="button" disabled={busy} style={chip(activeCat === cat)}
+                                onClick={() => setSelectedLookId(activeCat === cat ? '' : first.id)}>
+                                {ci.emoji} {ci.label}
+                              </button>
+                            );
+                          })}
+                          <button type="button" disabled={busy} style={chip(!activeLook && selectedLookId === '')}
+                            onClick={() => setSelectedLookId('')}>
+                            🛠 Custom…
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ── PICK A LOOK — preset cards (checkpoint+LoRA+triggers baked in) ── */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
-                    <div style={{ ...S.label, fontSize: '12px', margin: 0 }}>CHOOSE A MODEL</div>
+                    <div style={{ ...S.label, fontSize: '12px', margin: 0 }}>{(looks || []).length ? 'PICK A LOOK' : 'CHOOSE A MODEL'}</div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                       <button type="button" onClick={() => refreshThumbs(!missingThumbs)} disabled={!!thumbJob?.running}
                         title={missingThumbs ? 'Fetch Civitai preview images' : 'Re-fetch previews (uses your saved Civitai token to pull NSFW previews)'}
@@ -859,7 +1067,83 @@ export function Create() {
                       </button>
                     </div>
                   </div>
-                  {comfyModels && !comfyModels.checkpoints?.length ? (
+                  {(looks || []).length > 0 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px', marginBottom: '6px' }}>
+                      {(looks || []).map(lk => {
+                        const active = activeLook?.id === lk.id;
+                        const blurred = safeMode && (lk.thumbNsfw ?? 1) >= 4 && !revealedThumbs[lk.id];
+                        return (
+                          <button key={lk.id} type="button" disabled={busy || !lk.available}
+                            onClick={() => setSelectedLookId(active ? '' : lk.id)}
+                            title={lk.available ? lk.description : `Needs ${lk.missing.map(cleanName).join(', ')} — download it first`}
+                            style={{
+                              position: 'relative', textAlign: 'left', cursor: busy || !lk.available ? 'not-allowed' : 'pointer',
+                              borderRadius: '12px', padding: '0', overflow: 'hidden', minHeight: '112px',
+                              display: 'flex', flexDirection: 'column', fontFamily: MONO,
+                              border: active ? '2px solid #34d39a' : '1px solid var(--color-border)',
+                              background: 'var(--color-card)', color: 'var(--color-text)',
+                              boxShadow: active ? '0 0 0 3px rgba(52,211,154,0.18)' : 'none',
+                              opacity: lk.available ? 1 : 0.45,
+                            }}>
+                            <div style={{
+                              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: '34px', minHeight: '64px', position: 'relative',
+                              background: 'linear-gradient(135deg, rgba(52,211,154,0.18), rgba(52,211,154,0.04))',
+                            }}>
+                              {lk.thumb ? <img src={lk.thumb} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0, filter: blurred ? 'blur(18px)' : 'none' }} /> : (lk.emoji || '✨')}
+                              {lk.thumb && blurred && (
+                                <span onClick={(e) => { e.stopPropagation(); setRevealedThumbs(r => ({ ...r, [lk.id]: true })); }}
+                                  style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontFamily: MONO, color: '#fff', background: 'rgba(0,0,0,0.35)', cursor: 'pointer' }}>
+                                  🔞 tap to reveal
+                                </span>
+                              )}
+                              {active && <span style={{ position: 'absolute', top: '6px', right: '8px', fontSize: '14px', color: '#34d39a', textShadow: '0 1px 3px #000' }}>✓</span>}
+                            </div>
+                            <div style={{ padding: '8px 10px' }}>
+                              <div style={{ fontSize: '12px', fontWeight: 700, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lk.emoji ? `${lk.emoji} ` : ''}{lk.label}</div>
+                              <div style={{ fontSize: '10px', color: lk.available ? 'var(--color-text-muted)' : '#ffb347', marginTop: '2px', lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                                {lk.available ? lk.description : `needs ${cleanName(lk.missing[0] || '?')}`}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                      {/* Custom card — the classic pick-everything-yourself flow */}
+                      <button type="button" disabled={busy}
+                        onClick={() => setSelectedLookId('')}
+                        style={{
+                          position: 'relative', textAlign: 'left', cursor: busy ? 'not-allowed' : 'pointer',
+                          borderRadius: '12px', padding: '0', overflow: 'hidden', minHeight: '112px',
+                          display: 'flex', flexDirection: 'column', fontFamily: MONO,
+                          border: !activeLook ? '2px solid #7fd1ff' : '1px dashed var(--color-border)',
+                          background: 'var(--color-card)', color: 'var(--color-text)',
+                        }}>
+                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '34px', minHeight: '64px', background: 'linear-gradient(135deg, rgba(127,209,255,0.16), rgba(127,209,255,0.04))' }}>🛠</div>
+                        <div style={{ padding: '8px 10px' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 700 }}>Custom</div>
+                          <div style={{ fontSize: '10px', color: 'var(--color-text-muted)', marginTop: '2px' }}>pick model & add-ons yourself</div>
+                        </div>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* ── Active Look summary — what it set up, and the Advanced bridge ── */}
+                  {activeLook && (
+                    <div style={{ marginTop: '8px', border: '1px solid rgba(52,211,154,0.3)', borderRadius: '8px', padding: '10px 12px', background: 'var(--color-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: '11px', fontFamily: MONO, color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                        <b style={{ color: '#34d39a' }}>{activeLook.emoji} {activeLook.label}</b> handles the setup: {cleanName(activeLook.checkpoint)}
+                        {activeLook.loras?.length ? ` + ${activeLook.loras.map(l => cleanName(l.name)).join(' + ')}` : ''} · {activeLook.size.width}×{activeLook.size.height} · {activeLook.steps} steps
+                      </div>
+                      <button type="button" disabled={busy} onClick={() => customizeLook(activeLook)}
+                        style={{ ...actBtn, color: '#7fd1ff', borderColor: 'rgba(127,209,255,0.3)' }}>⚙ Customize</button>
+                    </div>
+                  )}
+
+                  {/* ── CHOOSE A MODEL — classic gallery (Custom path only) ─────────── */}
+                  {!activeLook && (looks || []).length > 0 && (
+                    <div style={{ ...S.label, fontSize: '12px', margin: '14px 0 10px' }}>CHOOSE A MODEL</div>
+                  )}
+                  {activeLook ? null : comfyModels && !comfyModels.checkpoints?.length ? (
                     <div style={{ fontSize: '13px', color: 'var(--color-text-faint)', fontFamily: MONO, lineHeight: 1.6 }}>
                       No models yet — tap <b>⚙ Advanced options</b> → <b>+ Add model from Civitai</b> to download one.
                     </div>
@@ -873,6 +1157,7 @@ export function Create() {
                         return (
                           <button key={c.name} type="button" disabled={busy}
                             onClick={() => setComfyCheckpoint(c.name)}
+                            title={c.description || c.name}
                             style={{
                               position: 'relative', textAlign: 'left', cursor: busy ? 'not-allowed' : 'pointer',
                               borderRadius: '12px', padding: '0', overflow: 'hidden', minHeight: '112px',
@@ -898,7 +1183,7 @@ export function Create() {
                             </div>
                             {/* caption */}
                             <div style={{ padding: '8px 10px' }}>
-                              <div style={{ fontSize: '12px', fontWeight: 700, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cleanName(c.name)}</div>
+                              <div style={{ fontSize: '12px', fontWeight: 700, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label || cleanName(c.name)}</div>
                               <div style={{ fontSize: '10px', color: fi.color, marginTop: '2px' }}>{fi.emoji} {fi.label}</div>
                             </div>
                           </button>
@@ -907,9 +1192,9 @@ export function Create() {
                     </div>
                   )}
 
-                  {/* ── ADD A STYLE — optional, compatible add-ons only ──────────── */}
-                  {(() => {
-                    const compat = (comfyModels?.loras || []).filter(l => loraCompatible(l.family, ckptFam));
+                  {/* ── ADD A STYLE — optional, PROVEN-compatible add-ons only (Custom path) ── */}
+                  {!activeLook && (() => {
+                    const compat = (comfyModels?.loras || []).filter(l => loraCompatWith(l, comfyCheckpoint) === 'ok');
                     if (!selectedCkpt || compat.length === 0) return null;
                     const pill = (active: boolean): JSX.CSSProperties => ({
                       fontSize: '13px', fontFamily: MONO, padding: '9px 14px', borderRadius: '999px',
@@ -922,20 +1207,26 @@ export function Create() {
                       <div style={{ marginTop: '20px' }}>
                         <div style={{ ...S.label, fontSize: '12px', marginBottom: '10px' }}>ADD A STYLE — OPTIONAL {comfyLoras.length > 0 && <span style={{ color: '#34d39a' }}>({comfyLoras.length} on)</span>}</div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                          <button type="button" disabled={busy} onClick={() => setComfyLoras([])} style={pill(comfyLoras.length === 0)}>
+                          <button type="button" disabled={busy} onClick={() => { setComfyLoras([]); setLoraHint(''); }} style={pill(comfyLoras.length === 0)}>
                             {comfyLoras.length === 0 ? '✓ ' : ''}None
                           </button>
                           {compat.map(l => {
                             const active = comfyLoras.includes(l.name);
                             return (
                               <button key={l.name} type="button" disabled={busy}
-                                onClick={() => setComfyLoras(prev => prev.includes(l.name) ? prev.filter(x => x !== l.name) : [...prev, l.name])}
+                                title={l.description || l.name}
+                                onClick={() => {
+                                  if (!active && comfyLoras.length >= 2) { setLoraHint('2 add-ons max in Simple — stacking more usually deforms the image. Use ⚙ Advanced to stack anyway.'); return; }
+                                  setLoraHint('');
+                                  setComfyLoras(prev => prev.includes(l.name) ? prev.filter(x => x !== l.name) : [...prev, l.name]);
+                                }}
                                 style={pill(active)}>
-                                {active ? '✓ ' : ''}{cleanName(l.name)}
+                                {active ? '✓ ' : ''}{loraLabel(l)}
                               </button>
                             );
                           })}
                         </div>
+                        {loraHint && <div style={{ fontSize: '11px', color: '#ffb347', fontFamily: MONO, marginTop: '8px' }}>⚠ {loraHint}</div>}
                       </div>
                     );
                   })()}
@@ -953,11 +1244,11 @@ export function Create() {
                     )}
                   </div>
                   <textarea value={prompt} onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
-                    placeholder="A neon-lit candlestick chart exploding upward, cinematic…"
+                    placeholder={activeLook ? 'Describe the person or scene — the Look handles models, triggers and quality tags…' : 'A neon-lit candlestick chart exploding upward, cinematic…'}
                     rows={4} disabled={busy} style={{ ...S.ta, marginTop: '8px', fontSize: '15px' }} />
-                  {effectiveTriggers.length > 0 && (
+                  {(activeLook ? (activeLook.triggers || []) : effectiveTriggers).length > 0 && (
                     <div style={{ fontSize: '11px', color: '#34d39a', fontFamily: MONO, marginTop: '6px' }}>
-                      ✓ auto-adding for you: {effectiveTriggers.join(', ')}
+                      ✓ auto-adding for you: {(activeLook ? (activeLook.triggers || []) : effectiveTriggers).join(', ')}{activeLook ? ' + quality tags' : ''}
                     </div>
                   )}
 
@@ -969,7 +1260,7 @@ export function Create() {
                   <div style={{ textAlign: 'center', marginTop: '8px', minHeight: '16px' }}>
                     {!busy && lastMs !== null && result?.ok
                       ? <span style={{ fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>✓ Generated in {fmtMs(lastMs)}</span>
-                      : !busy && selectedCkpt && <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO }}>free · runs on this laptop's GPU · best quality</span>}
+                      : !busy && (activeLook || selectedCkpt) && <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO }}>{activeLook ? `${activeLook.label} · ` : ''}free · runs on this laptop's GPU · best quality</span>}
                   </div>
                   {busy && <ProgressBar pct={imgPct} label={imgBarLabel} sub={`${fmtMs(elapsedMs)} elapsed`} />}
                 </div>
@@ -1010,9 +1301,30 @@ export function Create() {
                   </div>
                   {civJob && civJob.status !== 'downloading' && (
                     <div style={{ fontFamily: MONO, fontSize: '11px', color: civJob.status === 'done' ? '#34d39a' : '#f45a5a' }}>
-                      {civJob.status === 'done' ? `✓ Saved ${civJob.name || ''} — pick it in the checkpoint list` : `✕ ${civJob.error || 'failed'}`}
+                      {civJob.status === 'done' ? `✓ Saved ${civJob.name || ''} — pick it in the model list` : `✕ ${civJob.error || 'failed'}`}
                     </div>
                   )}
+                  {/* Name-this-model mini form — friendly label + feature category so the
+                      new model shows up readable (and feeds the Simple-mode chips). Skippable. */}
+                  {civJob?.status === 'done' && civJob.name && !metaSaved && (
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '8px 10px' }}>
+                      <span style={{ fontSize: '11px', fontFamily: MONO, color: 'var(--color-text-muted)' }}>Give it a friendly name (optional):</span>
+                      <input type="text" placeholder={cleanName(civJob.name)} value={metaLabel}
+                        onInput={(e) => setMetaLabel((e.target as HTMLInputElement).value)} style={{ ...S.select, minWidth: '170px', cursor: 'text' }} />
+                      <select value={metaCategory} onChange={(e) => setMetaCategory((e.target as HTMLSelectElement).value)} style={S.select}>
+                        <option value="">category…</option>
+                        {Object.entries(CAT_LABEL).filter(([k]) => k !== 'custom').map(([k, v]) => <option key={k} value={k}>{v.emoji} {v.label}</option>)}
+                      </select>
+                      <button type="button" onClick={saveModelMeta} disabled={!metaLabel.trim() && !metaCategory}
+                        style={{ ...actBtn, color: '#34d39a', borderColor: 'rgba(52,211,154,0.3)' }}>Save name</button>
+                    </div>
+                  )}
+                  {civJob?.status === 'done' && metaSaved && (
+                    <div style={{ fontFamily: MONO, fontSize: '11px', color: '#34d39a' }}>✓ name saved — it'll show with that label everywhere</div>
+                  )}
+                  <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
+                    Copied a model file in by hand? Tap <b>🖼 Load thumbnails</b> in Simple mode — it identifies the file on Civitai by hash and fills in family, triggers and preview.
+                  </div>
                 </div>
               </details>
 
@@ -1273,43 +1585,69 @@ export function Create() {
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                           {comfyModels.loras.map(l => {
                             const active = comfyLoras.includes(l.name);
-                            const compatible = loraCompatible(l.family, ckptFam);
+                            const compat = loraCompatWith(l, comfyCheckpoint);
                             const fi = famInfo(l.family);
-                            if (!compatible) {
+                            // No installed checkpoint can run this add-on at all.
+                            if (loraOrphaned(l)) {
                               return (
                                 <span key={l.name}
-                                  title={`${cleanName(l.name)} — trained for ${fi.label}, not ${famInfo(ckptFam).label}. Pick a ${fi.label} base model to use it.`}
+                                  title={`${loraLabel(l)} — needs a ${fi.label} base model, which isn't installed. Download one from Civitai to use it.`}
+                                  style={{
+                                    fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px',
+                                    cursor: 'not-allowed', color: '#ffb347',
+                                    background: 'var(--color-elevated)', border: '1px dashed rgba(255,179,71,0.45)', opacity: 0.8,
+                                  }}>
+                                  ⬇ {loraLabel(l)} · needs {fi.label} model
+                                </span>
+                              );
+                            }
+                            if (compat === 'mismatch') {
+                              return (
+                                <span key={l.name}
+                                  title={`${loraLabel(l)} — trained for ${fi.label}, not ${famInfo(ckptFam).label}. Pick a ${fi.label} base model to use it.`}
                                   style={{
                                     fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px',
                                     cursor: 'not-allowed', color: 'var(--color-text-faint)',
                                     background: 'var(--color-elevated)', border: '1px dashed var(--color-border)', opacity: 0.55,
                                   }}>
-                                  🔒 {cleanName(l.name)} · {fi.label}
+                                  🔒 {loraLabel(l)} · {fi.label}
                                 </span>
                               );
                             }
+                            const needsConfirm = compat === 'unknown' && !active && !unknownConfirmed.includes(l.name);
                             return (
                               <button
                                 key={l.name}
                                 type="button"
                                 disabled={busy}
-                                onClick={() => setComfyLoras(prev =>
-                                  prev.includes(l.name) ? prev.filter(x => x !== l.name) : [...prev, l.name]
-                                )}
+                                onClick={() => {
+                                  if (needsConfirm) { setConfirmLora(l); return; }
+                                  setComfyLoras(prev =>
+                                    prev.includes(l.name) ? prev.filter(x => x !== l.name) : [...prev, l.name]
+                                  );
+                                }}
                                 style={{
                                   fontSize: '11px', fontFamily: MONO, padding: '4px 10px',
                                   borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer',
-                                  color: active ? '#06210f' : 'var(--color-text-muted)',
+                                  color: active ? '#06210f' : compat === 'unknown' ? '#ffb347' : 'var(--color-text-muted)',
                                   background: active ? '#34d39a' : 'var(--color-elevated)',
-                                  border: '1px solid ' + (active ? '#34d39a' : 'var(--color-border)'),
+                                  border: '1px solid ' + (active ? '#34d39a' : compat === 'unknown' ? 'rgba(255,179,71,0.45)' : 'var(--color-border)'),
                                 }}
-                                title={`${l.name} — ${l.sizeMB}MB${l.baseModel ? ` · Civitai: ${l.baseModel}` : ''}`}
+                                title={compat === 'unknown'
+                                  ? `${loraLabel(l)} — model family unknown; may produce broken images with ${famInfo(ckptFam).label}. Tap to confirm.`
+                                  : `${l.description || l.name} — ${l.sizeMB}MB${l.baseModel ? ` · Civitai: ${l.baseModel}` : ''}`}
                               >
-                                {active ? '✓ ' : ''}{cleanName(l.name)}{l.verified === false ? ' ?' : ''}
+                                {active ? '✓ ' : compat === 'unknown' ? '⚠ ' : ''}{loraLabel(l)}{l.verified === false ? ' ?' : ''}
                               </button>
                             );
                           })}
                         </div>
+                        {/* Stacking guard — warn-only; the server stays permissive in Advanced */}
+                        {(comfyLoras.length > 3 || comfyLoras.length * comfyLoraStrength > 2.0) && (
+                          <div style={{ fontSize: '11px', color: '#ffb347', fontFamily: MONO, marginTop: '8px' }}>
+                            ⚠ {comfyLoras.length} add-ons at {comfyLoraStrength.toFixed(2)} strength — stacking this much usually causes deformed output. Try fewer add-ons or lower strength.
+                          </div>
+                        )}
                       </div>
                     ) : null}
 
@@ -1362,7 +1700,25 @@ export function Create() {
                       free · GPU · {comfyCheckpoint ? comfyCheckpoint.replace(/\.(safetensors|ckpt|gguf)$/, '') : 'ComfyUI'}{comfyLoras.length ? ` + ${comfyLoras.length} LoRA${comfyLoras.length > 1 ? 's' : ''}` : ''}
                     </span>
                   )}
+                  {imgEngine === 'comfyui' && comfyCheckpoint && !busy && (
+                    <button type="button" onClick={() => { setSaveLookOpen(o => !o); setLookSaveMsg(''); }}
+                      title="Save this checkpoint + add-ons + sizes as a one-tap Look card in Simple mode"
+                      style={{ ...actBtn, marginLeft: 'auto', color: '#ffd166', borderColor: 'rgba(255,209,102,0.3)' }}>
+                      ⭐ Save as Look
+                    </button>
+                  )}
                 </div>
+                {/* Save-as-Look mini form — turns the current Advanced settings into a Simple-mode card */}
+                {saveLookOpen && imgEngine === 'comfyui' && (
+                  <div style={{ marginTop: '10px', border: '1px solid rgba(255,209,102,0.3)', borderRadius: '8px', padding: '10px 12px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <input type="text" placeholder="Name (e.g. My Feet Look)" value={lookName}
+                      onInput={(e) => setLookName((e.target as HTMLInputElement).value)} style={{ ...S.select, minWidth: '180px', cursor: 'text' }} />
+                    <input type="text" placeholder="One-line description (optional)" value={lookDesc}
+                      onInput={(e) => setLookDesc((e.target as HTMLInputElement).value)} style={{ ...S.select, flex: 1, minWidth: '200px', cursor: 'text' }} />
+                    <button type="button" onClick={saveLook} disabled={!lookName.trim()} style={genBtnStyle(!!lookName.trim())}>Save</button>
+                    {lookSaveMsg && <div style={{ width: '100%', fontSize: '11px', fontFamily: MONO, color: lookSaveMsg.startsWith('✓') ? '#34d39a' : '#f45a5a' }}>{lookSaveMsg}</div>}
+                  </div>
+                )}
                 {busy && <ProgressBar pct={imgPct} label={imgBarLabel} sub={`${fmtMs(elapsedMs)} elapsed`} />}
               </div>
               </>
@@ -1377,6 +1733,22 @@ export function Create() {
                   onSendToVideo={() => { setVidPrompt(prompt); setTab('video'); try { history.replaceState(null, '', '#video'); } catch {} }}
                 />
               )}
+
+              {/* Unknown-compat add-on confirm — sets the server override flag */}
+              <ConfirmModal
+                open={!!confirmLora}
+                onClose={() => setConfirmLora(null)}
+                destructive
+                title="Unknown add-on family"
+                body={`"${confirmLora ? loraLabel(confirmLora) : ''}" has an unknown model family — it may produce broken or deformed images with ${cleanName(comfyCheckpoint || 'this model')}.`}
+                detail="If you continue, it runs with a compatibility override. Tip: tap 🖼 Load thumbnails first — it can identify the add-on on Civitai and resolve its real family."
+                confirmLabel="Use anyway"
+                onConfirm={() => {
+                  if (!confirmLora) return;
+                  setUnknownConfirmed(p => [...p, confirmLora.name]);
+                  setComfyLoras(p => p.includes(confirmLora.name) ? p : [...p, confirmLora.name]);
+                }}
+              />
             </>
           ) : (
             /* ── Video tab ───────────────────────────────────────────────────── */

@@ -1,0 +1,82 @@
+{
+  "cyberrealisticPony_v170.safetensors": {
+    "label": "CyberRealistic Pony",
+    "description": "Realistic people with the widest style add-on support — most add-ons here are made for it",
+    "category": "photo"
+  },
+  "epicellaXL_photoV1.safetensors": {
+    "label": "Epicella XL Photo",
+    "description": "Clean photographic portraits and scenes (SDXL)",
+    "category": "photo"
+  },
+  "epicphotogasm_ultimateFidelity.safetensors": {
+    "label": "EpicPhotogasm (SD 1.5)",
+    "description": "Older but fast photo model — keep sizes small (512x768)",
+    "category": "photo"
+  },
+  "epicrealismXL_pureFix.safetensors": {
+    "label": "EpicRealism XL",
+    "description": "Best all-round realistic photo model (SDXL)",
+    "category": "photo"
+  },
+  "RealFeet_xl_v1.safetensors": {
+    "label": "Real Feet (SDXL)",
+    "description": "Better, more anatomically correct feet — add the word 'feet' to your prompt",
+    "category": "feet",
+    "recommendedStrength": 0.8
+  },
+  "feet_forward-EpicUni-V1.safetensors": {
+    "label": "Feet Forward (SD 1.5)",
+    "description": "Feet-focused poses and close-ups for the SD 1.5 photo model",
+    "category": "feet",
+    "recommendedStrength": 0.7
+  },
+  "kFeetMix101_v2-000006.safetensors": {
+    "label": "Feet Mix 101 (SD 1.5)",
+    "description": "Alternative feet detail add-on for SD 1.5 — trigger word 'feet101'",
+    "category": "feet",
+    "recommendedStrength": 0.5
+  },
+  "cow-ponyxl-v1.safetensors": {
+    "label": "Cow Girl",
+    "description": "Cow girl with udders/hooves/tail — trigger 'c0wg1rl', works with CyberRealistic Pony",
+    "category": "cow",
+    "recommendedStrength": 0.8
+  },
+  "starbucksgirl_Pony.safetensors": {
+    "label": "Barista Cow Print",
+    "description": "Coffee-shop girl in cow print with milk bottle — trigger 'sbgirl'",
+    "category": "cow",
+    "recommendedStrength": 0.8
+  },
+  "Callie Cowgirl.safetensors": {
+    "label": "Callie Cowgirl (Flux)",
+    "description": "Farmer cow-girl character — needs a Flux model, which is not installed",
+    "category": "cow",
+    "recommendedStrength": 0.8
+  },
+  "RealSkin_xxXL_v1.safetensors": {
+    "label": "Real Skin",
+    "description": "More natural skin texture, less plastic look",
+    "category": "skin",
+    "recommendedStrength": 0.6
+  },
+  "bigeyes-ponyxl-v1.safetensors": {
+    "label": "Big Eyes",
+    "description": "Wide anime-style eyes effect — trigger 'wide eyes'",
+    "category": "eyes",
+    "recommendedStrength": 0.7
+  },
+  "zy_AmateurStyle_v2.safetensors": {
+    "label": "Amateur 2000s Photo",
+    "description": "Grainy webcam/flash-photo nostalgia look — triggers 'amateur', 'grainy'",
+    "category": "style",
+    "recommendedStrength": 0.7
+  },
+  "RLY-thot_shot-ZiB-ZiT-helena-v1-trigger-rlyhelena.safetensors": {
+    "label": "Helena (Z-Image)",
+    "description": "Character add-on for Z-Image Turbo — needs a Z-Image model, which is not installed",
+    "category": "character",
+    "recommendedStrength": 0.8
+  }
+}

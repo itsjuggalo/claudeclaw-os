@@ -22,7 +22,8 @@ import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from '
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo } from './localgen.js';
 import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
-import { readManifest, metaFor, upsertMeta, normalizeFamily, ModelMeta } from './modelmeta.js';
+import { readManifest, metaFor, upsertMeta, mergeMeta, normalizeFamily, loraCompat, readCurated, enrichedMetaFor, familyFromFilename, ModelMeta } from './modelmeta.js';
+import { listLooks, saveUserLook, deleteUserLook } from './looks.js';
 import Database from 'better-sqlite3';
 import {
   getAllScheduledTasks,
@@ -1258,15 +1259,22 @@ init();
       const checkpointDir = `${HOME}/ComfyUI/models/checkpoints`;
       const loraDir = `${HOME}/ComfyUI/models/loras`;
       // Attach Civitai-sourced compatibility metadata (family/triggers/verified)
-      // so the UI can lock incompatible LoRAs and inject the right trigger words.
+      // plus the curated friendly layer (label/description/category) so the UI
+      // can show human names and lock incompatible LoRAs. Compatibility is
+      // computed HERE (single source of truth) — the client only does lookups
+      // on compatibleCheckpoints/unknownCheckpoints, it has no rule logic.
       const manifest = readManifest();
+      const curated = readCurated();
       const checkpoints = fs.existsSync(checkpointDir) ? fs.readdirSync(checkpointDir).filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf')).map(f => {
-        const md = metaFor(f, manifest);
-        return { name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw };
+        const md = enrichedMetaFor(f, manifest, curated);
+        return { name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw, label: md.label, description: md.description, category: md.category };
       }) : [];
       const loras = fs.existsSync(loraDir) ? fs.readdirSync(loraDir).filter(f => f.endsWith('.safetensors')).map(f => {
-        const md = metaFor(f, manifest);
-        return { name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw };
+        const md = enrichedMetaFor(f, manifest, curated);
+        const loraFam = md.requiresCheckpointFamily || md.family;
+        const compatibleCheckpoints = checkpoints.filter(ck => loraCompat(loraFam, ck.family) === 'ok').map(ck => ck.name);
+        const unknownCheckpoints = checkpoints.filter(ck => loraCompat(loraFam, ck.family) === 'unknown').map(ck => ck.name);
+        return { name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw, label: md.label, description: md.description, category: md.category, recommendedStrength: md.recommendedStrength, compatibleCheckpoints, unknownCheckpoints };
       }) : [];
       return c.json({ running, vram, checkpoints, loras, url: running ? 'http://localhost:8188' : null });
     } catch (e) {
@@ -1379,20 +1387,24 @@ init();
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
   });
 
-  // Backend mirror of the client loraCompatible(): a combo is incompatible only when
-  // BOTH families are KNOWN and differ. If either is 'other'/unknown we can't prove a
-  // mismatch, so we allow it (matches the permissive UI lock). Returns first offender.
+  // Server-side compatibility gate using the tri-state loraCompat() from
+  // modelmeta.ts (the single source of truth — the client only consumes
+  // precomputed arrays from /api/comfyui/status). 'mismatch' always rejects;
+  // 'unknown' rejects too UNLESS the caller passed allowUnknown (set by the
+  // Advanced-mode confirm dialog) — unknown-family combos were the source of
+  // deformed output when silently allowed. Returns the first offender.
   function validateLoraFamilies(
     checkpoint: string,
     loras: Array<{ name: string }>,
     manifest: Record<string, ModelMeta>,
-  ): { lora: string; loraFam: string; ckptFam: string } | null {
+    allowUnknown = false,
+  ): { lora: string; loraFam: string; ckptFam: string; compat: 'mismatch' | 'unknown' } | null {
     const ckptFam = metaFor(checkpoint, manifest).family;
-    if (!ckptFam || ckptFam === 'other') return null;
     for (const l of loras) {
-      const loraFam = metaFor(l.name, manifest).family;
-      if (!loraFam || loraFam === 'other') continue;
-      if (loraFam !== ckptFam) return { lora: l.name, loraFam, ckptFam };
+      const md = metaFor(l.name, manifest);
+      const compat = loraCompat(md.requiresCheckpointFamily || md.family, ckptFam);
+      if (compat === 'mismatch') return { lora: l.name, loraFam: md.family, ckptFam, compat };
+      if (compat === 'unknown' && !allowUnknown) return { lora: l.name, loraFam: md.family, ckptFam, compat };
     }
     return null;
   }
@@ -1408,6 +1420,8 @@ init();
         prompt?: string; negative_prompt?: string; steps?: number; cfg?: number;
         width?: number; height?: number; checkpoint?: string; seed?: number;
         loras?: Array<{ name: string; strength?: number }>;
+        allowUnknownCompat?: boolean;
+        fast?: boolean;   // DMD2 4-step distillation (SDXL-family checkpoints only)
       };
       const prompt = (body.prompt || '').trim();
       if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
@@ -1428,10 +1442,14 @@ init();
       const checkpoint = body.checkpoint || ckptFiles[0] || 'cyberrealisticPony_v170.safetensors';
       const loraList = body.loras ?? [];
       const manifest = readManifest();
-      const bad = validateLoraFamilies(checkpoint, loraList, manifest);
-      if (bad) return c.json({ ok: false, error:
-        `Incompatible LoRA "${bad.lora.replace(/\.(safetensors|ckpt|gguf)$/i,'')}" (${bad.loraFam}) `
-        + `for a ${bad.ckptFam} checkpoint. Pick a ${bad.ckptFam} LoRA or a matching checkpoint.` }, 400);
+      const bad = validateLoraFamilies(checkpoint, loraList, manifest, !!body.allowUnknownCompat);
+      if (bad) {
+        const loraLabel = bad.lora.replace(/\.(safetensors|ckpt|gguf)$/i, '');
+        const msg = bad.compat === 'mismatch'
+          ? `Incompatible LoRA "${loraLabel}" (${bad.loraFam}) for a ${bad.ckptFam} checkpoint. Pick a ${bad.ckptFam} LoRA or a matching checkpoint.`
+          : `LoRA "${loraLabel}" has an unknown model family — it can produce broken images with this checkpoint. Use Advanced mode and confirm to run it anyway.`;
+        return c.json({ ok: false, error: msg }, 400);
+      }
 
       const { execSync, spawn } = await import('child_process');
 
@@ -1473,6 +1491,17 @@ init();
       const workflow: Record<string, any> = {
         "4": { inputs: { ckpt_name: checkpoint }, class_type: "CheckpointLoaderSimple" },
       };
+      // ── Fast mode (DMD2 distillation): 4-8 steps at cfg 1.0 instead of
+      // 20 at cfg 7 — ~4x faster sampling, near-identical quality. Only valid
+      // on SDXL-architecture checkpoints (sdxl/pony/illustrious); the LoRA
+      // breaks sd15/flux, so fall back to the normal path for those. Requires
+      // models/loras/dmd2_sdxl_4step_lora_fp16.safetensors (tianweiy/DMD2).
+      const DMD2_LORA = 'dmd2_sdxl_4step_lora_fp16.safetensors';
+      const SDXL_ARCH = new Set(['sdxl', 'pony', 'illustrious']);
+      const ckptFamily = manifest[checkpoint]?.family || familyFromFilename(checkpoint);
+      const loraDir = `${HOME}/ComfyUI/models/loras`;
+      const fastMode = !!body.fast && SDXL_ARCH.has(ckptFamily) && fs.existsSync(`${loraDir}/${DMD2_LORA}`);
+
       // LoRA chain: node ids 100, 101, 102... each feeds into the next
       let modelRef: [string, number] = ["4", 0];
       let clipRef:  [string, number] = ["4", 1];
@@ -1486,10 +1515,24 @@ init();
         modelRef = [nodeId, 0];
         clipRef  = [nodeId, 1];
       }
+      if (fastMode) {
+        // DMD2 goes LAST in the chain at full strength so style LoRAs upstream
+        // keep their effect while DMD2 controls the denoising trajectory.
+        const nodeId = String(100 + loraList.length);
+        workflow[nodeId] = {
+          inputs: { lora_name: DMD2_LORA, strength_model: 1.0, strength_clip: 1.0, model: modelRef, clip: clipRef },
+          class_type: "LoraLoader",
+        };
+        modelRef = [nodeId, 0];
+        clipRef  = [nodeId, 1];
+      }
       workflow["6"] = { inputs: { text: prompt, clip: clipRef }, class_type: "CLIPTextEncode" };
       workflow["7"] = { inputs: { text: body.negative_prompt || "deformed, ugly, blurry, low quality, bad anatomy, watermark, text", clip: clipRef }, class_type: "CLIPTextEncode" };
       workflow["5"] = { inputs: { width: body.width ?? 512, height: body.height ?? 768, batch_size: 1 }, class_type: "EmptyLatentImage" };
-      workflow["3"] = { inputs: { seed, steps: body.steps ?? 20, cfg: body.cfg ?? 7.0, sampler_name: "euler", scheduler: "normal", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" };
+      workflow["3"] = fastMode
+        // DMD2 contract: cfg MUST be 1.0 (no CFG), lcm sampler, 4-8 steps.
+        ? { inputs: { seed, steps: Math.min(Math.max(body.steps ?? 4, 4), 8), cfg: 1.0, sampler_name: "lcm", scheduler: "sgm_uniform", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" }
+        : { inputs: { seed, steps: body.steps ?? 20, cfg: body.cfg ?? 7.0, sampler_name: "euler", scheduler: "normal", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" };
       workflow["8"] = { inputs: { samples: ["3", 0], vae: ["4", 2] }, class_type: "VAEDecode" };
       workflow["9"] = { inputs: { filename_prefix: "cc_gen", images: ["8", 0] }, class_type: "SaveImage" };
 
@@ -1662,7 +1705,9 @@ init();
       if (!r.ok) return;
       const data = await r.json() as { baseModel?: string; trainedWords?: string[]; model?: { type?: string } };
       if (!data?.baseModel) return;
-      upsertMeta(name, {
+      // MERGE, don't replace — a re-download must never wipe user-set labels/
+      // categories or the cached sha256/thumb.
+      mergeMeta(name, {
         family: normalizeFamily(data.baseModel),
         baseModel: data.baseModel,
         type: dest === 'loras' ? 'lora' : dest === 'checkpoints' ? 'checkpoint' : dest,
@@ -1740,6 +1785,52 @@ init();
   app.get('/api/comfy/thumbs/refresh/:id', (c) => {
     const j = thumbJobs.get(c.req.param('id'));
     return j ? c.json({ ok: true, ...j }) : c.json({ ok: false, error: 'unknown job' }, 404);
+  });
+
+  // ── Looks — curated checkpoint+LoRA presets for the Create page ──────────
+  // Builtins live in data/looks.json (repo), user-saved Looks in
+  // ~/.claudeclaw/looks.local.json. Validated against installed files at read
+  // time so a removed model shows as "needs <file>" instead of breaking.
+  app.get('/api/looks', (c) => {
+    try { return c.json({ ok: true, looks: listLooks() }); }
+    catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/looks', async (c) => {
+    try {
+      const body = await c.req.json();
+      const saved = saveUserLook(body);
+      return c.json({ ok: true, look: saved });
+    } catch (e) {
+      return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  app.delete('/api/looks/:id', (c) => {
+    try {
+      const removed = deleteUserLook(c.req.param('id'));
+      return removed ? c.json({ ok: true }) : c.json({ ok: false, error: 'unknown look (builtins cannot be deleted)' }, 404);
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── Friendly model metadata — user-set label/description/category ────────
+  // Merge-upsert into the manifest (survives Civitai re-downloads since
+  // captureCivitaiMeta also merges). Powers the post-download "name this
+  // model" form and any future per-card edit affordance.
+  app.post('/api/models/meta', async (c) => {
+    try {
+      const body = await c.req.json() as { name?: string; label?: string; description?: string; category?: string; recommendedStrength?: number };
+      const name = String(body?.name ?? '').trim();
+      if (!name) return c.json({ ok: false, error: 'name is required' }, 400);
+      const patch: Partial<ModelMeta> = {};
+      if (typeof body.label === 'string') patch.label = body.label.trim() || undefined;
+      if (typeof body.description === 'string') patch.description = body.description.trim() || undefined;
+      if (typeof body.category === 'string') patch.category = body.category.trim() || undefined;
+      if (typeof body.recommendedStrength === 'number' && isFinite(body.recommendedStrength)) patch.recommendedStrength = body.recommendedStrength;
+      if (!Object.keys(patch).length) return c.json({ ok: false, error: 'nothing to update' }, 400);
+      const merged = mergeMeta(name, patch);
+      return c.json({ ok: true, meta: merged });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
   });
 
   app.post('/api/models/download', async (c) => {
