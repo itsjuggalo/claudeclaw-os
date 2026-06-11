@@ -66,22 +66,53 @@ async function downloadToGallery(url: string, kind: 'image' | 'video'): Promise<
   return file;
 }
 
-export function generateHiggsfield(opts: HiggsfieldInput): Promise<HiggsfieldResult> {
+// Per-model param schema (`model get <id> --json` → params[]). Cached per id.
+// Lets us pass --aspect_ratio/--resolution ONLY when the model accepts that exact
+// value — enums differ wildly (image res = 1k/2k/4k, seedance = 480p/720p/1080p,
+// kling has no resolution param at all), so blindly forcing flags would 400.
+const _schemaCache = new Map<string, Map<string, string[] | null>>();
+async function getModelParams(model: string): Promise<Map<string, string[] | null> | null> {
+  if (_schemaCache.has(model)) return _schemaCache.get(model)!;
+  const res = await runHf(['model', 'get', model, '--json']);
+  if (res.code !== 0) return null;
+  try {
+    const start = res.out.search(/[{[]/);
+    const j = JSON.parse(start >= 0 ? res.out.slice(start) : res.out);
+    const m = new Map<string, string[] | null>();
+    for (const p of (j.params || [])) {
+      if (p && typeof p.name === 'string') m.set(p.name, Array.isArray(p.enum) ? p.enum.map(String) : null);
+    }
+    _schemaCache.set(model, m);
+    return m;
+  } catch { return null; }
+}
+
+export async function generateHiggsfield(opts: HiggsfieldInput): Promise<HiggsfieldResult> {
+  const prompt = (opts.prompt || '').trim();
+  if (!prompt) return { ok: false, error: 'Prompt is required.' };
+  if (prompt.length > 2000) return { ok: false, error: 'Prompt too long (max 2000 characters).' };
+  const model = (opts.model || '').trim();
+  if (!MODEL_RE.test(model)) return { ok: false, error: 'A Higgsfield model must be selected.' };
+
+  // Build the param flags from the model's own schema (falls back to a regex
+  // guard if the schema can't be fetched).
+  const schema = await getModelParams(model);
+  const args = ['generate', 'create', model, '--prompt', prompt];
+  const ar = opts.aspectRatio?.trim();
+  if (ar && AR_RE.test(ar)) {
+    if (schema) { const e = schema.get('aspect_ratio'); if (e !== undefined && (e === null || e.includes(ar))) args.push('--aspect_ratio', ar); }
+    else args.push('--aspect_ratio', ar);
+  }
+  const res = opts.resolution?.trim().toLowerCase();
+  if (res && RES_RE.test(res)) {
+    if (schema) { const e = schema.get('resolution'); if (e !== undefined && (e === null || e.includes(res))) args.push('--resolution', res); }
+    else args.push('--resolution', res);
+  }
+  // Video can take minutes; block on the CLI and let it print the result URL.
+  const waitTimeout = opts.kind === 'video' ? '12m' : '4m';
+  args.push('--wait', '--wait-timeout', waitTimeout, '--wait-interval', '5s');
+
   return new Promise((resolve) => {
-    const prompt = (opts.prompt || '').trim();
-    if (!prompt) return resolve({ ok: false, error: 'Prompt is required.' });
-    if (prompt.length > 2000) return resolve({ ok: false, error: 'Prompt too long (max 2000 characters).' });
-    const model = (opts.model || '').trim();
-    if (!MODEL_RE.test(model)) return resolve({ ok: false, error: 'A Higgsfield model must be selected.' });
-
-    // Args are an array (no shell) → prompt/model can't inject commands.
-    const args = ['generate', 'create', model, '--prompt', prompt];
-    if (opts.aspectRatio && AR_RE.test(opts.aspectRatio)) args.push('--aspect_ratio', opts.aspectRatio);
-    if (opts.resolution && RES_RE.test(opts.resolution)) args.push('--resolution', opts.resolution.toLowerCase());
-    // Video can take minutes; block on the CLI and let it print the result URL.
-    const waitTimeout = opts.kind === 'video' ? '12m' : '4m';
-    args.push('--wait', '--wait-timeout', waitTimeout, '--wait-interval', '5s');
-
     execFile(
       higgsfieldBin(),
       args,
@@ -105,14 +136,21 @@ export function generateHiggsfield(opts: HiggsfieldInput): Promise<HiggsfieldRes
         let error = 'Higgsfield generation failed.';
         if (err && (err as NodeJS.ErrnoException & { killed?: boolean }).killed) {
           error = `Generation timed out (${waitTimeout}). Try a faster model or simpler prompt.`;
-        } else if (/insufficient|credit|balance|payment|402/i.test(out)) {
-          error = 'Higgsfield credits exhausted — top up your subscription.';
+        } else if (/plan_required|minimum_\w+_plan/i.test(out)) {
+          error = `"${model}" needs a higher Higgsfield plan — upgrade (Basic/Pro/Ultimate) or pick a model your plan allows.`;
+        } else if (/insufficient|out of credit|balance|payment_required|\b402\b/i.test(out)) {
+          error = 'Higgsfield credits exhausted — top up your plan.';
         } else if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
           error = 'higgsfield CLI not found on the server — `npm i -g @higgsfield/cli`.';
         } else {
-          const m = out.match(/Error:\s*(.+)/);
-          if (m) error = m[1].trim().slice(0, 300);
-          else if (err) error = String(err.message).slice(0, 300);
+          // CLI errors print either `Error: <msg>` or a raw JSON body {error_type,text}.
+          const j = out.match(/\{[^{}]*"(?:error_type|text|message)"[^{}]*\}/);
+          if (j) { try { const o = JSON.parse(j[0]); error = String(o.text || o.message || o.error_type || error).slice(0, 300); } catch { /* keep */ } }
+          if (error === 'Higgsfield generation failed.') {
+            const m = out.match(/Error:\s*(.+)/);
+            if (m) error = m[1].trim().slice(0, 300);
+            else if (err) error = String(err.message).slice(0, 300);
+          }
         }
         resolve({ ok: false, error });
       },
@@ -132,28 +170,28 @@ function runHf(args: string[]): Promise<{ out: string; code: number }> {
   });
 }
 
-// Defensive parse: the exact `model list --json` shape is unverified until auth,
-// so accept an array, or any object whose values include the array.
-function parseModels(out: string, kind: 'image' | 'video'): HiggsfieldModel[] {
+// `model list --json` returns an array of { display_name, job_set_type, type }.
+// id = job_set_type, name = display_name, kind = type ('image' | 'video').
+function parseModels(out: string): HiggsfieldModel[] {
   let data: unknown;
-  try { data = JSON.parse(out.trim()); } catch { return []; }
+  // The CLI may print a banner line before the JSON — grab the array/object slice.
+  const start = out.search(/[[{]/);
+  try { data = JSON.parse((start >= 0 ? out.slice(start) : out).trim()); } catch { return []; }
   let arr: unknown[] = [];
   if (Array.isArray(data)) arr = data;
   else if (data && typeof data === 'object') {
-    const vals = Object.values(data as Record<string, unknown>);
-    const found = vals.find((v) => Array.isArray(v));
+    const found = Object.values(data as Record<string, unknown>).find((v) => Array.isArray(v));
     if (Array.isArray(found)) arr = found;
   }
   const out2: HiggsfieldModel[] = [];
   for (const item of arr) {
-    if (typeof item === 'string') { out2.push({ id: item, name: item, kind }); continue; }
-    if (item && typeof item === 'object') {
-      const o = item as Record<string, unknown>;
-      const id = String(o.id ?? o.slug ?? o.model ?? o.name ?? '').trim();
-      if (!id || !MODEL_RE.test(id)) continue;
-      const name = String(o.name ?? o.title ?? o.display_name ?? id);
-      out2.push({ id, name, kind });
-    }
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const id = String(o.job_set_type ?? o.id ?? o.slug ?? '').trim();
+    if (!id || !MODEL_RE.test(id)) continue;
+    const t = String(o.type ?? '').toLowerCase();
+    if (t !== 'image' && t !== 'video') continue;
+    out2.push({ id, name: String(o.display_name ?? o.name ?? id), kind: t });
   }
   return out2;
 }
@@ -161,13 +199,10 @@ function parseModels(out: string, kind: 'image' | 'video'): HiggsfieldModel[] {
 export async function listHiggsfieldModels(): Promise<{ ok: boolean; models?: HiggsfieldModel[]; error?: string }> {
   const now = Date.now();
   if (_modelCache && now - _modelCache.ts < MODELS_TTL_MS) return { ok: true, models: _modelCache.models };
-  const [img, vid] = await Promise.all([
-    runHf(['model', 'list', '--json']),
-    runHf(['model', 'list', '--video', '--json']),
-  ]);
-  if (img.code === -1) return { ok: false, error: 'higgsfield CLI not installed' };
-  if (/Not authenticated/i.test(img.out)) return { ok: false, error: 'not authenticated — run `higgsfield auth login`' };
-  const models = [...parseModels(img.out, 'image'), ...parseModels(vid.out, 'video')];
+  const res = await runHf(['model', 'list', '--json']);
+  if (res.code === -1) return { ok: false, error: 'higgsfield CLI not installed' };
+  if (/Not authenticated/i.test(res.out)) return { ok: false, error: 'not authenticated — run `higgsfield auth login`' };
+  const models = parseModels(res.out);
   if (models.length === 0) return { ok: false, error: 'no models returned (check CLI auth/output)' };
   _modelCache = { ts: now, models };
   return { ok: true, models };
