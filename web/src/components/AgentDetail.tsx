@@ -203,7 +203,7 @@ function OverviewTab({ agent }: { agent: Agent }) {
   const costsOn = showCosts.value;
   return (
     <div class="space-y-3">
-      <div class={(costsOn ? 'grid-cols-3' : 'grid-cols-1') + ' grid gap-2'}>
+      <div class={(costsOn ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1') + ' grid gap-2'}>
         <Kpi label="Today turns" value={String(agent.todayTurns)} />
         {costsOn && <Kpi label="Today cost" value={formatCost(agent.todayCost)} />}
         {costsOn && <Kpi label="Lifetime cost" value={formatCost(tokens.data?.allTimeCost || 0)} />}

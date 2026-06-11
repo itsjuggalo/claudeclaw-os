@@ -9,6 +9,7 @@ import { MissionControl } from '@/pages/MissionControl';
 import { Memories } from '@/pages/Memories';
 import { HiveMind } from '@/pages/HiveMind';
 import { McKb } from '@/pages/McKb';
+import { Journal } from '@/pages/Journal';
 import { Agents } from '@/pages/Agents';
 import { Scheduled } from '@/pages/Scheduled';
 import { Audit } from '@/pages/Audit';
@@ -18,6 +19,23 @@ import { Voices } from '@/pages/Voices';
 import { Chat } from '@/pages/Chat';
 import { WarRoom } from '@/pages/WarRoom';
 import { AgentFiles } from '@/pages/AgentFiles';
+import { Peon } from '@/pages/Peon';
+import { Wallets } from '@/pages/Wallets';
+import { Gallery } from '@/pages/Gallery';
+import { SkoolBuilds } from '@/pages/SkoolBuilds';
+import { LewisTrading } from '@/pages/LewisTrading';
+import { Create } from '@/pages/Create';
+import { Hermes } from '@/pages/Hermes';
+import { ClaudeOffice } from '@/pages/ClaudeOffice';
+import { TokenUsage } from '@/pages/TokenUsage';
+import { TradeDeskPage } from '@/pages/TradeDeskPage';
+import { EquityManagement } from '@/pages/EquityManagement';
+import { SignalFeedPage } from '@/pages/SignalFeedPage';
+import { FlowRankPage } from '@/pages/FlowRankPage';
+import { PortfolioAIPage } from '@/pages/PortfolioAIPage';
+import { FlowWinnersPage } from '@/pages/FlowWinnersPage';
+import { Databases } from '@/pages/Databases';
+import { DatabaseDetail } from '@/pages/DatabaseDetail';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
@@ -54,11 +72,31 @@ export function App() {
           <Route path="/memories"><Memories /></Route>
           <Route path="/hive"><HiveMind /></Route>
           <Route path="/mckb"><McKb /></Route>
+          <Route path="/databases"><Databases /></Route>
+          <Route path="/databases/:id"><DatabaseDetail /></Route>
+          <Route path="/journal"><Journal /></Route>
           <Route path="/usage"><Usage /></Route>
           <Route path="/audit"><Audit /></Route>
+          <Route path="/wallets"><Wallets /></Route>
+          <Route path="/gallery"><Gallery /></Route>
+          <Route path="/skool-builds"><SkoolBuilds /></Route>
+          <Route path="/lewis-trading"><LewisTrading /></Route>
+          <Route path="/create"><Create /></Route>
+          <Route path="/hermes"><Hermes /></Route>
           <Route path="/warroom"><WarRoom /></Route>
+          <Route path="/office"><ClaudeOffice /></Route>
+          <Route path="/token-usage"><TokenUsage /></Route>
           <Route path="/voices"><Voices /></Route>
+          <Route path="/peon"><Peon /></Route>
           <Route path="/settings"><Settings /></Route>
+
+          {/* Trade Desk — live trading intelligence */}
+          <Route path="/trade-desk"><TradeDeskPage /></Route>
+          <Route path="/equity"><EquityManagement /></Route>
+          <Route path="/trade-desk/signals"><SignalFeedPage /></Route>
+          <Route path="/trade-desk/flow-rank"><FlowRankPage /></Route>
+          <Route path="/trade-desk/portfolio"><PortfolioAIPage /></Route>
+          <Route path="/trade-desk/flow-winners"><FlowWinnersPage /></Route>
 
           {/* Common alt slugs that used to point at placeholder pages */}
           <Route path="/hive-mind"><Redirect to="/hive" /></Route>

@@ -20,7 +20,7 @@ vi.mock('./logger.js', () => ({
 }));
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { ClaudeSdkEngineAdapter, EngineFactory, getAcpCommand } from './agent-engine/index.js';
+import { ClaudeSdkEngineAdapter, EngineFactory, getAcpCommand, engineSupportsSystemPrompt } from './agent-engine/index.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockQuery = query as any;
@@ -68,7 +68,7 @@ describe('Agent Provider Engine', () => {
       { type: 'stream_event', parent_tool_use_id: null, event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hel' } } },
       { type: 'assistant', message: { usage: { input_tokens: 123, cache_read_input_tokens: 456 }, content: [{ type: 'tool_use', id: 'tool-1', name: 'Read' }] } },
       { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 999 } },
-      { type: 'result', subtype: 'success', result: 'hello', usage: { input_tokens: 1000, output_tokens: 10, cache_read_input_tokens: 400 }, total_cost_usd: 0.02 },
+      { type: 'result', subtype: 'success', result: 'hello', usage: { input_tokens: 1000, output_tokens: 10, cache_read_input_tokens: 400 }, total_cost_usd: 0.02, modelUsage: { 'claude-haiku-4-5-20251001': { contextWindow: 200000, maxOutputTokens: 32000 } } },
     ]);
 
     expect(events.map((ev) => ev.type)).toEqual([
@@ -94,9 +94,36 @@ describe('Agent Provider Engine', () => {
         preCompactTokens: 999,
         lastCallCacheRead: 456,
         lastCallInputTokens: 123,
+        contextWindow: 200000,
       },
     });
     expect(events[5]).toMatchObject({ type: 'result', text: 'hello', stopReason: 'success' });
+  });
+
+  it('assembles full turn text when a turn ends text -> tool_use -> trailing text', async () => {
+    // Regression: the SDK `result` field only carries the LAST assistant text
+    // block, so a turn shaped `answer -> tool_use -> "Logged to hive mind."`
+    // used to truncate to the trailing line. We now join all top-level text.
+    const adapter = new ClaudeSdkEngineAdapter();
+    const events = await collect(adapter, [
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'Here is the full answer.' }] } },
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash' }] } },
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'Logged to hive mind.' }] } },
+      { type: 'result', subtype: 'success', result: 'Logged to hive mind.', usage: {}, total_cost_usd: 0 },
+    ]);
+    const resultEvent = events.find((ev) => ev.type === 'result');
+    expect(resultEvent).toMatchObject({ text: 'Here is the full answer.\n\nLogged to hive mind.' });
+  });
+
+  it('excludes subagent text (parent_tool_use_id set) from the assembled result', async () => {
+    const adapter = new ClaudeSdkEngineAdapter();
+    const events = await collect(adapter, [
+      { type: 'assistant', parent_tool_use_id: 'tool-9', message: { content: [{ type: 'text', text: 'subagent chatter' }] } },
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'real answer' }] } },
+      { type: 'result', subtype: 'success', result: 'real answer', usage: {}, total_cost_usd: 0 },
+    ]);
+    const resultEvent = events.find((ev) => ev.type === 'result');
+    expect(resultEvent).toMatchObject({ text: 'real answer' });
   });
 
   it('passes tool-disabled one-shot options through to Claude SDK', async () => {
@@ -115,6 +142,65 @@ describe('Agent Provider Engine', () => {
         model: 'claude-haiku-4-5-20251001',
         effort: 'low',
         thinking: { type: 'disabled' },
+      }),
+    }));
+  });
+
+  it('passes a persona systemPrompt through as a plain string (no claude_code preset)', async () => {
+    const adapter = new ClaudeSdkEngineAdapter();
+    mockQuery.mockReturnValue(mockEvents([{ type: 'result', result: '{}', usage: {}, total_cost_usd: 0 }])());
+    const out = [];
+    for await (const ev of adapter.invoke({
+      prompt: 'hi',
+      provider: { type: 'claude' },
+      cwd: '/tmp/test',
+      systemPrompt: 'You are Holden.',
+    })) {
+      out.push(ev);
+    }
+    const opts = mockQuery.mock.calls[0][0].options;
+    // Plain string, not a { type: 'preset', preset: 'claude_code' } object.
+    expect(opts.systemPrompt).toBe('You are Holden.');
+  });
+
+  it('omits systemPrompt entirely when no persona is supplied', async () => {
+    const adapter = new ClaudeSdkEngineAdapter();
+    mockQuery.mockReturnValue(mockEvents([{ type: 'result', result: '{}', usage: {}, total_cost_usd: 0 }])());
+    const out = [];
+    for await (const ev of adapter.invoke({ prompt: 'hi', provider: { type: 'claude' }, cwd: '/tmp/test' })) {
+      out.push(ev);
+    }
+    const opts = mockQuery.mock.calls[0][0].options;
+    expect(opts.systemPrompt).toBeUndefined();
+  });
+
+  it('reports per-engine system-prompt support (ACP cannot pin one)', () => {
+    // config mock sets ENABLE_ACP: true, so the claude/non-claude split applies.
+    expect(engineSupportsSystemPrompt({ type: 'claude' })).toBe(true);
+    expect(engineSupportsSystemPrompt({ type: 'opencode' })).toBe(false);
+    expect(engineSupportsSystemPrompt(undefined)).toBe(false);
+  });
+
+  it('defaults allowDangerouslySkipPermissions to true when defaulting to bypassPermissions', async () => {
+    // SDK 0.3.x requires the skip flag whenever permissionMode is 'bypassPermissions'.
+    // When the caller specifies neither, the adapter must default both consistently.
+    mockQuery.mockReturnValue(mockEvents([
+      { type: 'result', subtype: 'success', result: '{}', usage: {}, total_cost_usd: 0 },
+    ])());
+
+    const out = [];
+    for await (const ev of new ClaudeSdkEngineAdapter().invoke({
+      prompt: 'hi',
+      provider: { type: 'claude' },
+      cwd: '/tmp/test',
+    })) {
+      out.push(ev);
+    }
+
+    expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
       }),
     }));
   });

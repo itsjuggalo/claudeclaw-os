@@ -12,6 +12,7 @@ import {
   uiScale, setUiScale,
   showCosts, setShowCosts,
 } from '@/lib/theme';
+import { viewMode, setViewMode } from '@/lib/view-mode';
 import {
   workspaceName,
   setWorkspaceName,
@@ -125,6 +126,14 @@ export function Settings() {
                 <ScalePicker />
               </Row>
               <Divider />
+              <Row label="Desktop view" hint="Force the full desktop layout on phones (like Request Desktop Site). Reloads the page. No effect in desktop browsers.">
+                <Toggle
+                  on={viewMode.value === 'desktop'}
+                  onChange={() => setViewMode(viewMode.value === 'desktop' ? 'auto' : 'desktop')}
+                  ariaLabel="Desktop view"
+                />
+              </Row>
+              <Divider />
               <Row label="Show costs" hint="Hide if you're on a Claude Code subscription — costs only matter on the API path.">
                 <Toggle
                   on={showCosts.value}
@@ -219,7 +228,7 @@ function WorkspaceNameField() {
         onInput={onInput}
         maxLength={32}
         placeholder="ClaudeClaw"
-        class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[200px]"
+        class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-full max-w-[200px]"
       />
       {savedTick && <Check size={14} class="text-[var(--color-status-done)] shrink-0" />}
     </div>
@@ -562,7 +571,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
             markDirty();
           }}
           aria-label="Provider"
-          class="h-8 w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)]"
+          class="h-8 w-full max-w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)]"
         >
           <option value="opencode">OpenCode</option>
           <option value="gemini">Gemini CLI</option>
@@ -585,7 +594,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
             }}
             disabled={models.loading}
             aria-label="Model"
-            class="h-8 w-[220px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
+            class="h-8 w-full max-w-[220px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
           >
             {(models.data?.models ?? []).map((m) => (
               <option key={m.id} value={m.id}>{m.label}</option>
@@ -601,7 +610,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
                 markDirty();
               }}
               placeholder="model-id"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
+              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-full max-w-[220px]"
             />
           )}
           {models.data?.note && <div class="text-[10.5px] text-[var(--color-text-faint)] max-w-[260px] text-right leading-snug">{models.data.note}</div>}
@@ -655,7 +664,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
                 markDirty();
               }}
               placeholder="my-acp-agent"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
+              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-full max-w-[220px]"
             />
           </Row>
           <Divider />
@@ -668,7 +677,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
                 markDirty();
               }}
               placeholder="--acp"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
+              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-full max-w-[220px]"
             />
           </Row>
         </>
@@ -776,13 +785,16 @@ function Card({ children }: { children: any }) {
 }
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: any }) {
+  // Stacks label-above-control on phones; side-by-side from sm: up.
+  // The inline row used to squeeze the label to a sliver and let wide
+  // controls (theme chips, scale buttons) overlap the hint text.
   return (
-    <div class="flex items-center gap-4 py-1.5">
+    <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 py-2 sm:py-1.5">
       <div class="flex-1 min-w-0">
         <div class="text-[13px] text-[var(--color-text)]">{label}</div>
         {hint && <div class="text-[11px] text-[var(--color-text-faint)] mt-0.5">{hint}</div>}
       </div>
-      {children}
+      <div class="flex flex-wrap items-center gap-2 sm:justify-end sm:shrink-0 sm:max-w-[60%]">{children}</div>
     </div>
   );
 }

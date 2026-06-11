@@ -31,6 +31,9 @@ import {
   HOURLY_TOKEN_BUDGET,
   MEMORY_NOTIFY,
   PROJECT_ROOT,
+  CLAUDE_MODEL_OPUS,
+  CLAUDE_MODEL_SONNET,
+  CLAUDE_MODEL_HAIKU,
 } from './config.js';
 import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount } from './db.js';
 import { logger } from './logger.js';
@@ -41,9 +44,10 @@ import { scanForSecrets, redactSecrets } from './exfiltration-guard.js';
 import { trackUsage, getRateStatus } from './rate-tracker.js';
 import { buildCostFooter } from './cost-footer.js';
 import { DEFAULT_CLAUDE_MODEL, getMainProviderConfig, getProviderDisplay, ProviderConfig } from './provider.js';
+import { engineSupportsSystemPrompt } from './agent-engine/index.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
-import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
+import { parseDelegation, delegateToAgent, getAvailableAgents, classifyAndAssignAgent } from './orchestrator.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import {
   isLocked,
@@ -79,7 +83,9 @@ const GLOBAL_STREAM_INTERVAL_MS = 2500;
 // ── Context window tracking ──────────────────────────────────────────
 // Uses input_tokens from the last API call (= actual context window size:
 // system prompt + conversation history + tool results for that call).
-// Compares against CONTEXT_LIMIT (default 1M for Opus 4.6 1M, configurable).
+// Compares against the active model's real context window reported by the SDK
+// (e.g. Opus 4.8 = 1M, Sonnet 4.6 = 200k), falling back to CONTEXT_LIMIT when
+// the engine doesn't report one (e.g. ACP providers).
 //
 // On a fresh session the base overhead (system prompt, skills, CLAUDE.md,
 // MCP tools) can be 200-400k+ tokens. We track that baseline per session
@@ -111,7 +117,8 @@ function checkContextWarning(chatId: string, sessionId: string | undefined, usag
   }
 
   const baseline = sessionBaseline.get(baseKey)!;
-  const available = CONTEXT_LIMIT - baseline;
+  const contextLimit = usage.contextWindow ?? CONTEXT_LIMIT;
+  const available = contextLimit - baseline;
   if (available <= 0) return null;
 
   const conversationTokens = contextTokens - baseline;
@@ -126,6 +133,17 @@ function checkContextWarning(chatId: string, sessionId: string | undefined, usag
 
 function activeProvider(): ProviderConfig {
   return agentProvider ?? getMainProviderConfig();
+}
+
+export function modelStatusLine(provider: ProviderConfig, chatId: string): string {
+  if (provider.type === 'claude') {
+    return `Model: ${chatModelOverride.get(chatId) ?? agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL}`;
+  }
+  if (provider.model) return `Model: ${provider.model}`;
+  if (provider.type === 'codex') return 'Model: Codex default';
+  if (provider.type === 'gemini') return 'Model: Gemini CLI default';
+  if (provider.type === 'opencode') return 'Model: OpenCode default';
+  return 'Model: Provider default';
 }
 
 function canUseTelegramUrlButton(rawUrl: string): boolean {
@@ -155,10 +173,13 @@ const voiceEnabledChats = new Set<string>();
 // When not set, uses CLI default (Opus via Max/OAuth)
 const chatModelOverride = new Map<string, string>();
 
+// Label → model ID for the /model opus|sonnet|haiku shortcuts. IDs resolve
+// from env/config (see config.ts) so they track new model releases without a
+// code change — set CLAUDE_MODEL_OPUS etc. in .env and restart.
 const AVAILABLE_MODELS: Record<string, string> = {
-  opus: 'claude-opus-4-6',
-  sonnet: 'claude-sonnet-4-5',
-  haiku: 'claude-haiku-4-5',
+  opus: CLAUDE_MODEL_OPUS,
+  sonnet: CLAUDE_MODEL_SONNET,
+  haiku: CLAUDE_MODEL_HAIKU,
 };
 const DEFAULT_MODEL_LABEL = 'opus';
 
@@ -297,6 +318,28 @@ export function splitMessage(text: string): string[] {
 
   if (remaining) parts.push(remaining);
   return parts;
+}
+
+function stripTrailingAcpFooter(text: string): string {
+  let cleaned = text;
+  while (/(?:\r?\n\s*)?\[acp\]\s*$/i.test(cleaned)) {
+    cleaned = cleaned.replace(/(?:\r?\n\s*)?\[acp\]\s*$/i, '');
+  }
+  return cleaned.trimEnd();
+}
+
+function sanitizeAcpDisplayText(text: string, provider: ProviderConfig): string {
+  if (provider.type !== 'acp') return text;
+  return stripTrailingAcpFooter(text);
+}
+
+function isAcpInfraProgress(description: string, provider: ProviderConfig): boolean {
+  if (provider.type !== 'acp') return false;
+  const trimmed = description.trim();
+  if (!trimmed) return false;
+  if (/^\[acp\]$/i.test(trimmed)) return true;
+  if (/\[acp\]\s*$/i.test(trimmed)) return true;
+  return /^acp (session started|model set to|mode set to|thinking set to)/i.test(trimmed);
 }
 
 // ── File marker types ─────────────────────────────────────────────────
@@ -481,7 +524,13 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
   // ── Delegation detection ────────────────────────────────────────────
   // Intercept @agentId or /delegate syntax before running the main agent.
-  const delegation = parseDelegation(message);
+  // If no explicit delegation, Pack 05 auto-classifier picks an agent (or
+  // returns null to keep main). Auto-assign is gated by
+  // MISSION_AUTO_ASSIGN_ENABLED + LLM_SPAWN_ENABLED + complexity filter.
+  let delegation = parseDelegation(message);
+  if (!delegation) {
+    delegation = await classifyAndAssignAgent(message, AGENT_ID, chatIdStr);
+  }
   if (delegation) {
     setProcessing(chatIdStr, true);
     await sendTyping(ctx.api, chatId);
@@ -526,7 +575,10 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   // Build memory context and prepend to message
   const { contextText: memCtx, surfacedMemoryIds, surfacedMemorySummaries } = await buildMemoryContext(chatIdStr, message, AGENT_ID);
   const parts: string[] = [];
-  if (agentSystemPrompt && !sessionId) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+  // Only inject the persona in-band for engines that can't carry it in a system
+  // prompt (ACP). On the Claude SDK path it's already pinned there every turn, so
+  // injecting again would just duplicate it on the first turn.
+  if (agentSystemPrompt && !sessionId && !engineSupportsSystemPrompt(agentProvider)) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
   if (memCtx) parts.push(memCtx);
 
   // Inject recent scheduled task outputs so the user can reply to them naturally.
@@ -587,12 +639,18 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       };
       if (event.type === 'task_started') {
         emitChatEvent(progressPayload);
-        void ctx.reply(`🔄 ${event.description}`).catch(() => {});
+        // ACP emits infrastructure-level status (and occasional bare [acp]
+        // markers). Keep these visible in SSE logs, but don't post them
+        // to Telegram chat as user-facing messages.
+        const isAcpInfraStatus = isAcpInfraProgress(event.description, provider);
+        if (!isAcpInfraStatus) {
+          void ctx.reply(`🔄 ${event.description}`).catch(() => {});
+        }
       } else if (event.type === 'task_completed') {
         emitChatEvent(progressPayload);
         // Only notify Telegram for meaningful completions (sub-agent results),
         // not generic "Tool result" from every individual tool call.
-        if (event.description !== 'Tool result') {
+        if (event.description !== 'Tool result' && !isAcpInfraProgress(event.description, provider)) {
           void ctx.reply(`✓ ${event.description}`).catch(() => {});
         }
       } else if (event.type === 'plan') {
@@ -606,7 +664,9 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
           const now = Date.now();
           if (now - lastToolNotifyTime >= TOOL_NOTIFY_INTERVAL_MS) {
             lastToolNotifyTime = now;
-            void ctx.reply(`⚙️ ${event.description}...`).catch(() => {});
+            if (!isAcpInfraProgress(event.description, provider)) {
+              void ctx.reply(`⚙️ ${event.description}...`).catch(() => {});
+            }
           }
         }
       }
@@ -633,7 +693,8 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
       if (now - globalLast < GLOBAL_STREAM_INTERVAL_MS || deltaLen < 20) return;
 
-      let displayText = accumulated;
+      let displayText = sanitizeAcpDisplayText(accumulated, provider);
+      if (!displayText.trim()) return;
       if (displayText.length > 4000) {
         displayText = '...' + displayText.slice(displayText.length - 3900);
       }
@@ -693,7 +754,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       logger.info({ newSessionId: result.newSessionId }, 'Session saved');
     }
 
-    let rawResponse = result.text?.trim() || 'Done.';
+    let rawResponse = sanitizeAcpDisplayText(result.text?.trim() || 'Done.', provider) || 'Done.';
 
     // Exfiltration guard: scan for leaked secrets before sending to Telegram
     if (EXFILTRATION_GUARD_ENABLED) {
@@ -788,6 +849,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
           result.usage.totalCostUsd,
           result.usage.didCompact,
           AGENT_ID,
+          result.usage.contextWindow,
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');
@@ -967,7 +1029,9 @@ export function createBot(): Bot {
       '/agents — List available agents\n' +
       '/delegate — Delegate task to agent\n' +
       '/lock — Lock session (PIN required to unlock)\n' +
-      '/status — Security status\n\n' +
+      '/status — Security status\n' +
+      '/packs — List installed sound packs\n' +
+      '/setpack <name> — Switch active sound pack\n\n' +
       'Delegation: @agentId: prompt or /delegate agentId prompt\n\n' +
       'You can also send voice notes, photos, files, and videos.'
     );
@@ -1137,9 +1201,7 @@ export function createBot(): Bot {
   bot.command('provider', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
     const provider = activeProvider();
-    const modelLine = provider.type === 'claude'
-      ? `Model: ${chatModelOverride.get(ctx.chat!.id.toString()) ?? agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL}`
-      : 'Model: OpenCode/provider default config';
+    const modelLine = modelStatusLine(provider, ctx.chat!.id.toString());
     await ctx.reply(`Provider: ${getProviderDisplay(provider)}\n${modelLine}`);
   });
 
@@ -1359,8 +1421,37 @@ export function createBot(): Bot {
     messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `/delegate ${args}`));
   });
 
+  // /packs — list installed peon-ping sound packs
+  bot.command('packs', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    try {
+      const res = await fetch('http://localhost:3141/api/peon/packs');
+      const data = await res.json() as { ok: boolean; packs: { name: string; label: string; active: boolean }[]; active: string | null };
+      if (!data.ok || !data.packs.length) { await ctx.reply('No packs found.'); return; }
+      const lines = data.packs.map((p) => `${p.active ? '▶' : '  '} ${p.name} — ${p.label}`);
+      await ctx.reply(`🎮 Installed packs (${data.packs.length}):\n\n${lines.join('\n')}\n\nUse /setpack <name> to switch.`);
+    } catch { await ctx.reply('Could not reach peon API.'); }
+  });
+
+  // /setpack <name> — switch active peon-ping sound pack
+  bot.command('setpack', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const name = ctx.match?.trim().toLowerCase();
+    if (!name) { await ctx.reply('Usage: /setpack <pack-name>\n\nSee /packs for available names.'); return; }
+    try {
+      const res = await fetch('http://localhost:3141/api/peon/packs/use', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json() as { ok: boolean; active?: string; error?: string };
+      if (!data.ok) { await ctx.reply(`❌ ${data.error ?? 'Unknown error'}`); return; }
+      await ctx.reply(`✅ Sound pack switched to: ${name}`);
+    } catch { await ctx.reply('Could not reach peon API.'); }
+  });
+
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/provider', '/memory', '/forget', '/pin', '/unpin', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/lock', '/status']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/provider', '/memory', '/forget', '/pin', '/unpin', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/lock', '/status', '/packs', '/setpack']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
@@ -1705,7 +1796,7 @@ async function processDashboardMessage(
 
     const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, AGENT_ID);
     const dashParts: string[] = [];
-    if (agentSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+    if (agentSystemPrompt && !sessionId && !engineSupportsSystemPrompt(agentProvider)) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
 
     const recentDashTasks = getRecentTaskOutputs(AGENT_ID, 30);
@@ -1771,7 +1862,7 @@ async function processDashboardMessage(
       setSession(chatIdStr, result.newSessionId, AGENT_ID);
     }
 
-    const rawResponse = result.text?.trim() || 'Done.';
+    const rawResponse = sanitizeAcpDisplayText(result.text?.trim() || 'Done.', dashProvider) || 'Done.';
 
     // Save conversation turn
     saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
@@ -1851,6 +1942,7 @@ async function processDashboardMessage(
           result.usage.totalCostUsd,
           result.usage.didCompact,
           AGENT_ID,
+          result.usage.contextWindow,
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');

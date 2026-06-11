@@ -1,12 +1,31 @@
 import { Api, RawApi } from 'grammy';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { getCookie, setCookie } from 'hono/cookie';
 import { serve } from '@hono/node-server';
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG } from './config.js';
+import { spawnSync } from 'child_process';
+import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
+import { getWallets } from './wallets.js';
+import { getEquity } from './equity.js';
+import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
+import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
+import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
+import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
+import { getSkoolBuilds, readSkoolArtifact } from './skoolbuilds.js';
+import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
+import { generateImage } from './generate.js';
+import { generateLocalImage, generateLocalVideo } from './localgen.js';
+import { generateHiggsfield, listHiggsfieldModels } from './higgsfield.js';
+import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
+import { readManifest, metaFor, upsertMeta, mergeMeta, normalizeFamily, loraCompat, readCurated, enrichedMetaFor, familyFromFilename, ModelMeta } from './modelmeta.js';
+import { listLooks, saveUserLook, deleteUserLook } from './looks.js';
+import Database from 'better-sqlite3';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -68,7 +87,7 @@ import {
 import { computeNextRun } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
-import { AGENT_ID_RE, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel } from './agent-config.js';
+import { AGENT_ID_RE, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel, setAgentProvider } from './agent-config.js';
 import {
   resolveAgentAvatar,
   avatarEtag,
@@ -108,10 +127,178 @@ import {
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
-import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
+import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
+import { inspectAcpProviderRuntimeOptions, type AcpProviderRuntimeOptions } from './agent-engine/acp-adapter.js';
+
+// Selectable/valid Claude models for the dashboard pickers and the model-set
+// endpoints. The current lineup is derived from the CLAUDE_MODEL_* config
+// constants (see config.ts) so an env-driven model bump is picked up here
+// without editing this file; older pinned IDs stay valid for agents still on
+// them. Deduped so a config value matching a legacy literal isn't listed twice.
+const VALID_CLAUDE_MODELS = Array.from(new Set([
+  CLAUDE_MODEL_OPUS,
+  CLAUDE_MODEL_SONNET,
+  CLAUDE_MODEL_HAIKU,
+  'claude-opus-4-6',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-5',
+  'claude-haiku-4-5',
+]));
+
+const CLAUDE_MODEL_LABELS: Record<string, string> = {
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-sonnet-4-5': 'Sonnet 4.5',
+  'claude-haiku-4-5': 'Haiku 4.5',
+};
+
+const CLAUDE_MODEL_OPTIONS = VALID_CLAUDE_MODELS.map((id) => ({
+  id,
+  label: CLAUDE_MODEL_LABELS[id] ?? id,
+}));
+
+const GEMINI_MODEL_OPTIONS = [
+  { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+  { id: 'gemini-3-flash', label: 'Gemini 3 Flash' },
+  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+];
+
+const CODEX_MODEL_OPTIONS = [
+  { id: DEFAULT_CODEX_MODEL, label: 'GPT-5.5' },
+  { id: 'gpt-5.4', label: 'GPT-5.4' },
+  { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+  { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
+  { id: 'gpt-5.2', label: 'GPT-5.2' },
+];
+
+const CUSTOM_ACP_MODEL_OPTIONS = [
+  { id: 'provider-default', label: 'Provider default' },
+];
+
+const CLAUDE_RUNTIME_OPTIONS = [
+  { id: 'fast', label: 'Low / fast' },
+  { id: 'normal', label: 'Medium / normal' },
+  { id: 'deep', label: 'High / deep' },
+  { id: 'max', label: 'Max' },
+];
+
+const CLAUDE_THINKING_OPTIONS = [
+  { id: 'auto', label: 'Auto' },
+  { id: 'off', label: 'Off' },
+  { id: 'on', label: 'On' },
+];
+
+const CODEX_THINKING_FALLBACK_OPTIONS = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra high' },
+];
+
+function fallbackRuntimeOptions(provider: ProviderConfig): AcpProviderRuntimeOptions {
+  if (provider.type === 'codex') {
+    return {
+      provider: provider.type,
+      modeOptions: [],
+      thinkingOptions: CODEX_THINKING_FALLBACK_OPTIONS,
+      rawConfigOptions: [],
+      source: 'fallback',
+    };
+  }
+  return {
+    provider: provider.type,
+    modeOptions: [],
+    thinkingOptions: [
+      { id: 'auto', label: 'Auto' },
+      { id: 'off', label: 'Off' },
+      { id: 'on', label: 'On' },
+    ],
+    rawConfigOptions: [],
+    source: 'fallback',
+  };
+}
+
+function parseProviderArgsQuery(value: string | undefined): string[] | undefined {
+  if (!value?.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string');
+  } catch { /* fall through to shell-ish split */ }
+  return value.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) => part.replace(/^["']|["']$/g, '')) ?? [];
+}
+
+function stripAnsi(s: string): string {
+  return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function getOpenCodeModels(): Array<{ id: string; label: string }> {
+  const result = spawnSync('opencode', ['models'], { stdio: 'pipe', encoding: 'utf-8' });
+  if (result.status !== 0) return [];
+  return stripAnsi(result.stdout)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(line))
+    .map((id) => ({ id, label: id }));
+}
+
+function getOpenCodeDefaultModel(): string | undefined {
+  const configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.jsonc');
+  if (!fs.existsSync(configPath)) return undefined;
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    const raw = JSON.parse(content) as Record<string, unknown>;
+    return typeof raw.model === 'string' ? raw.model : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getProviderStatus() {
+  const provider = getMainProviderConfig();
+  const model = provider.type === 'claude'
+    ? (getMainModelOverride() ?? provider.model ?? agentDefaultModel ?? DEFAULT_CLAUDE_MODEL)
+    : provider.type === 'opencode'
+      ? (provider.model ?? getOpenCodeDefaultModel() ?? 'OpenCode default')
+      : provider.type === 'gemini'
+        ? (provider.model ?? 'Gemini CLI default')
+        : provider.type === 'codex'
+          ? (provider.model ?? DEFAULT_CODEX_MODEL)
+      : (provider.model ?? (provider.command ? `${provider.command}${provider.args?.length ? ` ${provider.args.join(' ')}` : ''}` : 'Provider default'));
+
+  return {
+    provider,
+    providerType: provider.type,
+    label: provider.type === 'claude'
+      ? 'Claude'
+      : provider.type === 'opencode'
+        ? 'OpenCode'
+        : provider.type === 'gemini'
+          ? 'Gemini'
+          : provider.type === 'codex'
+            ? 'Codex'
+            : 'ACP',
+    runtime: getProviderDisplay(provider),
+    model,
+    // Surfaced so the dashboard can hide the provider picker when the
+    // beta ACP feature is off. Single source of truth for the UI.
+    acpEnabled: ENABLE_ACP,
+  };
+}
+
+function validateProviderConfig(provider: ProviderConfig): string | null {
+  if (provider.type === 'acp' && !provider.command?.trim()) {
+    return 'Custom ACP provider requires a command';
+  }
+  return null;
+}
 
 async function classifyTaskAgent(prompt: string): Promise<string | null> {
   const agentIds = listAgentIds();
@@ -181,6 +368,26 @@ function safeTokenEqual(provided: string | null | undefined, expected: string | 
 export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const app = new Hono();
 
+  // Hosts always trusted for CORS reflection + CSRF, on top of the
+  // configured DASHBOARD_URL host. Loopback plus the Tailscale mesh
+  // (CGNAT IP + MagicDNS) — both tailnet-scoped, so a foreign web origin
+  // can never present them. This is how the dashboard is opened from phone/LAN.
+  const allowedOriginHost = (() => {
+    const raw = (DASHBOARD_URL || '').trim();
+    if (!raw) return '';
+    try { return new URL(raw).hostname; } catch { return ''; }
+  })();
+  const STATIC_TRUSTED_HOSTS = new Set([
+    'localhost',
+    '127.0.0.1',
+    '[::1]',
+    '100.91.39.122',              // Tailscale IP
+    'g59-wsl.taile1328b.ts.net',  // Tailscale MagicDNS
+  ]);
+  const isTrustedHost = (host: string): boolean =>
+    STATIC_TRUSTED_HOSTS.has(host) ||
+    (!!allowedOriginHost && host === allowedOriginHost);
+
   // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers).
   // Reflect Origin only when it matches a known-good host (audit fix A4E-3,
   // ported from fork). Wildcard `*` is functionally equivalent to "trust
@@ -192,12 +399,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (origin) {
       try {
         const host = new URL(origin).hostname;
-        const dashHost = DASHBOARD_URL ? new URL(DASHBOARD_URL).hostname : '';
         const allowed =
-          host === 'localhost' ||
-          host === '127.0.0.1' ||
-          host === '[::1]' ||
-          (!!dashHost && host === dashHost) ||
+          isTrustedHost(host) ||
           host.endsWith('.trycloudflare.com');
         if (allowed) {
           c.header('Access-Control-Allow-Origin', origin);
@@ -301,13 +504,47 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // / under DASHBOARD_LEGACY=true) call requireToken() inline.
   app.use('*', async (c, next) => {
     const path = new URL(c.req.url).pathname;
+    // Persist a valid ?token= as an HttpOnly cookie so the dashboard JUST
+    // WORKS after a reboot / browser restart without re-pasting the token.
+    // sessionStorage (the SPA's old store) is wiped on browser close; this
+    // cookie survives. Runs on EVERY path (incl. the SPA shell `/`) so the
+    // first `?token=` visit on any device sets it. We only ever write the
+    // cookie when the query token already matches DASHBOARD_TOKEN, so an
+    // unauthenticated visitor never receives it. HttpOnly = JS/XSS can't
+    // read it; no Secure flag because :3141 is plain HTTP over the Tailscale
+    // WG tunnel (Secure would drop the cookie). SameSite=Lax is fine for a
+    // same-origin SPA.
+    //
+    // SLIDING REFRESH: re-stamp the cookie on EVERY authenticated request
+    // (token from query OR an existing valid cookie). maxAge is pinned to
+    // 34560000s = 400 days, which is the hard ceiling — Chrome/Safari clamp
+    // ANY cookie to 400 days and Hono's setCookie THROWS above it (a larger
+    // value 500s every request). Re-stamping on each use means the 400-day
+    // clock resets on every visit, so for any device used within a 400-day
+    // window the login is effectively permanent (survives reboot, browser
+    // close, cache-clear). Only a deliberate cookies/site-data wipe or a
+    // 400-day cold gap removes it — and the SPA re-auth overlay covers both.
+    if (!DASHBOARD_AUTH_DISABLED) {
+      const provided = c.req.query('token') || getCookie(c, 'claudeclaw_token');
+      if (provided && safeTokenEqual(provided, DASHBOARD_TOKEN)) {
+        setCookie(c, 'claudeclaw_token', DASHBOARD_TOKEN, {
+          httpOnly: true,
+          sameSite: 'Lax',
+          path: '/',
+          maxAge: 34560000,
+        });
+      }
+    }
     // Only gate the API surface. Static and HTML pass through.
     if (!path.startsWith('/api/')) {
       await next();
       return;
     }
     if (!DASHBOARD_AUTH_DISABLED) {
-      const token = c.req.query('token');
+      // Accept the token from the query param OR the persisted cookie.
+      // Same-origin fetch()/EventSource auto-send the cookie, so once set
+      // the bare URL authenticates every /api/* call across reboots.
+      const token = c.req.query('token') || getCookie(c, 'claudeclaw_token');
       if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -320,7 +557,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // by legacy fallbacks that DO embed the token in the page source.
   function requireToken(c: any): Response | null {
     if (DASHBOARD_AUTH_DISABLED) return null;
-    const token = c.req.query('token');
+    const token = c.req.query('token') || getCookie(c, 'claudeclaw_token');
     if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401) as Response;
     }
@@ -377,11 +614,6 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // is empty under the production daemon — meaning every cross-origin
   // POST 403'd from the Cloudflare tunnel even though .env had the
   // right URL.
-  const allowedOriginHost = (() => {
-    const raw = (DASHBOARD_URL || '').trim();
-    if (!raw) return '';
-    try { return new URL(raw).hostname; } catch { return ''; }
-  })();
   app.use('*', async (c, next) => {
     const method = c.req.method;
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
@@ -395,17 +627,328 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       // Note: 0.0.0.0 was previously in this allowlist but is a bind
       // address, never a valid Origin header any browser would send.
       // Removed (audit fix A4E-3 follow-on, ported from fork-side review).
-      const allowed =
-        host === 'localhost' ||
-        host === '127.0.0.1' ||
-        host === '[::1]' ||
-        (!!allowedOriginHost && host === allowedOriginHost);
+      const allowed = isTrustedHost(host);
       if (!allowed) {
         logger.warn({ origin, method, path: new URL(c.req.url).pathname }, 'CSRF: rejected cross-origin request');
         return c.json({ error: 'cross-origin request rejected' }, 403);
       }
+    } else {
+      // No Origin header. Browsers ALWAYS send Origin on cross-origin
+      // state-changing requests, so a missing Origin is normally a
+      // same-origin post or a non-browser client (curl/CLI). Honor
+      // Sec-Fetch-Site so a browser request that stripped Origin can't
+      // slip past: if the browser says this came cross-site, reject it.
+      // curl/CLI send no Sec-Fetch-Site, so they still pass.
+      const sfs = (c.req.header('sec-fetch-site') || '').toLowerCase();
+      if (sfs === 'cross-site' || sfs === 'cross-origin') {
+        logger.warn({ method, sfs, path: new URL(c.req.url).pathname }, 'CSRF: rejected cross-site request (no Origin)');
+        return c.json({ error: 'cross-origin request rejected' }, 403);
+      }
     }
     await next();
+  });
+
+  // Phone portal — a static landing page listing all services by Tailscale IP.
+  // Bookmark http://100.91.39.122:3141/portal on the phone.
+  app.get('/portal', (c) => {
+    const ts = '100.91.39.122';
+    const services = [
+      { name: 'ClaudeClaw',     port: 3141, path: '/',          desc: 'AI agent dashboard + gallery' },
+      { name: 'ARIES',          port: 1337, path: '/',          desc: 'Trading PWA — broker + strategy engine' },
+      { name: 'MissionCtrl V2', port: 3000, path: '/',          desc: 'Main MC trading dashboard' },
+      { name: 'Vibe Trading',   port: 8899, path: '/',          desc: 'AI trading research & backtesting' },
+      { name: 'Kronos',         port: 7070, path: '/',          desc: 'ML model training & forecast WebUI' },
+      { name: 'n8n',            port: 5678, path: '/',          desc: 'Workflow automation' },
+      { name: 'Mobile Hub',     port: 8443, path: '/',          desc: 'Mobile launchpad (HTTPS)', https: true },
+      { name: 'Uptime Kuma',    port: 3001, path: '/',          desc: 'Service health monitor' },
+      { name: 'Gallery',        port: 3141, path: '/#/gallery',      desc: 'Nano Banana generations' },
+      { name: 'Token Dashboard', port: 3141, path: '/token-dashboard', desc: 'Per-prompt cost analytics & cache stats' },
+      { name: 'CLI Tools',       port: 3141, path: '/cli-tools',       desc: 'Printing Press Library + CLI-Anything inventory' },
+    ];
+    const rows = services.map(s =>
+      `<a href="${(s as any).https ? 'https' : 'http'}://${ts}:${s.port}${s.path}" class="card">
+        <div class="name">${s.name} <span class="port">:${s.port}</span></div>
+        <div class="desc">${s.desc}</div>
+      </a>`
+    ).join('');
+    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Mission Control — Portal</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#080d12;color:#c9d1da;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;padding:20px}
+  h1{font-size:18px;font-weight:700;color:#7fd1ff;margin-bottom:4px;letter-spacing:.5px}
+  .sub{font-size:12px;color:#3d5a6e;margin-bottom:20px;font-family:monospace}
+  .grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .card{display:block;background:#0e1824;border:1px solid #1a2b38;border-radius:12px;padding:14px;text-decoration:none;transition:border-color .15s,transform .1s;-webkit-tap-highlight-color:transparent}
+  .card:active{transform:scale(.97);border-color:#7fd1ff}
+  .name{font-size:15px;font-weight:700;color:#e2e8f0;margin-bottom:4px}
+  .port{font-size:11px;color:#3d8fad;font-family:monospace;font-weight:400}
+  .desc{font-size:11px;color:#4a6070;line-height:1.4}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#22c55e;margin-right:6px;vertical-align:middle}
+  footer{margin-top:24px;font-size:11px;color:#1e3040;text-align:center;font-family:monospace}
+</style></head><body>
+<h1>&#127968; Mission Control</h1>
+<div class="sub"><span class="dot"></span>g59-wsl · ${ts} · ${new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',timeZone:'America/New_York'})} ET</div>
+<div class="grid">${rows}</div>
+<footer>Tailscale mesh · add to home screen for quick access</footer>
+</body></html>`;
+    return c.html(html);
+  });
+
+  // CLI Tools — Printing Press Library catalog + CLI-Anything inventory.
+  // Reads ~/printing-press-library/registry.json and detects installed CLIs.
+  app.get('/api/cli-tools', (c) => {
+    const HOME = os.homedir();
+    const registryPath = path.join(HOME, 'printing-press-library', 'registry.json');
+    const skillsDir = path.join(HOME, '.claude', 'skills');
+    const cliAnythingDir = path.join(HOME, 'CLI-Anything');
+
+    // Load registry
+    let entries: any[] = [];
+    try {
+      const raw = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+      entries = raw.entries || [];
+    } catch { /* repo not cloned */ }
+
+    // Installed skill names (lowercased)
+    const installedSkills = new Set<string>();
+    try {
+      fs.readdirSync(skillsDir).forEach(s => installedSkills.add(s.toLowerCase()));
+    } catch { /* ignore */ }
+
+    // Mark each entry installed if skill matches pp-<name> or <name>
+    const catalog = entries.map((e: any) => {
+      const key = (e.name || '').toLowerCase();
+      const installed = installedSkills.has(`pp-${key}`) || installedSkills.has(key);
+      return { ...e, installed };
+    });
+
+    // Scan CLI-Anything for generated CLIs (dirs with cli.py or main.py or README.md but not meta dirs)
+    const META_DIRS = new Set(['cli-anything-plugin','cli-hub','cli-hub-meta-skill','codex-skill',
+      'hermes-skill','qoder-plugin','skill_generation','skills','docs','assets','templates',
+      'commands','tests','scripts','guides','seaclip','macrocli']);
+    let cliAnythingCLIs: { name: string; hasReadme: boolean; hasCli: boolean }[] = [];
+    try {
+      cliAnythingCLIs = fs.readdirSync(cliAnythingDir)
+        .filter(d => {
+          if (META_DIRS.has(d)) return false;
+          const full = path.join(cliAnythingDir, d);
+          try { return fs.statSync(full).isDirectory(); } catch { return false; }
+        })
+        .map(d => {
+          const full = path.join(cliAnythingDir, d);
+          const hasCli = fs.existsSync(path.join(full, 'cli.py')) ||
+                         fs.existsSync(path.join(full, 'main.py')) ||
+                         fs.existsSync(path.join(full, 'cli'));
+          const hasReadme = fs.existsSync(path.join(full, 'README.md'));
+          return { name: d, hasReadme, hasCli };
+        });
+    } catch { /* ignore */ }
+
+    const installedCount = catalog.filter((e: any) => e.installed).length;
+    return c.json({ catalog, installedCount, cliAnythingCLIs });
+  });
+
+  app.get('/cli-tools', (c) => {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLI Tools — ClaudeClaw</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0f0f0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; min-height: 100vh; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #141414; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; position: sticky; top: 0; z-index: 20; }
+  .back-btn { background: none; border: 1px solid #2a2a2a; border-radius: 6px; color: #9ca3af; font-size: 12px; padding: 4px 10px; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s; }
+  .back-btn:hover { border-color: #4f46e5; color: #a5b4fc; }
+  .topbar-title { font-size: 13px; font-weight: 600; color: #e0e0e0; flex: 1; }
+  .stat-chip { font-size: 11px; color: #6b7280; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 8px; }
+  .stat-chip b { color: #a5b4fc; }
+  main { flex: 1; padding: 16px; max-width: 1200px; width: 100%; margin: 0 auto; }
+  .controls { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  .search { flex: 1; min-width: 200px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; color: #e0e0e0; font-size: 13px; padding: 8px 12px; outline: none; }
+  .search:focus { border-color: #4f46e5; }
+  .cat-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill { padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid #2a2a2a; background: #1a1a1a; color: #6b7280; transition: all 0.15s; user-select: none; }
+  .pill:hover, .pill.active { background: #312e81; border-color: #4f46e5; color: #a5b4fc; }
+  .pill.installed-filter.active { background: #064e3b; border-color: #10b981; color: #6ee7b7; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 12px; transition: border-color 0.15s; }
+  .card:hover { border-color: #3a3a4a; }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .card-name { font-size: 13px; font-weight: 700; color: #e0e0e0; }
+  .card-cat { font-size: 10px; color: #6b7280; background: #111; border: 1px solid #222; border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+  .card-desc { font-size: 11px; color: #9ca3af; line-height: 1.5; margin-bottom: 8px; }
+  .card-footer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge-mcp { font-size: 10px; background: #1e3a5f; color: #60a5fa; border-radius: 4px; padding: 2px 6px; }
+  .badge-installed { font-size: 10px; background: #064e3b; color: #6ee7b7; border-radius: 4px; padding: 2px 6px; }
+  .badge-api { font-size: 10px; background: #2a1a3a; color: #a78bfa; border-radius: 4px; padding: 2px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .install-cmd { font-size: 10px; font-family: monospace; color: #6b7280; background: #111; border: 1px solid #1e1e1e; border-radius: 4px; padding: 2px 6px; cursor: pointer; transition: color 0.15s, border-color 0.15s; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .install-cmd:hover { color: #a5b4fc; border-color: #4f46e5; }
+  .install-cmd.copied { color: #6ee7b7; border-color: #10b981; }
+  .section-title { font-size: 12px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+  .divider { border: none; border-top: 1px solid #1e1e1e; margin: 24px 0; }
+  .cli-anything-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cli-chip { background: #1a1a2a; border: 1px solid #2a2a3a; border-radius: 6px; padding: 4px 10px; font-size: 11px; color: #a5b4fc; }
+  .cli-chip.has-cli { border-color: #3a2a5a; color: #c4b5fd; }
+  .empty { text-align: center; color: #6b7280; padding: 40px; grid-column: 1/-1; font-size: 13px; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/" class="back-btn">&#8592; ClaudeClaw</a>
+  <span class="topbar-title">CLI Tools</span>
+  <span class="stat-chip" id="stat-showing"></span>
+  <span class="stat-chip"><b id="stat-installed">-</b> installed</span>
+  <span class="stat-chip"><b id="stat-total">-</b> total</span>
+</div>
+<main>
+  <div class="controls">
+    <input class="search" id="search" placeholder="Search CLIs…" oninput="applyFilters()" autocomplete="off">
+    <div class="cat-pills" id="cat-pills"></div>
+    <span class="pill installed-filter" id="pill-installed" onclick="toggleInstalled()">Installed only</span>
+  </div>
+  <div class="grid" id="grid"></div>
+  <hr class="divider">
+  <div class="section-title">CLI-Anything — locally generated CLIs</div>
+  <div class="cli-anything-grid" id="cli-anything-grid"></div>
+</main>
+<script>
+let ALL = [];
+let activeCat = 'all';
+let installedOnly = false;
+
+function copyCmd(el, cmd) {
+  navigator.clipboard.writeText(cmd).then(() => {
+    el.textContent = 'copied!';
+    el.classList.add('copied');
+    setTimeout(() => { el.textContent = cmd; el.classList.remove('copied'); }, 1500);
+  });
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderCard(e) {
+  const cmd = \`npx skills add mvanhorn/printing-press-library/cli-skills/pp-\${e.name} -g -y\`;
+  const mcp = e.mcp && e.mcp.tool_count ? \`<span class="badge-mcp">MCP \${e.mcp.tool_count} tools</span>\` : '';
+  const inst = e.installed ? '<span class="badge-installed">&#10003; installed</span>' : '';
+  const api = e.api ? \`<span class="badge-api" title="\${esc(e.api)}">\${esc(e.api)}</span>\` : '';
+  const desc = (e.description || '').length > 120 ? e.description.slice(0,117)+'…' : (e.description || '');
+  return \`<div class="card" data-name="\${esc(e.name)}" data-cat="\${esc(e.category)}" data-installed="\${e.installed}">
+  <div class="card-head">
+    <span class="card-name">\${esc(e.name)}</span>
+    <span class="card-cat">\${esc(e.category)}</span>
+  </div>
+  <div class="card-desc">\${esc(desc)}</div>
+  <div class="card-footer">
+    \${inst}\${mcp}\${api}
+    <span class="install-cmd" title="Click to copy install command" onclick="copyCmd(this, \${JSON.stringify(cmd)})">\${esc(cmd)}</span>
+  </div>
+</div>\`;
+}
+
+function applyFilters() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const grid = document.getElementById('grid');
+  let visible = 0;
+  const cards = grid.querySelectorAll('.card');
+  cards.forEach(card => {
+    const name = card.dataset.name || '';
+    const cat = card.dataset.cat || '';
+    const installed = card.dataset.installed === 'true';
+    const matchQ = !q || name.includes(q) || cat.includes(q) || card.querySelector('.card-desc').textContent.toLowerCase().includes(q);
+    const matchCat = activeCat === 'all' || cat === activeCat;
+    const matchInst = !installedOnly || installed;
+    const show = matchQ && matchCat && matchInst;
+    card.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  document.getElementById('stat-showing').innerHTML = '<b>' + visible + '</b> shown';
+}
+
+function setCat(cat) {
+  activeCat = cat;
+  document.querySelectorAll('.pill[data-cat]').forEach(p => p.classList.toggle('active', p.dataset.cat === cat));
+  applyFilters();
+}
+
+function toggleInstalled() {
+  installedOnly = !installedOnly;
+  document.getElementById('pill-installed').classList.toggle('active', installedOnly);
+  applyFilters();
+}
+
+async function init() {
+  const res = await fetch('/api/cli-tools');
+  const data = await res.json();
+  ALL = data.catalog || [];
+
+  document.getElementById('stat-total').textContent = ALL.length;
+  document.getElementById('stat-installed').textContent = data.installedCount || 0;
+  document.getElementById('stat-showing').innerHTML = '<b>' + ALL.length + '</b> shown';
+
+  // Build category pills
+  const cats = ['all', ...new Set(ALL.map(e => e.category).filter(Boolean))];
+  const pillsEl = document.getElementById('cat-pills');
+  pillsEl.innerHTML = cats.map(c =>
+    \`<span class="pill \${c==='all'?'active':''}" data-cat="\${c}" onclick="setCat('\${c}')">\${c==='all'?'All':c}</span>\`
+  ).join('');
+
+  // Render all cards
+  const grid = document.getElementById('grid');
+  grid.innerHTML = ALL.map(renderCard).join('') || '<div class="empty">Registry not found — clone mvanhorn/printing-press-library to ~/printing-press-library</div>';
+
+  // CLI-Anything chips
+  const cliGrid = document.getElementById('cli-anything-grid');
+  const clis = data.cliAnythingCLIs || [];
+  cliGrid.innerHTML = clis.length
+    ? clis.map(c => \`<span class="cli-chip \${c.hasCli?'has-cli':''}" title="\${c.hasReadme?'has README':''}">&#128295; \${esc(c.name)}</span>\`).join('')
+    : '<span style="color:#4b5563;font-size:12px">No generated CLIs found in ~/CLI-Anything</span>';
+}
+
+init();
+</script>
+</body>
+</html>`;
+    return c.html(html);
+  });
+
+  // Token Dashboard — embeds nateherkai/token-dashboard (:8080) in a full-page iframe.
+  // No auth required: the embedded service is localhost-only.
+  app.get('/token-dashboard', (c) => {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Token Dashboard — ClaudeClaw</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0f0f0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #141414; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; }
+  .back-btn { background: none; border: 1px solid #2a2a2a; border-radius: 6px; color: #9ca3af; font-size: 12px; padding: 4px 10px; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s; }
+  .back-btn:hover { border-color: #4f46e5; color: #a5b4fc; }
+  .title { font-size: 13px; font-weight: 600; color: #e0e0e0; }
+  .badge { font-size: 11px; color: #6b7280; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 7px; }
+  iframe { flex: 1; border: none; width: 100%; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/" class="back-btn">&#8592; ClaudeClaw</a>
+  <span class="title">Token Dashboard</span>
+  <span class="badge">:8080</span>
+</div>
+<iframe src="http://localhost:8080" title="Token Dashboard"></iframe>
+</body>
+</html>`;
+    return c.html(html);
   });
 
   // Serve dashboard HTML.
@@ -458,7 +1001,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // Top-level static files copied from web/public/ at build time
   // (e.g. /brain.glb for the 3D Hive Mind view). These have stable
   // names so they sit at the root rather than under /assets/.
-  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm)}', (c) => {
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico)}', (c) => {
     const filename = c.req.param('filename');
     const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
     const root = path.join(PROJECT_ROOT, 'dist', 'web');
@@ -469,6 +1012,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const ctype = ext === '.glb' ? 'model/gltf-binary'
       : ext === '.gltf' ? 'model/gltf+json'
       : ext === '.wasm' ? 'application/wasm'
+      : ext === '.svg' ? 'image/svg+xml'
+      : ext === '.webmanifest' ? 'application/manifest+json'
+      : ext === '.png' ? 'image/png'
+      : ext === '.ico' ? 'image/x-icon'
       : 'application/octet-stream';
     return new Response(new Uint8Array(data), {
       headers: {
@@ -692,6 +1239,958 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       }
     });
     return c.json({ agents });
+  });
+
+  // ── ComfyUI — status + VRAM for the local image/video generation stack ──
+  app.get('/api/comfyui/status', async (c) => {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      // Check if ComfyUI is responding on port 8188 — native fetch; the old
+      // curl-via-execSync blocked the event loop for up to 2s per poll.
+      let running = false;
+      try {
+        const probe = await fetch('http://127.0.0.1:8188/system_stats', { signal: AbortSignal.timeout(2000) });
+        running = probe.ok;
+      } catch {}
+      // VRAM via nvidia-smi (async for the same reason)
+      let vram: { total: number; used: number; free: number } | null = null;
+      try {
+        const { stdout } = await execFileAsync(
+          '/usr/lib/wsl/lib/nvidia-smi',
+          ['--query-gpu=memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
+          { timeout: 5000 },
+        );
+        const [total, used, free] = stdout.trim().split(', ').map(Number);
+        vram = { total, used, free };
+      } catch {}
+      // Model inventory
+      const HOME = process.env.HOME || '/home/itsju';
+      const checkpointDir = `${HOME}/ComfyUI/models/checkpoints`;
+      const loraDir = `${HOME}/ComfyUI/models/loras`;
+      // Attach Civitai-sourced compatibility metadata (family/triggers/verified)
+      // plus the curated friendly layer (label/description/category) so the UI
+      // can show human names and lock incompatible LoRAs. Compatibility is
+      // computed HERE (single source of truth) — the client only does lookups
+      // on compatibleCheckpoints/unknownCheckpoints, it has no rule logic.
+      const manifest = readManifest();
+      const curated = readCurated();
+      const checkpoints = fs.existsSync(checkpointDir) ? fs.readdirSync(checkpointDir).filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf')).map(f => {
+        const md = enrichedMetaFor(f, manifest, curated);
+        return { name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw, label: md.label, description: md.description, category: md.category };
+      }) : [];
+      const loras = fs.existsSync(loraDir) ? fs.readdirSync(loraDir).filter(f => f.endsWith('.safetensors')).map(f => {
+        const md = enrichedMetaFor(f, manifest, curated);
+        const loraFam = md.requiresCheckpointFamily || md.family;
+        const compatibleCheckpoints = checkpoints.filter(ck => loraCompat(loraFam, ck.family) === 'ok').map(ck => ck.name);
+        const unknownCheckpoints = checkpoints.filter(ck => loraCompat(loraFam, ck.family) === 'unknown').map(ck => ck.name);
+        return { name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw, label: md.label, description: md.description, category: md.category, recommendedStrength: md.recommendedStrength, compatibleCheckpoints, unknownCheckpoints };
+      }) : [];
+      return c.json({ running, vram, checkpoints, loras, url: running ? 'http://localhost:8188' : null });
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── ComfyUI remote control — start/stop from Tailscale or ClaudeClaw UI ──
+  app.post('/api/comfy/start', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      let running = false;
+      try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
+      if (running) return c.json({ ok: false, error: 'already running' });
+      const { spawn } = await import('child_process');
+      const HOME = process.env.HOME || '/home/itsju';
+      // Spawn via `bash` so a missing execute bit on comfyui-start can't EACCES.
+      const child = spawn('bash', [`${HOME}/bin/comfyui-start`], {
+        detached: true, stdio: 'ignore', env: { ...process.env, HOME },
+      });
+      child.unref();
+      return c.json({ ok: true, pid: child.pid, message: 'ComfyUI launching — poll /api/comfyui/status for ready (30–60s)' });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/comfy/stop', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      let stopped = false;
+      try {
+        const pid = execSync('cat /tmp/comfyui.pid 2>/dev/null || true', { stdio: 'pipe' }).toString().trim();
+        if (pid) { execSync(`kill ${pid}`, { stdio: 'pipe' }); stopped = true; }
+      } catch {}
+      // ALWAYS sweep the real python child — the pidfile can be stale or (pre-fix)
+      // hold the wrong pid, which would leave ComfyUI orphaned holding VRAM on the
+      // 8GB GPU. Then clear the shared lock so the next gen isn't falsely blocked.
+      // Pattern covers both the legacy ~/ComfyUI path and the 2026-06-07
+      // restructure home /AIWorkWSL/tools/comfyui (case differs between them).
+      try { execSync("pkill -f '[Cc]omfy[Uu][Ii]/venv/bin/python.*main.py' 2>/dev/null || true", { stdio: 'pipe' }); stopped = true; } catch {}
+      try { execSync('rm -f /tmp/heavy-gpu-job.lock 2>/dev/null || true', { stdio: 'pipe' }); } catch {}
+      return c.json({ ok: stopped, message: stopped ? 'ComfyUI stopped' : 'ComfyUI was not running' });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── Live ComfyUI step progress (SSE) ─────────────────────────────────────────
+  // Relays ComfyUI's native /ws `progress` (step k of N) so the Create page can
+  // show a REAL progress bar instead of a guessed estimate. Only ONE GPU gen runs
+  // at a time (shared lock), so whatever ComfyUI emits is the user's current gen.
+  app.get('/api/comfy/progress', (c) => {
+    return streamSSE(c, async (stream) => {
+      const wsModule: any = await import('ws').catch(() => null);
+      const WS = wsModule ? (wsModule.default?.WebSocket ?? wsModule.WebSocket) : null;
+      let writeChain: Promise<void> = Promise.resolve();
+      const send = (obj: unknown) => {
+        writeChain = writeChain.then(async () => {
+          try { await stream.writeSSE({ event: 'message', data: JSON.stringify(obj) }); } catch {}
+        });
+      };
+      if (!WS) { send({ type: 'error', error: 'ws unavailable' }); return; }
+
+      let ws: any = null;
+      try {
+        ws = new WS('ws://127.0.0.1:8188/ws');
+        ws.on('message', (raw: Buffer, isBinary: boolean) => {
+          if (isBinary) return; // preview-image frames — ignore
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === 'progress' && msg.data) {
+              send({ type: 'progress', value: msg.data.value, max: msg.data.max, node: msg.data.node ?? null });
+            } else if (msg.type === 'executing') {
+              send({ type: 'executing', node: msg.data?.node ?? null });
+            } else if (msg.type === 'executed') {
+              send({ type: 'executed', node: msg.data?.node ?? null });
+            }
+          } catch { /* non-JSON frame */ }
+        });
+        ws.on('error', () => send({ type: 'error', error: 'comfy ws error' }));
+      } catch { send({ type: 'error', error: 'comfy ws connect failed' }); }
+
+      const ping = setInterval(async () => {
+        try { await stream.writeSSE({ event: 'ping', data: '' }); } catch { clearInterval(ping); }
+      }, 30_000);
+
+      try {
+        await new Promise<void>((_, reject) => { stream.onAbort(() => reject(new Error('aborted'))); });
+      } catch { /* client disconnected */ }
+      finally { clearInterval(ping); try { ws?.close(); } catch {} }
+    });
+  });
+
+  app.post('/api/comfy/queue', async (c) => {
+    try {
+      // Safety gate — the raw passthrough is a bypass door for the high-level
+      // /api/comfy/generate gate, so it must enforce the same checks.
+      const gate = await preflightGate();
+      if (!gate.ok) { notify(`🛑 ComfyUI queue blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+      if (await comfyQueueDepth() >= 1) return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
+      const body = await c.req.json();
+      const res = await fetch('http://127.0.0.1:8188/prompt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (!res.ok) return c.json({ ok: false, error: `ComfyUI returned ${res.status}` }, 502);
+      return c.json({ ok: true, ...(await res.json() as object) });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.get('/api/comfy/queue/:id', async (c) => {
+    try {
+      const res = await fetch(`http://127.0.0.1:8188/history/${c.req.param('id')}`);
+      if (!res.ok) return c.json({ ok: false, error: `ComfyUI returned ${res.status}` }, 502);
+      return c.json({ ok: true, ...(await res.json() as object) });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // Server-side compatibility gate using the tri-state loraCompat() from
+  // modelmeta.ts (the single source of truth — the client only consumes
+  // precomputed arrays from /api/comfyui/status). 'mismatch' always rejects;
+  // 'unknown' rejects too UNLESS the caller passed allowUnknown (set by the
+  // Advanced-mode confirm dialog) — unknown-family combos were the source of
+  // deformed output when silently allowed. Returns the first offender.
+  function validateLoraFamilies(
+    checkpoint: string,
+    loras: Array<{ name: string }>,
+    manifest: Record<string, ModelMeta>,
+    allowUnknown = false,
+  ): { lora: string; loraFam: string; ckptFam: string; compat: 'mismatch' | 'unknown' } | null {
+    const ckptFam = metaFor(checkpoint, manifest).family;
+    for (const l of loras) {
+      const md = metaFor(l.name, manifest);
+      const compat = loraCompat(md.requiresCheckpointFamily || md.family, ckptFam);
+      if (compat === 'mismatch') return { lora: l.name, loraFam: md.family, ckptFam, compat };
+      if (compat === 'unknown' && !allowUnknown) return { lora: l.name, loraFam: md.family, ckptFam, compat };
+    }
+    return null;
+  }
+
+  // ── ComfyUI high-level generate — prompt → workflow → queue → job id ──
+  // This is the endpoint the Create page calls. Handles ComfyUI startup,
+  // workflow construction, and queueing, then returns a prompt_id the client
+  // polls via GET /api/comfy/generate/:prompt_id.
+  app.post('/api/comfy/generate', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    try {
+      const body = await c.req.json() as {
+        prompt?: string; negative_prompt?: string; steps?: number; cfg?: number;
+        width?: number; height?: number; checkpoint?: string; seed?: number;
+        loras?: Array<{ name: string; strength?: number }>;
+        allowUnknownCompat?: boolean;
+        fast?: boolean;   // DMD2 4-step distillation (SDXL-family checkpoints only)
+      };
+      const prompt = (body.prompt || '').trim();
+      if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
+
+      // ── 0. Safety gate — refuse if unsafe, no matter the trigger source ──
+      // (phone, dashboard, or raw API). Closes the warm-ComfyUI gap: cold start
+      // runs preflight via comfyui-start, but a warm instance had no gate.
+      const gate = await preflightGate();
+      if (!gate.ok) { notify(`🛑 Image gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+
+      // ── 0b. Resolve checkpoint + LoRAs and validate family compatibility BEFORE
+      // the (slow) ComfyUI startup, so a known-mismatched combo fails instantly
+      // regardless of whether ComfyUI is up.
+      const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
+      const ckptFiles = fs.existsSync(ckptDir)
+        ? fs.readdirSync(ckptDir).filter((f: string) => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf'))
+        : [];
+      const checkpoint = body.checkpoint || ckptFiles[0] || 'cyberrealisticPony_v170.safetensors';
+      const loraList = body.loras ?? [];
+      const manifest = readManifest();
+      const bad = validateLoraFamilies(checkpoint, loraList, manifest, !!body.allowUnknownCompat);
+      if (bad) {
+        const loraLabel = bad.lora.replace(/\.(safetensors|ckpt|gguf)$/i, '');
+        const msg = bad.compat === 'mismatch'
+          ? `Incompatible LoRA "${loraLabel}" (${bad.loraFam}) for a ${bad.ckptFam} checkpoint. Pick a ${bad.ckptFam} LoRA or a matching checkpoint.`
+          : `LoRA "${loraLabel}" has an unknown model family — it can produce broken images with this checkpoint. Use Advanced mode and confirm to run it anyway.`;
+        return c.json({ ok: false, error: msg }, 400);
+      }
+
+      const { execSync, spawn } = await import('child_process');
+
+      // ── 1. Ensure ComfyUI is up — but DON'T block the request for the full
+      // cold boot. A cold WSL ComfyUI takes ~30–90s to load; holding the HTTP
+      // request open that long is exactly what produced "failed to fetch". So
+      // we kick off startup (once per boot window), wait only a few seconds in
+      // case it's nearly ready, then hand back `{ starting: true }` and let the
+      // client re-kick. Each request stays short, so no intermediary can drop it.
+      let running = false;
+      try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
+      if (!running) {
+        if (Date.now() - comfyStartedAt > 180_000) {
+          comfyStartedAt = Date.now();
+          // Spawn via `bash` so a missing execute bit can't EACCES the cold start.
+          const child = spawn('bash', [`${HOME}/bin/comfyui-start`], {
+            detached: true, stdio: 'ignore', env: { ...process.env, HOME },
+          });
+          child.unref();
+          logger.info('ComfyUI cold start kicked off (async)');
+        }
+        const startMs = Date.now();
+        while (Date.now() - startMs < 8000) {
+          await new Promise(r => setTimeout(r, 2000));
+          try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; break; } catch {}
+        }
+        if (!running) return c.json({ ok: true, starting: true });
+      }
+
+      // ── 1b. Queue-depth cap — one heavy job at a time on the 8GB GPU ────
+      if (await comfyQueueDepth() >= 1) {
+        return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
+      }
+
+      // ── 2. Build workflow from template ─────────────────────────────────
+      const seed = body.seed ?? Math.floor(Math.random() * 2 ** 32);
+
+      // Build workflow — chain LoRA nodes between checkpoint and sampler
+      const workflow: Record<string, any> = {
+        "4": { inputs: { ckpt_name: checkpoint }, class_type: "CheckpointLoaderSimple" },
+      };
+      // ── Fast mode (DMD2 distillation): 4-8 steps at cfg 1.0 instead of
+      // 20 at cfg 7 — ~4x faster sampling, near-identical quality. Only valid
+      // on SDXL-architecture checkpoints (sdxl/pony/illustrious); the LoRA
+      // breaks sd15/flux, so fall back to the normal path for those. Requires
+      // models/loras/dmd2_sdxl_4step_lora_fp16.safetensors (tianweiy/DMD2).
+      const DMD2_LORA = 'dmd2_sdxl_4step_lora_fp16.safetensors';
+      const SDXL_ARCH = new Set(['sdxl', 'pony', 'illustrious']);
+      const ckptFamily = manifest[checkpoint]?.family || familyFromFilename(checkpoint);
+      const loraDir = `${HOME}/ComfyUI/models/loras`;
+      const fastMode = !!body.fast && SDXL_ARCH.has(ckptFamily) && fs.existsSync(`${loraDir}/${DMD2_LORA}`);
+
+      // LoRA chain: node ids 100, 101, 102... each feeds into the next
+      let modelRef: [string, number] = ["4", 0];
+      let clipRef:  [string, number] = ["4", 1];
+      for (let i = 0; i < loraList.length; i++) {
+        const nodeId = String(100 + i);
+        const strength = loraList[i].strength ?? 0.8;
+        workflow[nodeId] = {
+          inputs: { lora_name: loraList[i].name, strength_model: strength, strength_clip: strength, model: modelRef, clip: clipRef },
+          class_type: "LoraLoader",
+        };
+        modelRef = [nodeId, 0];
+        clipRef  = [nodeId, 1];
+      }
+      if (fastMode) {
+        // DMD2 goes LAST in the chain at full strength so style LoRAs upstream
+        // keep their effect while DMD2 controls the denoising trajectory.
+        const nodeId = String(100 + loraList.length);
+        workflow[nodeId] = {
+          inputs: { lora_name: DMD2_LORA, strength_model: 1.0, strength_clip: 1.0, model: modelRef, clip: clipRef },
+          class_type: "LoraLoader",
+        };
+        modelRef = [nodeId, 0];
+        clipRef  = [nodeId, 1];
+      }
+      workflow["6"] = { inputs: { text: prompt, clip: clipRef }, class_type: "CLIPTextEncode" };
+      workflow["7"] = { inputs: { text: body.negative_prompt || "deformed, ugly, blurry, low quality, bad anatomy, watermark, text", clip: clipRef }, class_type: "CLIPTextEncode" };
+      workflow["5"] = { inputs: { width: body.width ?? 512, height: body.height ?? 768, batch_size: 1 }, class_type: "EmptyLatentImage" };
+      workflow["3"] = fastMode
+        // DMD2 contract: cfg MUST be 1.0 (no CFG), lcm sampler, 4-8 steps.
+        ? { inputs: { seed, steps: Math.min(Math.max(body.steps ?? 4, 4), 8), cfg: 1.0, sampler_name: "lcm", scheduler: "sgm_uniform", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" }
+        : { inputs: { seed, steps: body.steps ?? 20, cfg: body.cfg ?? 7.0, sampler_name: "euler", scheduler: "normal", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" };
+      workflow["8"] = { inputs: { samples: ["3", 0], vae: ["4", 2] }, class_type: "VAEDecode" };
+      workflow["9"] = { inputs: { filename_prefix: "cc_gen", images: ["8", 0] }, class_type: "SaveImage" };
+
+      // ── 3. Queue ────────────────────────────────────────────────────────
+      const queueRes = await fetch('http://127.0.0.1:8188/prompt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow }),
+      });
+      if (!queueRes.ok) return c.json({ ok: false, error: `ComfyUI queue rejected: ${queueRes.status}` }, 502);
+      const { prompt_id } = await queueRes.json() as { prompt_id: string };
+
+      // ── 4. Register job + return immediately — client polls for the result ─
+      logger.info({ prompt_id, seed, checkpoint }, 'ComfyUI job queued (async)');
+      comfyJobs.set(prompt_id, { seed, checkpoint, done: false, queuedAt: Date.now() });
+      return c.json({ ok: true, prompt_id, seed });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── ComfyUI generate — poll one job by prompt_id ──────────────────────────
+  // Single (non-looping) history check. On a terminal state it moves the output
+  // into the gallery, surfaces real ComfyUI errors, and flushes VRAM exactly once.
+  app.get('/api/comfy/generate/:prompt_id', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const prompt_id = c.req.param('prompt_id');
+    const job = comfyJobs.get(prompt_id);
+    const seed = job?.seed;
+    if (job?.done) {
+      return job.error
+        ? c.json({ ok: false, done: true, error: job.error, seed })
+        : c.json({ ok: true, done: true, file: job.file, url: job.url, seed,
+                   notes: `checkpoint: ${(job.checkpoint||'').replace('.safetensors','')}` });
+    }
+    // Concurrency claim: if another poll for this id is already finalizing (moving
+    // the file / freeing VRAM), don't re-enter the terminal branch and double-free.
+    // The get→set below is synchronous (no await between), so it's atomic per tick.
+    if (job?.settling) return c.json({ ok: true, done: false });
+    if (job) job.settling = true;
+    const release = () => { const j = comfyJobs.get(prompt_id); if (j && !j.done) j.settling = false; };
+    const finish = (patch: { file?: string; url?: string; error?: string }) => {
+      const j = comfyJobs.get(prompt_id) || { seed: seed ?? 0, checkpoint: job?.checkpoint || '', done: false, queuedAt: Date.now() };
+      comfyJobs.set(prompt_id, { ...j, ...patch, done: true, settling: false });
+    };
+    try {
+      const histRaw = await fetch(`http://127.0.0.1:8188/history/${prompt_id}`).then(r => r.json());
+      const entry = (histRaw as Record<string, any>)[prompt_id];
+      if (!entry) { release(); return c.json({ ok: true, done: false }); }
+      const statusMsgs: Array<[string, any]> = entry.status?.status_messages ?? [];
+      const errMsg = statusMsgs.find(([t]) => t === 'execution_error');
+      if (errMsg) {
+        const d = errMsg[1] || {};
+        const detail = [d.node_type, d.exception_type, d.exception_message].filter(Boolean).join(': ') || 'ComfyUI execution error';
+        finish({ error: detail });
+        void comfyFree();
+        return c.json({ ok: false, done: true, error: detail, seed });
+      }
+      if (entry.status?.completed === true) {
+        const comfyOutputDir = `${HOME}/ComfyUI/output`;
+        const galleryDir = `${HOME}/gallery-watched/comfyui`;
+        let filename: string | null = null; let subfolder = '';
+        const outputs = entry.outputs ?? {};
+        for (const nodeId of Object.keys(outputs)) {
+          const images: Array<{ filename: string; subfolder: string; type: string }> = outputs[nodeId]?.images ?? [];
+          if (images.length > 0) { filename = images[0].filename; subfolder = images[0].subfolder ?? ''; break; }
+        }
+        if (!filename) { finish({ error: 'ComfyUI completed but no output image found' }); void comfyFree(); return c.json({ ok: false, done: true, error: 'ComfyUI completed but no output image found', seed }); }
+        const srcPath = subfolder ? `${comfyOutputDir}/${subfolder}/${filename}` : `${comfyOutputDir}/${filename}`;
+        if (!fs.existsSync(galleryDir)) fs.mkdirSync(galleryDir, { recursive: true });
+        const dstPath = `${galleryDir}/${filename}`;
+        // Move output → gallery. A move failure is TERMINAL (don't leave the client
+        // polling forever): mark the job failed with the real error and free VRAM.
+        try {
+          try { fs.renameSync(srcPath, dstPath); }
+          catch { fs.copyFileSync(srcPath, dstPath); try { fs.unlinkSync(srcPath); } catch {} }
+        } catch (moveErr) {
+          logger.warn({ srcPath, dstPath, err: String(moveErr) }, 'ComfyUI output move to gallery failed');
+          finish({ error: `couldn't save the image to the gallery: ${String(moveErr)}` });
+          void comfyFree();
+          return c.json({ ok: false, done: true, error: `couldn't save the image to the gallery: ${String(moveErr)}`, seed });
+        }
+        const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(filename)}`;
+        finish({ file: filename, url });
+        void comfyFree();
+        notify(`✅ Image ready: ${filename} (${(job?.checkpoint||'').replace('.safetensors','')})`);
+        return c.json({ ok: true, done: true, file: filename, url, seed, notes: `checkpoint: ${(job?.checkpoint||'').replace('.safetensors','')}` });
+      }
+      release();
+      return c.json({ ok: true, done: false });
+    } catch (e) {
+      release();
+      return c.json({ ok: true, done: false, transient: String(e) });
+    }
+  });
+
+  // ── System disk — always report WSL virtual AND C: physical ──
+  // C: is the true ceiling: the WSL .vhdx file expands into C: space.
+  // "df /" returns 846 GB "free" (expandable virtual) but C: has ~133 GB.
+  app.get('/api/system/disk', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      const parseDF = (raw: string) => {
+        const p = raw.trim().split(/\s+/);
+        return { fs: p[0], size: p[1], used: p[2], avail: p[3], pct: p[4] };
+      };
+      let wsl: ReturnType<typeof parseDF> | null = null;
+      let cdrive: ReturnType<typeof parseDF> | null = null;
+      try { wsl = parseDF(execSync('df -h / | tail -1', { stdio: 'pipe' }).toString()); } catch {}
+      try { cdrive = parseDF(execSync('df -h /mnt/c | tail -1', { stdio: 'pipe' }).toString()); } catch {}
+      const cPct = cdrive ? parseInt(cdrive.pct) : 0;
+      const warning = cPct >= 85 ? `C: drive ${cdrive!.pct} full — ${cdrive!.avail} free` : null;
+      return c.json({ wsl, cdrive, warning, critical: cPct >= 95, note: 'C: is the physical limit; WSL .vhdx expands into it.' });
+    } catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // ── System metrics for the phone — surfaces ~/metrics/metrics.db (cpu/ram/
+  //    gpu/disk/protection health, collected every 60s by metrics/collector.py)
+  //    PLUS a LIVE system-guardian preflight verdict, so the Create page can show
+  //    health and hard-disable Generate when unsafe. Read-only; never recollects.
+  app.get('/api/system/metrics', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const dbPath = `${HOME}/metrics/metrics.db`;
+    let metrics: Record<string, unknown> = {};
+    let staleness = -1;
+    try {
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        const hw = db.prepare('SELECT * FROM hw_metrics ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        const disk = db.prepare('SELECT * FROM disk_metrics ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        const prot = db.prepare('SELECT * FROM protection_health ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        metrics = { hw: hw ?? null, disk: disk ?? null, protection: prot ?? null };
+        const latestTs = Math.max(hw?.ts ?? 0, disk?.ts ?? 0, prot?.ts ?? 0);
+        if (latestTs > 0) staleness = Math.floor(Date.now() / 1000) - latestTs;
+      } finally { db.close(); }
+    } catch (e) { metrics = { error: String(e) }; }
+    // Live preflight = the exact gate the server enforces, so the UI verdict can
+    // never disagree with what the server will actually allow.
+    const preflight = await preflightGate();
+    return c.json({ metrics, preflight, staleness, stale: staleness < 0 || staleness > 180 });
+  });
+
+  // ── Model manager — download a Civitai model from the phone, disk-gated ──
+  //   Every download goes through model-cap-check (hard folder ceiling) and
+  //   safe-model-download (refuses if C: <= 30G), so models can never silently
+  //   refill C:. Progress is polled via GET /api/models/download/:id.
+  const comfyJobs = new Map<string, { seed: number; checkpoint: string; done: boolean;
+    settling?: boolean; file?: string; url?: string; error?: string; queuedAt: number }>();
+  // Sweep finished jobs (free RAM) and reclaim VRAM from abandoned ones (browser
+  // closed mid-gen → its poll never reached the terminal comfyFree). Runs every
+  // 10 min; unref'd so it never keeps the process alive on its own.
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, j] of comfyJobs) {
+      if (j.done && now - j.queuedAt > 30 * 60_000) comfyJobs.delete(id);
+      else if (!j.done && now - j.queuedAt > 20 * 60_000) { void comfyFree(); comfyJobs.delete(id); }
+    }
+  }, 10 * 60_000).unref?.();
+  // Last time we spawned comfyui-start, so a burst of "still starting" re-kicks
+  // from the client doesn't spawn a launcher storm during the cold-boot window.
+  let comfyStartedAt = 0;
+  const modelDownloads = new Map<string, { dest: string; name: string; status: 'downloading' | 'done' | 'failed'; pct: number; error?: string }>();
+  const MODEL_DEST_DIRS: Record<string, string> = { checkpoints: 'checkpoints', loras: 'loras', controlnet: 'controlnet', vae: 'vae' };
+
+  // Best-effort: after a Civitai download finishes, ask Civitai what it is and
+  // record family + trigger words in the manifest. Never throws / never blocks.
+  async function captureCivitaiMeta(url: string, token: string, name: string, dest: string) {
+    try {
+      const m = url.match(/models\/(\d+)/);
+      if (!m) return;
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      const r = await fetch(`https://civitai.com/api/v1/model-versions/${m[1]}`, { headers });
+      if (!r.ok) return;
+      const data = await r.json() as { baseModel?: string; trainedWords?: string[]; model?: { type?: string } };
+      if (!data?.baseModel) return;
+      // MERGE, don't replace — a re-download must never wipe user-set labels/
+      // categories or the cached sha256/thumb.
+      mergeMeta(name, {
+        family: normalizeFamily(data.baseModel),
+        baseModel: data.baseModel,
+        type: dest === 'loras' ? 'lora' : dest === 'checkpoints' ? 'checkpoint' : dest,
+        triggers: Array.isArray(data.trainedWords) ? data.trainedWords : [],
+        source: 'civitai',
+        verified: true,
+      });
+    } catch { /* metadata is a nicety; download already succeeded */ }
+  }
+
+  // ── Civitai thumbnails — look up each model's preview image by file hash ──
+  // Cards show a family-colored tile until this runs; it hashes each model file
+  // (sha256, cached so it never re-hashes the GBs) and asks Civitai for that
+  // version's images, storing the primary image URL + its nsfwLevel. NSFW images
+  // need a Civitai token (the same one used for downloads); without it Civitai
+  // returns only the SFW previews. One job at a time; progress polled via GET.
+  const thumbJobs = new Map<string, { total: number; processed: number; updated: number; current: string; done: boolean; error?: string }>();
+  async function fetchThumbForFile(absPath: string, name: string, type: 'checkpoint' | 'lora', token: string, force = false): Promise<boolean> {
+    const { execFileSync } = await import('child_process');
+    const manifest = readManifest();
+    const existing = manifest[name] || metaFor(name, manifest);
+    if (existing.thumb && !force) return false;             // already have one (force re-fetches, e.g. to pull NSFW previews with a token)
+    let sha = existing.sha256;
+    if (!sha) { try { sha = execFileSync('sha256sum', [absPath]).toString().split(' ')[0]; } catch { return false; } }
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    let data: any = null;
+    try {
+      const r = await fetch(`https://civitai.com/api/v1/model-versions/by-hash/${sha}`, { headers });
+      if (r.ok) data = await r.json();
+    } catch { /* offline / not found */ }
+    const imgs: any[] = (data?.images || []).filter((i: any) => (i?.type === 'image' || !i?.type) && i?.url);
+    // Cache the sha even on a miss so a re-run never re-hashes this file.
+    if (!imgs.length) { upsertMeta(name, { ...existing, sha256: sha }); return false; }
+    const primary = imgs[0];
+    // Normalize the Civitai transform segment to a light thumbnail width.
+    const thumb = String(primary.url).replace(/(\/[0-9a-f-]{36}\/)(?:[^/]*=[^/]*)\//i, '$1width=350,quality=80/');
+    upsertMeta(name, {
+      ...existing, sha256: sha, thumb, thumbNsfw: primary.nsfwLevel ?? 1,
+      // Opportunistically backfill family/triggers from the same response if we
+      // only had a filename guess before (gives 'other' LoRAs a real family).
+      ...(existing.verified ? {} : {
+        family: normalizeFamily(data.baseModel), baseModel: data.baseModel,
+        triggers: Array.isArray(data.trainedWords) ? data.trainedWords : [],
+        type, source: 'civitai', verified: true,
+      }),
+    });
+    return true;
+  }
+  app.post('/api/comfy/thumbs/refresh', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const token = String((body as any)?.token ?? '').trim();
+    const force = !!(body as any)?.force;
+    if ([...thumbJobs.values()].some(j => !j.done)) return c.json({ ok: false, error: 'a thumbnail refresh is already running' }, 429);
+    const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
+    const loraDir = `${HOME}/ComfyUI/models/loras`;
+    const list = (dir: string, type: 'checkpoint' | 'lora') => (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
+      .filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf'))
+      .map(f => ({ name: f, abs: `${dir}/${f}`, type }));
+    const all = [...list(ckptDir, 'checkpoint'), ...list(loraDir, 'lora')];
+    const jobId = `thumbs-${Date.now()}`;
+    const job = { total: all.length, processed: 0, updated: 0, current: '', done: false };
+    thumbJobs.set(jobId, job);
+    void (async () => {
+      for (const f of all) {
+        job.current = f.name;
+        try { if (await fetchThumbForFile(f.abs, f.name, f.type, token, force)) job.updated++; } catch { /* skip */ }
+        job.processed++;
+      }
+      job.current = ''; job.done = true;
+      logger.info({ updated: job.updated, total: job.total }, 'Civitai thumbnail refresh complete');
+    })();
+    return c.json({ ok: true, jobId, total: all.length });
+  });
+  app.get('/api/comfy/thumbs/refresh/:id', (c) => {
+    const j = thumbJobs.get(c.req.param('id'));
+    return j ? c.json({ ok: true, ...j }) : c.json({ ok: false, error: 'unknown job' }, 404);
+  });
+
+  // ── Looks — curated checkpoint+LoRA presets for the Create page ──────────
+  // Builtins live in data/looks.json (repo), user-saved Looks in
+  // ~/.claudeclaw/looks.local.json. Validated against installed files at read
+  // time so a removed model shows as "needs <file>" instead of breaking.
+  app.get('/api/looks', (c) => {
+    try { return c.json({ ok: true, looks: listLooks() }); }
+    catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/looks', async (c) => {
+    try {
+      const body = await c.req.json();
+      const saved = saveUserLook(body);
+      return c.json({ ok: true, look: saved });
+    } catch (e) {
+      return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  app.delete('/api/looks/:id', (c) => {
+    try {
+      const removed = deleteUserLook(c.req.param('id'));
+      return removed ? c.json({ ok: true }) : c.json({ ok: false, error: 'unknown look (builtins cannot be deleted)' }, 404);
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── Friendly model metadata — user-set label/description/category ────────
+  // Merge-upsert into the manifest (survives Civitai re-downloads since
+  // captureCivitaiMeta also merges). Powers the post-download "name this
+  // model" form and any future per-card edit affordance.
+  app.post('/api/models/meta', async (c) => {
+    try {
+      const body = await c.req.json() as { name?: string; label?: string; description?: string; category?: string; recommendedStrength?: number };
+      const name = String(body?.name ?? '').trim();
+      if (!name) return c.json({ ok: false, error: 'name is required' }, 400);
+      const patch: Partial<ModelMeta> = {};
+      if (typeof body.label === 'string') patch.label = body.label.trim() || undefined;
+      if (typeof body.description === 'string') patch.description = body.description.trim() || undefined;
+      if (typeof body.category === 'string') patch.category = body.category.trim() || undefined;
+      if (typeof body.recommendedStrength === 'number' && isFinite(body.recommendedStrength)) patch.recommendedStrength = body.recommendedStrength;
+      if (!Object.keys(patch).length) return c.json({ ok: false, error: 'nothing to update' }, 400);
+      const merged = mergeMeta(name, patch);
+      return c.json({ ok: true, meta: merged });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/models/download', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    try {
+      const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const url = String(body?.url ?? '').trim();
+      const token = String(body?.token ?? '').trim();
+      const dest = String(body?.dest ?? '').trim();
+      let name = String(body?.filename ?? '').trim();
+      let host = '';
+      try { host = new URL(url).host; } catch { return c.json({ ok: false, error: 'invalid url' }, 400); }
+      if (!/(^|\.)civitai\.com$/.test(host)) return c.json({ ok: false, error: 'only civitai.com downloads are allowed' }, 400);
+      if (!MODEL_DEST_DIRS[dest]) return c.json({ ok: false, error: `dest must be one of: ${Object.keys(MODEL_DEST_DIRS).join(', ')}` }, 400);
+      if (!name) { const m = url.match(/models\/(\d+)/); name = `civitai-${m ? m[1] : 'model'}.safetensors`; }
+      name = name.replace(/[^\w.\-]/g, '_');  // sanitize — block path traversal
+      if (!/\.(safetensors|ckpt|pt|gguf)$/i.test(name)) name += '.safetensors';
+
+      const { execSync, spawn } = await import('child_process');
+      // Hard model-folder cap — refuse before we even start.
+      try { execSync(`${HOME}/05_AUTOMATION/bin/model-cap-check`, { stdio: 'pipe' }); }
+      catch (e) {
+        const out = (e as { stdout?: Buffer }).stdout?.toString().trim() || 'model folder cap exceeded';
+        notify(`🛑 Model download refused (cap): ${out}`);
+        return c.json({ ok: false, blocked: true, error: out }, 409);
+      }
+
+      const destDir = `${HOME}/ComfyUI/models/${MODEL_DEST_DIRS[dest]}`;
+      const jobId = crypto.randomUUID();
+      modelDownloads.set(jobId, { dest, name, status: 'downloading', pct: 0 });
+      const args = ['aria2c', '-x8', '-s8', '--summary-interval=1', '--auto-file-renaming=false', '--allow-overwrite=false', '-d', destDir, '-o', name];
+      if (token) args.push(`--header=Authorization: Bearer ${token}`);
+      args.push(url);
+      const child = spawn(`${HOME}/05_AUTOMATION/bin/safe-model-download`, args, { env: { ...process.env, HOME } });
+      const onData = (buf: Buffer) => { const m = buf.toString().match(/\((\d+)%\)/); if (m) { const j = modelDownloads.get(jobId); if (j) j.pct = Number(m[1]); } };
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+      child.on('close', (code) => {
+        const j = modelDownloads.get(jobId); if (!j) return;
+        if (code === 0) {
+          j.status = 'done'; j.pct = 100; invalidateGalleryCache();
+          // Capture compatibility metadata straight from Civitai so the new model
+          // is correctly classified (family + triggers) with no hardcoding.
+          void captureCivitaiMeta(url, token, name, dest);
+        }
+        else { j.status = 'failed'; j.error = `download exited ${code} — safe-model-download may have refused (C: too low) or auth failed`; }
+        notify(j.status === 'done' ? `✅ Model downloaded: ${name} → ${dest}` : `⚠️ Model download failed: ${name} — ${j.error}`);
+      });
+      return c.json({ ok: true, jobId, name, dest });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.get('/api/models/download/:id', (c) => {
+    const j = modelDownloads.get(c.req.param('id'));
+    if (!j) return c.json({ ok: false, error: 'unknown job' }, 404);
+    return c.json({ ok: true, ...j });
+  });
+
+  // ── Wallets — aggregated brokerage/exchange balances (moved here from
+  //    MissionCtrl so sensitive balances stay on the local-only dashboard) ──
+  app.get('/api/wallets', async (c) => {
+    try {
+      const wallets = await getWallets();
+      return c.json(wallets);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Equity Management — per-agent Alpaca analytics (boba + jazzy):
+  //    equity curves, risk metrics, and trading-discipline guardrail flags.
+  //    Read-only; same local-only stance as /api/wallets. See src/equity.ts.
+  app.get('/api/equity', async (c) => {
+    try {
+      return c.json(await getEquity());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Lewis Trading — integrations harvested from Lewis Jackson's "YouTube
+  //    Video Prompts" course (zero-one Skool). Kept separate from Skool Builds.
+  //    Read-only: manifest at ~/.claudeclaw/lewis-trading.json; only
+  //    manifest-declared files are readable (see src/lewistrading.ts).
+  app.get('/api/lewis-trading', (c) => {
+    try { return c.json(getLewisIntegrations()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+  app.get('/api/lewis-trading/file', (c) => {
+    const id = c.req.query('id') || '';
+    const name = c.req.query('name') || '';
+    const out = readLewisFile(id, name);
+    if (!out) return c.json({ error: 'not found' }, 404);
+    return c.json(out);
+  });
+
+  // ── Skool Builds — artifacts generated from running Skool classroom prompts.
+  //    Read-only; manifest at ~/.claudeclaw/skool-builds.json; only manifest-
+  //    declared files are readable (see src/skoolbuilds.ts).
+  app.get('/api/skool-builds', (c) => {
+    try { return c.json(getSkoolBuilds()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+  app.get('/api/skool-builds/file', (c) => {
+    const id = c.req.query('id') || '';
+    const name = c.req.query('name') || '';
+    const out = readSkoolArtifact(id, name);
+    if (!out) return c.json({ error: 'not found' }, 404);
+    return c.json(out);
+  });
+
+  // ── Trade Desk — unified trading intelligence panel (signals, flow rank,
+  //    winners, momentum, macro, brief, AIME). All read-only. Data comes from
+  //    the live pipeline DBs and firebase-signals on the laptop.
+
+  app.get('/api/trade-desk/overview', (c) => {
+    try { return c.json(getTradeDeskOverview()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/signals', (c) => {
+    const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 500);
+    try { return c.json(getSignals(limit)); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/flow-rank', (c) => {
+    try { return c.json(getFlowRank()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/flow-winners', (c) => {
+    const days = parseInt(c.req.query('days') || '7', 10);
+    const symbol = c.req.query('symbol') || undefined;
+    try { return c.json({ winners: getFlowWinners(days, symbol) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/momentum', (c) => {
+    try { return c.json({ momentum: getMomentum() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/macro', (c) => {
+    try { return c.json({ macro: getMacro() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/ledger', (c) => {
+    const hours = parseInt(c.req.query('hours') || '48', 10);
+    try { return c.json({ ledger: getTradeLedger(hours) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/brief', (c) => {
+    try { return c.json(getBrief()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.post('/api/trade-desk/aime', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const prompt = String(body.prompt || '').trim();
+      if (!prompt) return c.json({ error: 'prompt required' }, 400);
+      const cookie = AIME_SESSION_COOKIE;
+      if (!cookie) return c.json({ response: '', status: 'no_cookie', message: 'Set AIME_SESSION_COOKIE in .env to activate' });
+      const result = await queryAIME(prompt, cookie);
+      return c.json(result);
+    } catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // ── Gallery — generated images/videos, surfaced from the same local source
+  //    folders as the :8090 BobaCatTrades + Nano gallery (see src/gallery.ts).
+  //    Served here so it's same-origin (no CORS) and works even if :8090 is down.
+  app.get('/api/gallery', (c) => {
+    try {
+      return c.json(getGallery());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+  app.get('/api/gallery/file', (c) => {
+    const full = resolveGalleryFile(
+      c.req.query('root') || '',
+      c.req.query('sub') || '',
+      c.req.query('name') || '',
+    );
+    if (!full) return c.text('', 404);
+    let data: Buffer;
+    try {
+      data = fs.readFileSync(full);
+    } catch {
+      return c.text('', 404); // file vanished between stat and read (live folders)
+    }
+    return new Response(new Uint8Array(data), {
+      headers: { 'Content-Type': galleryMime(full), 'Cache-Control': 'public, max-age=300' },
+    });
+  });
+
+  // POST a prompt → run the Nano Banana generator (banana-maker skill). The image
+  // saves into its output/ dir, which is the gallery "Generated" section, so it
+  // appears in /gallery automatically. Returns {ok,file,url,notes} or {ok:false,error}.
+  app.post('/api/gallery/generate', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const prompt = String(body?.prompt ?? '');
+    const source = typeof body?.source === 'string' ? body.source : 'banana';
+    let result;
+    if (source === 'higgsfield') {
+      result = await generateHiggsfield({
+        kind: 'image',
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        resolution: typeof body?.resolution === 'string' ? body.resolution : undefined,
+      });
+    } else if (source === 'local') {
+      result = await generateLocalImage({
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        steps: typeof body?.steps === 'number' ? body.steps : undefined,
+        seed: typeof body?.seed === 'number' ? body.seed : undefined,
+      });
+    } else {
+      result = await generateImage({
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        size: typeof body?.size === 'string' ? body.size : undefined,
+      });
+    }
+    if (result.ok) invalidateGalleryCache();
+    return c.json(result);
+  });
+
+  // Batch generation — generate N images in one call.
+  // Banana: runs sequentially (Gemini rate-limited, up to 5).
+  // Local: runs sequentially (single GPU, up to 3).
+  app.post('/api/gallery/batch-generate', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const prompt = String(body?.prompt ?? '');
+    const source = typeof body?.source === 'string' ? body.source : 'local';
+    const rawCount = typeof body?.count === 'number' ? body.count : 1;
+
+    const maxCounts: Record<string, number> = { banana: 5, local: 3 };
+    const count = Math.max(1, Math.min(rawCount, maxCounts[source] || 5));
+
+    const results = [];
+
+    if (source === 'banana') {
+      // sequential — Gemini rate-limited
+      for (let i = 0; i < count; i++) {
+        const r = await generateImage({
+          prompt,
+          model: typeof body?.model === 'string' ? body.model : undefined,
+          aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+          size: typeof body?.size === 'string' ? body.size : undefined,
+        });
+        results.push(r);
+      }
+    } else {
+      // local — single GPU, serialize
+      for (let i = 0; i < count; i++) {
+        const r = await generateLocalImage({
+          prompt,
+          model: typeof body?.model === 'string' ? body.model : undefined,
+          steps: typeof body?.steps === 'number' ? body.steps : undefined,
+        });
+        results.push(r);
+      }
+    }
+
+    if (results.some((r) => r.ok)) invalidateGalleryCache();
+    return c.json({ results });
+  });
+
+  // Move a gallery file between declared sections (rename with cross-fs copy+delete fallback).
+  app.post('/api/gallery/move', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const result = moveGalleryFile(
+      String(body?.srcRoot ?? ''), String(body?.srcSub ?? ''), String(body?.name ?? ''),
+      String(body?.dstRoot ?? ''), String(body?.dstSub ?? ''),
+    );
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
+  // Local FREE video (diffusers LTX-Video on the GPU) → renders/ = gallery video section.
+  app.post('/api/gallery/generate-video', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    // Higgsfield is CLOUD — it never touches the local GPU, so skip the GPU
+    // preflight gate (which only guards the local LTX subprocess).
+    if (body?.source === 'higgsfield') {
+      const result = await generateHiggsfield({
+        kind: 'video',
+        prompt: String(body?.prompt ?? ''),
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        resolution: typeof body?.resolution === 'string' ? body.resolution : undefined,
+      });
+      if (result.ok) invalidateGalleryCache();
+      notify(result.ok ? `✅ Higgsfield video ready: ${result.file}` : `⚠️ Higgsfield video failed: ${result.error}`);
+      return c.json(result);
+    }
+    // Safety gate BEFORE spawning the long (up to 20-min) LTX subprocess so the
+    // phone gets an instant "blocked: <reason>" instead of waiting. LTX on the
+    // 8GB GPU is the box-freeze vector — localgen.ts also gates + locks it.
+    const gate = await preflightGate();
+    if (!gate.ok) { notify(`🛑 Video gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+    const result = await generateLocalVideo({
+      prompt: String(body?.prompt ?? ''),
+      frames: typeof body?.frames === 'number' ? body.frames : undefined,
+      steps: typeof body?.steps === 'number' ? body.steps : undefined,
+      seed: typeof body?.seed === 'number' ? body.seed : undefined,
+    });
+    if (result.ok) invalidateGalleryCache();
+    notify(result.ok ? `✅ Video ready: ${result.file}` : `⚠️ Video gen failed: ${result.error}`);
+    return c.json(result);
+  });
+
+  // Higgsfield model catalogue for the Create-page dropdowns (cached 5 min).
+  // Shells `higgsfield model list --json` (image + --video) via the CLI.
+  app.get('/api/higgsfield/models', async (c) => {
+    const r = await listHiggsfieldModels();
+    return c.json(r, r.ok ? 200 : 503);
+  });
+
+  // ── Hermes Agent workspace ────────────────────────────────────────────────
+  app.get('/api/hermes', async (c) => {
+    try { return c.json(getHermesData()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/hermes/logs', (c) => {
+    const n = parseInt(c.req.query('n') || '60', 10);
+    try { return c.json({ lines: getHermesLogs(Math.min(n, 200)) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.post('/api/hermes/send', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const chatId = String(body?.chat_id ?? '7888676328');
+    const message = String(body?.message ?? '');
+    if (!message.trim()) return c.json({ ok: false, message: 'empty message' }, 400);
+    return c.json(hermesSend(chatId, message));
+  });
+
+  app.post('/api/hermes/restart', async (c) => {
+    return c.json(hermesRestartGateway());
   });
 
   // ── War Room meeting history & transcript persistence ──────────────
@@ -1485,6 +2984,132 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
+  // ── peon-ping sound pack switcher ────────────────────────────────
+  const PEON_BIN = path.join(os.homedir(), '.local', 'bin', 'peon');
+
+  function runPeon(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+    return new Promise((resolve) => {
+      import('child_process').then(({ execFile }) => {
+        execFile(PEON_BIN, args, { timeout: 8000, env: process.env }, (err, stdout, stderr) => {
+          resolve({ stdout: stdout || '', stderr: stderr || '', code: (err as any)?.code ?? 0 });
+        });
+      });
+    });
+  }
+
+  function parsePeonPackList(raw: string): { name: string; label: string; active: boolean }[] {
+    // Strip ANSI escape codes then parse "  name   N sounds   Display Name  [<-- active]"
+    const stripped = raw.replace(/\x1b\[[0-9;]*m/g, '');
+    const packs: { name: string; label: string; active: boolean }[] = [];
+    for (const line of stripped.split('\n')) {
+      const m = line.match(/^\s{2}(\S+)\s+\d+ sounds\s{3}(.+?)(?:\s+<-- active)?\s*$/);
+      if (!m) continue;
+      packs.push({ name: m[1], label: m[2].trim(), active: line.includes('<-- active') });
+    }
+    return packs;
+  }
+
+  app.get('/api/peon/packs', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    const { stdout } = await runPeon(['packs', 'list']);
+    const packs = parsePeonPackList(stdout);
+    const active = packs.find((p) => p.active)?.name ?? null;
+    return c.json({ ok: true, packs, active });
+  });
+
+  app.post('/api/peon/packs/use', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { name?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const name = (body.name || '').trim();
+    if (!name || !/^[a-z0-9_-]+$/.test(name)) {
+      return c.json({ ok: false, error: 'invalid pack name' }, 400);
+    }
+    const { stdout, code } = await runPeon(['packs', 'use', name]);
+    if (code !== 0) return c.json({ ok: false, error: stdout.trim() || 'peon error' }, 500);
+    return c.json({ ok: true, active: name });
+  });
+
+  app.get('/api/peon/status', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    const [statusRes, mobileRes, volRes] = await Promise.all([
+      runPeon(['status']),
+      runPeon(['mobile', 'status']),
+      runPeon(['volume']),
+    ]);
+    const stripped = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    const statusLine = stripped(statusRes.stdout);
+    const mobileLine = stripped(mobileRes.stdout);
+    const volLine = stripped(volRes.stdout);
+    const paused = /paused/i.test(statusLine);
+    const volMatch = volLine.match(/[\d.]+/);
+    const volume = volMatch ? parseFloat(volMatch[0]) : null;
+
+    // Parse mobile channels: look for "ntfy" and "telegram" lines
+    const mobileLines = mobileLine.split('\n').map((l) => stripped(l));
+    const ntfyLine = mobileLines.find((l) => /ntfy/i.test(l)) ?? null;
+    const telegramLine = mobileLines.find((l) => /telegram/i.test(l)) ?? null;
+    const mobileEnabled = !/disabled|off/i.test(mobileLine) && (ntfyLine !== null || telegramLine !== null);
+
+    const ntfyTopic = ntfyLine ? (ntfyLine.match(/Topic:\s*(\S+)/i)?.[1] ?? ntfyLine) : null;
+    const telegramConfigured = telegramLine !== null && !/not configured/i.test(telegramLine);
+
+    return c.json({
+      ok: true,
+      paused,
+      volume,
+      mobileEnabled,
+      ntfyTopic,
+      telegramConfigured,
+      raw: { status: statusLine, mobile: mobileLine, volume: volLine },
+    });
+  });
+
+  app.post('/api/peon/pause', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    await runPeon(['pause']);
+    return c.json({ ok: true, paused: true });
+  });
+
+  app.post('/api/peon/resume', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    await runPeon(['resume']);
+    return c.json({ ok: true, paused: false });
+  });
+
+  app.post('/api/peon/volume', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { volume?: number } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const vol = body.volume;
+    if (vol === undefined || vol < 0 || vol > 1) return c.json({ ok: false, error: 'volume must be 0.0–1.0' }, 400);
+    await runPeon(['volume', String(vol)]);
+    return c.json({ ok: true, volume: vol });
+  });
+
+  app.post('/api/peon/mobile/test', async (c) => {
+    // peon mobile is off; relay script owns phone channels — call it directly
+    const relayScript = path.join(os.homedir(), '.claude', 'hooks', 'mobile-relay.sh');
+    const testPayload = JSON.stringify({ session_id: 'dashboard-test', message: 'Test from Mission Control — ntfy + Telegram relay live' });
+    const { execFile } = await import('child_process');
+    const err = await new Promise<Error | null>((resolve) => {
+      const proc = execFile(relayScript, [], { timeout: 12000, env: process.env }, (e) => resolve(e));
+      proc.stdin?.write(testPayload);
+      proc.stdin?.end();
+    });
+    if (err && (err as any).code !== 0) return c.json({ ok: false, error: String(err.message) }, 500);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/peon/mobile/toggle', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { enable?: boolean } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const cmd = body.enable ? 'on' : 'off';
+    await runPeon(['mobile', cmd]);
+    return c.json({ ok: true, mobileEnabled: body.enable });
+  });
+
   // Scheduled tasks
   app.get('/api/tasks', (c) => {
     const tasks = getAllScheduledTasks();
@@ -1793,7 +3418,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Memory stats
   app.get('/api/memories', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const stats = getDashboardMemoryStats(chatId);
     const fading = getDashboardLowSalienceMemories(chatId, 10);
     const topAccessed = getDashboardTopAccessedMemories(chatId, 5);
@@ -1804,7 +3429,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Memory list (for drill-down drawer)
   app.get('/api/memories/pinned', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const memories = getDashboardPinnedMemories(chatId);
     return c.json({ memories });
   });
@@ -1833,7 +3458,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         turns = summary.turns;
         compactions = summary.compactions;
         const contextTokens = (summary.lastContextTokens || 0) + (summary.lastCacheRead || 0);
-        contextPct = contextTokens > 0 ? Math.round((contextTokens / CONTEXT_LIMIT) * 100) : 0;
+        // Size the gauge against the model's real window when the SDK reported
+        // one (e.g. Opus 4.8 = 1M, Sonnet 4.6 = 200k); fall back to CONTEXT_LIMIT.
+        const contextLimit = summary.lastContextWindow || CONTEXT_LIMIT;
+        contextPct = contextTokens > 0 ? Math.round((contextTokens / contextLimit) * 100) : 0;
         const ageSec = Math.floor(Date.now() / 1000) - summary.firstTurnAt;
         if (ageSec < 3600) sessionAge = Math.floor(ageSec / 60) + 'm';
         else if (ageSec < 86400) sessionAge = Math.floor(ageSec / 3600) + 'h';
@@ -1988,7 +3616,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    const validModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+    const validModels = VALID_CLAUDE_MODELS;
     if (!validModels.includes(model)) return c.json({ error: `Invalid model` }, 400);
 
     const agentIds = listAgentIds();
@@ -2013,7 +3641,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    const validModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+    const validModels = VALID_CLAUDE_MODELS;
     if (!validModels.includes(model)) return c.json({ error: `Invalid model. Valid: ${validModels.join(', ')}` }, 400);
 
     try {
@@ -2032,6 +3660,163 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       return c.json({ ok: true, agent: agentId, model, restartRequired: true });
     } catch (err) {
       return c.json({ error: 'Failed to update model' }, 500);
+    }
+  });
+
+  // ── Provider / model config (config-driven providers) ───────────────
+  app.get('/api/provider/status', (c) => {
+    return c.json(getProviderStatus());
+  });
+
+  app.get('/api/providers/models', (c) => {
+    const provider = (c.req.query('provider') || '').toLowerCase();
+    const current = getMainProviderConfig();
+    if (!ENABLE_ACP && provider !== 'claude') {
+      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    }
+    if (provider === 'claude') {
+      return c.json({
+        provider,
+        models: CLAUDE_MODEL_OPTIONS,
+        defaultModel: current.type === 'claude' ? (current.model ?? DEFAULT_CLAUDE_MODEL) : DEFAULT_CLAUDE_MODEL,
+        selectable: true,
+        allowCustom: true,
+      });
+    }
+    if (provider === 'opencode') {
+      const models = getOpenCodeModels();
+      const configuredModel = getOpenCodeDefaultModel();
+      const currentModel = current.type === 'opencode' ? current.model : undefined;
+      return c.json({
+        provider,
+        models: models.length ? models : [{ id: 'opencode-default', label: 'OpenCode default' }],
+        defaultModel: currentModel ?? (configuredModel && models.some((m) => m.id === configuredModel)
+          ? configuredModel
+          : models[0]?.id ?? configuredModel ?? 'opencode-default'),
+        selectable: models.length > 0,
+        allowCustom: true,
+        note: 'OpenCode model selection is sent through ACP session/set_model when the provider supports it.',
+      });
+    }
+    if (provider === 'gemini') {
+      return c.json({
+        provider,
+        models: GEMINI_MODEL_OPTIONS,
+        defaultModel: current.type === 'gemini' ? (current.model ?? GEMINI_MODEL_OPTIONS[0].id) : GEMINI_MODEL_OPTIONS[0].id,
+        selectable: true,
+        allowCustom: true,
+        note: 'Gemini model selection is sent through ACP session/set_model when supported.',
+      });
+    }
+    if (provider === 'codex') {
+      return c.json({
+        provider,
+        models: CODEX_MODEL_OPTIONS,
+        defaultModel: current.type === 'codex' ? (current.model ?? DEFAULT_CODEX_MODEL) : DEFAULT_CODEX_MODEL,
+        selectable: true,
+        allowCustom: true,
+        note: 'Codex model selection is sent through the codex-acp adapter via ACP session/set_model when supported.',
+      });
+    }
+    if (provider === 'acp') {
+      return c.json({
+        provider,
+        models: CUSTOM_ACP_MODEL_OPTIONS,
+        defaultModel: current.type === 'acp' ? (current.model ?? 'provider-default') : 'provider-default',
+        selectable: true,
+        allowCustom: true,
+        note: 'Custom ACP model ids are provider-specific. Use provider-default to skip session/set_model.',
+      });
+    }
+    return c.json({ error: 'Invalid provider' }, 400);
+  });
+
+  app.get('/api/providers/runtime-options', async (c) => {
+    const providerType = (c.req.query('provider') || '').toLowerCase();
+    if (!ENABLE_ACP && providerType !== 'claude') {
+      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    }
+    const current = getMainProviderConfig();
+    const hasCommandOverride = c.req.query('command') !== undefined || c.req.query('args') !== undefined;
+    const base: ProviderConfig = providerType === current.type && !hasCommandOverride
+      ? current
+      : normalizeProviderConfig({
+        type: providerType,
+        command: c.req.query('command'),
+        args: parseProviderArgsQuery(c.req.query('args')),
+      });
+
+    if (base.type === 'claude') {
+      return c.json({
+        provider: base.type,
+        modeOptions: CLAUDE_RUNTIME_OPTIONS,
+        thinkingOptions: CLAUDE_THINKING_OPTIONS,
+        rawConfigOptions: [],
+        source: 'static',
+      });
+    }
+    if (base.type !== 'opencode' && base.type !== 'gemini' && base.type !== 'codex' && base.type !== 'acp') {
+      return c.json({ error: 'Invalid provider' }, 400);
+    }
+    if (base.type === 'acp' && !base.command?.trim()) {
+      return c.json({ ...fallbackRuntimeOptions(base), error: 'Custom ACP provider requires a command' });
+    }
+
+    try {
+      const inspected = await inspectAcpProviderRuntimeOptions(base, PROJECT_ROOT, 5000);
+      if (inspected.modeOptions.length || inspected.thinkingOptions.length) return c.json(inspected);
+      return c.json({
+        ...fallbackRuntimeOptions(base),
+        error: 'Provider did not advertise runtime options',
+      });
+    } catch (err) {
+      const fallback = fallbackRuntimeOptions(base);
+      return c.json({
+        ...fallback,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  app.patch('/api/agents/:id/provider', async (c) => {
+    const agentId = c.req.param('id');
+    const body = await c.req.json<{ provider?: ProviderConfig; type?: string; model?: string; command?: string; args?: string[] }>();
+    const candidate = body.provider ?? {
+      type: body.type,
+      model: body.model,
+      command: body.command,
+      args: body.args,
+    };
+    const provider = normalizeProviderConfig(candidate);
+    if (!ENABLE_ACP && provider.type !== 'claude') {
+      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    }
+    const validationError = validateProviderConfig(provider);
+    if (validationError) return c.json({ error: validationError }, 400);
+
+    // Preflight: if the provider's CLI is not installed, fail fast with an
+    // actionable response so the user can install it before the next chat
+    // turn crashes with a spawn ENOENT they can't easily decode.
+    const availability = checkProviderAvailability(provider);
+    if (!availability.ok) {
+      return c.json({
+        error: availability.error,
+        installCommand: availability.installCommand,
+        setupHint: availability.setupHint,
+        docsUrl: availability.docsUrl,
+      }, 400);
+    }
+
+    try {
+      if (agentId === 'main') {
+        setMainProviderConfig(provider);
+        updateAgentProvider(provider);
+      } else {
+        setAgentProvider(agentId, provider);
+      }
+      return c.json({ ok: true, agent: agentId, provider, restartRequired: agentId !== 'main' });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to update provider' }, 500);
     }
   });
 
@@ -2362,125 +4147,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   app.post('/api/agents/suggestions/refresh', async (c) => {
-    const liveAgents = ['main', ...listAgentIds()];
-    const agentMeta: Array<{ id: string; description: string; rawCount: number; recentSummaries: string[] }> = [];
-    for (const id of liveAgents) {
-      let description = '';
-      if (id !== 'main') {
-        try { description = loadAgentConfig(id).description || ''; } catch { /* skip */ }
-      } else {
-        description = 'Primary ClaudeClaw bot — general triage and routing';
-      }
-      const entries = getHiveMindEntries(200, id);
-      const allFiltered = entries
-        .map((e) => `[${e.action}] ${e.summary}`)
-        .filter((s) => s.length > 0);
-      // Sample evenly across the agent's last 200 entries, picking 12
-      // representative summaries. We want diversity (different domains,
-      // not just the latest cluster) without bloating the prompt past
-      // Haiku's comfort zone — total prompt with 6 agents × 12
-      // summaries × ~80 chars stays under ~2 KB and typically completes
-      // in 15–25s.
-      const target = 12;
-      const recentSummaries = allFiltered.length <= target
-        ? allFiltered
-        : allFiltered.filter((_, i) => i % Math.ceil(allFiltered.length / target) === 0).slice(0, target);
-      agentMeta.push({ id, description, rawCount: allFiltered.length, recentSummaries });
-    }
-
-    // Skip agents with too little signal — splitting an agent that's
-    // done 5 things isn't useful, and Haiku will hallucinate splits.
-    const eligible = agentMeta.filter((a) => a.rawCount >= 20);
-    if (eligible.length === 0) {
-      return c.json({ ok: true, suggestions: [], reason: 'not enough hive_mind activity to analyze' });
-    }
-
-    const recentlySuggested = new Set(
-      getRecentlySuggestedSplits(30).map((r) => `${r.from_agent}::${r.suggested_id}`),
-    );
-
-    // Prompt: "for each agent, is one doing many distinct domains?"
-    // Constrain the model to suggest AT MOST one split per agent and
-    // require activity_share_pct so the user knows whether the
-    // suggestion is meaningful (a 5%-share split isn't worth doing).
-    const promptParts = [
-      'You analyze a multi-agent system to spot when an agent has drifted into doing many distinct things and should be split.',
-      '',
-      'For each agent below, decide: is there ONE coherent sub-domain handling >= 25% of their recent activity that would benefit from being its own specialized agent? Only suggest a split when the new agent would have a clean scope and the parent agent would be more focused after the split.',
-      '',
-      'Return JSON with this exact shape:',
-      '{ "suggestions": [{ "from_agent": "<id>", "suggested_id": "<lowercase-id>", "suggested_name": "<Title Case>", "suggested_description": "<one-sentence scope, 80 chars max>", "reasoning": "<why now, 200 chars max>", "activity_share_pct": <integer 0-100> }] }',
-      '',
-      'Rules:',
-      '- suggested_id must be lowercase letters, numbers, hyphens; not match an existing agent.',
-      '- Suggest at most one split per from_agent.',
-      '- Skip suggestions where activity_share_pct < 25.',
-      '- If no agent needs splitting, return { "suggestions": [] }.',
-      '',
-      'Agents:',
-    ];
-    for (const a of eligible) {
-      promptParts.push('');
-      promptParts.push(`AGENT: ${a.id}`);
-      promptParts.push(`DESCRIPTION: ${a.description || '(no description)'}`);
-      promptParts.push('RECENT ACTIVITY:');
-      for (const s of a.recentSummaries) {
-        promptParts.push(`  - ${s}`);
-      }
-    }
-    const existingIds = new Set(liveAgents);
-
-    let raw = '';
-    const promptStr = promptParts.join('\n');
-    logger.info({ promptBytes: promptStr.length, agentCount: eligible.length }, 'agent suggestion: starting analysis');
-    const t0 = Date.now();
+    // Analysis logic lives in src/agent-suggestions.ts so the same code
+    // path serves both this manual trigger and the 24h periodic job.
+    const { refreshAgentSuggestions } = await import('./agent-suggestions.js');
     try {
-      // 120s timeout — the dashboard process spawns the SDK subprocess
-      // alongside its own busy event loop (war-room polling, memory
-      // ingest, scheduler). Cold-starts under load have measured up to
-      // 90s in practice, vs 4–5s for a standalone CLI call with the
-      // same prompt size. Better to wait than fail spuriously.
-      raw = await extractViaClaude(promptStr, 120_000);
-      logger.info({ elapsedMs: Date.now() - t0, responseBytes: raw.length }, 'agent suggestion: Haiku replied');
+      const result = await refreshAgentSuggestions();
+      return c.json(result);
     } catch (err) {
-      logger.warn({ err: err instanceof Error ? err.message : err, elapsedMs: Date.now() - t0 }, 'agent suggestion analysis failed');
+      logger.warn({ err: err instanceof Error ? err.message : err }, 'agent suggestion analysis failed');
       return c.json({ error: 'analysis failed (Haiku unavailable)' }, 503);
     }
-    const parsed = parseJsonResponse<{ suggestions: any[] }>(raw);
-    const list = Array.isArray(parsed?.suggestions) ? parsed!.suggestions : [];
-
-    let inserted = 0;
-    let skipped = 0;
-    for (const s of list) {
-      if (!s || typeof s !== 'object') { skipped++; continue; }
-      const fromAgent = String(s.from_agent || '').trim();
-      const suggestedId = String(s.suggested_id || '').trim().toLowerCase();
-      const suggestedName = String(s.suggested_name || '').trim();
-      const suggestedDescription = String(s.suggested_description || '').trim();
-      const reasoning = String(s.reasoning || '').trim();
-      const sharePct = Math.max(0, Math.min(100, Math.round(Number(s.activity_share_pct) || 0)));
-
-      if (!fromAgent || !existingIds.has(fromAgent)) { skipped++; continue; }
-      if (!/^[a-z0-9-]{2,32}$/.test(suggestedId)) { skipped++; continue; }
-      if (existingIds.has(suggestedId)) { skipped++; continue; }
-      if (!suggestedName || !suggestedDescription || !reasoning) { skipped++; continue; }
-      if (sharePct < 25) { skipped++; continue; }
-      // Don't re-suggest the exact same split we already proposed in
-      // the last 30 days (whether dismissed or still active).
-      if (recentlySuggested.has(`${fromAgent}::${suggestedId}`)) { skipped++; continue; }
-
-      insertAgentSuggestion({
-        from_agent: fromAgent,
-        suggested_id: suggestedId,
-        suggested_name: suggestedName,
-        suggested_description: suggestedDescription.slice(0, 200),
-        reasoning: reasoning.slice(0, 500),
-        activity_share_pct: sharePct,
-      });
-      inserted++;
-    }
-    insertAuditLog('main', '', 'agent_suggestion_refresh', `inserted=${inserted} skipped=${skipped}`, false);
-    return c.json({ ok: true, inserted, skipped, suggestions: listActiveAgentSuggestions() });
   });
 
   app.post('/api/agents/suggestions/:id/dismiss', (c) => {
@@ -2532,6 +4208,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       name?: string;
       description?: string;
       model?: string;
+      provider?: ProviderConfig;
       template?: string;
       botToken?: string;
     }>();
@@ -2547,11 +4224,29 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!botToken) return c.json({ error: 'botToken required' }, 400);
 
     try {
+      const provider = body?.provider ? normalizeProviderConfig(body.provider, body?.model?.trim() || undefined) : undefined;
+      if (provider) {
+        if (!ENABLE_ACP && provider.type !== 'claude') {
+          return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+        }
+        const validationError = validateProviderConfig(provider);
+        if (validationError) return c.json({ error: validationError }, 400);
+        const availability = checkProviderAvailability(provider);
+        if (!availability.ok) {
+          return c.json({
+            error: availability.error,
+            installCommand: availability.installCommand,
+            setupHint: availability.setupHint,
+            docsUrl: availability.docsUrl,
+          }, 400);
+        }
+      }
       const result = await createAgent({
         id,
         name,
         description,
         model: body?.model?.trim() || undefined,
+        provider,
         template: body?.template?.trim() || undefined,
         botToken,
       });
@@ -2861,8 +4556,15 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     try {
       const envPath = path.join(PROJECT_ROOT, '.env');
       const { setEnvKey } = await import('./env-write.js');
+      // Capture the previous state so the audit row records old→new, which
+      // is what an operator actually wants during incident reconstruction.
+      const { isEnabled } = await import('./kill-switches.js');
+      const prev = isEnabled(key as Parameters<typeof isEnabled>[0]);
       setEnvKey(envPath, key, enabled ? 'true' : 'false');
-      logger.info({ key, enabled }, 'Kill switch toggled via dashboard');
+      logger.info({ key, enabled, prev }, 'Kill switch toggled via dashboard');
+      // Pack 03 audit: flips are blocked=1 because they represent a
+      // safety-relevant state change. The detail captures the transition.
+      insertAuditLog('main', '', 'kill_switch_flip', `${key}: ${prev} -> ${enabled}`, true);
       return c.json({ ok: true, key, enabled });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -2906,6 +4608,40 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
+  // ── /journal — daily agent decision journal (Boba/Jazzy/stock/crypto) ──
+  app.get('/api/journal/list', async (c) => {
+    try {
+      const dir = path.join(os.homedir(), 'mc-kb', 'notes', 'agent-journal');
+      if (!fs.existsSync(dir)) return c.json({ days: [] });
+      const days = fs.readdirSync(dir)
+        .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+        .map((f) => f.replace(/\.md$/, ''))
+        .sort()
+        .reverse();
+      return c.json({ days });
+    } catch (e) {
+      return c.json({ days: [], error: String((e as Error).message || e) }, 500);
+    }
+  });
+
+  app.get('/api/journal/get', async (c) => {
+    const date = c.req.query('date') || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return c.json({ error: 'date must be YYYY-MM-DD' }, 400);
+    }
+    try {
+      const filePath = path.join(os.homedir(), 'mc-kb', 'notes', 'agent-journal', `${date}.md`);
+      if (!fs.existsSync(filePath)) {
+        return c.json({ date, content: '', missing: true });
+      }
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const stat = fs.statSync(filePath);
+      return c.json({ date, content, mtime: stat.mtime.toISOString(), bytes: stat.size });
+    } catch (e) {
+      return c.json({ error: String((e as Error).message || e) }, 500);
+    }
+  });
+
   app.get('/api/mckb/query', async (c) => {
     const q = c.req.query('q');
     if (!q) return c.json({ error: 'missing q' }, 400);
@@ -2919,6 +4655,112 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       return c.json(body, r.status as 200);
     } catch (e) {
       return c.json({ error: 'mc-kb server unreachable', detail: String((e as Error).message || e) }, 503);
+    }
+  });
+
+  // ── Databases — read-only catalog + query surface (KB RAG, SQL DBs,
+  //    RAG/FTS indexes, masked secrets). All local-only. ──
+  app.get('/api/databases', async (c) => {
+    try {
+      return c.json(await getCatalog());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // Prime all database caches on boot so the operator's first load is warm
+  // (no cold catalog du-walk, no cold KB-sources subprocess). Fire-and-forget.
+  void warmupDatabases();
+
+  app.get('/api/databases/kb/:id/search', async (c) => {
+    const id = c.req.param('id');
+    const q = c.req.query('q') || '';
+    const top = parseInt(c.req.query('top') || '8', 10);
+    try {
+      return c.json(await kbSearch(id, q, top));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/sources', async (c) => {
+    const id = c.req.param('id');
+    try {
+      return c.json(await kbSources(id));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/anatomy', (c) => {
+    try {
+      return c.json(kbAnatomy(c.req.param('id')));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/anatomy/img/:file', (c) => {
+    const res = kbAnatomyImage(c.req.param('id'), c.req.param('file'));
+    if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+    const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
+    return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  app.post('/api/databases/kb/:id/ask', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const body = await c.req.json().catch(() => ({} as { question?: string }));
+      const question = (body as { question?: string }).question || '';
+      const result = await kbAsk(id, question);
+      if (result.error) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/sql/:id/meta', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const result = await sqlMeta(id);
+      if ('error' in result) return c.json(result, 404);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.post('/api/databases/sql/:id/query', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const body = await c.req.json().catch(() => ({} as { sql?: string }));
+      const sql = (body as { sql?: string }).sql || '';
+      const result = sqlSelect(id, sql);
+      if ('error' in result) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/secrets', (c) => {
+    try {
+      return c.json(listSecrets());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/secrets/reveal', (c) => {
+    const source = c.req.query('source') || '';
+    const name = c.req.query('name') || '';
+    try {
+      const result = revealSecret(source, name);
+      if (result.error) return c.json(result, 403);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
     }
   });
 

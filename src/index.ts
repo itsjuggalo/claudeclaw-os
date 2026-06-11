@@ -6,7 +6,7 @@ import { createBot } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { startDashboard } from './dashboard.js';
-import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
+import { initDatabase, cleanupOldMissionTasks, insertAuditLog, pruneOldAuditEntries } from './db.js';
 import { initSecurity, setAuditCallback } from './security.js';
 import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
@@ -47,7 +47,7 @@ if (AGENT_ID !== 'main') {
     systemPrompt,
     mcpServers: agentConfig.mcpServers,
   });
-  logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
+  logger.info({ agentId: AGENT_ID, name: agentConfig.name, provider: agentConfig.provider }, 'Running as agent');
 } else {
   // Main bot follows the same pattern as sub-agents: load CLAUDE.md from
   // CLAUDECLAW_CONFIG/agents/main/ and set CWD to that directory so the
@@ -162,7 +162,48 @@ async function main(): Promise<void> {
   if (AGENT_ID === 'main') {
     runDecaySweep();
     cleanupOldMissionTasks(7);
-    setInterval(() => { runDecaySweep(); cleanupOldMissionTasks(7); }, 24 * 60 * 60 * 1000);
+    // Pack 03 retention sweep on startup + every 24h alongside the other
+    // periodic cleanups. 90-day retention; pinned rows survive.
+    const auditPruned = pruneOldAuditEntries(90);
+    if (auditPruned > 0) logger.info({ pruned: auditPruned }, 'Pruned old audit entries on startup');
+    setInterval(() => {
+      runDecaySweep();
+      cleanupOldMissionTasks(7);
+      const pruned = pruneOldAuditEntries(90);
+      if (pruned > 0) logger.info({ pruned }, 'Pruned old audit entries (24h sweep)');
+    }, 24 * 60 * 60 * 1000);
+
+    // Pack 04 periodic refresh: re-run agent-split analysis every 24h.
+    // Off-by-explicit-false so set-and-forget behavior is the default;
+    // operators who don't want Haiku tokens spent on this can set
+    // SUGGESTIONS_AUTO_REFRESH_ENABLED=false. The dashboard refresh
+    // button keeps working either way.
+    const autoSuggestEnv = (process.env.SUGGESTIONS_AUTO_REFRESH_ENABLED ?? 'true').trim().toLowerCase();
+    const autoSuggestEnabled = autoSuggestEnv !== 'false' && autoSuggestEnv !== '0' && autoSuggestEnv !== 'off' && autoSuggestEnv !== 'no';
+    if (autoSuggestEnabled) {
+      // Delay first refresh 10 minutes after boot so a restart loop
+      // doesn't burn Haiku tokens; subsequent runs at 24h cadence.
+      setTimeout(() => {
+        void import('./agent-suggestions.js').then(({ refreshAgentSuggestions }) =>
+          refreshAgentSuggestions(),
+        ).then((r) => {
+          logger.info({ inserted: r.inserted, skipped: r.skipped, reason: r.reason }, 'Agent suggestions refreshed (startup)');
+        }).catch((err) => {
+          logger.warn({ err: err instanceof Error ? err.message : err }, 'Initial agent suggestion refresh failed (non-fatal)');
+        });
+      }, 10 * 60 * 1000);
+      setInterval(() => {
+        void import('./agent-suggestions.js').then(({ refreshAgentSuggestions }) =>
+          refreshAgentSuggestions(),
+        ).then((r) => {
+          logger.info({ inserted: r.inserted, skipped: r.skipped, reason: r.reason }, 'Agent suggestions refreshed (24h)');
+        }).catch((err) => {
+          logger.warn({ err: err instanceof Error ? err.message : err }, 'Periodic agent suggestion refresh failed (non-fatal)');
+        });
+      }, 24 * 60 * 60 * 1000);
+    } else {
+      logger.info('Agent suggestion auto-refresh disabled (SUGGESTIONS_AUTO_REFRESH_ENABLED=false)');
+    }
 
     // One-time bundled→mutable avatar migration. After this lands, any
     // previously user-uploaded main avatar that we wrote into the

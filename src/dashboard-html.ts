@@ -169,6 +169,17 @@ const WARROOM_ENABLED = warroomEnabled;
     </button>
   </div>
 </div>
+
+<!-- Quick Links — ARIES + Mobile Hub + Portal -->
+<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+  <a href="https://g59-wsl.taile1328b.ts.net" target="_blank" rel="noopener"
+     style="font-size:11px;font-weight:600;color:#7fd1ff;background:#0c2244;border:1px solid #1e3a5f;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">🚀 ARIES</a>
+  <a href="https://100.91.39.122:8443" target="_blank" rel="noopener"
+     style="font-size:11px;font-weight:600;color:#86efac;background:#071f12;border:1px solid #14532d;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">📡 Mobile Hub</a>
+  <a href="/portal" target="_blank" rel="noopener"
+     style="font-size:11px;font-weight:600;color:#c4b5fd;background:#1a1730;border:1px solid #3730a3;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">⚡ All Services</a>
+</div>
+
 <div id="bot-info" class="flex items-center gap-3 mb-4 text-xs text-gray-500" style="display:none"></div>
 
 <!-- Summary Stats Bar -->
@@ -200,8 +211,9 @@ const WARROOM_ENABLED = warroomEnabled;
       <div class="model-picker" onclick="toggleModelPicker(this)" style="display:inline-block">
         <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
         <div class="model-menu" style="display:none;right:0;left:auto">
-          <div class="model-opt" data-model="claude-opus-4-6" onclick="pickGlobalModel(this)">All Opus</div>
-          <div class="model-opt" data-model="claude-sonnet-4-6" onclick="pickGlobalModel(this)">All Sonnet</div>
+          <div class="model-opt" data-model="claude-opus-4-8" onclick="pickGlobalModel(this)">All Opus 4.8</div>
+          <div class="model-opt" data-model="claude-opus-4-6" onclick="pickGlobalModel(this)">All Opus 4.6</div>
+          <div class="model-opt" data-model="claude-sonnet-4-6" onclick="pickGlobalModel(this)">All Sonnet 4.6</div>
           <div class="model-opt" data-model="claude-haiku-4-5" onclick="pickGlobalModel(this)">All Haiku</div>
         </div>
       </div>
@@ -218,6 +230,24 @@ ${WARROOM_ENABLED ? `<div class="card" style="display:flex;align-items:center;ju
   </div>
   <div style="font-size:20px;color:#3b82f6">&#127908;</div>
 </div>` : ''}
+
+<!-- Token Dashboard quick link -->
+<div class="card" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;border:1px solid #1a2a4a;background:linear-gradient(135deg,#0d1526 0%,#1a1a1a 100%)" onclick="window.location.href='/token-dashboard'">
+  <div>
+    <div style="font-size:14px;font-weight:600;color:#a5b4fc">Token Dashboard</div>
+    <div style="font-size:12px;color:#6b7280;margin-top:2px">Per-prompt cost analytics &amp; cache stats</div>
+  </div>
+  <div style="font-size:20px">&#128202;</div>
+</div>
+
+<!-- CLI Tools quick link -->
+<div class="card" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;border:1px solid #1a2a4a;background:linear-gradient(135deg,#0d1526 0%,#1a1a1a 100%)" onclick="window.location.href='/cli-tools'">
+  <div>
+    <div style="font-size:14px;font-weight:600;color:#a5b4fc">CLI Tools</div>
+    <div style="font-size:12px;color:#6b7280;margin-top:2px">213 Printing Press CLIs + CLI-Anything inventory</div>
+  </div>
+  <div style="font-size:20px">&#128295;</div>
+</div>
 
 <!-- War Room Voice Settings (only shown when WARROOM_ENABLED) -->
 ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
@@ -569,6 +599,27 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
   </div>
 </div>
 
+<!-- Disk Space Card -->
+<div id="disk-section" class="mt-3 mb-3">
+  <div class="card" style="padding:12px 16px">
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Disk</span>
+      <span id="disk-warning" style="display:none;font-size:11px;padding:2px 8px;border-radius:10px;background:#7f1d1d;color:#fca5a5"></span>
+    </div>
+    <div class="grid grid-cols-2 gap-3 text-center">
+      <div>
+        <div class="stat-val text-base" id="disk-c-free">-</div>
+        <div class="stat-label">C: Free <span style="color:#6b7280;font-size:9px">(physical limit)</span></div>
+        <div style="margin-top:4px;background:#1e293b;border-radius:3px;height:4px;overflow:hidden"><div id="disk-c-bar" style="height:100%;background:#22c55e;width:0%;transition:width 0.4s"></div></div>
+      </div>
+      <div>
+        <div class="stat-val text-base" id="disk-wsl-free">-</div>
+        <div class="stat-label">WSL Free <span style="color:#6b7280;font-size:9px">(virtual)</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Token / Cost -->
 <div id="token-section" class="mt-5 mb-8">
   <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2" id="tokens-section">Token Usage<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Token consumption (text units processed by the AI). Today's totals and all-time cumulative. Included in your Max subscription.</span></span></h2>
@@ -590,6 +641,37 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
     <canvas id="cost-chart" height="140"></canvas>
   </div>
 
+</div>
+
+<!-- ComfyUI Status Card -->
+<div id="comfyui-section" class="mt-5 mb-5">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">ComfyUI
+    <span class="info-tip"><span class="info-icon">&#x24D8;</span><span class="info-tooltip">Local image/video generation. CyberRealistic Pony + Juggernaut Z (Flux). Run comfyui-start in WSL to launch.</span></span>
+  </h2>
+  <div class="card" id="comfyui-card">
+    <div class="flex justify-between items-center mb-3">
+      <div class="flex items-center gap-2">
+        <span id="comfyui-dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#6b7280"></span>
+        <span id="comfyui-status-text" class="text-sm text-gray-400">Checking...</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="comfy-start-btn" onclick="startComfyUI()" style="display:none;font-size:12px;color:#22c55e;background:transparent;border:1px solid #166534;padding:3px 10px;border-radius:6px;cursor:pointer">Launch ▶</button>
+        <button id="comfy-stop-btn" onclick="stopComfyUI()" style="display:none;font-size:12px;color:#f87171;background:transparent;border:1px solid #7f1d1d;padding:3px 10px;border-radius:6px;cursor:pointer">Stop ■</button>
+        <a id="comfyui-link" href="http://localhost:8188" target="_blank" rel="noopener"
+           style="display:none;font-size:12px;color:#60a5fa;text-decoration:none;border:1px solid #1e3a5f;padding:3px 10px;border-radius:6px">
+          Open UI →
+        </a>
+      </div>
+    </div>
+    <div id="comfyui-vram" class="mb-3" style="display:none">
+      <div class="text-xs text-gray-500 mb-1">VRAM</div>
+      <div style="background:#1e293b;border-radius:4px;height:8px;overflow:hidden">
+        <div id="comfyui-vram-bar" style="height:100%;background:#3b82f6;width:0%;transition:width 0.4s"></div>
+      </div>
+      <div class="text-xs text-gray-500 mt-1"><span id="comfyui-vram-used">-</span> / <span id="comfyui-vram-total">-</span> MiB used</div>
+    </div>
+    <div id="comfyui-models" class="text-xs text-gray-500"></div>
+  </div>
 </div>
 
 </div><!-- end RIGHT COLUMN -->
@@ -1519,9 +1601,9 @@ async function loadAgents() {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
       const statusText = a.running ? 'live' : 'off';
-      const modelOpts = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
-      const modelShort = function(m) { return {'claude-opus-4-6':'Opus','claude-sonnet-4-6':'Sonnet','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
-      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-6' : 'claude-sonnet-4-6');
+      const modelOpts = ['claude-opus-4-8', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+      const modelShort = function(m) { return {'claude-opus-4-8':'Opus 4.8','claude-opus-4-6':'Opus 4.6','claude-sonnet-4-6':'Sonnet 4.6','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
+      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-8' : 'claude-sonnet-4-6');
       const modelLabel = modelShort(currentModel);
       const providerType = (a.provider && a.provider.type) || 'opencode';
       const providerLabel = providerType === 'claude' ? 'Claude: ' + modelLabel : providerType === 'opencode' ? 'OpenCode' : 'ACP';
@@ -1778,6 +1860,7 @@ let cawTokenDebounce = null;
 let cawNameManuallyEdited = false;
 const CAW_FALLBACK_MODELS = {
   claude: [
+    { id: 'claude-opus-4-8', label: 'Opus 4.8' },
     { id: 'claude-opus-4-6', label: 'Opus 4.6' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
     { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
@@ -2537,10 +2620,99 @@ function closeTaskHistory() {
 // Poll mission tasks more frequently (every 15s) for responsiveness
 setInterval(loadMissionControl, 15000);
 
+async function loadComfyUI() {
+  try {
+    const r = await fetch(BASE + '/api/comfyui/status?token=' + TOKEN);
+    const d = await r.json();
+    const dot = document.getElementById('comfyui-dot');
+    const txt = document.getElementById('comfyui-status-text');
+    const link = document.getElementById('comfyui-link');
+    const vramWrap = document.getElementById('comfyui-vram');
+    const vramBar = document.getElementById('comfyui-vram-bar');
+    const vramUsed = document.getElementById('comfyui-vram-used');
+    const vramTotal = document.getElementById('comfyui-vram-total');
+    const modelsEl = document.getElementById('comfyui-models');
+    if (d.running) {
+      dot.style.background = '#22c55e';
+      txt.textContent = 'Running — localhost:8188';
+      txt.style.color = '#22c55e';
+      link.style.display = '';
+      document.getElementById('comfy-start-btn').style.display = 'none';
+      document.getElementById('comfy-stop-btn').style.display = '';
+    } else {
+      dot.style.background = '#6b7280';
+      txt.textContent = 'Stopped';
+      txt.style.color = '#9ca3af';
+      link.style.display = 'none';
+      document.getElementById('comfy-start-btn').style.display = '';
+      document.getElementById('comfy-stop-btn').style.display = 'none';
+    }
+    if (d.vram) {
+      vramWrap.style.display = '';
+      const pct = Math.round(d.vram.used / d.vram.total * 100);
+      vramBar.style.width = pct + '%';
+      vramBar.style.background = pct > 80 ? '#ef4444' : pct > 60 ? '#f59e0b' : '#3b82f6';
+      vramUsed.textContent = d.vram.used;
+      vramTotal.textContent = d.vram.total;
+    }
+    if (d.checkpoints || d.loras) {
+      const ckpts = (d.checkpoints || []).map(f => f.name.replace('.safetensors','').replace('.gguf','').replace('.ckpt','')).join(', ') || 'none';
+      const loras = (d.loras || []).map(f => f.name.replace('.safetensors','')).join(', ') || 'none';
+      modelsEl.innerHTML = '<b style="color:#9ca3af">Models:</b> ' + escapeHtml(ckpts) + '<br><b style="color:#9ca3af">LoRAs:</b> ' + escapeHtml(loras);
+    }
+  } catch {}
+}
+setInterval(loadComfyUI, 30000);
+
+async function startComfyUI() {
+  const btn = document.getElementById('comfy-start-btn');
+  btn.textContent = 'Starting…';
+  btn.disabled = true;
+  try {
+    const r = await fetch(BASE + '/api/comfy/start?token=' + TOKEN, { method: 'POST' }).then(x => x.json());
+    if (r.ok) { setTimeout(loadComfyUI, 5000); setTimeout(loadComfyUI, 15000); setTimeout(loadComfyUI, 30000); }
+    else alert('Failed to start ComfyUI: ' + (r.error || 'unknown'));
+  } catch (e) { alert('Error: ' + e); }
+  btn.textContent = 'Launch ▶';
+  btn.disabled = false;
+}
+
+async function stopComfyUI() {
+  const btn = document.getElementById('comfy-stop-btn');
+  btn.textContent = 'Stopping…';
+  btn.disabled = true;
+  try {
+    await fetch(BASE + '/api/comfy/stop?token=' + TOKEN, { method: 'POST' });
+    setTimeout(loadComfyUI, 2000);
+  } catch (e) { alert('Error: ' + e); }
+  btn.textContent = 'Stop ■';
+  btn.disabled = false;
+}
+
+async function loadDisk() {
+  try {
+    const d = await api('/api/system/disk');
+    const cFreeEl = document.getElementById('disk-c-free');
+    const wslFreeEl = document.getElementById('disk-wsl-free');
+    const bar = document.getElementById('disk-c-bar');
+    const warn = document.getElementById('disk-warning');
+    if (d.cdrive) {
+      cFreeEl.textContent = d.cdrive.avail;
+      const pct = parseInt(d.cdrive.pct) || 0;
+      bar.style.width = Math.min(100, pct) + '%';
+      bar.style.background = pct >= 95 ? '#ef4444' : pct >= 85 ? '#f59e0b' : '#22c55e';
+    }
+    if (d.wsl) wslFreeEl.textContent = d.wsl.avail;
+    if (d.warning) { warn.textContent = '⚠ ' + d.warning; warn.style.display = ''; }
+    else { warn.style.display = 'none'; }
+  } catch {}
+}
+setInterval(loadDisk, 120000);
+
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary(), loadMissionControl()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary(), loadMissionControl()]); loadComfyUI(); loadDisk();
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }

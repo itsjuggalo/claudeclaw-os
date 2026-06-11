@@ -1,0 +1,15 @@
+{
+  "_comment": "Manually-maintained catalyst calendar for Boba/Jazzy. Deploy to /home/ubuntu/.openclaw/data/catalysts.json. Entries in the next 48h get injected into Boba's prompt. Tickers in shortlist get a ⚠️ flag. Add new entries as you become aware; an upcoming enhancement could auto-populate this from Finnhub/FRED.",
+  "_schema": {
+    "earnings": "[{ticker, datetime (ISO 8601 UTC), when (BMO/AMC/?)}]",
+    "macro":    "[{name, datetime (ISO 8601 UTC), impact (high/med/low)}]"
+  },
+  "earnings": [
+    {"ticker": "NVDA", "datetime": "2026-05-28T20:00:00Z", "when": "AMC"},
+    {"ticker": "CRM",  "datetime": "2026-05-28T20:00:00Z", "when": "AMC"}
+  ],
+  "macro": [
+    {"name": "FOMC Rate Decision", "datetime": "2026-06-12T18:00:00Z", "impact": "high"},
+    {"name": "CPI Release",        "datetime": "2026-06-11T12:30:00Z", "impact": "high"}
+  ]
+}

@@ -10,7 +10,9 @@ export interface PageHeaderProps {
 export function PageHeader({ title, breadcrumb, actions, tabs }: PageHeaderProps) {
   return (
     <div class="border-b border-[var(--color-border)]">
-      <div class="flex items-center gap-3 px-6 py-3">
+      {/* flex-wrap: on narrow screens the actions drop to their own line
+          instead of pushing off the right edge of the viewport. */}
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 md:px-6 py-3">
         {breadcrumb && (
           <div class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
             <span>{breadcrumb}</span>
@@ -18,10 +20,10 @@ export function PageHeader({ title, breadcrumb, actions, tabs }: PageHeaderProps
           </div>
         )}
         <h1 class="text-[14px] font-semibold text-[var(--color-text)]">{title}</h1>
-        <div class="ml-auto flex items-center gap-2">{actions}</div>
+        <div class="ml-auto flex flex-wrap items-center justify-end gap-2">{actions}</div>
       </div>
       {tabs && (
-        <div class="flex items-center gap-1 px-6 pb-2">{tabs}</div>
+        <div class="flex flex-wrap items-center gap-1 gap-y-2 px-4 md:px-6 pb-2">{tabs}</div>
       )}
     </div>
   );

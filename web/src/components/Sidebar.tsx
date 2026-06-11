@@ -1,8 +1,10 @@
 import { Link, useLocation } from 'wouter-preact';
-import { Search, ChevronDown, X } from 'lucide-preact';
+import { Search, ChevronDown, X, Monitor, Smartphone } from 'lucide-preact';
 import { useState } from 'preact/hooks';
 import { ROUTES, SECTION_LABEL, type RouteSection } from '@/lib/routes';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
+import { Toggle } from './Toggle';
+import { viewMode, setViewMode } from '@/lib/view-mode';
 import { commandPaletteOpen } from '@/lib/command-palette';
 import { chatUnread } from '@/lib/chat-stream';
 import { invalidateFetchCache, useFetch } from '@/lib/useFetch';
@@ -16,7 +18,7 @@ import {
   modKeyLabel,
 } from '@/lib/personalization';
 
-const SECTIONS: RouteSection[] = ['workspace', 'intelligence', 'collaborate', 'configure'];
+const SECTIONS: RouteSection[] = ['workspace', 'intelligence', 'trade', 'collaborate', 'configure', 'mc'];
 
 export function Sidebar() {
   const [pathname] = useLocation();
@@ -83,18 +85,14 @@ export function Sidebar() {
                 const active = pathname === r.path || (pathname === '/' && r.path === '/mission');
                 const Icon = r.icon;
                 const unread = r.path === '/chat' ? chatUnread.value : 0;
-                return (
-                  <Link
-                    key={r.path}
-                    href={r.path}
-                    onClick={closeSidebar}
-                    class={[
-                      'flex items-center gap-2.5 px-3 py-2 rounded-md text-[14px] transition-colors',
-                      active
-                        ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
-                        : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
-                    ].join(' ')}
-                  >
+                const itemClass = [
+                  'flex items-center gap-2.5 px-3 py-2 rounded-md text-[14px] transition-colors',
+                  active
+                    ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
+                ].join(' ');
+                const inner = (
+                  <>
                     <Icon size={16} />
                     <span class="flex-1">{r.label}</span>
                     {unread > 0 && (
@@ -102,6 +100,31 @@ export function Sidebar() {
                         {unread > 99 ? '99+' : unread}
                       </span>
                     )}
+                    {r.href && (
+                      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" style="opacity:0.4;flex-shrink:0">
+                        <path d="M5 2H2a1 1 0 00-1 1v7a1 1 0 001 1h7a1 1 0 001-1V7M7 1h4m0 0v4m0-4L5 7"/>
+                      </svg>
+                    )}
+                  </>
+                );
+                return r.href ? (
+                  <a
+                    key={r.path}
+                    href={r.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class={itemClass}
+                  >
+                    {inner}
+                  </a>
+                ) : (
+                  <Link
+                    key={r.path}
+                    href={r.path}
+                    onClick={closeSidebar}
+                    class={itemClass}
+                  >
+                    {inner}
                   </Link>
                 );
               })}
@@ -143,7 +166,7 @@ function SidebarFooter() {
     setSwitching(true);
     try {
       const nextProvider = nextType === 'claude'
-        ? { type: 'claude', model: 'claude-opus-4-6' }
+        ? { type: 'claude', model: 'claude-opus-4-8' }
         : { type: nextType };
       await apiPatch('/api/agents/main/provider', { provider: nextProvider });
       invalidateFetchCache('/api/provider/status');
@@ -188,8 +211,24 @@ function SidebarFooter() {
         </div>
         <div class="mt-1.5 text-[11px] leading-snug text-[var(--color-text-muted)]">
           <span class="text-[var(--color-text-faint)]">Model</span>{' '}
-          <span class="break-all">{provider.data?.model ?? 'claude-opus-4-6'}</span>
+          <span class="break-all">{provider.data?.model ?? 'claude-opus-4-8'}</span>
         </div>
+      </div>
+
+      {/* Always rendered — never gate this on a breakpoint: forcing
+          desktop makes `md:` match and a breakpoint-hidden toggle would
+          strand the user in desktop view. No-op on real desktops. */}
+      <div class="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
+          {viewMode.value === 'desktop' ? <Monitor size={14} /> : <Smartphone size={14} />}
+          <span>Desktop view</span>
+        </div>
+        <Toggle
+          size="sm"
+          on={viewMode.value === 'desktop'}
+          onChange={() => setViewMode(viewMode.value === 'desktop' ? 'auto' : 'desktop')}
+          ariaLabel="Toggle desktop view"
+        />
       </div>
 
       <Link

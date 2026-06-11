@@ -22,6 +22,9 @@ const envConfig = readEnvFile([
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'OLLAMA_EMBED_URL',
+  'OLLAMA_EMBED_MODEL',
   'AGENT_TIMEOUT_MS',
   'AGENT_MAX_TURNS',
   'SECURITY_PIN_HASH',
@@ -40,6 +43,7 @@ const envConfig = readEnvFile([
   'PROTECTED_ENV_VARS',
   'WARROOM_ENABLED',
   'WARROOM_PORT',
+  'AIME_SESSION_COOKIE',
   'STREAM_STRATEGY',
   'ENABLE_ACP',
 ]);
@@ -167,8 +171,11 @@ export const AGENT_MAX_TURNS = parseInt(
   10,
 );
 
-// Context window limit for the model. Opus 4.6 (1M context) = 1,000,000.
-// Override via CONTEXT_LIMIT in .env if using a different model variant.
+// Fallback context-window limit (tokens). The context gauge and warnings now
+// prefer the active model's REAL window as reported by the SDK per turn
+// (Opus 4.8 = 1M, Sonnet 4.6 = 200k). This value is only used when the engine
+// doesn't report one — e.g. ACP providers, or rows from before the upgrade.
+// Override via CONTEXT_LIMIT in .env to change that fallback.
 export const CONTEXT_LIMIT = parseInt(
   process.env.CONTEXT_LIMIT || envConfig.CONTEXT_LIMIT || '1000000',
   10,
@@ -202,6 +209,18 @@ export const DB_ENCRYPTION_KEY =
 // Google API key for Gemini (memory extraction + consolidation)
 export const GOOGLE_API_KEY =
   process.env.GOOGLE_API_KEY || envConfig.GOOGLE_API_KEY || '';
+
+// DeepSeek API key — free/cheap provider for consolidation/extraction. Default
+// provider as of 2026-05-30 after Gemini billing depleted (429). See gemini.ts.
+export const DEEPSEEK_API_KEY =
+  process.env.DEEPSEEK_API_KEY || envConfig.DEEPSEEK_API_KEY || '';
+
+// Local Ollama embeddings (truly $0). When OLLAMA_EMBED_URL is set (e.g.
+// http://localhost:11434), embeddings.ts uses it instead of depleted Gemini.
+export const OLLAMA_EMBED_URL =
+  process.env.OLLAMA_EMBED_URL || envConfig.OLLAMA_EMBED_URL || '';
+export const OLLAMA_EMBED_MODEL =
+  process.env.OLLAMA_EMBED_MODEL || envConfig.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 
 // Streaming strategy for progressive Telegram updates.
 // 'global-throttle' (default): edits a placeholder message with streamed text,
@@ -243,6 +262,23 @@ export const SMART_ROUTING_ENABLED =
 export const SMART_ROUTING_CHEAP_MODEL =
   process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'claude-haiku-4-5';
 
+// ── Claude model selection ──────────────────────────────────────────
+// The /model opus|sonnet|haiku Telegram shortcuts and the fresh-install
+// default all resolve through these. Defaults track the current Claude
+// lineup; override any of them in .env so a new model release is picked
+// up on the next restart WITHOUT a code change or a new release.
+// Example: CLAUDE_MODEL_OPUS=claude-opus-4-9
+export const CLAUDE_MODEL_OPUS =
+  process.env.CLAUDE_MODEL_OPUS || envConfig.CLAUDE_MODEL_OPUS || 'claude-opus-4-8';
+export const CLAUDE_MODEL_SONNET =
+  process.env.CLAUDE_MODEL_SONNET || envConfig.CLAUDE_MODEL_SONNET || 'claude-sonnet-4-6';
+export const CLAUDE_MODEL_HAIKU =
+  process.env.CLAUDE_MODEL_HAIKU || envConfig.CLAUDE_MODEL_HAIKU || 'claude-haiku-4-5';
+// Default Claude model when no provider/agent model is configured (e.g. fresh installs).
+// Falls back to the Opus alias above so it tracks the same single source of truth.
+export const DEFAULT_CLAUDE_MODEL =
+  process.env.DEFAULT_CLAUDE_MODEL || envConfig.DEFAULT_CLAUDE_MODEL || CLAUDE_MODEL_OPUS;
+
 // Cost footer on every response.
 // compact = model only, verbose = model + tokens, cost = model + $, full = everything
 export type CostFooterMode = 'off' | 'compact' | 'verbose' | 'cost' | 'full';
@@ -282,7 +318,7 @@ export const EXFILTRATION_GUARD_ENABLED =
   (process.env.EXFILTRATION_GUARD_ENABLED || envConfig.EXFILTRATION_GUARD_ENABLED || 'true').toLowerCase() === 'true';
 export const PROTECTED_ENV_VARS = (
   process.env.PROTECTED_ENV_VARS || envConfig.PROTECTED_ENV_VARS ||
-  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY'
+  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY,DEEPSEEK_API_KEY'
 ).split(',').map((s) => s.trim()).filter(Boolean);
 
 // ── Provider Selection (BETA) ───────────────────────────────────────
@@ -300,3 +336,8 @@ export const WARROOM_PORT = parseInt(
   process.env.WARROOM_PORT || envConfig.WARROOM_PORT || '7860',
   10,
 );
+
+// AInvest/AIME session cookie for the Trade Desk AIME panel.
+// Set via .env: AIME_SESSION_COOKIE=<browser cookie string>
+export const AIME_SESSION_COOKIE: string =
+  process.env.AIME_SESSION_COOKIE || envConfig.AIME_SESSION_COOKIE || '';

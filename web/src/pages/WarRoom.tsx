@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
-import { Mic, MessageSquare, Video, ExternalLink, Pin, PinOff, Sliders, Users } from 'lucide-preact';
+import { Mic, MessageSquare, Video, ExternalLink, Pin, PinOff, Sliders, Users, Volume2 } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { AgentAvatar } from '@/components/AgentAvatar';
@@ -17,6 +17,7 @@ import { formatRelativeTime, resolveAgentName } from '@/lib/format';
 // renders the standalone Voices page) for back-compat.
 type Mode = 'picker' | 'voice' | 'text' | 'meet' | 'voices' | 'standup';
 
+interface PeonPack { name: string; label: string; active: boolean; }
 interface PinState { ok: boolean; agent: string | null; mode: 'direct' | 'auto'; }
 interface RosterAgent { id: string; name: string; description: string; }
 interface TextMeetingSummary { id: string; started_at: number; ended_at: number | null; entry_count: number; preview: string; }
@@ -51,7 +52,7 @@ export function WarRoom() {
               Pull all agents into one conversation. Voice rooms speak in real-time via Pipecat + Gemini Live.
               Text rooms work async with full transcript and per-agent pinning.
             </p>
-            <div class="grid grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <ModeCard
                 icon={<Mic size={22} />}
                 title="Voice"
@@ -89,6 +90,7 @@ export function WarRoom() {
                 href={legacyUrl(`/warroom?mode=picker&token=${encodeURIComponent(dashboardToken)}&chatId=${encodeURIComponent(chatId)}`)}
               />
             </div>
+            <PeonPackSelector />
           </div>
         </div>
       </div>
@@ -134,6 +136,62 @@ function readModeFromUrl(): Mode {
     if (m === 'voice' || m === 'text' || m === 'meet' || m === 'voices' || m === 'picker' || m === 'standup') return m;
   } catch {}
   return 'picker';
+}
+
+function PeonPackSelector() {
+  const [packs, setPacks] = useState<PeonPack[]>([]);
+  const [active, setActive] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/peon/packs')
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) { setPacks(d.packs); setActive(d.active); } })
+      .catch(() => {});
+  }, []);
+
+  if (packs.length === 0) return null;
+
+  async function switchPack(name: string) {
+    if (name === active || busy) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const res = await fetch('/api/peon/packs/use', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      }).then((r) => r.json());
+      if (res.ok) {
+        setActive(name);
+        setStatus('Switched to ' + (packs.find((p) => p.name === name)?.label ?? name));
+        setTimeout(() => setStatus(null), 2500);
+      } else {
+        setStatus('Error: ' + (res.error || 'unknown'));
+      }
+    } catch (e: any) {
+      setStatus('Error: ' + e.message);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div class="flex items-center gap-3 px-1 py-3 border-t border-[var(--color-border)]">
+      <Volume2 size={14} class="text-[var(--color-text-faint)] shrink-0" />
+      <label class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] shrink-0">Sound pack</label>
+      <select
+        value={active ?? ''}
+        onChange={(e) => switchPack((e.target as HTMLSelectElement).value)}
+        disabled={busy}
+        class="flex-1 bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] disabled:opacity-50 cursor-pointer"
+      >
+        {packs.map((p) => (
+          <option key={p.name} value={p.name}>{p.label}{p.active ? ' ✓' : ''}</option>
+        ))}
+      </select>
+      {status && <span class="text-[11px] text-[var(--color-text-muted)] shrink-0">{status}</span>}
+    </div>
+  );
 }
 
 function ModeCard({ icon, title, description, onClick }: any) {
@@ -328,7 +386,7 @@ function TextPane() {
           {list.map((m) => (
             <a
               key={m.id}
-              href={legacyUrl(`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(m.id)}&chatId=${encodeURIComponent(chatId)}`)}
+              href={legacyUrl(`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(m.id)}&chatId=${encodeURIComponent(chatId)}${m.ended_at !== null ? '&archive=1' : ''}`)}
               class="block bg-[var(--color-card)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] rounded-lg p-3 transition-colors"
             >
               <div class="flex items-center gap-2 mb-1">
@@ -442,7 +500,7 @@ function DispatchForm({ onChange }: { onChange: () => void }) {
           <DispatchTab label="Daily.co (Pipecat + Gemini)" active={tab === 'daily'} onClick={() => setTab('daily')} />
         </div>
         <div class="p-4 space-y-3">
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Agent">
               <select
                 value={agent}

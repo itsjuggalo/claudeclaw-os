@@ -369,7 +369,7 @@ function FileHistoryList({
   }
   return (
     <div class="flex h-full">
-      <div class="w-[360px] shrink-0 overflow-y-auto border-r border-[var(--color-border)]">
+      <div class="w-[min(360px,45vw)] shrink-0 overflow-y-auto border-r border-[var(--color-border)]">
         <div class="px-4 py-2.5 text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] border-b border-[var(--color-border)]">
           {versions.length} version{versions.length === 1 ? '' : 's'}
         </div>
