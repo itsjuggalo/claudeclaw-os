@@ -34,6 +34,8 @@ type Look = {
   builtin?: boolean; available: boolean; missing: string[];
 };
 let looksCache: Look[] | null = null;
+interface HfModel { id: string; name: string; kind: 'image' | 'video'; }
+let hfModelCache: HfModel[] | null = null;
 
 // ── localStorage preference helpers ──────────────────────────────────────────
 function loadPref<T>(key: string, def: T): T {
@@ -49,7 +51,7 @@ interface GenResult { ok: boolean; file?: string; url?: string; notes?: string; 
 const fmtMs = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 // Expected durations (ms) used to ease the perceived-progress bar toward ~95%.
 // Generous (cold-load) values so the bar keeps creeping instead of stalling at 95%.
-const EST_MS: Record<string, number> = { 'sdxl-turbo': 16000, 'sd-turbo': 10000, banana: 25000, comfyui: 75000, ltx: 200000 };
+const EST_MS: Record<string, number> = { 'sdxl-turbo': 16000, 'sd-turbo': 10000, banana: 25000, comfyui: 75000, ltx: 200000, higgsfield: 45000 };
 // Asymptotic ease toward 0.95 over the engine's expected duration (never hits 1 until done).
 const estProgress = (elapsedMs: number, tauMs: number) => 0.95 * (1 - Math.exp(-elapsedMs / (tauMs * 0.6)));
 
@@ -383,7 +385,7 @@ export function Create() {
   );
 
   // image engine
-  type ImgEngine = 'banana' | 'local' | 'comfyui';
+  type ImgEngine = 'banana' | 'local' | 'comfyui' | 'higgsfield';
   // Pollinations removed (it became a paid/402 service). Default to free local gen;
   // sanitize any saved 'pollinations' preference back to a free engine.
   const [imgEngine, setImgEngine] = useState<ImgEngine>(() => {
@@ -407,6 +409,16 @@ export function Create() {
 
   // local state
   const [localModel, setLocalModel] = useState(() => loadPref('localModel', 'sdxl-turbo'));
+
+  // higgsfield state (CLOUD, via the `higgsfield` CLI — bills Mike's subscription).
+  // Models are fetched from /api/higgsfield/models (the CLI catalogue), split into
+  // image vs video. hfImgModel/hfVidModel are the selected ids per tab.
+  const [hfModels, setHfModels] = useState<HfModel[] | null>(hfModelCache);
+  const [hfModelsErr, setHfModelsErr] = useState('');
+  const [hfImgModel, setHfImgModel] = useState(() => loadPref('hfImgModel', ''));
+  const [hfVidModel, setHfVidModel] = useState(() => loadPref('hfVidModel', ''));
+  const [hfAspect, setHfAspect] = useState(() => loadPref('hfAspect', '16:9'));
+  const [hfRes, setHfRes] = useState(() => loadPref('hfRes', '2k'));
 
   // comfyui state
   // Trigger words the user explicitly removed from the auto-add list.
@@ -503,6 +515,13 @@ export function Create() {
     }
   }, [imgEngine]);
 
+  // ── Higgsfield: persist selections + fetch the model catalogue once (cached at
+  // module level). Fetched whenever either tab selects the Higgsfield engine.
+  useEffect(() => { savePref('hfImgModel', hfImgModel); }, [hfImgModel]);
+  useEffect(() => { savePref('hfVidModel', hfVidModel); }, [hfVidModel]);
+  useEffect(() => { savePref('hfAspect', hfAspect); }, [hfAspect]);
+  useEffect(() => { savePref('hfRes', hfRes); }, [hfRes]);
+
   // batch state
   const [batchCount, setBatchCount] = useState(1);
 
@@ -528,7 +547,7 @@ export function Create() {
   const [promptHist, setPromptHist] = useState<string[]>(loadPromptHistory());
 
   // video state
-  const [vidEngine, setVidEngine] = useState<'local' | 'fvm'>('local');
+  const [vidEngine, setVidEngine] = useState<'local' | 'fvm' | 'higgsfield'>('local');
   const [vidPrompt, setVidPrompt] = useState('');
   const [vidBusy, setVidBusy] = useState(false);
   const [vidResult, setVidResult] = useState<GenResult | null>(null);
@@ -552,6 +571,26 @@ export function Create() {
 
   // ── Effects below ALL state declarations (dep arrays must not hit the TDZ) ──
   useEffect(() => { savePref('localSteps', localSteps); }, [localSteps]);
+
+  // Higgsfield: fetch the model catalogue once either tab selects it (deps touch
+  // vidEngine, so this must live below all state declarations).
+  useEffect(() => {
+    if (imgEngine !== 'higgsfield' && vidEngine !== 'higgsfield') return;
+    if (hfModelCache) { setHfModels(hfModelCache); return; }
+    fetch(withTok('/api/higgsfield/models'))
+      .then(r => r.json())
+      .then((d: { ok?: boolean; models?: HfModel[]; error?: string }) => {
+        if (d?.ok && d.models?.length) { hfModelCache = d.models; setHfModels(d.models); setHfModelsErr(''); }
+        else setHfModelsErr(d?.error || 'could not load Higgsfield models');
+      })
+      .catch((e) => setHfModelsErr(String(e)));
+  }, [imgEngine, vidEngine]);
+  // Default the per-tab model once the catalogue arrives.
+  useEffect(() => {
+    if (!hfModels) return;
+    if (!hfImgModel) { const m = hfModels.find(x => x.kind === 'image'); if (m) setHfImgModel(m.id); }
+    if (!hfVidModel) { const m = hfModels.find(x => x.kind === 'video'); if (m) setHfVidModel(m.id); }
+  }, [hfModels]);
 
   // Image: drive the perceived-progress bar + elapsed timer while generating.
   useEffect(() => {
@@ -627,8 +666,13 @@ export function Create() {
   // safe = server preflight says go (default true until first poll returns, so
   // the UI never blocks spuriously before health loads). The server still gates.
   const safe = !sys || sys.preflight?.ok !== false;
-  const canImg = prompt.trim().length > 0 && !busy && safe && (imgEngine !== 'comfyui' || comfyCheckpoint !== '' || !!activeLook);
-  const canVid = vidPrompt.trim().length > 0 && !vidBusy && safe;
+  // Higgsfield is CLOUD — it never touches the local GPU, so it is NOT gated by
+  // `safe` (the local preflight verdict); it just needs a model selected.
+  const canImg = prompt.trim().length > 0 && !busy
+    && (imgEngine === 'higgsfield' ? hfImgModel !== '' : safe)
+    && (imgEngine !== 'comfyui' || comfyCheckpoint !== '' || !!activeLook);
+  const canVid = vidPrompt.trim().length > 0 && !vidBusy
+    && (vidEngine === 'higgsfield' ? hfVidModel !== '' : safe);
 
   // ── Clear results when switching engine or tab ────────────────────────────
   useEffect(() => { setResult(null); setBatchResults([]); setLastMs(null); }, [tab, imgEngine]);
@@ -639,7 +683,7 @@ export function Create() {
   }
 
   // ── Max batch counts per engine
-  const maxBatch = imgEngine === 'banana' ? 5 : imgEngine === 'comfyui' ? 1 : 3;
+  const maxBatch = imgEngine === 'banana' ? 5 : (imgEngine === 'comfyui' || imgEngine === 'higgsfield') ? 1 : 3;
 
   // ── Selected base model + the trigger words we'll auto-add ─────────────────
   const selectedCkpt = comfyModels?.checkpoints?.find(c => c.name === comfyCheckpoint);
@@ -775,6 +819,11 @@ export function Create() {
           r = await pollComfy(kick.prompt_id, kick.seed);
         }
         setResult(r);
+      } else if (imgEngine === 'higgsfield') {
+        r = await apiPost<GenResult>('/api/gallery/generate', {
+          source: 'higgsfield', prompt: prompt.trim(), model: hfImgModel, aspectRatio: hfAspect, resolution: hfRes,
+        });
+        setResult(r);
       } else if (batchCount > 1) {
         const body: Record<string, unknown> = { prompt: prompt.trim(), count: batchCount };
         if (imgEngine === 'banana') { body.source = 'banana'; body.model = bnModel; body.aspectRatio = bnAspect; body.size = bnSize; }
@@ -845,9 +894,13 @@ export function Create() {
       ? override.seed
       : (vidSeedVal.trim() !== '' && Number.isFinite(Number(vidSeedVal)) ? Number(vidSeedVal) : undefined);
     try {
-      const r = await apiPost<GenResult>('/api/gallery/generate-video', {
-        prompt: vidPrompt.trim(), ...(seedNum !== undefined ? { seed: seedNum } : {}),
-      });
+      const r = vidEngine === 'higgsfield'
+        ? await apiPost<GenResult>('/api/gallery/generate-video', {
+            source: 'higgsfield', prompt: vidPrompt.trim(), model: hfVidModel, aspectRatio: hfAspect, resolution: hfRes,
+          })
+        : await apiPost<GenResult>('/api/gallery/generate-video', {
+            prompt: vidPrompt.trim(), ...(seedNum !== undefined ? { seed: seedNum } : {}),
+          });
       setVidResult(r);
       if (r.ok) {
         setVidLastMs(Date.now() - start);
@@ -965,7 +1018,9 @@ export function Create() {
   const imgPct = comfyStep ? comfyStep.value / comfyStep.max : progress;
   const imgBarLabel = imgEngine === 'comfyui'
     ? (comfyStep ? `Sampling… Step ${comfyStep.value}/${comfyStep.max}` : 'ComfyUI starting…')
-    : imgEngine === 'banana' ? 'Nano Banana working…' : 'Generating on the GPU…';
+    : imgEngine === 'banana' ? 'Nano Banana working…'
+    : imgEngine === 'higgsfield' ? 'Higgsfield rendering in the cloud…'
+    : 'Generating on the GPU…';
 
   return (
     <div class="flex flex-col h-full">
@@ -1384,6 +1439,7 @@ export function Create() {
                       <option value="local">Local — SDXL-Turbo (free, on-GPU)</option>
                       <option value="banana">Nano Banana — Gemini (paid)</option>
                       <option value="comfyui">ComfyUI — your Civitai models (free, on-GPU, best quality)</option>
+                      <option value="higgsfield">Higgsfield — Sora/Kling/Flux/Soul (cloud · subscription)</option>
                     </select>
                   </div>
 
@@ -1450,6 +1506,33 @@ export function Create() {
                     </>
                   )}
 
+                  {/* Higgsfield (cloud) — model + aspect + resolution */}
+                  {imgEngine === 'higgsfield' && (
+                    <>
+                      <div>
+                        <div style={S.label}>MODEL</div>
+                        <select value={hfImgModel} onChange={(e) => setHfImgModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '260px' }}>
+                          {hfModels === null && <option value="">Loading…</option>}
+                          {hfModels?.filter(m => m.kind === 'image').map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                          {hfModels && !hfModels.some(m => m.kind === 'image') && <option value="">No image models</option>}
+                        </select>
+                        {hfModelsErr && <div style={{ fontSize: '10px', color: '#ef5350', fontFamily: MONO, marginTop: '4px' }}>{hfModelsErr}</div>}
+                      </div>
+                      <div>
+                        <div style={S.label}>ASPECT</div>
+                        <select value={hfAspect} onChange={(e) => setHfAspect((e.target as HTMLSelectElement).value)} disabled={busy} style={S.select}>
+                          {['1:1', '16:9', '9:16', '4:3', '3:4', '21:9'].map(a => <option key={a} value={a}>{a}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <div style={S.label}>RESOLUTION</div>
+                        <select value={hfRes} onChange={(e) => setHfRes((e.target as HTMLSelectElement).value)} disabled={busy} style={S.select}>
+                          {['720p', '1080p', '1k', '2k', '4k'].map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                      </div>
+                    </>
+                  )}
+
                   {/* Aspect ratio (Banana only) */}
                   {imgEngine === 'banana' && (
                     <div>
@@ -1475,8 +1558,8 @@ export function Create() {
                     </div>
                   )}
 
-                  {/* Batch count — hidden for ComfyUI since it only supports single generation */}
-                  {imgEngine !== 'comfyui' && (
+                  {/* Batch count — hidden for ComfyUI/Higgsfield (single generation only) */}
+                  {imgEngine !== 'comfyui' && imgEngine !== 'higgsfield' && (
                     <div>
                       <div style={S.label}>BATCH (1–{maxBatch})</div>
                       <select value={batchCount} onChange={(e) => setBatchCount(Number((e.target as HTMLSelectElement).value))} disabled={busy} style={{ ...S.select, minWidth: '80px' }}>
@@ -1485,8 +1568,8 @@ export function Create() {
                     </div>
                   )}
 
-                  {/* Seed — reproduce/vary an output (Banana has no seed control) */}
-                  {imgEngine !== 'banana' && (
+                  {/* Seed — reproduce/vary an output (Banana/Higgsfield have no seed control) */}
+                  {imgEngine !== 'banana' && imgEngine !== 'higgsfield' && (
                     <div>
                       <div style={S.label}>SEED</div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1769,11 +1852,30 @@ export function Create() {
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '16px' }}>
                 <div>
                   <div style={S.label}>ENGINE</div>
-                  <select value={vidEngine} onChange={(e) => setVidEngine((e.target as HTMLSelectElement).value as 'local' | 'fvm')} style={{ ...S.select, minWidth: '300px' }}>
+                  <select value={vidEngine} onChange={(e) => setVidEngine((e.target as HTMLSelectElement).value as 'local' | 'fvm' | 'higgsfield')} style={{ ...S.select, minWidth: '300px' }}>
                     <option value="local">Local — LTX-Video (free, on-GPU)</option>
+                    <option value="higgsfield">Higgsfield — Sora/Kling/Veo (cloud · subscription)</option>
                     <option value="fvm">Free Video Maker (Veo / Sora / Replicate / fal · paid)</option>
                   </select>
                 </div>
+                {vidEngine === 'higgsfield' && (
+                  <div>
+                    <div style={S.label}>MODEL</div>
+                    <select value={hfVidModel} onChange={(e) => setHfVidModel((e.target as HTMLSelectElement).value)} disabled={vidBusy} style={{ ...S.select, minWidth: '240px' }}>
+                      {hfModels === null && <option value="">Loading…</option>}
+                      {hfModels?.filter(m => m.kind === 'video').map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      {hfModels && !hfModels.some(m => m.kind === 'video') && <option value="">No video models</option>}
+                    </select>
+                  </div>
+                )}
+                {vidEngine === 'higgsfield' && (
+                  <div>
+                    <div style={S.label}>ASPECT</div>
+                    <select value={hfAspect} onChange={(e) => setHfAspect((e.target as HTMLSelectElement).value)} disabled={vidBusy} style={S.select}>
+                      {['16:9', '9:16', '1:1', '4:3', '21:9'].map(a => <option key={a} value={a}>{a}</option>)}
+                    </select>
+                  </div>
+                )}
               </div>
 
               {vidEngine === 'local' ? (
@@ -1816,6 +1918,28 @@ export function Create() {
                     <ResultBox result={vidResult} kind="video" prompt={vidPrompt}
                       onRegenerate={() => genVideo()}
                       onNewSeed={() => genVideo({ seed: undefined })}
+                    />
+                  )}
+                </>
+              ) : vidEngine === 'higgsfield' ? (
+                <>
+                  <div style={S.card}>
+                    <div style={S.label}>PROMPT</div>
+                    <textarea value={vidPrompt} onInput={(e) => setVidPrompt((e.target as HTMLTextAreaElement).value)} placeholder="A golden bull charging through a glowing stock chart, cinematic, smooth camera move" rows={4} disabled={vidBusy} style={S.ta} />
+                    {hfModelsErr && <div style={{ fontSize: '11px', color: '#ef5350', fontFamily: MONO, marginTop: '8px' }}>{hfModelsErr}</div>}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '16px' }}>
+                      <button type="button" onClick={() => genVideo()} disabled={!canVid} style={genBtnStyle(canVid)}>{vidBusy ? <><span class="cc-spin">⟳</span> Rendering {fmtMs(vidElapsedMs)}</> : '✦ Generate Video'}</button>
+                      {!vidBusy && vidLastMs !== null && vidResult?.ok
+                        ? <span style={{ fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>✓ Rendered in {fmtMs(vidLastMs)}</span>
+                        : <span style={{ fontSize: '12px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
+                            {vidBusy ? 'Higgsfield is rendering in the cloud — ~1–3 min.' : 'Cloud render via your Higgsfield subscription. No local GPU needed.'}
+                          </span>}
+                    </div>
+                    {vidBusy && <ProgressBar pct={vidProgress} label="Higgsfield rendering in the cloud…" sub={`${fmtMs(vidElapsedMs)} elapsed`} />}
+                  </div>
+                  {vidResult && (
+                    <ResultBox result={vidResult} kind="video" prompt={vidPrompt}
+                      onRegenerate={() => genVideo()}
                     />
                   )}
                 </>

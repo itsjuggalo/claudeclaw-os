@@ -21,6 +21,7 @@ import { getSkoolBuilds, readSkoolArtifact } from './skoolbuilds.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo } from './localgen.js';
+import { generateHiggsfield, listHiggsfieldModels } from './higgsfield.js';
 import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
 import { readManifest, metaFor, upsertMeta, mergeMeta, normalizeFamily, loraCompat, readCurated, enrichedMetaFor, familyFromFilename, ModelMeta } from './modelmeta.js';
 import { listLooks, saveUserLook, deleteUserLook } from './looks.js';
@@ -2050,7 +2051,15 @@ init();
     const prompt = String(body?.prompt ?? '');
     const source = typeof body?.source === 'string' ? body.source : 'banana';
     let result;
-    if (source === 'local') {
+    if (source === 'higgsfield') {
+      result = await generateHiggsfield({
+        kind: 'image',
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        resolution: typeof body?.resolution === 'string' ? body.resolution : undefined,
+      });
+    } else if (source === 'local') {
       result = await generateLocalImage({
         prompt,
         model: typeof body?.model === 'string' ? body.model : undefined,
@@ -2123,6 +2132,20 @@ init();
   // Local FREE video (diffusers LTX-Video on the GPU) → renders/ = gallery video section.
   app.post('/api/gallery/generate-video', async (c) => {
     const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    // Higgsfield is CLOUD — it never touches the local GPU, so skip the GPU
+    // preflight gate (which only guards the local LTX subprocess).
+    if (body?.source === 'higgsfield') {
+      const result = await generateHiggsfield({
+        kind: 'video',
+        prompt: String(body?.prompt ?? ''),
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        resolution: typeof body?.resolution === 'string' ? body.resolution : undefined,
+      });
+      if (result.ok) invalidateGalleryCache();
+      notify(result.ok ? `✅ Higgsfield video ready: ${result.file}` : `⚠️ Higgsfield video failed: ${result.error}`);
+      return c.json(result);
+    }
     // Safety gate BEFORE spawning the long (up to 20-min) LTX subprocess so the
     // phone gets an instant "blocked: <reason>" instead of waiting. LTX on the
     // 8GB GPU is the box-freeze vector — localgen.ts also gates + locks it.
@@ -2137,6 +2160,13 @@ init();
     if (result.ok) invalidateGalleryCache();
     notify(result.ok ? `✅ Video ready: ${result.file}` : `⚠️ Video gen failed: ${result.error}`);
     return c.json(result);
+  });
+
+  // Higgsfield model catalogue for the Create-page dropdowns (cached 5 min).
+  // Shells `higgsfield model list --json` (image + --video) via the CLI.
+  app.get('/api/higgsfield/models', async (c) => {
+    const r = await listHiggsfieldModels();
+    return c.json(r, r.ok ? 200 : 503);
   });
 
   // ── Hermes Agent workspace ────────────────────────────────────────────────
