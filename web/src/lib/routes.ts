@@ -68,6 +68,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-kronos',   label: 'Kronos',          section: 'mc', icon: TrendingUp,  href: 'http://100.91.39.122:7070' },
   { path: '/ext-vibe',     label: 'Vibe Trading',    section: 'mc', icon: Workflow,    href: 'http://100.91.39.122:8899' },
   { path: '/ext-hub',      label: 'Mobile Hub',      section: 'mc', icon: Radio,       href: 'https://100.91.39.122:8443' },
+  { path: '/ext-n8n',      label: 'n8n',             section: 'mc', icon: Workflow,    href: 'http://100.91.39.122:5678' },
 
   // Ops & Admin — non-trading pages parked here from the trading apps (MissionCtrl
   // :3000 + ARIES :1337). Sidebar links only; the source pages still live in their
