@@ -5,11 +5,11 @@ import {
   Settings, Smartphone, Wallet, Images, Wand2,
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
-  Coins, Gauge,
+  Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
-export type RouteSection = 'workspace' | 'intelligence' | 'collaborate' | 'configure' | 'mc' | 'trade';
+export type RouteSection = 'workspace' | 'intelligence' | 'collaborate' | 'configure' | 'mc' | 'trade' | 'ops';
 
 export interface RouteDef {
   path: string;
@@ -64,6 +64,24 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-kronos',   label: 'Kronos',          section: 'mc', icon: TrendingUp,  href: 'http://100.91.39.122:7070' },
   { path: '/ext-vibe',     label: 'Vibe Trading',    section: 'mc', icon: Workflow,    href: 'http://100.91.39.122:8899' },
   { path: '/ext-hub',      label: 'Mobile Hub',      section: 'mc', icon: Radio,       href: 'https://100.91.39.122:8443' },
+
+  // Ops & Admin — non-trading pages parked here from the trading apps (MissionCtrl
+  // :3000 + ARIES :1337). Sidebar links only; the source pages still live in their
+  // apps. Open in a new tab. (Relocated 2026-06-13 to keep the trading apps lean.)
+  { path: '/ext-mc-projects',    label: 'Projects',         section: 'ops', icon: FolderKanban,   href: 'http://100.91.39.122:3000/?page=projects' },
+  { path: '/ext-mc-sessions',    label: 'Sessions',         section: 'ops', icon: MessageSquare,  href: 'http://100.91.39.122:3000/?page=sessions' },
+  { path: '/ext-mc-memory',      label: 'MC Memory',        section: 'ops', icon: Brain,          href: 'http://100.91.39.122:3000/?page=memory' },
+  { path: '/ext-mc-memgraph',    label: 'Memory Graph',     section: 'ops', icon: Network,        href: 'http://100.91.39.122:3000/?page=memory-graph' },
+  { path: '/ext-mc-skills',      label: 'Skills',           section: 'ops', icon: Database,       href: 'http://100.91.39.122:3000/?page=skills' },
+  { path: '/ext-mc-usage',       label: 'MC Usage',         section: 'ops', icon: Activity,       href: 'http://100.91.39.122:3000/?page=usage' },
+  { path: '/ext-mc-pm2',         label: 'PM2 Control',      section: 'ops', icon: Server,         href: 'http://100.91.39.122:3000/?page=pm2-control' },
+  { path: '/ext-mc-docs',        label: 'MC Docs',          section: 'ops', icon: BookOpen,       href: 'http://100.91.39.122:3000/?page=docs' },
+  { path: '/ext-mc-office',      label: 'MC Office',        section: 'ops', icon: Building2,      href: 'http://100.91.39.122:3000/?page=office' },
+  { path: '/ext-mc-tasks',       label: 'MC Tasks',         section: 'ops', icon: ListTodo,       href: 'http://100.91.39.122:3000/?page=tasks' },
+  { path: '/ext-mc-agents',      label: 'MC Agents',        section: 'ops', icon: Bot,            href: 'http://100.91.39.122:3000/?page=agents' },
+  { path: '/ext-aries-log',      label: 'Mission Log',      section: 'ops', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
+  { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'ops', icon: Settings,       href: 'http://100.91.39.122:1337/settings' },
+  { path: '/ext-aries-system',   label: 'System Analytics', section: 'ops', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
 ];
 
 export const SECTION_LABEL: Record<RouteSection, string> = {
@@ -73,6 +91,7 @@ export const SECTION_LABEL: Record<RouteSection, string> = {
   collaborate:  'Collaborate',
   configure:    'Configure',
   mc:           'MC Apps',
+  ops:          'Ops & Admin',
 };
 
 export const DEFAULT_ROUTE = '/mission';
