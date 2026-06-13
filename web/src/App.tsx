@@ -8,6 +8,7 @@ import { Placeholder } from '@/pages/Placeholder';
 import { MissionControl } from '@/pages/MissionControl';
 import { Memories } from '@/pages/Memories';
 import { HiveMind } from '@/pages/HiveMind';
+import { KnowledgeGraph } from '@/pages/KnowledgeGraph';
 import { McKb } from '@/pages/McKb';
 import { Journal } from '@/pages/Journal';
 import { Agents } from '@/pages/Agents';
@@ -71,6 +72,7 @@ export function App() {
           <Route path="/chat"><Chat /></Route>
           <Route path="/memories"><Memories /></Route>
           <Route path="/hive"><HiveMind /></Route>
+          <Route path="/knowledge-graph"><KnowledgeGraph /></Route>
           <Route path="/mckb"><McKb /></Route>
           <Route path="/databases"><Databases /></Route>
           <Route path="/databases/:id"><DatabaseDetail /></Route>

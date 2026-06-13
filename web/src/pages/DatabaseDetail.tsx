@@ -742,6 +742,21 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
     void runQuery(q);
   }
 
+  // Curated "insight" queries that surface otherwise-dark tables as instant
+  // answers (hive-mind efficiency plan 2026-06-13). Keyed by db id; only shown
+  // for DBs that have presets. SELECT-only, schema-verified against live data.
+  const INSIGHTS: Record<string, { label: string; sql: string }[]> = {
+    'desk-pipeline': [
+      { label: 'Win rate by source',
+        sql: "SELECT source, side, COUNT(*) n, ROUND(100.0*AVG(CASE WHEN forward_5d_aligned THEN 1 ELSE 0 END),1) hit_pct, ROUND(AVG(forward_5d_pct),2) avg_fwd5d FROM historical_outcomes GROUP BY source, side ORDER BY n DESC" },
+      { label: 'Veto accuracy (was the veto right?)',
+        sql: "SELECT veto_reason, COUNT(*) n, ROUND(AVG(outcome_opt_pnl_pct),1) avg_pnl_if_taken, SUM(CASE WHEN outcome_opt_pnl_pct>0 THEN 1 ELSE 0 END) would_have_won FROM vetoed_candidates WHERE outcome_opt_pnl_pct IS NOT NULL GROUP BY veto_reason ORDER BY n DESC" },
+      { label: 'Factor contribution (what drives picks)',
+        sql: "SELECT factor_name, COUNT(*) n, ROUND(AVG(contribution),3) avg_contribution, ROUND(AVG(weight),3) avg_weight FROM decipher_audit GROUP BY factor_name ORDER BY ABS(AVG(contribution)) DESC LIMIT 20" },
+    ],
+  };
+  const presets = INSIGHTS[item.id] || [];
+
   return (
     <>
       <PageHeader
@@ -792,6 +807,30 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 ))}
               </div>
             </>
+          )}
+
+          {presets.length > 0 && (
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '6px' }}>
+                Insights · one-click
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {presets.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => { setSql(p.sql); void runQuery(p.sql); }}
+                    style={{
+                      fontSize: '12px', padding: '5px 10px', borderRadius: '999px',
+                      background: 'var(--color-card)', border: '1px solid var(--color-accent)',
+                      color: 'var(--color-text)', cursor: 'pointer',
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
 
           <textarea

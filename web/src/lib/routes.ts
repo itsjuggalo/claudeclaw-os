@@ -37,6 +37,7 @@ export const ROUTES: RouteDef[] = [
   // Intelligence — knowledge / AI
   { path: '/memories',   label: 'Memories',        section: 'intelligence', icon: Brain,         shortcut: 'g e' },
   { path: '/hive',       label: 'Hive Mind',       section: 'intelligence', icon: Network,       shortcut: 'g h' },
+  { path: '/knowledge-graph', label: 'Knowledge Graph', section: 'intelligence', icon: Workflow              },
   { path: '/databases',  label: 'Databases',       section: 'intelligence', icon: Database                      },
   { path: '/journal',    label: 'Journal',         section: 'intelligence', icon: BookOpen,      shortcut: 'g j' },
   { path: '/audit',      label: 'Audit',           section: 'intelligence', icon: ShieldCheck                   },
