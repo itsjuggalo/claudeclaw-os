@@ -21,7 +21,7 @@ const DEFAULT_WORKSPACE_NAME = 'ClaudeClaw';
 // Secondary sections start collapsed so the nav stays short out of the box;
 // the trader-focused groups (workspace / intelligence / trade) stay open. The
 // user's own toggles override this and persist server-side.
-const DEFAULT_COLLAPSED: string[] = ['collaborate', 'configure', 'mc', 'ops'];
+const DEFAULT_COLLAPSED: string[] = ['collaborate', 'system', 'mc', 'ops'];
 
 // hotkey mod is 'auto' by default; resolveModKey() consults navigator.platform
 // when this is 'auto' so Mac users get ⌘ and everyone else gets Ctrl.

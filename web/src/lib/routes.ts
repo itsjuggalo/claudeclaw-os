@@ -9,7 +9,7 @@ import {
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
-export type RouteSection = 'workspace' | 'intelligence' | 'collaborate' | 'configure' | 'mc' | 'trade' | 'ops';
+export type RouteSection = 'workspace' | 'studio' | 'intelligence' | 'collaborate' | 'configure' | 'system' | 'mc' | 'trade' | 'ops';
 
 export interface RouteDef {
   path: string;
@@ -29,27 +29,21 @@ export const ROUTES: RouteDef[] = [
   { path: '/scheduled',  label: 'Scheduled',       section: 'workspace',    icon: ListTodo,      shortcut: 'g s' },
   { path: '/agents',     label: 'Agents',          section: 'workspace',    icon: Users,         shortcut: 'g a' },
   { path: '/chat',       label: 'Chat',            section: 'workspace',    icon: MessageSquare, shortcut: 'g c' },
-  { path: '/create',     label: 'Create',          section: 'workspace',    icon: Wand2,         shortcut: 'g n' },
 
+  // Studio — creative / media
+  { path: '/create',     label: 'Create',          section: 'studio',       icon: Wand2,         shortcut: 'g n' },
+  { path: '/gallery',    label: 'Gallery',         section: 'studio',       icon: Images,        shortcut: 'g i' },
+
+  // Intelligence — knowledge / AI
   { path: '/memories',   label: 'Memories',        section: 'intelligence', icon: Brain,         shortcut: 'g e' },
   { path: '/hive',       label: 'Hive Mind',       section: 'intelligence', icon: Network,       shortcut: 'g h' },
   { path: '/databases',  label: 'Databases',       section: 'intelligence', icon: Database                      },
   { path: '/journal',    label: 'Journal',         section: 'intelligence', icon: BookOpen,      shortcut: 'g j' },
-  { path: '/usage',      label: 'Usage',           section: 'intelligence', icon: Activity,      shortcut: 'g u' },
-  { path: '/token-usage', label: 'Token Usage',    section: 'intelligence', icon: Coins,         shortcut: 'g k' },
   { path: '/audit',      label: 'Audit',           section: 'intelligence', icon: ShieldCheck                   },
-  { path: '/wallets',    label: 'Wallets',         section: 'intelligence', icon: Wallet,        shortcut: 'g $' },
-  { path: '/gallery',    label: 'Gallery',         section: 'intelligence', icon: Images,        shortcut: 'g i' },
   { path: '/skool-builds', label: 'Skool Builds',  section: 'intelligence', icon: GraduationCap                 },
   { path: '/hermes',     label: 'Hermes',          section: 'intelligence', icon: Bot,           shortcut: 'g r' },
 
-  { path: '/warroom',    label: 'War Room',        section: 'collaborate',  icon: Swords,        shortcut: 'g w' },
-  { path: '/office',     label: 'Claude Office',   section: 'collaborate',  icon: Building2,     shortcut: 'g o' },
-  { path: '/peon',       label: 'Peon Ping',       section: 'collaborate',  icon: Smartphone                },
-
-  { path: '/settings',   label: 'Settings',        section: 'configure',    icon: Settings                  },
-
-  // Trade Desk — live trading intelligence
+  // Trade Desk — live trading / finance
   { path: '/trade-desk',          label: 'Trade Desk',    section: 'trade', icon: TrendingUp,  shortcut: 'g t' },
   { path: '/equity',              label: 'Equity Mgmt',   section: 'trade', icon: Gauge,       shortcut: 'g q' },
   { path: '/trade-desk/signals',  label: 'Signal Feed',   section: 'trade', icon: Activity               },
@@ -57,6 +51,16 @@ export const ROUTES: RouteDef[] = [
   { path: '/trade-desk/portfolio',label: 'Portfolio AI',  section: 'trade', icon: Briefcase              },
   { path: '/trade-desk/flow-winners', label: 'Flow Winners', section: 'trade', icon: Trophy             },
   { path: '/lewis-trading',       label: 'Lewis Trading', section: 'trade', icon: GraduationCap           },
+  { path: '/wallets',    label: 'Wallets',         section: 'trade',        icon: Wallet,        shortcut: 'g $' },
+
+  { path: '/warroom',    label: 'War Room',        section: 'collaborate',  icon: Swords,        shortcut: 'g w' },
+  { path: '/office',     label: 'Claude Office',   section: 'collaborate',  icon: Building2,     shortcut: 'g o' },
+  { path: '/peon',       label: 'Peon Ping',       section: 'collaborate',  icon: Smartphone                },
+
+  // System — metering / config
+  { path: '/usage',      label: 'Usage',           section: 'system',       icon: Activity,      shortcut: 'g u' },
+  { path: '/token-usage', label: 'Token Usage',    section: 'system',       icon: Coins,         shortcut: 'g k' },
+  { path: '/settings',   label: 'Settings',        section: 'system',       icon: Settings                  },
 
   // Mission Control quick-launch (external links, open in new tab)
   { path: '/ext-aries',    label: 'ARIES',           section: 'mc', icon: Rocket,      href: 'http://100.91.39.122:1337' },
@@ -86,10 +90,12 @@ export const ROUTES: RouteDef[] = [
 
 export const SECTION_LABEL: Record<RouteSection, string> = {
   workspace:    'Workspace',
+  studio:       'Studio',
   intelligence: 'Intelligence',
   trade:        'Trade Desk',
   collaborate:  'Collaborate',
   configure:    'Configure',
+  system:       'System',
   mc:           'MC Apps',
   ops:          'Ops & Admin',
 };
