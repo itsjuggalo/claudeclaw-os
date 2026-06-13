@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter-preact';
-import { Search, ChevronDown, X, Monitor, Smartphone } from 'lucide-preact';
+import { Search, ChevronDown, X, Monitor, Smartphone, ChevronsDownUp, ChevronsUpDown } from 'lucide-preact';
 import { useState } from 'preact/hooks';
 import { ROUTES, SECTION_LABEL, type RouteSection } from '@/lib/routes';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -14,6 +14,7 @@ import { sidebarOpen, closeSidebar } from '@/lib/sidebar';
 import {
   collapsedSections,
   toggleSectionCollapsed,
+  setCollapsedSections,
   workspaceName,
   modKeyLabel,
 } from '@/lib/personalization';
@@ -25,6 +26,10 @@ export function Sidebar() {
   const collapsed = collapsedSections.value;
   const modLabel = modKeyLabel();
   const open = sidebarOpen.value;
+
+  // Sections that actually render (have ≥1 route). Used by collapse-all.
+  const liveSections = SECTIONS.filter((s) => ROUTES.some((r) => r.section === s));
+  const allCollapsed = liveSections.length > 0 && liveSections.every((s) => collapsed.has(s));
 
   // Mobile: fixed drawer that slides in from the left. Desktop (>=md):
   // always-visible inline column. Tailwind's `md:` prefix flips between
@@ -51,15 +56,26 @@ export function Sidebar() {
         <X size={16} />
       </button>
 
-      <button
-        type="button"
-        onClick={() => { commandPaletteOpen.value = true; closeSidebar(); }}
-        class="mx-3 mt-1 mb-2 flex items-center gap-2 px-3 py-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors text-[13px]"
-      >
-        <Search size={15} />
-        <span>Search</span>
-        <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">{modLabel}K</span>
-      </button>
+      <div class="mx-3 mt-1 mb-2 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => { commandPaletteOpen.value = true; closeSidebar(); }}
+          class="flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors text-[13px]"
+        >
+          <Search size={15} />
+          <span>Search</span>
+          <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">{modLabel}K</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setCollapsedSections(allCollapsed ? [] : [...liveSections])}
+          title={allCollapsed ? 'Expand all sections' : 'Collapse all sections'}
+          aria-label={allCollapsed ? 'Expand all sections' : 'Collapse all sections'}
+          class="shrink-0 p-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+        >
+          {allCollapsed ? <ChevronsUpDown size={15} /> : <ChevronsDownUp size={15} />}
+        </button>
+      </div>
 
       <nav class="flex-1 overflow-y-auto px-2 pb-3">
         {SECTIONS.map((section) => {

@@ -99,6 +99,14 @@ export function toggleSectionCollapsed(name: string): void {
   debouncedSave('sidebar_collapsed_sections', JSON.stringify([...next]));
 }
 
+/** Bulk set the collapsed-section set — backs the collapse-all / expand-all
+ *  control. Pass [] to expand everything. */
+export function setCollapsedSections(names: string[]): void {
+  const next = new Set(names);
+  collapsedSections.value = next;
+  debouncedSave('sidebar_collapsed_sections', JSON.stringify([...next]));
+}
+
 export function setMissionColumnOrder(next: string[]): void {
   missionColumnOrder.value = next;
   debouncedSave('mission_column_order', JSON.stringify(next));
