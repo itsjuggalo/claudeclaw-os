@@ -12,6 +12,7 @@
     "triggers": [],
     "size": { "width": 768, "height": 1024 },
     "steps": 30,
+    "detailer": false,
     "builtin": true
   },
   {
@@ -27,6 +28,7 @@
     "triggers": ["feet"],
     "size": { "width": 768, "height": 1024 },
     "steps": 30,
+    "detailer": true,
     "builtin": true
   },
   {
@@ -42,6 +44,7 @@
     "triggers": ["feet forward", "foot focus"],
     "size": { "width": 512, "height": 768 },
     "steps": 30,
+    "detailer": true,
     "builtin": true
   },
   {
@@ -57,6 +60,7 @@
     "triggers": ["c0wg1rl"],
     "size": { "width": 768, "height": 1024 },
     "steps": 25,
+    "detailer": false,
     "builtin": true
   },
   {
@@ -72,6 +76,7 @@
     "triggers": ["sbgirl", "cow print"],
     "size": { "width": 768, "height": 1024 },
     "steps": 25,
+    "detailer": false,
     "builtin": true
   },
   {
@@ -87,6 +92,7 @@
     "triggers": ["amateur", "grainy"],
     "size": { "width": 768, "height": 1024 },
     "steps": 25,
+    "detailer": false,
     "builtin": true
   },
   {
@@ -102,6 +108,7 @@
     "triggers": ["wide eyes"],
     "size": { "width": 768, "height": 1024 },
     "steps": 25,
+    "detailer": false,
     "builtin": true
   }
 ]

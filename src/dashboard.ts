@@ -1434,7 +1434,9 @@ init();
         width?: number; height?: number; checkpoint?: string; seed?: number;
         loras?: Array<{ name: string; strength?: number }>;
         allowUnknownCompat?: boolean;
-        fast?: boolean;   // DMD2 4-step distillation (SDXL-family checkpoints only)
+        fast?: boolean;        // DMD2 4-step distillation (SDXL-family checkpoints only)
+        detailer?: boolean;    // foot+hand FaceDetailer pass after VAEDecodeTiled (ported from verify_feet_gen.py)
+        detailer_strength?: number; // reserved for future per-pass strength override (unused in A2)
       };
       const prompt = (body.prompt || '').trim();
       if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
@@ -1442,7 +1444,20 @@ init();
       // ── 0. Safety gate — refuse if unsafe, no matter the trigger source ──
       // (phone, dashboard, or raw API). Closes the warm-ComfyUI gap: cold start
       // runs preflight via comfyui-start, but a warm instance had no gate.
-      const gate = await preflightGate();
+      //
+      // Auto-free recovery: if the only failure reason is stale VRAM from a
+      // previous gen (pattern: "VRAM", "GPU memory", or "already holds"), call
+      // comfyFree() and retry once. This fixes "PREFLIGHT FAIL: GPU already holds
+      // NNNNMiB" on back-to-back gens without requiring a manual flush.
+      // Non-VRAM failures (low RAM, low C: disk, concurrency lock) skip the retry.
+      let gate = await preflightGate();
+      if (!gate.ok && /VRAM|GPU memory|already holds/i.test(gate.reason ?? '')) {
+        logger.info({ reason: gate.reason }, 'preflight: VRAM stale — calling comfyFree() and retrying');
+        await comfyFree();
+        await new Promise(r => setTimeout(r, 1500)); // give the driver 1.5s to release pages
+        gate = await preflightGate();
+        if (gate.ok) logger.info('preflight: retry passed after comfyFree');
+      }
       if (!gate.ok) { notify(`🛑 Image gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
 
       // ── 0b. Resolve checkpoint + LoRAs and validate family compatibility BEFORE
@@ -1546,8 +1561,67 @@ init();
         // DMD2 contract: cfg MUST be 1.0 (no CFG), lcm sampler, 4-8 steps.
         ? { inputs: { seed, steps: Math.min(Math.max(body.steps ?? 4, 4), 8), cfg: 1.0, sampler_name: "lcm", scheduler: "sgm_uniform", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" }
         : { inputs: { seed, steps: body.steps ?? 20, cfg: body.cfg ?? 7.0, sampler_name: "euler", scheduler: "normal", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" };
-      workflow["8"] = { inputs: { samples: ["3", 0], vae: ["4", 2] }, class_type: "VAEDecode" };
-      workflow["9"] = { inputs: { filename_prefix: "cc_gen", images: ["8", 0] }, class_type: "SaveImage" };
+      // ── Node "8": VAEDecodeTiled — replaces plain VAEDecode for ALL gens.
+      // Tiled pinned allocs avoid the WSL2 "Pin error" hang that the old VAEDecode
+      // triggered under --disable-pinned-memory. Params match verify_feet_gen.py.
+      workflow["8"] = {
+        inputs: { samples: ["3", 0], vae: ["4", 2], tile_size: 512, overlap: 64, temporal_size: 64, temporal_overlap: 8 },
+        class_type: "VAEDecodeTiled",
+      };
+
+      // ── Detailer chain (nodes "30"–"33"): foot+hand FaceDetailer passes.
+      // Ported verbatim from verify_feet_gen.py::detailer() + build_workflow().
+      // Only appended when body.detailer === true; otherwise the graph ends at "8".
+      // "30" → foot bbox detector → "31" FaceDetailer on base image
+      // "32" → hand bbox detector → "33" FaceDetailer on foot-corrected image
+      // SaveImage ("9") points at the last Detailer output when on, else "8".
+      if (body.detailer) {
+        workflow["30"] = {
+          class_type: "UltralyticsDetectorProvider",
+          inputs: { model_name: "bbox/foot_yolov8.pt" },
+        };
+        workflow["31"] = {
+          class_type: "FaceDetailer",
+          inputs: {
+            image: ["8", 0], model: modelRef, clip: clipRef, vae: ["4", 2],
+            positive: ["6", 0], negative: ["7", 0], bbox_detector: ["30", 0],
+            wildcard: "",
+            guide_size: 384, guide_size_for: true, max_size: 768,
+            seed, steps: 20, cfg: 6.0, sampler_name: "euler", scheduler: "karras",
+            denoise: 0.45, feather: 5, noise_mask: true, force_inpaint: true,
+            bbox_threshold: 0.40, bbox_dilation: 10, bbox_crop_factor: 3.0,
+            sam_detection_hint: "center-1", sam_dilation: 0, sam_threshold: 0.93,
+            sam_bbox_expansion: 0, sam_mask_hint_threshold: 0.7,
+            sam_mask_hint_use_negative: "False", drop_size: 10, cycle: 1,
+            tiled_encode: true, tiled_decode: true,
+          },
+        };
+        workflow["32"] = {
+          class_type: "UltralyticsDetectorProvider",
+          inputs: { model_name: "bbox/hand_yolov8s.pt" },
+        };
+        workflow["33"] = {
+          class_type: "FaceDetailer",
+          inputs: {
+            image: ["31", 0], model: modelRef, clip: clipRef, vae: ["4", 2],
+            positive: ["6", 0], negative: ["7", 0], bbox_detector: ["32", 0],
+            wildcard: "",
+            guide_size: 384, guide_size_for: true, max_size: 768,
+            seed, steps: 20, cfg: 6.0, sampler_name: "euler", scheduler: "karras",
+            denoise: 0.40, feather: 5, noise_mask: true, force_inpaint: true,
+            bbox_threshold: 0.45, bbox_dilation: 10, bbox_crop_factor: 3.0,
+            sam_detection_hint: "center-1", sam_dilation: 0, sam_threshold: 0.93,
+            sam_bbox_expansion: 0, sam_mask_hint_threshold: 0.7,
+            sam_mask_hint_use_negative: "False", drop_size: 10, cycle: 1,
+            tiled_encode: true, tiled_decode: true,
+          },
+        };
+      }
+      // SaveImage: point at last Detailer output when active, else directly at VAEDecodeTiled.
+      workflow["9"] = {
+        inputs: { filename_prefix: "cc_gen", images: body.detailer ? ["33", 0] : ["8", 0] },
+        class_type: "SaveImage",
+      };
 
       // ── 3. Queue ────────────────────────────────────────────────────────
       const queueRes = await fetch('http://127.0.0.1:8188/prompt', {
@@ -1626,6 +1700,15 @@ init();
           return c.json({ ok: false, done: true, error: `couldn't save the image to the gallery: ${String(moveErr)}`, seed });
         }
         const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(filename)}`;
+        // Guard: if the url somehow came out empty (e.g. filename was an empty string
+        // that slipped past the null check), don't return an ok:true with no url —
+        // that would leave the Create page stuck showing a broken image. Treat it as
+        // a terminal error so the client surfaces a real message.
+        if (!url) {
+          finish({ error: 'output produced but URL unavailable' });
+          void comfyFree();
+          return c.json({ ok: false, done: true, error: 'output produced but URL unavailable', seed });
+        }
         finish({ file: filename, url });
         void comfyFree();
         notify(`✅ Image ready: ${filename} (${(job?.checkpoint||'').replace('.safetensors','')})`);

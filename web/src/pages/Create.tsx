@@ -31,6 +31,9 @@ type Look = {
   category?: string; checkpoint: string; loras: { name: string; strength: number }[];
   promptPrefix?: string; negative?: string; triggers?: string[];
   size: { width: number; height: number }; steps: number; cfg?: number;
+  // Detailer pass — re-renders feet & hands (slower, fixes toes/fingers).
+  // The Looks JSON carries this per-Look; feet Looks default true.
+  detailer?: boolean;
   builtin?: boolean; available: boolean; missing: string[];
 };
 let looksCache: Look[] | null = null;
@@ -206,7 +209,8 @@ const S = {
   },
   card: {
     background: 'var(--color-card)', border: '1px solid var(--color-border)',
-    borderRadius: '10px', padding: '20px',
+    borderRadius: '14px', padding: 'clamp(14px, 3.5vw, 22px)',
+    boxShadow: '0 2px 12px -6px rgba(0,0,0,0.5)',
   } as JSX.CSSProperties,
   errBox: {
     marginTop: '10px', border: '1px solid rgba(239,83,80,0.3)',
@@ -294,37 +298,119 @@ function ProgressBar({ pct, label, sub }: { pct: number; label: string; sub?: st
 }
 
 const actBtn: JSX.CSSProperties = {
-  fontSize: '11px', fontFamily: MONO, padding: '4px 10px', borderRadius: '6px',
+  fontSize: '11px', fontFamily: MONO, padding: '6px 12px', borderRadius: '7px',
   cursor: 'pointer', color: 'var(--color-text-muted)', background: 'var(--color-elevated)',
-  border: '1px solid var(--color-border)', textDecoration: 'none', display: 'inline-block',
+  border: '1px solid var(--color-border)', textDecoration: 'none', display: 'inline-flex',
+  alignItems: 'center', gap: '4px', lineHeight: 1.2,
 };
+
+// ── "✨ Fix feet & hands" toggle — a labeled pill switch + helper caption.
+// Sends detailer:<bool> to the generate endpoint. Disabled while a gen runs.
+function DetailerToggle({ on, busy, onToggle }: { on: boolean; busy: boolean; onToggle: () => void }) {
+  return (
+    <div style={{ marginTop: '14px' }}>
+      <button type="button" role="switch" aria-checked={on} disabled={busy} onClick={onToggle}
+        title="Re-renders feet & hands with a Detailer pass (slower, fixes toes/fingers)."
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: '10px', width: '100%', maxWidth: '100%',
+          justifyContent: 'flex-start', padding: '10px 14px', borderRadius: '10px', boxSizing: 'border-box',
+          cursor: busy ? 'not-allowed' : 'pointer', fontFamily: MONO, textAlign: 'left',
+          color: on ? '#34d39a' : 'var(--color-text)',
+          background: on ? 'rgba(52,211,154,0.10)' : 'var(--color-elevated)',
+          border: '1px solid ' + (on ? 'rgba(52,211,154,0.45)' : 'var(--color-border)'),
+        }}>
+        {/* pill track + knob */}
+        <span aria-hidden style={{
+          position: 'relative', flexShrink: 0, width: '38px', height: '22px', borderRadius: '999px',
+          background: on ? '#34d39a' : 'var(--color-border-strong)', transition: 'background 160ms',
+        }}>
+          <span style={{
+            position: 'absolute', top: '2px', left: on ? '18px' : '2px', width: '18px', height: '18px',
+            borderRadius: '50%', background: on ? '#06210f' : 'var(--color-text)', transition: 'left 160ms',
+          }} />
+        </span>
+        <span style={{ fontSize: '13px', fontWeight: 700, flex: 1 }}>✨ Fix feet &amp; hands</span>
+        <span style={{ fontSize: '11px', fontWeight: 700, color: on ? '#34d39a' : 'var(--color-text-faint)' }}>{on ? 'ON' : 'OFF'}</span>
+      </button>
+      <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO, marginTop: '6px', lineHeight: 1.45 }}>
+        Re-renders feet &amp; hands with a Detailer pass (slower, fixes toes/fingers).
+      </div>
+    </div>
+  );
+}
+// Brand accent — single source of truth so a future re-theme is one edit, not 80.
+const ACCENT = '#34d39a';
+const ACCENT_INK = '#06210f';
+
+// Friendly "image couldn't load" placeholder — same copy whether the <img>
+// 404s after mount (onError) OR the result came back ok with an empty url.
+// The picture is still safe in the Gallery, so we say so instead of a broken icon.
+function ImageUnavailable({ compact }: { compact?: boolean }) {
+  return (
+    <div style={{
+      width: '100%', aspectRatio: compact ? '1' : '4 / 3',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      gap: '8px', padding: compact ? '12px' : '28px', textAlign: 'center', boxSizing: 'border-box',
+      background: 'repeating-linear-gradient(45deg, var(--color-elevated), var(--color-elevated) 10px, var(--color-card) 10px, var(--color-card) 20px)',
+      border: '1px dashed var(--color-border-strong)', borderRadius: compact ? '0' : '8px',
+    }}>
+      <span style={{ fontSize: compact ? '20px' : '30px', opacity: 0.7 }} aria-hidden>🖼️</span>
+      <div style={{ fontSize: compact ? '10px' : '12px', color: 'var(--color-text-muted)', fontFamily: MONO, lineHeight: 1.5 }}>
+        image couldn't load{!compact && <br />}
+        <a href="/gallery" style={{ color: '#7fd1ff' }}>it's saved in the Gallery →</a>
+      </div>
+    </div>
+  );
+}
+
+// <img> that swaps in the placeholder on a 404 / missing-token / moved-file,
+// so a broken result never shows the browser's broken-image glyph.
+function SmartImg({ src, alt, style, compact }: { src: string; alt?: string; style: JSX.CSSProperties; compact?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <ImageUnavailable compact={compact} />;
+  return <img src={src} alt={alt} style={style} onError={() => setFailed(true)} />;
+}
 
 // ── Result display (with download / copy / regenerate / new-seed / send-to-video)
 function ResultBox({ result, kind, prompt, onRegenerate, onNewSeed, onSendToVideo }: {
   result: GenResult; kind: 'image' | 'video'; prompt?: string;
   onRegenerate?: () => void; onNewSeed?: () => void; onSendToVideo?: () => void;
 }) {
-  if (result.ok && result.url) {
-    const dl = withTok(result.url);
+  // An "ok" result with a missing/empty url can't render — treat it like a
+  // load failure (the file is still in the Gallery) instead of showing nothing.
+  if (result.ok) {
+    const hasUrl = !!(result.url && result.url.trim());
+    const dl = hasUrl ? withTok(result.url!) : '';
     return (
-      <div style={{ marginTop: '12px', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden', background: 'var(--color-card)' }}>
-        <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-border)', fontSize: '12px', color: '#34d39a', fontFamily: MONO }}>
-          ✓ Saved · {result.file}
-          {result.seed !== undefined && <span style={{ color: 'var(--color-text-faint)' }}> · seed {result.seed}</span>}
-          {result.notes && <div style={{ color: 'var(--color-text-muted)', marginTop: '2px' }}>{result.notes}</div>}
+      <div style={{
+        marginTop: '18px', border: `1px solid ${ACCENT}55`, borderRadius: '14px', overflow: 'hidden',
+        background: 'var(--color-card)', boxShadow: `0 8px 30px -12px ${ACCENT}33, 0 2px 8px rgba(0,0,0,0.4)`,
+      }}>
+        {/* Header — Saved ✓ + filename + seed, generously sized + readable */}
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', background: `linear-gradient(180deg, ${ACCENT}14, transparent)`, display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '13px', fontWeight: 700, color: ACCENT, fontFamily: MONO, letterSpacing: '0.3px' }}>Saved&nbsp;✓</span>
+          <span style={{ fontSize: '12px', color: 'var(--color-text)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{result.file || (kind === 'video' ? 'video' : 'image')}</span>
+          {result.seed !== undefined && <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO }}>seed&nbsp;{result.seed}</span>}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '14px', background: 'var(--color-bg)' }}>
-          {kind === 'video'
-            ? <video src={dl} controls autoPlay loop style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: '6px' }} />
-            : <img src={dl} alt={result.file} style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: '6px' }} />}
+        {result.notes && (
+          <div style={{ padding: '6px 16px', fontSize: '11px', color: 'var(--color-text-muted)', fontFamily: MONO, borderBottom: '1px solid var(--color-border)' }}>{result.notes}</div>
+        )}
+        {/* Viewer — large, centered, framed against the page bg */}
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '18px', background: 'var(--color-bg)', minHeight: '180px' }}>
+          {!hasUrl
+            ? <div style={{ maxWidth: '420px', width: '100%' }}><ImageUnavailable /></div>
+            : kind === 'video'
+              ? <video src={dl} controls autoPlay loop style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: '10px', boxShadow: '0 6px 24px rgba(0,0,0,0.5)' }} />
+              : <SmartImg src={dl} alt={result.file} style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: '10px', boxShadow: '0 6px 24px rgba(0,0,0,0.5)' }} />}
         </div>
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', padding: '10px 14px' }}>
-          <a href={dl} download={result.file} style={actBtn}>↓ Download</a>
+        {/* Actions — clear, evenly spaced, wrap on phone */}
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', padding: '12px 16px', borderTop: '1px solid var(--color-border)' }}>
+          {hasUrl && <a href={dl} download={result.file} style={{ ...actBtn, color: ACCENT_INK, background: ACCENT, border: `1px solid ${ACCENT}`, fontWeight: 700 }}>↓ Download</a>}
           {prompt && <button type="button" style={actBtn} onClick={() => { try { navigator.clipboard.writeText(prompt); } catch {} }}>⧉ Copy prompt</button>}
           {onRegenerate && <button type="button" style={actBtn} onClick={onRegenerate}>↻ Regenerate</button>}
           {onNewSeed && <button type="button" style={actBtn} onClick={onNewSeed}>🎲 New seed</button>}
           {kind === 'image' && onSendToVideo && <button type="button" style={actBtn} onClick={onSendToVideo}>🎬 To video</button>}
-          <a href="/gallery" style={{ ...actBtn, color: '#7fd1ff', borderColor: 'rgba(127,209,255,0.3)' }}>→ Gallery</a>
+          <a href="/gallery" style={{ ...actBtn, marginLeft: 'auto', color: '#7fd1ff', borderColor: 'rgba(127,209,255,0.3)' }}>→ Gallery</a>
         </div>
       </div>
     );
@@ -345,22 +431,29 @@ function ResultBox({ result, kind, prompt, onRegenerate, onNewSeed, onSendToVide
 // ── Batch results grid ────────────────────────────────────────────────────────
 function BatchGrid({ results }: { results: GenResult[] }) {
   if (!results.length) return null;
-  const ok = results.filter((r) => r.ok && r.url);
+  // Keep every ok result, even one with an empty url — it shows a tasteful
+  // "saved in Gallery" placeholder instead of silently disappearing.
+  const ok = results.filter((r) => r.ok);
   const failed = results.filter((r) => !r.ok);
   return (
-    <div style={{ marginTop: '16px' }}>
+    <div style={{ marginTop: '18px' }}>
       {ok.length > 0 && (
         <>
-          <div style={{ fontSize: '11px', color: '#34d39a', fontFamily: MONO, marginBottom: '8px' }}>
-            ✓ {ok.length}/{results.length} generated · <a href="/gallery" style={{ color: '#7fd1ff' }}>View in Gallery →</a>
+          <div style={{ fontSize: '12px', color: ACCENT, fontFamily: MONO, marginBottom: '10px', fontWeight: 600 }}>
+            Saved&nbsp;✓ {ok.length}/{results.length} generated · <a href="/gallery" style={{ color: '#7fd1ff' }}>View in Gallery →</a>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '10px' }}>
-            {ok.map((r, i) => (
-              <div key={i} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', overflow: 'hidden', background: 'var(--color-card)' }}>
-                <img src={withTok(r.url!)} alt={r.file} style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', display: 'block' }} />
-                <div style={{ padding: '4px 8px', fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.file}</div>
-              </div>
-            ))}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '12px' }}>
+            {ok.map((r, i) => {
+              const hasUrl = !!(r.url && r.url.trim());
+              return (
+                <div key={i} style={{ border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden', background: 'var(--color-card)', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
+                  {hasUrl
+                    ? <SmartImg src={withTok(r.url!)} alt={r.file} compact style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', display: 'block' }} />
+                    : <ImageUnavailable compact />}
+                  <div style={{ padding: '6px 9px', fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.file || 'saved'}</div>
+                </div>
+              );
+            })}
           </div>
         </>
       )}
@@ -455,6 +548,16 @@ export function Create() {
   const [revealedThumbs, setRevealedThumbs] = useState<Record<string, boolean>>({});
   const [thumbJob, setThumbJob] = useState<{ processed: number; total: number; updated: number; running: boolean } | null>(null);
   useEffect(() => { savePref('imgSafeMode', safeMode); }, [safeMode]);
+
+  // ── "✨ Fix feet & hands" (Detailer pass) ──────────────────────────────────
+  // Sent as `detailer:<bool>` in the /api/comfy/generate body. Default follows
+  // the selected Look's `detailer` field (feet Looks default true); OFF with no
+  // Look. `detailerTouched` records a manual override so switching Looks doesn't
+  // clobber the user's explicit choice — the override itself is persisted.
+  const [detailer, setDetailer] = useState<boolean>(() => loadPref('detailer', false));
+  const [detailerTouched, setDetailerTouched] = useState<boolean>(() => loadPref('detailerTouched', false));
+  useEffect(() => { savePref('detailer', detailer); }, [detailer]);
+  useEffect(() => { savePref('detailerTouched', detailerTouched); }, [detailerTouched]);
 
   // ── Persist key preferences on change ────────────────────────────────────
   useEffect(() => { savePref('imgEngine', imgEngine); }, [imgEngine]);
@@ -663,6 +766,16 @@ export function Create() {
   const activeLook = simpleMode && imgEngine === 'comfyui'
     ? (looks || []).find(lk => lk.id === selectedLookId && lk.available)
     : undefined;
+
+  // Default the Detailer toggle from the selected Look (feet Looks default true),
+  // OFF when there's no Look. Re-applies whenever the selected Look changes and
+  // the user hasn't manually overridden it — once they flip it (detailerTouched),
+  // their explicit choice sticks and is persisted across Look switches & reloads.
+  useEffect(() => {
+    if (detailerTouched) return;
+    setDetailer(!!activeLook?.detailer);
+  }, [selectedLookId, activeLook?.detailer, detailerTouched]);
+
   // safe = server preflight says go (default true until first poll returns, so
   // the UI never blocks spuriously before health loads). The server still gates.
   const safe = !sys || sys.preflight?.ok !== false;
@@ -755,6 +868,7 @@ export function Create() {
             ...(lk.cfg !== undefined ? { cfg: lk.cfg } : {}),
             ...(seedNum !== undefined ? { seed: seedNum } : {}),
             ...(fastGen ? { fast: true } : {}),
+            detailer,
           };
         } else {
           // ── Custom path — auto-prepend the active trigger words (from the
@@ -788,6 +902,7 @@ export function Create() {
             ...(hasConfirmedUnknown ? { allowUnknownCompat: true } : {}),
             ...(seedNum !== undefined ? { seed: seedNum } : {}),
             ...(fastGen ? { fast: true } : {}),
+            detailer,
           };
         }
         // Cold ComfyUI returns { starting:true } fast instead of blocking the
@@ -1044,7 +1159,7 @@ export function Create() {
       />
       <StatusStrip sys={sys} />
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        <div style={{ padding: '24px', maxWidth: tab === 'video' && vidEngine === 'fvm' ? '1200px' : '900px', margin: '0 auto' }}>
+        <div style={{ padding: 'clamp(14px, 4vw, 28px)', maxWidth: tab === 'video' && vidEngine === 'fvm' ? '1200px' : '960px', margin: '0 auto' }}>
 
           {tab === 'image' ? (
             <>
@@ -1056,7 +1171,7 @@ export function Create() {
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   <button type="button" onClick={() => setFastGen(f => !f)}
                     title="DMD2 4-step distillation — ~4x faster sampling, near-identical quality. SDXL/Pony models only (others fall back to normal)."
-                    style={{ ...actBtn, color: fastGen ? '#34d39a' : 'var(--color-text-faint)', borderColor: fastGen ? 'rgba(52,211,154,0.35)' : 'var(--color-border)' }}>
+                    style={{ ...actBtn, color: fastGen ? ACCENT : 'var(--color-text-faint)', background: fastGen ? `${ACCENT}1a` : 'var(--color-elevated)', borderColor: fastGen ? `${ACCENT}5a` : 'var(--color-border)' }}>
                     ⚡ Fast {fastGen ? 'ON' : 'OFF'}
                   </button>
                   <button type="button" onClick={() => setSimpleMode(m => !m)}
@@ -1146,30 +1261,33 @@ export function Create() {
                             title={lk.available ? lk.description : `Needs ${lk.missing.map(cleanName).join(', ')} — download it first`}
                             style={{
                               position: 'relative', textAlign: 'left', cursor: busy || !lk.available ? 'not-allowed' : 'pointer',
-                              borderRadius: '12px', padding: '0', overflow: 'hidden', minHeight: '112px',
+                              borderRadius: '14px', padding: '0', overflow: 'hidden',
                               display: 'flex', flexDirection: 'column', fontFamily: MONO,
-                              border: active ? '2px solid #34d39a' : '1px solid var(--color-border)',
+                              border: active ? `2px solid ${ACCENT}` : '1px solid var(--color-border)',
                               background: 'var(--color-card)', color: 'var(--color-text)',
-                              boxShadow: active ? '0 0 0 3px rgba(52,211,154,0.18)' : 'none',
-                              opacity: lk.available ? 1 : 0.45,
+                              boxShadow: active ? `0 0 0 3px ${ACCENT}2e, 0 6px 18px -10px ${ACCENT}66` : '0 1px 4px rgba(0,0,0,0.25)',
+                              opacity: lk.available ? 1 : 0.5,
+                              transition: 'border-color 140ms, box-shadow 140ms, transform 140ms',
                             }}>
                             <div style={{
-                              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontSize: '34px', minHeight: '64px', position: 'relative',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: '34px', aspectRatio: '4 / 3', position: 'relative', overflow: 'hidden',
                               background: 'linear-gradient(135deg, rgba(52,211,154,0.18), rgba(52,211,154,0.04))',
                             }}>
-                              {lk.thumb ? <img src={lk.thumb} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0, filter: blurred ? 'blur(18px)' : 'none' }} /> : (lk.emoji || '✨')}
+                              {/* emoji sits behind — shows if there's no thumb or the thumb fails to load */}
+                              <span aria-hidden style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{lk.emoji || '✨'}</span>
+                              {lk.thumb && <img src={lk.thumb} alt="" loading="lazy" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0, filter: blurred ? 'blur(18px)' : 'none' }} />}
                               {lk.thumb && blurred && (
                                 <span onClick={(e) => { e.stopPropagation(); setRevealedThumbs(r => ({ ...r, [lk.id]: true })); }}
                                   style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontFamily: MONO, color: '#fff', background: 'rgba(0,0,0,0.35)', cursor: 'pointer' }}>
                                   🔞 tap to reveal
                                 </span>
                               )}
-                              {active && <span style={{ position: 'absolute', top: '6px', right: '8px', fontSize: '14px', color: '#34d39a', textShadow: '0 1px 3px #000' }}>✓</span>}
+                              {active && <span style={{ position: 'absolute', top: '7px', right: '8px', fontSize: '13px', color: ACCENT_INK, background: ACCENT, borderRadius: '999px', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, boxShadow: '0 1px 4px rgba(0,0,0,0.4)' }}>✓</span>}
                             </div>
-                            <div style={{ padding: '8px 10px' }}>
+                            <div style={{ padding: '9px 11px' }}>
                               <div style={{ fontSize: '12px', fontWeight: 700, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lk.emoji ? `${lk.emoji} ` : ''}{lk.label}</div>
-                              <div style={{ fontSize: '10px', color: lk.available ? 'var(--color-text-muted)' : '#ffb347', marginTop: '2px', lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                              <div style={{ fontSize: '10px', color: lk.available ? 'var(--color-text-muted)' : '#ffb347', marginTop: '3px', lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                                 {lk.available ? lk.description : `needs ${cleanName(lk.missing[0] || '?')}`}
                               </div>
                             </div>
@@ -1181,15 +1299,17 @@ export function Create() {
                         onClick={() => setSelectedLookId('')}
                         style={{
                           position: 'relative', textAlign: 'left', cursor: busy ? 'not-allowed' : 'pointer',
-                          borderRadius: '12px', padding: '0', overflow: 'hidden', minHeight: '112px',
+                          borderRadius: '14px', padding: '0', overflow: 'hidden',
                           display: 'flex', flexDirection: 'column', fontFamily: MONO,
                           border: !activeLook ? '2px solid #7fd1ff' : '1px dashed var(--color-border)',
                           background: 'var(--color-card)', color: 'var(--color-text)',
+                          boxShadow: !activeLook ? '0 0 0 3px rgba(127,209,255,0.18)' : '0 1px 4px rgba(0,0,0,0.25)',
+                          transition: 'border-color 140ms, box-shadow 140ms',
                         }}>
-                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '34px', minHeight: '64px', background: 'linear-gradient(135deg, rgba(127,209,255,0.16), rgba(127,209,255,0.04))' }}>🛠</div>
-                        <div style={{ padding: '8px 10px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '34px', aspectRatio: '4 / 3', background: 'linear-gradient(135deg, rgba(127,209,255,0.16), rgba(127,209,255,0.04))' }}>🛠</div>
+                        <div style={{ padding: '9px 11px' }}>
                           <div style={{ fontSize: '12px', fontWeight: 700 }}>Custom</div>
-                          <div style={{ fontSize: '10px', color: 'var(--color-text-muted)', marginTop: '2px' }}>pick model & add-ons yourself</div>
+                          <div style={{ fontSize: '10px', color: 'var(--color-text-muted)', marginTop: '3px' }}>pick model &amp; add-ons yourself</div>
                         </div>
                       </button>
                     </div>
@@ -1228,31 +1348,34 @@ export function Create() {
                             title={c.description || c.name}
                             style={{
                               position: 'relative', textAlign: 'left', cursor: busy ? 'not-allowed' : 'pointer',
-                              borderRadius: '12px', padding: '0', overflow: 'hidden', minHeight: '112px',
+                              borderRadius: '14px', padding: '0', overflow: 'hidden',
                               display: 'flex', flexDirection: 'column', fontFamily: MONO,
-                              border: active ? '2px solid #34d39a' : '1px solid var(--color-border)',
+                              border: active ? `2px solid ${ACCENT}` : '1px solid var(--color-border)',
                               background: 'var(--color-card)', color: 'var(--color-text)',
-                              boxShadow: active ? '0 0 0 3px rgba(52,211,154,0.18)' : 'none',
+                              boxShadow: active ? `0 0 0 3px ${ACCENT}2e, 0 6px 18px -10px ${ACCENT}66` : '0 1px 4px rgba(0,0,0,0.25)',
+                              transition: 'border-color 140ms, box-shadow 140ms',
                             }}>
                             {/* picture area — real Civitai preview if loaded, else family-colored tile */}
                             <div style={{
-                              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontSize: '34px', minHeight: '64px',
+                              position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: '34px', aspectRatio: '4 / 3',
                               background: `linear-gradient(135deg, ${fi.color}33, ${fi.color}11)`,
                             }}>
-                              {c.thumb ? <img src={c.thumb} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0, filter: thumbBlurred(c) ? 'blur(18px)' : 'none' }} /> : fi.emoji}
+                              {/* family emoji sits behind — shows with no thumb or on load failure */}
+                              <span aria-hidden style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{fi.emoji}</span>
+                              {c.thumb && <img src={c.thumb} alt="" loading="lazy" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0, filter: thumbBlurred(c) ? 'blur(18px)' : 'none' }} />}
                               {c.thumb && thumbBlurred(c) && (
                                 <span onClick={(e) => { e.stopPropagation(); setRevealedThumbs(r => ({ ...r, [c.name]: true })); }}
                                   style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontFamily: MONO, color: '#fff', background: 'rgba(0,0,0,0.35)', cursor: 'pointer' }}>
                                   🔞 tap to reveal
                                 </span>
                               )}
-                              {active && <span style={{ position: 'absolute', top: '6px', right: '8px', fontSize: '14px', color: '#34d39a', textShadow: '0 1px 3px #000' }}>✓</span>}
+                              {active && <span style={{ position: 'absolute', top: '7px', right: '8px', fontSize: '13px', color: ACCENT_INK, background: ACCENT, borderRadius: '999px', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, boxShadow: '0 1px 4px rgba(0,0,0,0.4)' }}>✓</span>}
                             </div>
                             {/* caption */}
-                            <div style={{ padding: '8px 10px' }}>
+                            <div style={{ padding: '9px 11px' }}>
                               <div style={{ fontSize: '12px', fontWeight: 700, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label || cleanName(c.name)}</div>
-                              <div style={{ fontSize: '10px', color: fi.color, marginTop: '2px' }}>{fi.emoji} {fi.label}</div>
+                              <div style={{ fontSize: '10px', color: fi.color, marginTop: '3px' }}>{fi.emoji} {fi.label}</div>
                             </div>
                           </button>
                         );
@@ -1319,6 +1442,9 @@ export function Create() {
                       ✓ auto-adding for you: {(activeLook ? (activeLook.triggers || []) : effectiveTriggers).join(', ')}{activeLook ? ' + quality tags' : ''}
                     </div>
                   )}
+
+                  {/* ── Fix feet & hands (Detailer pass) — defaults from the Look ── */}
+                  <DetailerToggle on={detailer} busy={busy} onToggle={() => { setDetailer(d => !d); setDetailerTouched(true); }} />
 
                   {/* ── GENERATE — full-width, phone-friendly ────────────────────── */}
                   <button type="button" onClick={() => genImage()} disabled={!canImg}
@@ -1777,6 +1903,11 @@ export function Create() {
                       </div>
                     )}
                   </>
+                )}
+
+                {/* Fix feet & hands (Detailer pass) — ComfyUI only */}
+                {imgEngine === 'comfyui' && (
+                  <DetailerToggle on={detailer} busy={busy} onToggle={() => { setDetailer(d => !d); setDetailerTouched(true); }} />
                 )}
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '16px', flexWrap: 'wrap' }}>
