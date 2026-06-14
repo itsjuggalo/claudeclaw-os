@@ -10,7 +10,8 @@ import { apiPost, dashboardToken, ApiError } from '@/lib/api';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 const withTok = (u: string) => (dashboardToken ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}` : u);
-const VIDEO_URL = 'http://localhost:8765/';
+// Relative to the current origin so https deployments don't trigger mixed-content blocks.
+const VIDEO_URL = `${typeof window !== 'undefined' ? (window.location.protocol + '//' + window.location.hostname + ':8765') : 'http://localhost:8765'}/`;
 
 // ── Module-level ComfyUI model cache (avoids refetch on engine toggle) ────────
 // family/baseModel/triggers/verified come from the server, sourced from Civitai
@@ -463,9 +464,15 @@ function BatchGrid({ results }: { results: GenResult[] }) {
           </div>
         </>
       )}
-      {failed.map((r, i) => (
-        <div key={i} style={S.errBox}>✗ {r.error}</div>
-      ))}
+      {failed.map((r, i) => {
+        const fe = friendlyError(r.error);
+        return (
+          <div key={i} style={S.errBox}>
+            <div style={{ fontWeight: 600, marginBottom: fe.hint ? '4px' : 0 }}>✗ {fe.msg}</div>
+            {fe.hint && <div style={{ opacity: 0.8 }}>{fe.hint}</div>}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -528,6 +535,9 @@ export function Create() {
   const [comfyCheckpoint, setComfyCheckpoint] = useState('');
   const [comfyLoras, setComfyLoras] = useState<string[]>([]);
   const [comfyLoraStrength, setComfyLoraStrength] = useState(() => loadPref('comfyLoraStrength', 0.8));
+  // CFG (classifier-free guidance) scale — how strictly ComfyUI follows the prompt.
+  // Default 7.0 matches the server default; Fast mode overrides this to 1.0 internally.
+  const [comfyCfg, setComfyCfg] = useState<number>(() => loadPref('comfyCfg', 7.0));
   const [comfyModels, setComfyModels] = useState<ComfyModels | null>(comfyModelCache);
   const [comfyOnline, setComfyOnline] = useState<boolean | null>(comfyModelCache ? true : null);
   // Looks (presets) + Simple Mode selection. '' = Custom (the classic
@@ -578,6 +588,7 @@ export function Create() {
   useEffect(() => { savePref('comfySize', comfySize); }, [comfySize]);
   useEffect(() => { savePref('comfySteps', comfySteps); }, [comfySteps]);
   useEffect(() => { savePref('comfyLoraStrength', comfyLoraStrength); }, [comfyLoraStrength]);
+  useEffect(() => { savePref('comfyCfg', comfyCfg); }, [comfyCfg]);
 
   // When the base model changes, drop any selected LoRAs that aren't a proven
   // match for it — so an incompatible combo can never be submitted. Unknown-
@@ -918,6 +929,8 @@ export function Create() {
               const l = comfyModels?.loras?.find(x => x.name === name);
               return { name, strength: simpleMode ? (l?.recommendedStrength ?? comfyLoraStrength) : comfyLoraStrength };
             }) : undefined,
+            // Send cfg in Advanced mode (simpleMode=false); Simple uses server default 7.0.
+            ...(!simpleMode ? { cfg: comfyCfg } : {}),
             ...(hasConfirmedUnknown ? { allowUnknownCompat: true } : {}),
             ...(seedNum !== undefined ? { seed: seedNum } : {}),
             ...(fastGen ? { fast: true } : {}),
@@ -1662,6 +1675,21 @@ export function Create() {
                         <select value={comfySteps} onChange={(e) => setComfySteps(Number((e.target as HTMLSelectElement).value))} disabled={busy} style={{ ...S.select, minWidth: '120px', maxWidth: '100%' }}>
                           {[10, 15, 20, 25, 30].map((n) => <option key={n} value={n}>{n}</option>)}
                         </select>
+                      </div>
+                      <div>
+                        <div style={{ ...S.label, marginBottom: '6px' }}>CFG {fastGen && <span style={{ color: 'var(--color-text-faint)', fontWeight: 400 }}>(⚡ overridden to 1.0)</span>}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <input
+                            type="range" min="1" max="12" step="0.5"
+                            value={comfyCfg}
+                            onInput={(e) => setComfyCfg(Number((e.target as HTMLInputElement).value))}
+                            disabled={busy || fastGen}
+                            title="Classifier-free guidance scale — how strictly ComfyUI follows the prompt. 7 is standard; higher = more literal but can over-saturate."
+                            style={{ width: '80px', accentColor: '#34d39a', opacity: fastGen ? 0.45 : 1 }}
+                          />
+                          <span style={{ fontSize: '11px', color: fastGen ? 'var(--color-text-faint)' : 'var(--color-text-muted)', fontFamily: MONO, minWidth: '28px' }}>{comfyCfg.toFixed(1)}</span>
+                        </div>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, marginTop: '3px' }}>1–12 · default 7</div>
                       </div>
                     </>
                   )}

@@ -17,6 +17,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { loraCompat } from './modelmeta.js';
 
 // Provider preflight (src/provider.ts) shells out to `where`/`which` to test
 // PATH presence. Contract tests assert HTTP response shape and must not depend
@@ -34,6 +35,25 @@ vi.mock('child_process', async () => {
       stdout: '',
       stderr: '',
     })),
+  };
+});
+
+// genguard: stub preflightGate to pass (safe) and comfyQueueDepth to 0
+// so /api/comfy/generate validation tests reach the 400-level checks.
+vi.mock('./genguard.js', () => ({
+  preflightGate: vi.fn().mockResolvedValue({ ok: true }),
+  comfyQueueDepth: vi.fn().mockResolvedValue(0),
+  comfyFree: vi.fn().mockResolvedValue(undefined),
+  notify: vi.fn(),
+}));
+
+// modelmeta: control the manifest so LoRA family tests are deterministic.
+vi.mock('./modelmeta.js', async () => {
+  const actual = await vi.importActual<typeof import('./modelmeta.js')>('./modelmeta.js');
+  return {
+    ...actual,
+    readManifest: vi.fn().mockReturnValue({}),
+    writeManifest: vi.fn(),
   };
 });
 
@@ -790,5 +810,128 @@ describe('Security headers on /', () => {
   it('X-Content-Type-Options: nosniff is set', async () => {
     const res = await get('/api/health');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+});
+
+// ── loraCompat pure-helper tests ─────────────────────────────────────────────
+// Verifies the compatibility tri-state from modelmeta.ts directly. These are
+// pure functions — no mocking, no filesystem, no routes.
+describe('loraCompat pure helper', () => {
+  it('returns ok for same family', () => {
+    expect(loraCompat('pony', 'pony')).toBe('ok');
+    expect(loraCompat('sdxl', 'sdxl')).toBe('ok');
+    expect(loraCompat('sd15', 'sd15')).toBe('ok');
+  });
+
+  it('allows cross-SDXL-arch combos (pony ↔ sdxl ↔ illustrious)', () => {
+    expect(loraCompat('pony', 'sdxl')).toBe('ok');
+    expect(loraCompat('sdxl', 'pony')).toBe('ok');
+    expect(loraCompat('illustrious', 'pony')).toBe('ok');
+    expect(loraCompat('sdxl', 'illustrious')).toBe('ok');
+  });
+
+  it('returns mismatch for cross-arch (sd15 vs sdxl)', () => {
+    expect(loraCompat('sd15', 'sdxl')).toBe('mismatch');
+    expect(loraCompat('sdxl', 'sd15')).toBe('mismatch');
+    expect(loraCompat('flux', 'pony')).toBe('mismatch');
+    expect(loraCompat('sd15', 'flux')).toBe('mismatch');
+  });
+
+  it('returns unknown when either side is other/undefined', () => {
+    expect(loraCompat('other', 'pony')).toBe('unknown');
+    expect(loraCompat('sdxl', 'other')).toBe('unknown');
+    expect(loraCompat(undefined, undefined)).toBe('unknown');
+  });
+});
+
+// ── POST /api/comfy/generate — body shape + validation rejections ─────────────
+// genguard is mocked (above) to return { ok: true } / queue depth 0.
+// modelmeta readManifest is mocked to return {} (empty — all families = 'other').
+// Tests verify the 400-level guards that run BEFORE any ComfyUI call.
+describe('POST /api/comfy/generate — request body fields + validation rejections', () => {
+  async function postGenerate(body: Record<string, unknown>) {
+    return app.request('/api/comfy/generate' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'origin': 'https://dash.test.example' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('rejects missing prompt with 400', async () => {
+    const res = await postGenerate({ steps: 20, width: 512, height: 768 });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.any(String) });
+  });
+
+  it('rejects >3 LoRAs (MAX_LORAS cap) with 400', async () => {
+    const res = await postGenerate({
+      prompt: 'test prompt',
+      loras: [
+        { name: 'a.safetensors' },
+        { name: 'b.safetensors' },
+        { name: 'c.safetensors' },
+        { name: 'd.safetensors' },
+      ],
+    });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.stringMatching(/too many add-?ons|max.*3/i) });
+  });
+
+  it('rejects resolution exceeding MAX_DIM (>1536px per side) with 400', async () => {
+    const res = await postGenerate({ prompt: 'test prompt', width: 2048, height: 768 });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.stringMatching(/too high|resolution/i) });
+  });
+
+  it('rejects resolution exceeding MAX_PX (1024×1536 product cap) with 400', async () => {
+    // 1537×1024 = 1,573,888 > 1,572,864 (1024×1536)
+    const res = await postGenerate({ prompt: 'test prompt', width: 1537, height: 1024 });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.stringMatching(/too high|resolution/i) });
+  });
+
+  it('round-trips all documented body fields (valid params pass validation guards)', async () => {
+    // With an empty manifest all families are 'other' → unknown compat.
+    // allowUnknownCompat:true bypasses the LoRA family gate.
+    // After passing all 400 guards the route reaches ComfyUI HTTP (which is
+    // absent in test) and throws a fetch error → 500.  That is expected here —
+    // the test only cares that the 400 validation guards did NOT fire.
+    const res = await postGenerate({
+      prompt: 'a test prompt',
+      negative_prompt: 'bad anatomy',
+      checkpoint: 'test_checkpoint.safetensors',
+      loras: [{ name: 'style.safetensors', strength: 0.8 }],
+      detailer: false,
+      width: 512,
+      height: 768,
+      steps: 20,
+      cfg: 7.0,
+      fast: false,
+      allowUnknownCompat: true,
+    });
+    // Must not be a validation 400. May be 429 (gate) or 500 (ComfyUI absent).
+    expect(res.status).not.toBe(400);
+  });
+
+  it('rejects a family mismatch (sd15 LoRA on an sdxl checkpoint) with 400', async () => {
+    // Provide an explicit manifest so both sides have known families.
+    const { readManifest } = await import('./modelmeta.js');
+    vi.mocked(readManifest).mockReturnValueOnce({
+      'sdxl_base.safetensors': { family: 'sdxl', verified: true },
+      'sd15_lora.safetensors':  { family: 'sd15',  verified: true },
+    });
+
+    const res = await postGenerate({
+      prompt: 'test prompt',
+      checkpoint: 'sdxl_base.safetensors',
+      loras: [{ name: 'sd15_lora.safetensors', strength: 0.8 }],
+    });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.stringMatching(/incompatible|mismatch/i) });
   });
 });
