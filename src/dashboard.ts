@@ -2316,6 +2316,20 @@ init();
     // 8GB GPU is the box-freeze vector — localgen.ts also gates + locks it.
     const gate = await preflightGate();
     if (!gate.ok) { notify(`🛑 Video gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+    // LTX-Video RAM guard (verified 2026-06-14): the LTX model is ~13GB and is
+    // RAM-BOUND at LOAD — below ~14GB free it swap-thrashes for minutes and gets
+    // OOM-killed before reaching the GPU (util stays 0%). Fail fast with the truth
+    // instead of freezing the box. (Cloud/Higgsfield video skips this — handled above.)
+    try {
+      const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+      const m = meminfo.match(/MemAvailable:\s+(\d+)\s*kB/);
+      const freeMB = m ? Math.round(parseInt(m[1], 10) / 1024) : 99999;
+      if (freeMB < 14000) {
+        const msg = `Local video needs ~14GB free RAM (the LTX model is large) — only ${(freeMB / 1024).toFixed(1)}GB free right now. Close other gens / let ComfyUI idle-stop, then retry, or use cloud video.`;
+        notify(`🛑 Video gen blocked: low RAM (${(freeMB / 1024).toFixed(1)}GB free)`);
+        return c.json({ ok: false, blocked: true, error: msg }, 429);
+      }
+    } catch { /* if we can't read meminfo, fall through to the existing gates */ }
     const result = await generateLocalVideo({
       prompt: String(body?.prompt ?? ''),
       frames: typeof body?.frames === 'number' ? body.frames : undefined,

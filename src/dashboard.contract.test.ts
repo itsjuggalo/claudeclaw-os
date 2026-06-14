@@ -897,9 +897,11 @@ describe('POST /api/comfy/generate — request body fields + validation rejectio
   it('round-trips all documented body fields (valid params pass validation guards)', async () => {
     // With an empty manifest all families are 'other' → unknown compat.
     // allowUnknownCompat:true bypasses the LoRA family gate.
-    // After passing all 400 guards the route reaches ComfyUI HTTP (which is
-    // absent in test) and throws a fetch error → 500.  That is expected here —
-    // the test only cares that the 400 validation guards did NOT fire.
+    // After passing all 400 guards the route reaches ComfyUI cold-start (which
+    // tries to spawn + connect in test). We assert only that the 400 validation
+    // guards did NOT fire — the response may be 429 (gate overridden) or a
+    // timeout/500 from ComfyUI being absent. Vitest's 5s default is tight for
+    // the cold-start wait, so override the test timeout.
     const res = await postGenerate({
       prompt: 'a test prompt',
       negative_prompt: 'bad anatomy',
@@ -913,9 +915,9 @@ describe('POST /api/comfy/generate — request body fields + validation rejectio
       fast: false,
       allowUnknownCompat: true,
     });
-    // Must not be a validation 400. May be 429 (gate) or 500 (ComfyUI absent).
+    // Must not be a validation 400 (missing prompt / too many LoRAs / res too high / family mismatch).
     expect(res.status).not.toBe(400);
-  });
+  }, 30000 /* ComfyUI cold-start attempt takes up to ~10s in test env */);
 
   it('rejects a family mismatch (sd15 LoRA on an sdxl checkpoint) with 400', async () => {
     // Provide an explicit manifest so both sides have known families.
