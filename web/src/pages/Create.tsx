@@ -62,6 +62,8 @@ function friendlyError(raw?: string): { msg: string; hint?: string } {
   const e = (raw || '').toString();
   if (/CUDA out of memory|OutOfMemory|GPU out of memory|free VRAM/i.test(e)) return { msg: 'GPU ran out of memory.', hint: 'Close BlueStacks/WSA (or any other GPU app) to free VRAM, then retry.' };
   if (/credits are depleted|RESOURCE_EXHAUSTED|\b429\b|billing/i.test(e)) return { msg: 'Gemini image credits are depleted.', hint: 'Add credits at ai.studio, or switch to the free Local / ComfyUI engine.' };
+  if (/too many add-?ons|too many LoRAs|max(?:imum)? .*(?:add-?ons|LoRAs)|more than 3/i.test(e)) return { msg: 'Too many add-ons.', hint: 'Max 3 add-ons (LoRAs) — the 8GB GPU can’t fit more. Remove one and retry.' };
+  if (/Resolution.*too high|too (?:large|big).*(?:resolution|size)|exceeds.*(?:VRAM|GPU|size limit)|size.*too (?:large|high)/i.test(e)) return { msg: 'Resolution too high for the GPU.', hint: 'Pick a smaller size in the SIZE dropdown — 768×1024 is the safe max on the 8GB GPU.' };
   if (/Incompatible LoRA/i.test(e)) return { msg: e, hint: 'Each add-on (LoRA) only works with its own base-model family — the matching ones are color-coded; the rest are locked 🔒.' };
   if (/preflight|GPU-SAFETY BLOCKED|another GPU job/i.test(e)) return { msg: 'Blocked by the GPU safety guard.', hint: 'Another GPU job is running, or disk/VRAM is low — wait for it to finish, then retry.' };
   if (/ComfyUI failed to start|\b503\b/i.test(e)) return { msg: 'ComfyUI didn’t start in time.', hint: 'Click “Start ComfyUI”, wait for ● online (~30–60s), then generate.' };
@@ -96,6 +98,10 @@ const LOCAL_IMG_MODELS = [
   { value: 'sdxl-turbo', label: 'SDXL-Turbo (free, sharper)' },
   { value: 'sd-turbo',   label: 'SD-Turbo (free, lighter/faster)' },
 ];
+
+// Hard cap on stacked add-ons (LoRAs). The server now 400-rejects >3 (8GB GPU
+// can't hold more), so the UI must prevent picking a 4th — not merely warn.
+const MAX_LORAS = 3;
 
 // ── ComfyUI sizes ─────────────────────────────────────────────────────────────
 const COMFY_SIZES = [
@@ -606,7 +612,7 @@ export function Create() {
         return;
       }
       setComfyOnline(null);
-      fetch('/api/comfyui/status')
+      fetch(withTok('/api/comfyui/status'))
         .then(r => r.json())
         .then((d: any) => {
           comfyModelCache = d;
@@ -723,24 +729,26 @@ export function Create() {
     return () => { try { es?.close(); } catch {} };
   }, [busy, imgEngine]);
 
-  // Video: perceived-progress bar + elapsed timer.
+  // Video: perceived-progress bar + elapsed timer. Higgsfield (cloud) renders far
+  // faster than local LTX, so the bar uses its shorter tau (45s) instead of ltx's.
   useEffect(() => {
     if (!vidBusy) { setVidProgress(0); return; }
     vidStartRef.current = Date.now();
     setVidElapsedMs(0); setVidProgress(0);
+    const tau = vidEngine === 'higgsfield' ? EST_MS.higgsfield : EST_MS.ltx;
     const id = setInterval(() => {
       const el = Date.now() - vidStartRef.current;
       setVidElapsedMs(el);
-      setVidProgress(estProgress(el, EST_MS.ltx));
+      setVidProgress(estProgress(el, tau));
     }, 250);
     return () => clearInterval(id);
-  }, [vidBusy]);
+  }, [vidBusy, vidEngine]);
 
   // ComfyUI: auto re-poll status while offline so it flips to online on its own.
   useEffect(() => {
     if (imgEngine !== 'comfyui' || comfyOnline) return;
     const id = setInterval(() => {
-      fetch('/api/comfyui/status').then(r => r.json()).then((d: any) => {
+      fetch(withTok('/api/comfyui/status')).then(r => r.json()).then((d: any) => {
         if (d && (d.checkpoints || d.loras)) {
           comfyModelCache = d; setComfyModels(d);
           if (d.checkpoints?.length && !comfyCheckpoint) setComfyCheckpoint(d.checkpoints[0].name);
@@ -868,6 +876,10 @@ export function Create() {
             ...(lk.cfg !== undefined ? { cfg: lk.cfg } : {}),
             ...(seedNum !== undefined ? { seed: seedNum } : {}),
             ...(fastGen ? { fast: true } : {}),
+            // A curated Look IS the confirmation — its checkpoint+LoRA combo is
+            // hand-picked, so a LoRA with an unknown Civitai family must not be
+            // hard-blocked when run via the Look.
+            allowUnknownCompat: true,
             detailer,
           };
         } else {
@@ -877,6 +889,13 @@ export function Create() {
           // Simple Mode derives size/steps from the FAMILY (SD1.5 must stay
           // small, SDXL/Pony want 768×1024) — the saved size pref is Advanced-only.
           const [w, h] = simpleMode ? tips.defaultSize : comfySize.split('x').map(Number);
+          // A corrupted localStorage comfySize can yield NaN here — abort cleanly
+          // with a friendly result error instead of POSTing a NaN×NaN request.
+          if (!simpleMode && (!Number.isFinite(w) || !Number.isFinite(h))) {
+            setResult({ ok: false, error: 'Invalid size — re-select in the SIZE dropdown' });
+            setBusy(false);
+            return;
+          }
           const steps = simpleMode ? tips.defaultSteps : comfySteps;
           // In Simple mode, silently apply the family's recommended quality tags +
           // negatives so the user gets good output without touching any knobs.
@@ -1023,7 +1042,11 @@ export function Create() {
         if (r.seed !== undefined && vidSeedLock) setVidSeedVal(String(r.seed));
       }
     } catch (e) {
-      setVidResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      // Mirror the image path: an ApiError (e.g. a 400) carries the server's JSON
+      // body — surface its real `error` message instead of "…/generate-video failed: 400".
+      const msg = e instanceof ApiError ? (((e.body as { error?: string })?.error) || e.message)
+        : (e instanceof Error ? e.message : String(e));
+      setVidResult({ ok: false, error: msg });
     } finally { setVidBusy(false); }
   };
 
@@ -1059,7 +1082,7 @@ export function Create() {
     try { await apiPost('/api/comfy/start', {}); } catch {}
     const t0 = Date.now();
     const poll = () => {
-      fetch('/api/comfyui/status').then(r => r.json()).then((d: any) => {
+      fetch(withTok('/api/comfyui/status')).then(r => r.json()).then((d: any) => {
         if (d && (d.checkpoints || d.loras)) {
           comfyModelCache = d; setComfyModels(d);
           if (d.checkpoints?.length && !comfyCheckpoint) setComfyCheckpoint(d.checkpoints[0].name);
@@ -1068,6 +1091,17 @@ export function Create() {
       }).catch(() => { if (Date.now() - t0 < 90_000) setTimeout(poll, 4000); else setComfyStarting(false); });
     };
     setTimeout(poll, 4000);
+  };
+
+  // ── Select (or deselect) a Look from Simple mode. Selecting a Look explicitly
+  // CLEARS the manual detailer override so the Look's own `detailer` default
+  // re-applies — otherwise once a user flips "✨ Fix feet & hands" by hand, that
+  // override would stick forever (detailerTouched is persisted). The manual
+  // override still holds within a single Look selection. Deselecting ('' = Custom)
+  // also clears it so the next Look starts clean.
+  const selectLook = (id: string) => {
+    setDetailerTouched(false);
+    setSelectedLookId(id);
   };
 
   // ── Open a Look in Advanced mode with every field prefilled — the bridge
@@ -1216,13 +1250,13 @@ export function Create() {
                             const first = avail.find(lk => (lk.category || 'custom') === cat)!;
                             return (
                               <button key={cat} type="button" disabled={busy} style={chip(activeCat === cat)}
-                                onClick={() => setSelectedLookId(activeCat === cat ? '' : first.id)}>
+                                onClick={() => selectLook(activeCat === cat ? '' : first.id)}>
                                 {ci.emoji} {ci.label}
                               </button>
                             );
                           })}
                           <button type="button" disabled={busy} style={chip(!activeLook && selectedLookId === '')}
-                            onClick={() => setSelectedLookId('')}>
+                            onClick={() => selectLook('')}>
                             🛠 Custom…
                           </button>
                         </div>
@@ -1257,7 +1291,7 @@ export function Create() {
                         const blurred = safeMode && (lk.thumbNsfw ?? 1) >= 4 && !revealedThumbs[lk.id];
                         return (
                           <button key={lk.id} type="button" disabled={busy || !lk.available}
-                            onClick={() => setSelectedLookId(active ? '' : lk.id)}
+                            onClick={() => selectLook(active ? '' : lk.id)}
                             title={lk.available ? lk.description : `Needs ${lk.missing.map(cleanName).join(', ')} — download it first`}
                             style={{
                               position: 'relative', textAlign: 'left', cursor: busy || !lk.available ? 'not-allowed' : 'pointer',
@@ -1296,7 +1330,7 @@ export function Create() {
                       })}
                       {/* Custom card — the classic pick-everything-yourself flow */}
                       <button type="button" disabled={busy}
-                        onClick={() => setSelectedLookId('')}
+                        onClick={() => selectLook('')}
                         style={{
                           position: 'relative', textAlign: 'left', cursor: busy ? 'not-allowed' : 'pointer',
                           borderRadius: '14px', padding: '0', overflow: 'hidden',
@@ -1466,7 +1500,7 @@ export function Create() {
                 <div style={{ marginTop: '10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--color-text-muted)', fontFamily: MONO }}>
                   <b style={{ color: 'var(--color-text)' }}>Engine</b> — where the image is made. <b>ComfyUI</b> uses your downloaded Civitai models (best quality, runs on this laptop). <b>Quick preview</b> is fast and local. <b>Nano Banana</b> is Google's cloud — no load on the laptop.<br />
                   <b style={{ color: 'var(--color-text)' }}>Base model</b> — the foundation everything is built on. It has a family (🟠 Pony, 🔵 SDXL, 🔴 SD 1.5, …).<br />
-                  <b style={{ color: 'var(--color-text)' }}>LoRAs (style add-ons)</b> — optional extras layered on top of the base model. You can stack several. Only add-ons that match your base model's family can be selected — the rest are locked 🔒 so nothing comes out broken.<br />
+                  <b style={{ color: 'var(--color-text)' }}>LoRAs (style add-ons)</b> — optional extras layered on top of the base model. You can stack up to {MAX_LORAS} (the 8GB GPU can't fit more). Only add-ons that match your base model's family can be selected — the rest are locked 🔒 so nothing comes out broken.<br />
                   <b style={{ color: 'var(--color-text)' }}>Trigger words</b> — some add-ons need a magic word to activate; we add those to your prompt automatically (you can remove any with ×).<br />
                   <b style={{ color: '#34d39a' }}>● Safe to generate</b> at the top means the laptop has room. If it turns red, Generate is disabled until it's safe — so you can run this from your phone without watching the laptop.
                 </div>
@@ -1544,7 +1578,7 @@ export function Create() {
               <div style={S.card}>
                 <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: '14px' }}>
                   {/* Engine */}
-                  <div>
+                  <div style={{ maxWidth: '100%', minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
                       <div style={{ ...S.label, marginBottom: 0 }}>ENGINE</div>
                       {imgEngine === 'comfyui' && (
@@ -1561,7 +1595,7 @@ export function Create() {
                               </>
                       )}
                     </div>
-                    <select value={imgEngine} onChange={(e) => setImgEngine((e.target as HTMLSelectElement).value as ImgEngine)} disabled={busy} style={{ ...S.select, minWidth: '260px' }}>
+                    <select value={imgEngine} onChange={(e) => setImgEngine((e.target as HTMLSelectElement).value as ImgEngine)} disabled={busy} style={{ ...S.select, minWidth: '260px', maxWidth: '100%', width: '100%' }}>
                       <option value="local">Local — SDXL-Turbo (free, on-GPU)</option>
                       <option value="banana">Nano Banana — Gemini (paid)</option>
                       <option value="comfyui">ComfyUI — your Civitai models (free, on-GPU, best quality)</option>
@@ -1571,24 +1605,24 @@ export function Create() {
 
                   {/* Model (engine-specific) */}
                   {imgEngine === 'banana' && (
-                    <div>
+                    <div style={{ maxWidth: '100%', minWidth: 0 }}>
                       <div style={S.label}>MODEL</div>
-                      <select value={bnModel} onChange={(e) => setBnModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '260px' }}>
+                      <select value={bnModel} onChange={(e) => setBnModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '260px', maxWidth: '100%', width: '100%' }}>
                         {BANANA_MODELS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
                       </select>
                     </div>
                   )}
                   {imgEngine === 'local' && (
                     <>
-                      <div>
+                      <div style={{ maxWidth: '100%', minWidth: 0 }}>
                         <div style={S.label}>MODEL</div>
-                        <select value={localModel} onChange={(e) => setLocalModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '240px' }}>
+                        <select value={localModel} onChange={(e) => setLocalModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '240px', maxWidth: '100%', width: '100%' }}>
                           {LOCAL_IMG_MODELS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
                         </select>
                       </div>
                       <div>
                         <div style={S.label}>QUALITY</div>
-                        <select value={localSteps} onChange={(e) => setLocalSteps(Number((e.target as HTMLSelectElement).value))} disabled={busy} style={{ ...S.select, minWidth: '150px' }}>
+                        <select value={localSteps} onChange={(e) => setLocalSteps(Number((e.target as HTMLSelectElement).value))} disabled={busy} style={{ ...S.select, minWidth: '150px', maxWidth: '100%', width: '100%' }}>
                           <option value={1}>Fast (1 step)</option>
                           <option value={3}>Balanced (3)</option>
                           <option value={6}>Quality (6)</option>
@@ -1598,7 +1632,7 @@ export function Create() {
                   )}
                   {imgEngine === 'comfyui' && (
                     <>
-                      <div>
+                      <div style={{ maxWidth: '100%', minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                           <div style={{ ...S.label, marginBottom: 0 }}>BASE MODEL</div>
                           {selectedCkpt && (
@@ -1608,7 +1642,7 @@ export function Create() {
                             </span>
                           )}
                         </div>
-                        <select value={comfyCheckpoint} onChange={(e) => setComfyCheckpoint((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '300px' }}>
+                        <select value={comfyCheckpoint} onChange={(e) => setComfyCheckpoint((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '300px', maxWidth: '100%', width: '100%' }}>
                           {comfyModels?.checkpoints?.length
                             ? comfyModels.checkpoints.map(c => (
                                 <option key={c.name} value={c.name}>{cleanName(c.name)} · {famInfo(c.family).label} ({c.sizeGB}GB)</option>
@@ -1617,15 +1651,15 @@ export function Create() {
                         </select>
                         <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, marginTop: '4px' }}>The foundation — every add-on must match this family.</div>
                       </div>
-                      <div>
+                      <div style={{ maxWidth: '100%', minWidth: 0 }}>
                         <div style={S.label}>SIZE</div>
-                        <select value={comfySize} onChange={(e) => setComfySize((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '270px' }}>
+                        <select value={comfySize} onChange={(e) => setComfySize((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '270px', maxWidth: '100%', width: '100%' }}>
                           {COMFY_SIZES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                         </select>
                       </div>
                       <div>
                         <div style={S.label}>STEPS</div>
-                        <select value={comfySteps} onChange={(e) => setComfySteps(Number((e.target as HTMLSelectElement).value))} disabled={busy} style={{ ...S.select, minWidth: '120px' }}>
+                        <select value={comfySteps} onChange={(e) => setComfySteps(Number((e.target as HTMLSelectElement).value))} disabled={busy} style={{ ...S.select, minWidth: '120px', maxWidth: '100%' }}>
                           {[10, 15, 20, 25, 30].map((n) => <option key={n} value={n}>{n}</option>)}
                         </select>
                       </div>
@@ -1635,9 +1669,9 @@ export function Create() {
                   {/* Higgsfield (cloud) — model + aspect + resolution */}
                   {imgEngine === 'higgsfield' && (
                     <>
-                      <div>
+                      <div style={{ maxWidth: '100%', minWidth: 0 }}>
                         <div style={S.label}>MODEL</div>
-                        <select value={hfImgModel} onChange={(e) => setHfImgModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '260px' }}>
+                        <select value={hfImgModel} onChange={(e) => setHfImgModel((e.target as HTMLSelectElement).value)} disabled={busy} style={{ ...S.select, minWidth: '260px', maxWidth: '100%', width: '100%' }}>
                           {hfModels === null && <option value="">Loading…</option>}
                           {hfModels?.filter(m => m.kind === 'image').map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                           {hfModels && !hfModels.some(m => m.kind === 'image') && <option value="">No image models</option>}
@@ -1795,14 +1829,14 @@ export function Create() {
                             <span style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO }}>higher = stronger</span>
                           </div>
                           {comfyLoras.length > 0 && (
-                            <button type="button" onClick={() => setComfyLoras([])} disabled={busy}
+                            <button type="button" onClick={() => { setComfyLoras([]); setLoraHint(''); }} disabled={busy}
                               style={{ fontSize: '10px', color: '#ef5350', background: 'none', border: '1px solid rgba(239,83,80,0.3)', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer', fontFamily: MONO }}>
                               clear all
                             </button>
                           )}
                         </div>
                         <div style={{ fontSize: '10px', color: 'var(--color-text-faint)', fontFamily: MONO, marginBottom: '8px' }}>
-                          Layered on the base model — stack as many as you like. Locked 🔒 ones don't match {famInfo(ckptFam).label} and would produce artifacts.
+                          Layered on the base model — <b style={{ color: comfyLoras.length >= MAX_LORAS ? '#ffb347' : 'inherit' }}>max {MAX_LORAS} add-ons</b> (8GB GPU limit). Locked 🔒 ones don't match {famInfo(ckptFam).label} and would produce artifacts.
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                           {comfyModels.loras.map(l => {
@@ -1837,12 +1871,19 @@ export function Create() {
                               );
                             }
                             const needsConfirm = compat === 'unknown' && !active && !unknownConfirmed.includes(l.name);
+                            // At the cap, only the already-selected ones stay tappable
+                            // (so you can remove). Adding a 4th is blocked — the server
+                            // 400-rejects it, so don't let it be submitted at all.
+                            const atCap = !active && comfyLoras.length >= MAX_LORAS;
+                            const disabledChip = busy || atCap;
                             return (
                               <button
                                 key={l.name}
                                 type="button"
-                                disabled={busy}
+                                disabled={disabledChip}
                                 onClick={() => {
+                                  if (atCap) { setLoraHint(`Max ${MAX_LORAS} add-ons — 8GB GPU limit. Remove one to swap.`); return; }
+                                  setLoraHint('');
                                   if (needsConfirm) { setConfirmLora(l); return; }
                                   setComfyLoras(prev =>
                                     prev.includes(l.name) ? prev.filter(x => x !== l.name) : [...prev, l.name]
@@ -1850,22 +1891,35 @@ export function Create() {
                                 }}
                                 style={{
                                   fontSize: '11px', fontFamily: MONO, padding: '4px 10px',
-                                  borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer',
+                                  borderRadius: '6px', cursor: disabledChip ? 'not-allowed' : 'pointer',
+                                  opacity: atCap ? 0.45 : 1,
                                   color: active ? '#06210f' : compat === 'unknown' ? '#ffb347' : 'var(--color-text-muted)',
                                   background: active ? '#34d39a' : 'var(--color-elevated)',
                                   border: '1px solid ' + (active ? '#34d39a' : compat === 'unknown' ? 'rgba(255,179,71,0.45)' : 'var(--color-border)'),
                                 }}
-                                title={compat === 'unknown'
-                                  ? `${loraLabel(l)} — model family unknown; may produce broken images with ${famInfo(ckptFam).label}. Tap to confirm.`
-                                  : `${l.description || l.name} — ${l.sizeMB}MB${l.baseModel ? ` · Civitai: ${l.baseModel}` : ''}`}
+                                title={atCap
+                                  ? `Max ${MAX_LORAS} add-ons — 8GB GPU limit. Remove one to swap.`
+                                  : compat === 'unknown'
+                                    ? `${loraLabel(l)} — model family unknown; may produce broken images with ${famInfo(ckptFam).label}. Tap to confirm.`
+                                    : `${l.description || l.name} — ${l.sizeMB}MB${l.baseModel ? ` · Civitai: ${l.baseModel}` : ''}`}
                               >
                                 {active ? '✓ ' : compat === 'unknown' ? '⚠ ' : ''}{loraLabel(l)}{l.verified === false ? ' ?' : ''}
                               </button>
                             );
                           })}
                         </div>
-                        {/* Stacking guard — warn-only; the server stays permissive in Advanced */}
-                        {(comfyLoras.length > 3 || comfyLoras.length * comfyLoraStrength > 2.0) && (
+                        {/* Cap-reached / over-strength notice. Picking a 4th is now
+                            blocked outright (server 400-rejects >3), so this is a
+                            "you're at the limit" hint, not a soft warning. */}
+                        {loraHint && (
+                          <div style={{ fontSize: '11px', color: '#ffb347', fontFamily: MONO, marginTop: '8px' }}>⚠ {loraHint}</div>
+                        )}
+                        {!loraHint && comfyLoras.length >= MAX_LORAS && (
+                          <div style={{ fontSize: '11px', color: '#ffb347', fontFamily: MONO, marginTop: '8px' }}>
+                            ⚠ Max {MAX_LORAS} add-ons reached (8GB GPU limit) — remove one to swap in another.
+                          </div>
+                        )}
+                        {comfyLoras.length * comfyLoraStrength > 2.0 && (
                           <div style={{ fontSize: '11px', color: '#ffb347', fontFamily: MONO, marginTop: '8px' }}>
                             ⚠ {comfyLoras.length} add-ons at {comfyLoraStrength.toFixed(2)} strength — stacking this much usually causes deformed output. Try fewer add-ons or lower strength.
                           </div>
@@ -1973,7 +2027,11 @@ export function Create() {
                 onConfirm={() => {
                   if (!confirmLora) return;
                   setUnknownConfirmed(p => [...p, confirmLora.name]);
-                  setComfyLoras(p => p.includes(confirmLora.name) ? p : [...p, confirmLora.name]);
+                  setComfyLoras(p => {
+                    if (p.includes(confirmLora.name)) return p;
+                    if (p.length >= MAX_LORAS) { setLoraHint(`Max ${MAX_LORAS} add-ons — 8GB GPU limit. Remove one to swap.`); return p; }
+                    return [...p, confirmLora.name];
+                  });
                 }}
               />
             </>
@@ -1981,18 +2039,18 @@ export function Create() {
             /* ── Video tab ───────────────────────────────────────────────────── */
             <>
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '16px' }}>
-                <div>
+                <div style={{ maxWidth: '100%', minWidth: 0 }}>
                   <div style={S.label}>ENGINE</div>
-                  <select value={vidEngine} onChange={(e) => setVidEngine((e.target as HTMLSelectElement).value as 'local' | 'fvm' | 'higgsfield')} style={{ ...S.select, minWidth: '300px' }}>
+                  <select value={vidEngine} onChange={(e) => setVidEngine((e.target as HTMLSelectElement).value as 'local' | 'fvm' | 'higgsfield')} style={{ ...S.select, minWidth: '300px', maxWidth: '100%', width: '100%' }}>
                     <option value="local">Local — LTX-Video (free, on-GPU)</option>
                     <option value="higgsfield">Higgsfield — Sora/Kling/Veo (cloud · subscription)</option>
                     <option value="fvm">Free Video Maker (Veo / Sora / Replicate / fal · paid)</option>
                   </select>
                 </div>
                 {vidEngine === 'higgsfield' && (
-                  <div>
+                  <div style={{ maxWidth: '100%', minWidth: 0 }}>
                     <div style={S.label}>MODEL</div>
-                    <select value={hfVidModel} onChange={(e) => setHfVidModel((e.target as HTMLSelectElement).value)} disabled={vidBusy} style={{ ...S.select, minWidth: '240px' }}>
+                    <select value={hfVidModel} onChange={(e) => setHfVidModel((e.target as HTMLSelectElement).value)} disabled={vidBusy} style={{ ...S.select, minWidth: '240px', maxWidth: '100%', width: '100%' }}>
                       {hfModels === null && <option value="">Loading…</option>}
                       {hfModels?.filter(m => m.kind === 'video').map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                       {hfModels && !hfModels.some(m => m.kind === 'video') && <option value="">No video models</option>}

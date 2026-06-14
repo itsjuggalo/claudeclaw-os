@@ -1296,9 +1296,13 @@ init();
   // ── ComfyUI remote control — start/stop from Tailscale or ClaudeClaw UI ──
   app.post('/api/comfy/start', async (c) => {
     try {
-      const { execSync } = await import('child_process');
+      // B2: non-blocking fetch instead of execSync('curl …') so this route
+      // can't freeze the event loop for 2s while ComfyUI is cold.
       let running = false;
-      try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
+      try {
+        const probe = await fetch('http://127.0.0.1:8188/system_stats', { signal: AbortSignal.timeout(2500) });
+        running = probe.ok;
+      } catch {}
       if (running) return c.json({ ok: false, error: 'already running' });
       const { spawn } = await import('child_process');
       const HOME = process.env.HOME || '/home/itsju';
@@ -1370,7 +1374,14 @@ init();
       }, 30_000);
 
       try {
-        await new Promise<void>((_, reject) => { stream.onAbort(() => reject(new Error('aborted'))); });
+        // B7: also resolve (not just reject) on ws 'close' so the WS is always
+        // released if the socket drops before the SSE stream fires onAbort.
+        // Without this, a WS that closes mid-gen leaks until the client
+        // eventually disconnects and onAbort fires (or never, on keep-alive).
+        await new Promise<void>((resolve, reject) => {
+          stream.onAbort(() => reject(new Error('aborted')));
+          ws?.on('close', () => resolve());
+        });
       } catch { /* client disconnected */ }
       finally { clearInterval(ping); try { ws?.close(); } catch {} }
     });
@@ -1459,14 +1470,17 @@ init();
       // (phone, dashboard, or raw API). Closes the warm-ComfyUI gap: cold start
       // runs preflight via comfyui-start, but a warm instance had no gate.
       //
-      // Auto-free recovery: if the only failure reason is stale VRAM from a
-      // previous gen (pattern: "VRAM", "GPU memory", or "already holds"), call
-      // comfyFree() and retry once. This fixes "PREFLIGHT FAIL: GPU already holds
-      // NNNNMiB" on back-to-back gens without requiring a manual flush.
-      // Non-VRAM failures (low RAM, low C: disk, concurrency lock) skip the retry.
+      // Auto-free recovery: if the only failure reason is stale VRAM/RAM held by
+      // a previous gen or idle ComfyUI model weights, call comfyFree() and retry
+      // once. Patterns matched:
+      //   "VRAM" / "GPU memory" / "already holds" — GPU-side stale allocation
+      //   "RAM only"  — idle ComfyUI holding 9–12 GB of model weights in system
+      //                 RAM (comfyFree() calls unload_models+free_memory which
+      //                 releases that too, so the retry will actually recover)
+      // Non-recoverable failures (low C: disk, concurrency lock) skip the retry.
       let gate = await preflightGate();
-      if (!gate.ok && /VRAM|GPU memory|already holds/i.test(gate.reason ?? '')) {
-        logger.info({ reason: gate.reason }, 'preflight: VRAM stale — calling comfyFree() and retrying');
+      if (!gate.ok && /VRAM|GPU memory|already holds|RAM only/i.test(gate.reason ?? '')) {
+        logger.info({ reason: gate.reason }, 'RAM low — freeing ComfyUI-held model weights and retrying');
         await comfyFree();
         await new Promise(r => setTimeout(r, 1500)); // give the driver 1.5s to release pages
         gate = await preflightGate();
@@ -1493,7 +1507,7 @@ init();
         return c.json({ ok: false, error: msg }, 400);
       }
 
-      const { execSync, spawn } = await import('child_process');
+      const { spawn } = await import('child_process');
 
       // ── 1. Ensure ComfyUI is up — but DON'T block the request for the full
       // cold boot. A cold WSL ComfyUI takes ~30–90s to load; holding the HTTP
@@ -1501,8 +1515,16 @@ init();
       // we kick off startup (once per boot window), wait only a few seconds in
       // case it's nearly ready, then hand back `{ starting: true }` and let the
       // client re-kick. Each request stays short, so no intermediary can drop it.
-      let running = false;
-      try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; } catch {}
+      //
+      // B2: replaced execSync('curl …') with non-blocking fetch so a cold/slow
+      // ComfyUI can't freeze all routes for up to 2s per probe.
+      const comfyHealthy = async (): Promise<boolean> => {
+        try {
+          const r = await fetch('http://127.0.0.1:8188/system_stats', { signal: AbortSignal.timeout(2500) });
+          return r.ok;
+        } catch { return false; }
+      };
+      let running = await comfyHealthy();
       if (!running) {
         if (Date.now() - comfyStartedAt > 180_000) {
           comfyStartedAt = Date.now();
@@ -1516,12 +1538,21 @@ init();
         const startMs = Date.now();
         while (Date.now() - startMs < 8000) {
           await new Promise(r => setTimeout(r, 2000));
-          try { execSync('curl -sf http://127.0.0.1:8188/system_stats --max-time 2', { stdio: 'pipe' }); running = true; break; } catch {}
+          if (await comfyHealthy()) { running = true; break; }
         }
         if (!running) return c.json({ ok: true, starting: true });
       }
 
       // ── 1b. Queue-depth cap — one heavy job at a time on the 8GB GPU ────
+      // B5 — TOCTOU guard: two concurrent POSTs can both pass comfyQueueDepth()
+      // in the same event-loop tick (both await the same async depth read, both
+      // see 0, both proceed). The module-scope boolean is set synchronously
+      // before the first await so any concurrent request sees it immediately.
+      if (comfySubmitting) {
+        return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
+      }
+      comfySubmitting = true;
+      try {
       if (await comfyQueueDepth() >= 1) {
         return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
       }
@@ -1638,9 +1669,14 @@ init();
       };
 
       // ── 3. Queue ────────────────────────────────────────────────────────
+      // B3: 8s timeout so an unresponsive ComfyUI can't hang this route in
+      // 'settling' limbo until the TCP connection times out (minutes). The
+      // existing catch() below surfaces it as a transient error so the client
+      // retries on the next poll cycle.
       const queueRes = await fetch('http://127.0.0.1:8188/prompt', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: workflow }),
+        signal: AbortSignal.timeout(8000),
       });
       if (!queueRes.ok) return c.json({ ok: false, error: `ComfyUI queue rejected: ${queueRes.status}` }, 502);
       const { prompt_id } = await queueRes.json() as { prompt_id: string };
@@ -1649,6 +1685,11 @@ init();
       logger.info({ prompt_id, seed, checkpoint }, 'ComfyUI job queued (async)');
       comfyJobs.set(prompt_id, { seed, checkpoint, done: false, queuedAt: Date.now() });
       return c.json({ ok: true, prompt_id, seed });
+      } finally {
+        // B5 — always release the submit lock, whether the queue POST succeeded,
+        // failed, or threw (AbortError from B3 timeout lands here too).
+        comfySubmitting = false;
+      }
     } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
   });
 
@@ -1677,7 +1718,8 @@ init();
       comfyJobs.set(prompt_id, { ...j, ...patch, done: true, settling: false });
     };
     try {
-      const histRaw = await fetch(`http://127.0.0.1:8188/history/${prompt_id}`).then(r => r.json());
+      // B3: 8s timeout — history poll must not block forever if ComfyUI stalls.
+      const histRaw = await fetch(`http://127.0.0.1:8188/history/${prompt_id}`, { signal: AbortSignal.timeout(8000) }).then(r => r.json());
       const entry = (histRaw as Record<string, any>)[prompt_id];
       if (!entry) { release(); return c.json({ ok: true, done: false }); }
       const statusMsgs: Array<[string, any]> = entry.status?.status_messages ?? [];
@@ -1713,16 +1755,10 @@ init();
           void comfyFree();
           return c.json({ ok: false, done: true, error: `couldn't save the image to the gallery: ${String(moveErr)}`, seed });
         }
+        // B6: the `if (!url)` guard that was here was unreachable — a template
+        // literal is never falsy, and `filename` is already null-checked above.
+        // Removed to eliminate dead code (the original comment was aspirational).
         const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(filename)}`;
-        // Guard: if the url somehow came out empty (e.g. filename was an empty string
-        // that slipped past the null check), don't return an ok:true with no url —
-        // that would leave the Create page stuck showing a broken image. Treat it as
-        // a terminal error so the client surfaces a real message.
-        if (!url) {
-          finish({ error: 'output produced but URL unavailable' });
-          void comfyFree();
-          return c.json({ ok: false, done: true, error: 'output produced but URL unavailable', seed });
-        }
         finish({ file: filename, url });
         void comfyFree();
         notify(`✅ Image ready: ${filename} (${(job?.checkpoint||'').replace('.safetensors','')})`);
@@ -1801,6 +1837,11 @@ init();
   // Last time we spawned comfyui-start, so a burst of "still starting" re-kicks
   // from the client doesn't spawn a launcher storm during the cold-boot window.
   let comfyStartedAt = 0;
+  // B5 — TOCTOU guard: two concurrent POSTs can both pass comfyQueueDepth()>=1
+  // in the same event-loop tick. This single-tick boolean prevents the double-
+  // submit. Set true before the async depth check, cleared in finally after the
+  // queue POST (or on any early return path that goes through finally).
+  let comfySubmitting = false;
   const modelDownloads = new Map<string, { dest: string; name: string; status: 'downloading' | 'done' | 'failed'; pct: number; error?: string }>();
   const MODEL_DEST_DIRS: Record<string, string> = { checkpoints: 'checkpoints', loras: 'loras', controlnet: 'controlnet', vae: 'vae' };
 

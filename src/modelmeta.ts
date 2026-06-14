@@ -67,11 +67,20 @@ export function familyFromFilename(name: string): string {
 // Tri-state LoRA↔checkpoint compatibility. 'unknown' means we can't prove a
 // match either way (one side has no real family) — Simple Mode hides these,
 // Advanced Mode allows them only behind an explicit confirm.
+//
+// B4 — Pony/SDXL/Illustrious all share the SDXL architecture and can load
+// each other's LoRAs without ComfyUI errors (e.g. RealFeet_xl on a Pony
+// checkpoint). Treating them as 'mismatch' was a false hard-block. True
+// cross-arch (sd15 vs sdxl/pony, flux vs anything, etc.) stays 'mismatch'.
 export type Compat = 'ok' | 'unknown' | 'mismatch';
+const SDXL_ARCH_FAMILIES = new Set(['sdxl', 'pony', 'illustrious']);
 export function loraCompat(loraFam?: string, ckptFam?: string): Compat {
   const l = loraFam || 'other', c = ckptFam || 'other';
   if (l === 'other' || c === 'other') return 'unknown';
-  return l === c ? 'ok' : 'mismatch';
+  if (l === c) return 'ok';
+  // Allow any mix within the SDXL architecture family (pony ↔ sdxl ↔ illustrious)
+  if (SDXL_ARCH_FAMILIES.has(l) && SDXL_ARCH_FAMILIES.has(c)) return 'ok';
+  return 'mismatch';
 }
 
 export function readManifest(): Record<string, ModelMeta> {
