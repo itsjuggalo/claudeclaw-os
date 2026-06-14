@@ -1441,6 +1441,20 @@ init();
       const prompt = (body.prompt || '').trim();
       if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
 
+      // ── 0a. Hardware guards — a custom combo must never OOM the 8GB GPU ──
+      // Cap stacked add-ons (each LoRA adds VRAM + can corrupt output) and total
+      // resolution (the real OOM/freeze vector on the shared 8GB card).
+      const MAX_LORAS = 3;
+      const nLoras = body.loras?.length ?? 0;
+      if (nLoras > MAX_LORAS) {
+        return c.json({ ok: false, error: `Too many add-ons (${nLoras}) — max ${MAX_LORAS} at once to stay within the 8GB GPU.` }, 400);
+      }
+      const reqW = body.width ?? 768, reqH = body.height ?? 1024;
+      const MAX_DIM = 1536, MAX_PX = 1024 * 1536;   // ~1.57M px ceiling for 8GB + detailer
+      if (reqW > MAX_DIM || reqH > MAX_DIM || reqW * reqH > MAX_PX) {
+        return c.json({ ok: false, error: `Resolution ${reqW}×${reqH} is too high for the 8GB GPU (max ${MAX_DIM}px per side / ~${MAX_PX.toLocaleString()} total pixels).` }, 400);
+      }
+
       // ── 0. Safety gate — refuse if unsafe, no matter the trigger source ──
       // (phone, dashboard, or raw API). Closes the warm-ComfyUI gap: cold start
       // runs preflight via comfyui-start, but a warm instance had no gate.

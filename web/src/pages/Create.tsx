@@ -442,7 +442,7 @@ function BatchGrid({ results }: { results: GenResult[] }) {
           <div style={{ fontSize: '12px', color: ACCENT, fontFamily: MONO, marginBottom: '10px', fontWeight: 600 }}>
             Saved&nbsp;✓ {ok.length}/{results.length} generated · <a href="/gallery" style={{ color: '#7fd1ff' }}>View in Gallery →</a>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '12px' }}>
             {ok.map((r, i) => {
               const hasUrl = !!(r.url && r.url.trim());
               return (
@@ -1251,7 +1251,7 @@ export function Create() {
                     </div>
                   </div>
                   {(looks || []).length > 0 && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px', marginBottom: '6px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '10px', marginBottom: '6px' }}>
                       {(looks || []).map(lk => {
                         const active = activeLook?.id === lk.id;
                         const blurred = safeMode && (lk.thumbNsfw ?? 1) >= 4 && !revealedThumbs[lk.id];
@@ -1338,7 +1338,7 @@ export function Create() {
                   ) : !comfyModels?.checkpoints?.length ? (
                     <div style={{ fontSize: '13px', color: 'var(--color-text-faint)', fontFamily: MONO }}><span class="cc-spin">⟳</span> Loading models…</div>
                   ) : (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '10px' }}>
                       {comfyModels.checkpoints.map(c => {
                         const active = c.name === comfyCheckpoint;
                         const fi = famInfo(c.family);
