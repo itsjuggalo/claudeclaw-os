@@ -1480,10 +1480,37 @@ init();
       // Non-recoverable failures (low C: disk, concurrency lock) skip the retry.
       let gate = await preflightGate();
       if (!gate.ok && /VRAM|GPU memory|already holds|RAM only/i.test(gate.reason ?? '')) {
-        logger.info({ reason: gate.reason }, 'RAM low — freeing ComfyUI-held model weights and retrying');
+        logger.info({ reason: gate.reason }, 'preflight blocked on memory — attempting comfyFree recovery');
         await comfyFree();
         await new Promise(r => setTimeout(r, 1500)); // give the driver 1.5s to release pages
         gate = await preflightGate();
+        // comfyFree() releases VRAM, but ComfyUI keeps the model resident in CPU RAM
+        // (offload under --disable-pinned-memory). If we're STILL blocked on RAM and
+        // ComfyUI is idle (no job queued), recycling the process is the only thing that
+        // frees those 8–12 GB. Kill it, reset the cold-start cooldown, and hand back
+        // { starting:true } so the client re-kicks into a fresh, headroom-clean cold start.
+        if (!gate.ok && /RAM only/i.test(gate.reason ?? '') && (await comfyQueueDepth()) === 0) {
+          logger.warn({ reason: gate.reason }, 'RAM still low after comfyFree — recycling idle ComfyUI to release its CPU-resident model');
+          try {
+            const { spawn: spawnKill } = await import('child_process');
+            spawnKill('pkill', ['-TERM', '-f', 'venv/bin/python main.py'], { stdio: 'ignore' });
+          } catch { /* best-effort */ }
+          comfyStartedAt = 0;                              // allow an immediate cold start on the re-kick
+          await new Promise(r => setTimeout(r, 2500));     // let the process die + pages return
+          gate = await preflightGate();
+          if (gate.ok) {
+            notify('♻️ Recycled idle ComfyUI to free RAM — image gen will cold-start');
+            return c.json({ ok: true, starting: true });
+          }
+        }
+        // VRAM held by an idle, already-loaded model is REUSABLE by this sequential
+        // gen — it is not a real blocker. The downstream queue-depth gate (one job at
+        // a time) is the actual concurrency guard, so when ComfyUI is idle (queue 0)
+        // we proceed and let ComfyUI swap/reuse the model rather than hard-block.
+        if (!gate.ok && /already holds|GPU memory|VRAM/i.test(gate.reason ?? '') && (await comfyQueueDepth()) === 0) {
+          logger.info({ reason: gate.reason }, 'VRAM held by idle ComfyUI model — proceeding (reused; queue gate enforces single-job)');
+          gate = { ok: true, reason: 'idle-model-reuse' };
+        }
         if (gate.ok) logger.info('preflight: retry passed after comfyFree');
       }
       if (!gate.ok) { notify(`🛑 Image gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
