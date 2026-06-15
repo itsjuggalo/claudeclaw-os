@@ -13,6 +13,7 @@ import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
 import { ExploreTab } from '@/components/erik/ExploreTab';
+import { ConditionsTab } from '@/components/erik/ConditionsTab';
 import { TechniquePlayer } from '@/components/erik/TechniquePlayer';
 import { ErikQuiz } from '@/components/erik/ErikQuiz';
 import { useDebouncedValue } from '@/lib/useDebounce';
@@ -646,11 +647,11 @@ function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
 }
 
 function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
-  type KbTab = 'explore' | 'techniques' | 'quiz' | 'ask' | 'search' | 'sources';
+  type KbTab = 'explore' | 'conditions' | 'techniques' | 'quiz' | 'ask' | 'search' | 'sources';
   const urlTab = (() => {
     try {
       const t = new URLSearchParams(window.location.search).get('tab');
-      return (['explore', 'techniques', 'quiz', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
+      return (['explore', 'conditions', 'techniques', 'quiz', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
     } catch { return null; }
   })();
   const [tab, setTab] = useState<KbTab>(
@@ -793,6 +794,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
         tabs={
           <>
             {isErikDalton && <Tab label="Explore" active={tab === 'explore'} onClick={() => setTab('explore')} />}
+            {isErikDalton && <Tab label="Conditions" active={tab === 'conditions'} onClick={() => setTab('conditions')} />}
             {isErikDalton && <Tab label="Techniques" active={tab === 'techniques'} onClick={() => setTab('techniques')} />}
             {isErikDalton && <Tab label="Quiz" active={tab === 'quiz'} onClick={() => setTab('quiz')} />}
             {item.askable && <Tab label="Ask" active={tab === 'ask'} onClick={() => setTab('ask')} />}
@@ -806,6 +808,10 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
           {tab === 'explore' && (
             <ExploreTab itemId={item.id} anatomy={anatomy} videosMap={videosMap} />
+          )}
+
+          {tab === 'conditions' && (
+            <ConditionsTab itemId={item.id} videosMap={videosMap} />
           )}
 
           {tab === 'techniques' && (

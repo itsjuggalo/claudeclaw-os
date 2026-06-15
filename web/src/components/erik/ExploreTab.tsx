@@ -89,8 +89,36 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
 
   const framesReady = Object.keys(videosMap).length > 0;
 
+  // Library scale — communicates depth at a glance (good when showing peers).
+  const stats = useMemo(() => {
+    const vids = Object.values(videosMap);
+    const courses = new Set(vids.map((v) => v.course)).size;
+    const withFrames = vids.filter((v) => v.frames?.length).length;
+    const frames = vids.reduce((n, v) => n + (v.frames?.length || 0), 0);
+    return { courses, withFrames, frames, muscles: Object.keys(anatomy).length };
+  }, [videosMap, anatomy]);
+
   return (
     <div>
+      {/* credibility stat-strip */}
+      {framesReady && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+          {[
+            [stats.courses, 'courses'],
+            [stats.withFrames, 'techniques'],
+            [stats.frames.toLocaleString(), 'teaching frames'],
+            [stats.muscles, 'muscle plates'],
+            [15, 'body regions'],
+            [20, 'conditions'],
+          ].map(([n, l], i) => (
+            <div key={i} style={{ flex: '0 0 auto', padding: '6px 12px', borderRadius: '9px', background: 'var(--color-card)', border: '1px solid var(--color-border)', textAlign: 'center' }}>
+              <span style={{ fontSize: '15px', fontWeight: 800, color: ACCENT }}>{n}</span>
+              <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginLeft: '5px' }}>{l}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '14px', lineHeight: 1.5 }}>
         Rotate the 3D figure and click a body part — or use the flat map / chips below — to see the
         muscles there and Erik's techniques for that area.
