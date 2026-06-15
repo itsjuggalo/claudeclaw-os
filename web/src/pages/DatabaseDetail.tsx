@@ -283,6 +283,37 @@ interface FrameEntry {
   t_mid: number;
   file: string;   // relative like "frames/<videoId>/seg-000-29s.jpg"
   text: string;
+  region?: string;  // body region tag, e.g. "wrist/hand", "low back" (erikdalton_region_tags.py)
+}
+
+// Query words that signal a body region → the region label tagged on frames.
+// Lets "carpal tunnel" / "wrist pain" surface upper-extremity frames even when a
+// given segment's transcript doesn't literally repeat the word.
+const REGION_HINTS: Array<[string, string[]]> = [
+  ['wrist/hand', ['carpal', 'wrist', 'median nerve', 'tinel']],
+  ['elbow', ['elbow', 'epicondyle', 'forearm', 'tennis elbow']],
+  ['shoulder', ['shoulder', 'rotator cuff', 'scapula', 'frozen shoulder']],
+  ['neck', ['neck', 'cervical', 'scalene', 'whiplash', 'suboccipital']],
+  ['low back', ['low back', 'lower back', 'lumbar', 'sciatic', 'sciatica', 'disc']],
+  ['pelvis/SI', ['pelvis', 'pelvic', 'sacrum', 'si joint', 'sacroiliac', 'sacroiliac']],
+  ['hip/glutes', ['hip', 'glute', 'piriformis', 'psoas', 'groin']],
+  ['knee', ['knee', 'patella', 'meniscus', 'hamstring']],
+  ['foot/ankle', ['foot', 'feet', 'ankle', 'plantar', 'calf', 'achilles']],
+  ['thoracic/ribs', ['thoracic', 'rib', 'mid back', 'mid-back', 'kyphosis']],
+  ['jaw/TMJ', ['tmj', 'jaw', 'masseter']],
+  ['head/face', ['headache', 'cranial', 'occiput', 'migraine']],
+  ['core/abdomen', ['abdomen', 'belly', 'diaphragm', 'pelvic floor', 'psoas']],
+];
+
+// Which region labels does this query text point at? (substring is fine here —
+// these are intentional multi-char anatomy terms, and the query is short.)
+function queryRegions(text: string): Set<string> {
+  const t = text.toLowerCase();
+  const out = new Set<string>();
+  for (const [label, hints] of REGION_HINTS) {
+    if (hints.some((h) => t.includes(h))) out.add(label);
+  }
+  return out;
 }
 interface VideoFrameData {
   id: string;
@@ -328,6 +359,14 @@ function FrameCard({ frame, videoId, itemId, videoTitle }: {
             fontSize: '9px', fontWeight: 700, color: '#fff',
             background: 'rgba(0,0,0,0.6)', padding: '1px 4px', borderRadius: '3px',
           }}>{label}</span>
+          {frame.region && (
+            <span style={{
+              position: 'absolute', top: '3px', left: '4px',
+              fontSize: '9px', fontWeight: 700, color: '#fff',
+              background: 'rgba(16,120,90,0.82)', padding: '1px 5px', borderRadius: '3px',
+              textTransform: 'capitalize',
+            }}>{frame.region}</span>
+          )}
         </div>
         <div style={{ padding: '4px 6px' }}>
           <div style={{
@@ -369,6 +408,9 @@ function matchFrames(
   if (!text.trim() || Object.keys(videosMap).length === 0) return [];
   const words = text.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
   if (words.length === 0) return [];
+  // If the query names a body region, boost frames tagged with that region so
+  // they surface even when the segment's own transcript doesn't repeat the word.
+  const wantRegions = queryRegions(text);
 
   const scored: Array<{ frame: FrameEntry; videoId: string; videoTitle: string; score: number }> = [];
   for (const [videoId, vd] of Object.entries(videosMap)) {
@@ -376,6 +418,7 @@ function matchFrames(
       const ft = frame.text.toLowerCase();
       let score = 0;
       for (const w of words) { if (ft.includes(w)) score++; }
+      if (frame.region && wantRegions.has(frame.region)) score += 2;
       if (score > 0) scored.push({ frame, videoId, videoTitle: vd.title + ' · ' + vd.course, score });
     }
   }

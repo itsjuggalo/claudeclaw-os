@@ -54,12 +54,15 @@ export interface RegistryEntry {
 
 const RAW_REGISTRY: RegistryEntry[] = [
   // Knowledge Bases (RAG)
-  // searchUrl is omitted for claytrader/erikdalton/vibecoding — the shared :8095 server is
-  // not running. Omitting it sends queries straight to query.py via execFile (no 8-second
-  // wait on a dead connection first). mc-kb keeps its :8091 warm-server path (always online).
-  { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true },
-  { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true },
-  { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`) },
+  // claytrader/erikdalton/vibecoding point at the shared warm server on :8095
+  // (kb-warm-server PM2 app, ~/kb-warm-server/server.py). It keeps the embedding
+  // model + LanceDB tables resident so a query is ~0.4-1.6s instead of the ~40-54s
+  // cold load of spawning query.py. kbSearch falls back to query.py automatically
+  // if the server is down (kbSearchViaServer returns null), so search never breaks.
+  // mc-kb keeps its own :8091 warm-server path. Each ?kb= routes to that KB.
+  { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true, searchUrl: 'http://127.0.0.1:8095/query?kb=claytrader' },
+  { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true, searchUrl: 'http://127.0.0.1:8095/query?kb=erikdalton' },
+  { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`), searchUrl: 'http://127.0.0.1:8095/query?kb=vibecoding' },
   { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: existsSync(`${HOME}/02_DATA/mc-kb/ask.py`), searchUrl: 'http://127.0.0.1:8091/query' },
 
   // Trade & Pipeline SQL
