@@ -90,7 +90,9 @@ export function generateLocalVideo(opts: { prompt: string; frames?: number; step
   const args = ['--frames', String(frames), '--steps', String(steps)];
   if (Number.isFinite(opts.seed as number)) args.push('--seed', String(opts.seed));
   args.push('--', prompt);
-  // LTX video → run-video-safe.sh: gen-mode (frees ~2G VRAM) + cgroup 9G ceiling
-  // so it can't saturate the 8GB GPU and hard-freeze the laptop.
+  // LTX video → run-video-safe.sh: gen-mode (frees ~2G VRAM) + cgroup 14G ceiling
+  // so it can't saturate the 8GB GPU and hard-freeze the laptop. generate_video.py
+  // encodes the prompt with T5 on CPU then frees it (~9.5G) before loading the
+  // transformer, so peak RAM fits the cgroup (the 2026-06-14 LTX OOM fix).
   return run(`${LG}/run-video-safe.sh`, args, /Video saved to (.+)/, (f) => `/api/gallery/file?root=video&sub=&name=${encodeURIComponent(f)}`, 1_200_000, `${LG}/LTX_READY`, 'LTX-Video');
 }
