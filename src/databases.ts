@@ -645,6 +645,57 @@ export function kbAnatomyImage(id: string, file: string): { data: Buffer; mime: 
   }
 }
 
+// Serve a frame JPG from anatomy/frames/<videoId>/<file>.
+// videoId and file are both regex-gated + realpath-confirmed — no traversal.
+export function kbAnatomyFrame(
+  id: string, videoId: string, file: string,
+): { data: Buffer; mime: string } | { error: string } {
+  const dir = getKbDir(id);
+  if (!dir) return { error: 'unknown kb' };
+  // videoId: alphanumeric + underscores (matches actual directory names)
+  if (!/^[A-Za-z0-9_.-]+$/.test(videoId)) return { error: 'bad video id' };
+  // file: seg-NNN-NNNs.jpg pattern
+  if (!/^[a-z0-9._-]+\.jpe?g$/.test(file)) return { error: 'bad filename' };
+  const framesDir = join(dir, 'anatomy', 'frames');
+  const full = join(framesDir, videoId, file);
+  try {
+    if (!existsSync(full)) return { error: 'not found' };
+    if (!realpathSync(full).startsWith(realpathSync(framesDir) + pathSep)) return { error: 'denied' };
+    return { data: readFileSync(full), mime: 'image/jpeg' };
+  } catch (e) {
+    return { error: String((e as Error).message || e) };
+  }
+}
+
+// Return the frames index for a given KB's anatomy/frames/_index.json.
+export function kbFramesIndex(id: string): Record<string, unknown> {
+  const dir = getKbDir(id);
+  if (!dir) return {};
+  const idxFile = join(dir, 'anatomy', 'frames', '_index.json');
+  if (!existsSync(idxFile)) return {};
+  try { return JSON.parse(readFileSync(idxFile, 'utf8')) as Record<string, unknown>; }
+  catch { return {}; }
+}
+
+// Return a single video's frames.json.
+export function kbVideoFrames(
+  id: string, videoId: string,
+): { frames: unknown[] } | { error: string } {
+  const dir = getKbDir(id);
+  if (!dir) return { error: 'unknown kb' };
+  if (!/^[A-Za-z0-9_.-]+$/.test(videoId)) return { error: 'bad video id' };
+  const framesDir = join(dir, 'anatomy', 'frames');
+  const full = join(framesDir, videoId, 'frames.json');
+  try {
+    if (!existsSync(full)) return { error: 'not found' };
+    if (!realpathSync(full).startsWith(realpathSync(framesDir) + pathSep)) return { error: 'denied' };
+    const parsed = JSON.parse(readFileSync(full, 'utf8')) as { frames?: unknown[] };
+    return { frames: parsed.frames || [] };
+  } catch (e) {
+    return { error: String((e as Error).message || e) };
+  }
+}
+
 // ── SQL meta / select ────────────────────────────────────────────────
 export interface SqlMeta {
   size: string;

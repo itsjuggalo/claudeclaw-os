@@ -18,6 +18,55 @@ import { renderMarkdown } from '@/lib/markdown';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 
+// ── ClayTrader static method reference (distilled from claytrader-rules/) ──
+// Embedded so the panel has zero API round-trips and works without a restart.
+// Source: ~/restructure/DB-OVERHAUL/claytrader-rules/ ADOPT.md + per-method rules.json
+const CLAY_SETUPS = [
+  {
+    name: 'Panic Buy', verdict: 'ADAPT', course: 'Risk vs Reward Trading (RVR)',
+    summary: "Buy a pullback INSIDE an uptrend at a pre-chosen support, resting limit orders, 3:1+ R:R. 'When others run for the exits, plan a favorable entry.'",
+    entry: 'Uptrend (50 SMA up-sloping), stock pulling back, resting limit buy CUT THE LINE 1-2c above support.',
+    stop: "Previous candle's low OR Golden Brick Road MA (10 SMA). Cushion validates; negative cushion = skip.",
+    rvr: 'Default 3:1+. Target = realistic resistance, cut 1c below it.',
+  },
+  {
+    name: 'Momentum Buy', verdict: 'ADAPT', course: 'Risk vs Reward Trading (RVR)',
+    summary: "Buy a confirmed breakout; the stop defines the MAXIMUM entry price — math, not feeling. Must be at screen.",
+    entry: 'Break of pattern resistance (pole/flag/pennant/triangle). Upside cushion: pay up to ~5c past break.',
+    stop: "Previous candle's low at the break. Highest valid entry = stop + risk budget / shares.",
+    rvr: '3:1+. Target via flagpole projection (pole length + breakout level).',
+  },
+  {
+    name: 'Speculation Buy', verdict: 'ADOPT', course: 'Risk vs Reward Trading (RVR)',
+    summary: "Position INSIDE consolidation near support BEFORE breakout. 'Massively right or minimally wrong.' ClayTrader's most-used method.",
+    entry: 'Any point between support and resistance inside consolidation; no breakout needed.',
+    stop: "Below indecision candle cluster OR Golden Brick Road MA (10 SMA).",
+    rvr: '3:1+. Top of consolidation / measured-move. Failed breakout can still exit green.',
+  },
+  {
+    name: 'Volcano', verdict: 'ADOPT', course: 'Volcano Trading',
+    summary: "Classify chart state (EXTINCT / DORMANT / ACTIVE) via MACD signal + 50 SMA + 20/50 relationship. Only trade DORMANT/ACTIVE.",
+    entry: 'Break of short-term resistance trigger. EXTINCT (MACD signal <0, 20<50) = hard skip.',
+    stop: '10 EMA (or 20 SMA for swing) + cushion. Set immediately on fill.',
+    rvr: 'Progressive profit-locks at successive resistance levels. Trail final 25% on 10 EMA.',
+  },
+  {
+    name: 'Trampoline', verdict: 'ADAPT', course: 'Trampoline Trading',
+    summary: "Hunt heavily-shorted stocks (days-to-cover ≥5) in a basing phase, buy the break of a 'major problem' resistance. GATED: needs short-interest data feed.",
+    entry: 'Big-volume buy-signal candle, then break of major-problem resistance above it.',
+    stop: "Prior support low - cushion, never a round number. Set immediately, ratchet each bar.",
+    rvr: 'Managed by trailing stop. Lock partial profits; hold ≥25% for the squeeze.',
+  },
+] as const;
+
+const CLAY_HABITS = [
+  { n: 1, rule: 'The stop defines your MAX entry.', detail: "Set the stop FIRST. Compute the highest price that still yields ≥3:1 R:R. Above that price, the trade is dead — don't pay up. Kills FOMO entries." },
+  { n: 2, rule: 'Buy the one-foot drop, never the cliff.', detail: 'Only panic-buy a pullback when price is ABOVE an up-sloping 50 SMA. Rolling 50 SMA = real cliff, stay out.' },
+  { n: 3, rule: "Near support so you're 'massively right or minimally wrong.'", detail: 'Entering inside tight consolidation at support makes dollar risk tiny. Patience near support beats excitement at the breakout.' },
+  { n: 4, rule: 'Classify before you act. Never buy breakouts below MACD zero line.', detail: 'One glance: MACD signal, 50 SMA slope, 20 vs 50. MACD signal <0 and 20<50 = EXTINCT = skip, full stop.' },
+  { n: 5, rule: 'A stop only works if you honor it.', detail: 'Set the stop immediately on fill (below prior support + cushion, never round numbers). Ratchet to previous candle low each bar. "It will come back" = portfolio fires.' },
+] as const;
+
 // Small refresh control placed in a deep page's header (deep pages fetch once;
 // this re-pulls on demand since the catalog's 60s SWR doesn't cover them).
 function RefreshButton({ onClick, busy }: { onClick: () => void; busy: boolean }) {
@@ -224,6 +273,282 @@ function MuscleStrip({ slugs, anatomy, itemId }: {
   );
 }
 
+// ── TechniqueStrip: DVD frame thumbnails relevant to an Ask/Search result ──
+// Frames are served by the backend after a one-time restart:
+//   GET /api/databases/kb/erikdalton/anatomy/frames/<videoId>/<file>
+// The frames-index is loaded once per KbDetail mount (same lifecycle as anatomy).
+
+interface FrameEntry {
+  seg: number;
+  t_mid: number;
+  file: string;   // relative like "frames/<videoId>/seg-000-29s.jpg"
+  text: string;
+}
+interface VideoFrameData {
+  id: string;
+  title: string;
+  course: string;
+  frames: FrameEntry[];
+}
+
+// A single frame card: thumbnail + timestamp + transcript caption, clickable to enlarge.
+function FrameCard({ frame, videoId, itemId, videoTitle }: {
+  frame: FrameEntry; videoId: string; itemId: string; videoTitle: string;
+}) {
+  const [enlarged, setEnlarged] = useState(false);
+  // file is like "frames/<videoId>/seg-000-29s.jpg" — extract just the filename
+  const fileName = frame.file.split('/').pop() ?? frame.file;
+  const src = '/api/databases/kb/' + itemId + '/anatomy/frames/' + videoId + '/' + fileName;
+  const ts = Math.round(frame.t_mid);
+  const mins = Math.floor(ts / 60);
+  const secs = ts % 60;
+  const label = (mins > 0 ? mins + 'm' : '') + secs + 's';
+
+  return (
+    <>
+      <div
+        onClick={() => setEnlarged(true)}
+        style={{
+          width: '120px', flex: '0 0 auto', cursor: 'pointer',
+          background: 'var(--color-bg)', border: '1px solid var(--color-border)',
+          borderRadius: '8px', overflow: 'hidden',
+          transition: 'border-color 0.15s',
+        }}
+        title={frame.text}
+      >
+        <div style={{ position: 'relative', background: '#000' }}>
+          <img
+            src={src}
+            alt={frame.text.slice(0, 60)}
+            loading="lazy"
+            style={{ width: '120px', height: '68px', objectFit: 'cover', display: 'block' }}
+          />
+          <span style={{
+            position: 'absolute', bottom: '3px', right: '4px',
+            fontSize: '9px', fontWeight: 700, color: '#fff',
+            background: 'rgba(0,0,0,0.6)', padding: '1px 4px', borderRadius: '3px',
+          }}>{label}</span>
+        </div>
+        <div style={{ padding: '4px 6px' }}>
+          <div style={{
+            fontSize: '10px', color: 'var(--color-text-muted)', lineHeight: 1.3,
+            overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+          }}>
+            {frame.text.slice(0, 120)}
+          </div>
+          <div style={{ fontSize: '9px', color: 'var(--color-text-faint)', marginTop: '2px' }}>{videoTitle}</div>
+        </div>
+      </div>
+
+      {enlarged && (
+        <div
+          onClick={() => setEnlarged(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.82)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px',
+          }}
+        >
+          <div style={{ maxWidth: '720px', width: '100%' }} onClick={(e) => e.stopPropagation()}>
+            <img src={src} alt={frame.text} style={{ width: '100%', borderRadius: '8px', display: 'block' }} />
+            <div style={{ marginTop: '12px', color: '#e0e0e0', fontSize: '13px', lineHeight: 1.5 }}>{frame.text}</div>
+            <div style={{ marginTop: '6px', fontSize: '11px', color: '#888' }}>{videoTitle} · {label}</div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Match text against a loaded frames index. Returns up to maxCards most-relevant frames.
+function matchFrames(
+  text: string,
+  videosMap: Record<string, VideoFrameData>,
+  maxCards = 6,
+): Array<{ frame: FrameEntry; videoId: string; videoTitle: string }> {
+  if (!text.trim() || Object.keys(videosMap).length === 0) return [];
+  const words = text.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+  if (words.length === 0) return [];
+
+  const scored: Array<{ frame: FrameEntry; videoId: string; videoTitle: string; score: number }> = [];
+  for (const [videoId, vd] of Object.entries(videosMap)) {
+    for (const frame of vd.frames) {
+      const ft = frame.text.toLowerCase();
+      let score = 0;
+      for (const w of words) { if (ft.includes(w)) score++; }
+      if (score > 0) scored.push({ frame, videoId, videoTitle: vd.title + ' · ' + vd.course, score });
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  // deduplicate by videoId (max 2 per video) to avoid flooding with one course
+  const seen: Record<string, number> = {};
+  const result: typeof scored = [];
+  for (const item of scored) {
+    if ((seen[item.videoId] ?? 0) >= 2) continue;
+    seen[item.videoId] = (seen[item.videoId] ?? 0) + 1;
+    result.push(item);
+    if (result.length >= maxCards) break;
+  }
+  return result;
+}
+
+// A horizontal strip of frame thumbnails for an Erik Dalton Ask/Search result.
+function TechniqueStrip({ text, videosMap, itemId }: {
+  text: string;
+  videosMap: Record<string, VideoFrameData>;
+  itemId: string;
+}) {
+  const matches = useMemo(() => matchFrames(text, videosMap), [text, videosMap]);
+  if (matches.length === 0) return null;
+  return (
+    <div style={{ marginTop: '14px' }}>
+      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
+        Technique Frames · {matches.length} clip{matches.length > 1 ? 's' : ''}
+      </div>
+      <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' }}>
+        {matches.map((m, i) => (
+          <FrameCard
+            key={i}
+            frame={m.frame}
+            videoId={m.videoId}
+            itemId={itemId}
+            videoTitle={m.videoTitle}
+          />
+        ))}
+      </div>
+      <div style={{ fontSize: '9px', color: 'var(--color-text-faint)', marginTop: '4px' }}>
+        Erik Dalton DVD frames — educational reference only
+      </div>
+    </div>
+  );
+}
+
+// ── ClayTrader panel: rendered for the 'claytrader' KB ──────────────────────
+
+const VERDICT_STYLE: Record<string, { bg: string; color: string }> = {
+  ADOPT: { bg: '#10b98122', color: '#10b981' },
+  ADAPT: { bg: '#f59e0b22', color: '#f59e0b' },
+  SKIP:  { bg: '#ef444422', color: '#ef4444' },
+};
+
+function ClayTraderPanel() {
+  const [openIdx, setOpenIdx] = useState<number | null>(null);
+
+  return (
+    <div style={{
+      marginTop: '24px', border: '1px solid var(--color-border)',
+      borderRadius: '12px', overflow: 'hidden',
+      background: 'var(--color-card)',
+    }}>
+      {/* Header */}
+      <div style={{
+        padding: '14px 18px 10px',
+        borderBottom: '1px solid var(--color-border)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px',
+      }}>
+        <div>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>
+            ClayTrader Method Reference
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '2px' }}>
+            5 university setups distilled from transcripts
+          </div>
+        </div>
+        <span style={{
+          fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px',
+          padding: '3px 8px', borderRadius: '999px',
+          background: '#f59e0b22', color: '#f59e0b', border: '1px solid #f59e0b44',
+        }}>
+          METHOD REFERENCE — pick-engine wiring staged for approval
+        </span>
+      </div>
+
+      {/* Setup cards */}
+      <div>
+        {CLAY_SETUPS.map((s, i) => {
+          const vs = VERDICT_STYLE[s.verdict] ?? VERDICT_STYLE.ADAPT;
+          const open = openIdx === i;
+          return (
+            <div key={s.name} style={{ borderBottom: i < CLAY_SETUPS.length - 1 ? '1px solid var(--color-border)' : 'none' }}>
+              <button
+                type="button"
+                onClick={() => setOpenIdx(open ? null : i)}
+                style={{
+                  width: '100%', textAlign: 'left', background: 'none', border: 'none',
+                  padding: '12px 18px', cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: '10px',
+                }}
+              >
+                <span style={{
+                  flexShrink: 0, fontSize: '10px', fontWeight: 700, padding: '2px 7px',
+                  borderRadius: '999px', background: vs.bg, color: vs.color, marginTop: '1px',
+                }}>
+                  {s.verdict}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)' }}>
+                    {s.name}
+                    <span style={{ fontSize: '10px', fontWeight: 400, color: 'var(--color-text-faint)', marginLeft: '8px' }}>
+                      {s.course}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.4 }}>
+                    {s.summary}
+                  </div>
+                </div>
+                <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', flexShrink: 0, marginTop: '2px' }}>
+                  {open ? '▲' : '▼'}
+                </span>
+              </button>
+              {open && (
+                <div style={{ padding: '0 18px 14px 18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {[
+                    { label: 'Entry', value: s.entry },
+                    { label: 'Stop', value: s.stop },
+                    { label: 'R:R', value: s.rvr },
+                  ].map((row) => (
+                    <div key={row.label} style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
+                      <span style={{ flexShrink: 0, width: '42px', fontWeight: 700, color: 'var(--color-text-faint)', fontSize: '10px', paddingTop: '2px', textTransform: 'uppercase' }}>
+                        {row.label}
+                      </span>
+                      <span style={{ color: 'var(--color-text-muted)', lineHeight: 1.45 }}>{row.value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Habits section */}
+      <div style={{ borderTop: '1px solid var(--color-border)', padding: '14px 18px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '10px' }}>
+          5 Habits to Fix FOMO Entries
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {CLAY_HABITS.map((h) => (
+            <div key={h.n} style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
+              <span style={{
+                flexShrink: 0, width: '20px', height: '20px', borderRadius: '50%',
+                background: 'var(--color-elevated)', color: 'var(--color-accent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '10px', fontWeight: 700,
+              }}>{h.n}</span>
+              <div>
+                <div style={{ fontWeight: 600, color: 'var(--color-text)', lineHeight: 1.3 }}>{h.rule}</div>
+                <div style={{ color: 'var(--color-text-muted)', lineHeight: 1.45, marginTop: '2px' }}>{h.detail}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ marginTop: '12px', fontSize: '10px', color: 'var(--color-text-faint)' }}>
+          Source: ClayTrader University transcripts (~/claytrader-kb) · Distilled 2026-06-15
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Tag arbitrary text with the muscle slugs it references, using the KB's alias
 // table. This MUST stay equivalent to tag_text() in erikdalton-kb/anatomy_tags.py
 // (both read the same alias table): longest alias first, full word boundary
@@ -301,6 +626,30 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
       for (const a of m.aliases || []) pairs.push([a.toLowerCase(), slug]);
     return pairs.sort((x, y) => y[0].length - x[0].length);
   }, [anatomy]);
+
+  // TechniqueStrip: load frames index + per-video frames for erikdalton KB.
+  // Loaded lazily — on first Ask/Search result for this KB only.
+  const isErikDalton = item.id === 'erikdalton';
+  const [videosMap, setVideosMap] = useState<Record<string, VideoFrameData>>({});
+  const videosLoaded = useRef(false);
+  useEffect(() => {
+    if (!isErikDalton || videosLoaded.current) return;
+    videosLoaded.current = true;
+    // Load the _index.json to get the list of video IDs, then load each frames.json
+    apiGet<Record<string, { title: string; course: string; n_frames: number }>>('/api/databases/kb/' + item.id + '/frames-index')
+      .then(async (idx) => {
+        const map: Record<string, VideoFrameData> = {};
+        // Load all videos in parallel (47 requests, each tiny JSON)
+        await Promise.all(Object.entries(idx).map(async ([videoId, meta]) => {
+          try {
+            const r = await apiGet<{ frames: FrameEntry[] }>('/api/databases/kb/' + item.id + '/frames/' + videoId);
+            map[videoId] = { id: videoId, title: meta.title, course: meta.course, frames: r.frames || [] };
+          } catch { /* skip failed video */ }
+        }));
+        setVideosMap(map);
+      })
+      .catch(() => { /* no frames for this KB or backend not yet restarted */ });
+  }, [item.id, isErikDalton]);
 
   // Jump from a citation to the Search tab, pre-filled with the lesson heading.
   function jumpToSearch(heading: string) {
@@ -486,6 +835,13 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                         anatomy={anatomy}
                         itemId={item.id}
                       />
+                      {isErikDalton && (
+                        <TechniqueStrip
+                          text={answer.answer + ' ' + (answer.sources || []).join(' ')}
+                          videosMap={videosMap}
+                          itemId={item.id}
+                        />
+                      )}
                     </>
                   )}
                 </div>
@@ -536,6 +892,13 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                           anatomy={anatomy}
                           itemId={item.id}
                         />
+                        {isErikDalton && (
+                          <TechniqueStrip
+                            text={(h.heading || '') + ' ' + h.preview}
+                            videosMap={videosMap}
+                            itemId={item.id}
+                          />
+                        )}
                       </div>
                     );
                   })}
@@ -602,6 +965,9 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
               )}
             </>
           )}
+
+          {/* ClayTrader method reference — always visible on all tabs for this KB */}
+          {item.id === 'claytrader' && <ClayTraderPanel />}
 
         </div>
       </div>

@@ -435,11 +435,22 @@ async function main(): Promise<void> {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler disabled (no destination for results)');
   }
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info('Shutting down...');
     setTelegramConnected(false);
     releaseLock();
-    await bot.stop();
+    try {
+      await bot.stop();
+    } catch (err) {
+      // bot.stop() makes a final getUpdates call to confirm the offset.
+      // A transient network error (ETIMEDOUT / FetchError) here must NOT
+      // create an unhandled rejection — that would cause Node to exit with
+      // code 1 and trigger a PM2 crash-restart loop.
+      logger.warn({ err }, 'bot.stop() threw during shutdown (non-fatal, continuing exit)');
+    }
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());
