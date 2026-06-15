@@ -19,7 +19,7 @@ import {
   modKeyLabel,
 } from '@/lib/personalization';
 
-const SECTIONS: RouteSection[] = ['workspace', 'studio', 'intelligence', 'trade', 'collaborate', 'system', 'mc', 'ops'];
+const SECTIONS: RouteSection[] = ['workspace', 'studio', 'intelligence', 'trade', 'collaborate', 'system', 'mc', 'ops', 'wellness'];
 
 export function Sidebar() {
   const [pathname] = useLocation();
@@ -27,8 +27,10 @@ export function Sidebar() {
   const modLabel = modKeyLabel();
   const open = sidebarOpen.value;
 
+  // Only show routes where inSidebar is not explicitly false.
+  const sidebarRoutes = ROUTES.filter((r) => r.inSidebar !== false);
   // Sections that actually render (have ≥1 route). Used by collapse-all.
-  const liveSections = SECTIONS.filter((s) => ROUTES.some((r) => r.section === s));
+  const liveSections = SECTIONS.filter((s) => sidebarRoutes.some((r) => r.section === s));
   const allCollapsed = liveSections.length > 0 && liveSections.every((s) => collapsed.has(s));
 
   // Mobile: fixed drawer that slides in from the left. Desktop (>=md):
@@ -79,7 +81,7 @@ export function Sidebar() {
 
       <nav class="flex-1 overflow-y-auto px-2 pb-3">
         {SECTIONS.map((section) => {
-          const items = ROUTES.filter((r) => r.section === section);
+          const items = sidebarRoutes.filter((r) => r.section === section);
           if (items.length === 0) return null;
           const isCollapsed = collapsed.has(section);
           return (

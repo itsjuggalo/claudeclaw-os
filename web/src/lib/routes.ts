@@ -6,10 +6,11 @@ import {
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
   Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot, Flame,
+  HeartPulse,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
-export type RouteSection = 'workspace' | 'studio' | 'intelligence' | 'collaborate' | 'configure' | 'system' | 'mc' | 'trade' | 'ops';
+export type RouteSection = 'workspace' | 'studio' | 'intelligence' | 'collaborate' | 'configure' | 'system' | 'mc' | 'trade' | 'ops' | 'wellness';
 
 export interface RouteDef {
   path: string;
@@ -19,6 +20,8 @@ export interface RouteDef {
   shortcut?: string;
   /** External URL — renders as <a target="_blank"> instead of a router Link. */
   href?: string;
+  /** Set false to keep the route registered (router + command palette) but hide from sidebar nav. */
+  inSidebar?: boolean;
 }
 
 // Single source of truth for the sidebar, command palette, and router.
@@ -41,7 +44,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/databases',  label: 'Databases',       section: 'intelligence', icon: Database                      },
   { path: '/journal',    label: 'Journal',         section: 'intelligence', icon: BookOpen,      shortcut: 'g j' },
   { path: '/audit',      label: 'Audit',           section: 'intelligence', icon: ShieldCheck                   },
-  { path: '/skool-builds', label: 'Skool Builds',  section: 'intelligence', icon: GraduationCap                 },
+  { path: '/skool-builds', label: 'Skool Builds',  section: 'intelligence', icon: GraduationCap, inSidebar: false },
   { path: '/hermes',     label: 'Hermes',          section: 'intelligence', icon: Bot,           shortcut: 'g r' },
 
   // Trade Desk — live trading / finance
@@ -51,7 +54,8 @@ export const ROUTES: RouteDef[] = [
   { path: '/trade-desk/flow-rank',label: 'Flow Rank',     section: 'trade', icon: BarChart2              },
   { path: '/trade-desk/portfolio',label: 'Portfolio AI',  section: 'trade', icon: Briefcase              },
   { path: '/trade-desk/flow-winners', label: 'Flow Winners', section: 'trade', icon: Trophy             },
-  { path: '/lewis-trading',       label: 'Lewis Trading', section: 'trade', icon: GraduationCap           },
+  { path: '/databases/claytrader',    label: 'ClayTrader KB', section: 'trade', icon: GraduationCap,   shortcut: 'g y' },
+  { path: '/lewis-trading',       label: 'Lewis Trading', section: 'trade', icon: GraduationCap, inSidebar: false },
   { path: '/wallets',    label: 'Wallets',         section: 'trade',        icon: Wallet,        shortcut: 'g $' },
 
   { path: '/warroom',    label: 'War Room',        section: 'collaborate',  icon: Swords,        shortcut: 'g w' },
@@ -89,6 +93,9 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-aries-log',      label: 'Mission Log',      section: 'ops', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
   { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'ops', icon: Settings,       href: 'http://100.91.39.122:1337/settings' },
   { path: '/ext-aries-system',   label: 'System Analytics', section: 'ops', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
+
+  // Wellness — bodywork / MAT self-care (NOT trading)
+  { path: '/databases/erikdalton', label: 'Erik Dalton KB', section: 'wellness', icon: HeartPulse },
 ];
 
 export const SECTION_LABEL: Record<RouteSection, string> = {
@@ -101,6 +108,7 @@ export const SECTION_LABEL: Record<RouteSection, string> = {
   system:       'System',
   mc:           'MC Apps',
   ops:          'Ops & Admin',
+  wellness:     'Wellness',
 };
 
 export const DEFAULT_ROUTE = '/mission';

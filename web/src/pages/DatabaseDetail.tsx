@@ -228,6 +228,14 @@ function MuscleStrip({ slugs, anatomy, itemId }: {
 // table. This MUST stay equivalent to tag_text() in erikdalton-kb/anatomy_tags.py
 // (both read the same alias table): longest alias first, full word boundary
 // (plural-aware), all occurrences tried, result ordered by position in the text.
+//
+// NOTE for parallel anatomy-tagger agent: aliases are DATA-DRIVEN — they live in
+// erikdalton-kb/anatomy/index.json (each muscle's "aliases" array). This TS
+// function reads whatever is in that JSON at runtime via /api/databases/kb/erikdalton/anatomy.
+// There is NO hardcoded alias table here to sync. When you add forearm/wrist/hand
+// muscles to anatomy/index.json, tagMuscles() picks them up automatically.
+// TODO (parallel agent): confirm new muscle slugs appear in anatomy/index.json
+// once the forearm/wrist/hand tagger run completes.
 const isAlpha = (ch: string) => ch >= 'a' && ch <= 'z';
 function boundaryOk(left: string, right: string, right2: string): boolean {
   if (isAlpha(left)) return false;
