@@ -12,6 +12,7 @@ import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search, Download, RefreshCw } f
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
+import { ExploreTab } from '@/components/erik/ExploreTab';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { fmtUpdated } from '@/pages/Databases';
 import { renderMarkdown } from '@/lib/markdown';
@@ -643,8 +644,10 @@ function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
 }
 
 function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
-  type KbTab = 'ask' | 'search' | 'sources';
-  const [tab, setTab] = useState<KbTab>(item.askable ? 'ask' : 'search');
+  type KbTab = 'explore' | 'ask' | 'search' | 'sources';
+  const [tab, setTab] = useState<KbTab>(
+    item.id === 'erikdalton' ? 'explore' : item.askable ? 'ask' : 'search',
+  );
 
   // Ask state
   const [question, setQuestion] = useState('');
@@ -781,6 +784,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
         }
         tabs={
           <>
+            {isErikDalton && <Tab label="Explore" active={tab === 'explore'} onClick={() => setTab('explore')} />}
             {item.askable && <Tab label="Ask" active={tab === 'ask'} onClick={() => setTab('ask')} />}
             <Tab label="Search" active={tab === 'search'} onClick={() => setTab('search')} />
             <Tab label="Sources" active={tab === 'sources'} onClick={() => setTab('sources')} />
