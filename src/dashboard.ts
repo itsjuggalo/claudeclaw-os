@@ -13,6 +13,7 @@ import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderD
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getEquity } from './equity.js';
+import { getTokenBurn } from './tokenburn.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
@@ -2084,6 +2085,17 @@ init();
   app.get('/api/equity', async (c) => {
     try {
       return c.json(await getEquity());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Token Burn — normalised codeburn export (codeburn.export.v2).
+  //    Reads ~/.claudeclaw/token-burn.json written nightly by codeburn-daily.sh.
+  //    Drops sessions[]/shellCommands[] before sending to frontend. See src/tokenburn.ts.
+  app.get('/api/token-burn', async (c) => {
+    try {
+      return c.json(await getTokenBurn());
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }

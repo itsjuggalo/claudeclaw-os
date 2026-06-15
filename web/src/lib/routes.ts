@@ -5,7 +5,7 @@ import {
   Settings, Smartphone, Wallet, Images, Wand2,
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
-  Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot,
+  Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot, Flame,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -61,6 +61,7 @@ export const ROUTES: RouteDef[] = [
   // System — metering / config
   { path: '/usage',      label: 'Usage',           section: 'system',       icon: Activity,      shortcut: 'g u' },
   { path: '/token-usage', label: 'Token Usage',    section: 'system',       icon: Coins,         shortcut: 'g k' },
+  { path: '/token-burn', label: 'Token Burn',      section: 'system',       icon: Flame,         shortcut: 'g b' },
   { path: '/settings',   label: 'Settings',        section: 'system',       icon: Settings                  },
 
   // Mission Control quick-launch (external links, open in new tab)

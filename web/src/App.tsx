@@ -29,6 +29,7 @@ import { Create } from '@/pages/Create';
 import { Hermes } from '@/pages/Hermes';
 import { ClaudeOffice } from '@/pages/ClaudeOffice';
 import { TokenUsage } from '@/pages/TokenUsage';
+import { TokenBurn } from '@/pages/TokenBurn';
 import { TradeDeskPage } from '@/pages/TradeDeskPage';
 import { EquityManagement } from '@/pages/EquityManagement';
 import { SignalFeedPage } from '@/pages/SignalFeedPage';
@@ -88,6 +89,7 @@ export function App() {
           <Route path="/warroom"><WarRoom /></Route>
           <Route path="/office"><ClaudeOffice /></Route>
           <Route path="/token-usage"><TokenUsage /></Route>
+          <Route path="/token-burn"><TokenBurn /></Route>
           <Route path="/voices"><Voices /></Route>
           <Route path="/peon"><Peon /></Route>
           <Route path="/settings"><Settings /></Route>
