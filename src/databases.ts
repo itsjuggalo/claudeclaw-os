@@ -23,6 +23,14 @@ const execFileAsync = promisify(execFile);
 const HOME = '/home/itsju';
 const VENV = '/home/itsju/02_DATA/mc-kb/.venv/bin/python';
 
+/** Resolve the Python interpreter for a KB's pyDir.
+ *  Use the KB's own .venv if present (future-proof); otherwise fall back to
+ *  the shared mc-kb venv which already has lancedb + sentence-transformers. */
+function kbPython(pyDir: string): string {
+  const own = join(pyDir, '.venv', 'bin', 'python');
+  return existsSync(own) ? own : VENV;
+}
+
 // ── Registry ─────────────────────────────────────────────────────────
 export type DbType = 'kb' | 'sql' | 'secrets';
 export type DbGroup = 'kb' | 'sql' | 'state' | 'index' | 'secrets' | 'internals';
@@ -46,10 +54,13 @@ export interface RegistryEntry {
 
 const RAW_REGISTRY: RegistryEntry[] = [
   // Knowledge Bases (RAG)
-  { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true, searchUrl: 'http://localhost:8095/query?kb=claytrader' },
-  { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true, searchUrl: 'http://localhost:8095/query?kb=erikdalton' },
-  { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`), searchUrl: 'http://localhost:8095/query?kb=vibecoding' },
-  { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: existsSync(`${HOME}/02_DATA/mc-kb/ask.py`), searchUrl: 'http://localhost:8091/query' },
+  // searchUrl is omitted for claytrader/erikdalton/vibecoding — the shared :8095 server is
+  // not running. Omitting it sends queries straight to query.py via execFile (no 8-second
+  // wait on a dead connection first). mc-kb keeps its :8091 warm-server path (always online).
+  { id: 'claytrader', type: 'kb', group: 'kb', label: 'ClayTrader University', subtitle: "Clay's trading method", accent: 'amber', path: `${HOME}/claytrader-kb`, pyDir: `${HOME}/claytrader-kb`, askable: true },
+  { id: 'erikdalton', type: 'kb', group: 'kb', label: 'Erik Dalton', subtitle: 'Bodywork / MAT self-care', accent: 'emerald', path: `${HOME}/erikdalton-kb`, pyDir: `${HOME}/erikdalton-kb`, askable: true },
+  { id: 'vibecoding', type: 'kb', group: 'kb', label: 'Vibe Coding Academy', subtitle: 'AI coding workflows', accent: 'violet', path: `${HOME}/vibecoding-kb`, pyDir: `${HOME}/vibecoding-kb`, askable: existsSync(`${HOME}/vibecoding-kb/ask.py`) },
+  { id: 'mckb', type: 'kb', group: 'kb', label: 'mc-kb (Mission Control RAG)', subtitle: 'Bible + memory + notes', accent: 'sky', path: `${HOME}/02_DATA/mc-kb`, pyDir: `${HOME}/02_DATA/mc-kb`, askable: existsSync(`${HOME}/02_DATA/mc-kb/ask.py`), searchUrl: 'http://127.0.0.1:8091/query' },
 
   // Trade & Pipeline SQL
   { id: 'desk-pipeline', type: 'sql', group: 'sql', label: 'Desk Pipeline', accent: 'sky', path: `${HOME}/LapClaw/pipeline/desk_pipeline.sqlite` },
@@ -462,10 +473,12 @@ export async function kbSearch(id: string, q: string, top = 8): Promise<KbSearch
   }
   try {
     // execFile with an args array — q is never shell-interpolated.
+    // Use the KB's own .venv if present; fall back to the shared mc-kb venv.
+    // Timeout 90s: cold embedding-model load takes ~40-54s; 90s gives real headroom.
     const { stdout } = await execFileAsync(
-      VENV,
+      kbPython(dir),
       [join(dir, 'query.py'), '--json', '--top', topN, q],
-      { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 },
+      { timeout: 90_000, maxBuffer: 8 * 1024 * 1024 },
     );
     const parsed = JSON.parse(stdout) as RawKbHit[];
     const hits: KbHit[] = (Array.isArray(parsed) ? parsed : []).map((h) => ({
@@ -555,9 +568,9 @@ export async function kbSources(id: string): Promise<KbSourcesResult> {
     const sigPath = existsSync(statusFile) ? statusFile : vectors;
     return await warmAsync(`kbsources:${id}`, statSig(sigPath), 5 * 60_000, async () => {
       const { stdout } = await execFileAsync(
-        VENV,
+        kbPython(dir),
         ['-c', PY_KB_SOURCES, vectors],
-        { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+        { timeout: 90_000, maxBuffer: 8 * 1024 * 1024 },
       );
       const parsed = JSON.parse(stdout) as KbSourcesResult & { error?: string };
       if (parsed.error) throw new Error(parsed.error);
@@ -585,12 +598,11 @@ export async function kbAsk(id: string, question: string): Promise<KbAskResult> 
   }
   try {
     // claytrader keeps its default portfolio context (don't pass --no-portfolio).
+    // Use the KB's own .venv if present; fall back to the shared mc-kb venv.
+    // Generous ceiling: cold embed load (~40s) + retrieval + Gemini retries 3×/60s.
     const { stdout } = await execFileAsync(
-      VENV,
+      kbPython(dir),
       [join(dir, 'ask.py'), '--json', question],
-      // Generous ceiling: a cold subprocess loads the embedding model (~40s)
-      // before retrieval + a Gemini call that itself retries up to 3×/60s.
-      // 90s sat right on the measured runtime; 180s gives real headroom.
       { timeout: 180_000, maxBuffer: 8 * 1024 * 1024 },
     );
     return JSON.parse(stdout) as KbAskResult;
