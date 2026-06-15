@@ -190,6 +190,16 @@ function citationHeading(s: string): string {
   return s.replace(/\s*\([^)]*\)\s*$/, '').trim();
 }
 
+// ClayTrader transcripts are named "<vimeoId>.md" (e.g. .../107144125.md). The raw
+// videos are gone locally, but the Vimeo IDs survive in the filenames + the course
+// catalog — so we can deep-link any answer chunk straight back to its source lesson.
+// This is the ClayTrader half of the "make the KBs visual" goal (Erik Dalton already
+// surfaces technique frames; ClayTrader gets the chart-on-video it was distilled from).
+function claytraderVimeoId(source: string): string | null {
+  const m = (source || '').match(/(\d{6,})\.md$/);
+  return m ? m[1] : null;
+}
+
 const LAYER_COLOR: Record<string, string> = {
   identity: '#a78bfa', critical: '#f59e0b', working: '#10b981', episodic: '#5eb6ff',
 };
@@ -673,6 +683,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   // TechniqueStrip: load frames index + per-video frames for erikdalton KB.
   // Loaded lazily — on first Ask/Search result for this KB only.
   const isErikDalton = item.id === 'erikdalton';
+  const isClayTrader = item.id === 'claytrader';
   const [videosMap, setVideosMap] = useState<Record<string, VideoFrameData>>({});
   const videosLoaded = useRef(false);
   useEffect(() => {
@@ -912,6 +923,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '14px' }}>
                   {search.hits.map((h, i) => {
                     const lc = LAYER_COLOR[h.layer] || '#6b7280';
+                    const clayVid = isClayTrader ? claytraderVimeoId(h.source) : null;
                     return (
                       <div key={i} class="p-3 rounded-md border border-[var(--color-border)] bg-[var(--color-card)]">
                         <div class="flex items-center gap-2 mb-1 text-xs">
@@ -941,6 +953,32 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                             videosMap={videosMap}
                             itemId={item.id}
                           />
+                        )}
+                        {clayVid && (
+                          <a
+                            href={`https://vimeo.com/${clayVid}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open the original ClayTrader lesson on Vimeo"
+                            style={{
+                              display: 'inline-flex', flexDirection: 'column', gap: '4px',
+                              marginTop: '10px', textDecoration: 'none', width: '200px', maxWidth: '100%',
+                            }}
+                          >
+                            <span style={{ position: 'relative', display: 'block', borderRadius: '6px', overflow: 'hidden', border: '1px solid #f59e0b55' }}>
+                              <img
+                                src={`https://vumbnail.com/${clayVid}.jpg`}
+                                alt="ClayTrader lesson frame"
+                                loading="lazy"
+                                width={640}
+                                height={360}
+                                onError={(e) => { (e.currentTarget as HTMLImageElement).parentElement!.style.display = 'none'; }}
+                                style={{ display: 'block', width: '100%', height: 'auto', aspectRatio: '16 / 9', objectFit: 'cover' }}
+                              />
+                              <span aria-hidden style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', color: '#fff', textShadow: '0 1px 6px rgba(0,0,0,0.7)' }}>▶</span>
+                            </span>
+                            <span style={{ fontSize: '11px', fontWeight: 600, color: '#f59e0b' }}>Watch this lesson on Vimeo</span>
+                          </a>
                         )}
                       </div>
                     );
