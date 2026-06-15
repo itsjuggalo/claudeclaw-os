@@ -466,22 +466,32 @@ async function main(): Promise<void> {
     logger.warn({ err }, 'Could not clear webhook (non-fatal)');
   }
 
-  await bot.start({
-    onStart: (botInfo) => {
-      setTelegramConnected(true);
-      setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
-      logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
-      if (AGENT_ID === 'main') {
-        console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
-        if (!ALLOWED_CHAT_ID) {
-          console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID`);
+  // A Telegram bot startup failure (ETIMEDOUT / 409 conflict / network blip — e.g.
+  // after gen-mode SIGSTOPs the process during a GPU gen) must NOT crash the whole
+  // process: startDashboard() (above) is already serving the gallery/UI and keeps the
+  // process alive, so we catch here instead of letting main().catch() process.exit(1)
+  // and crash-loop the dashboard. Telegram is non-essential to the web gallery.
+  try {
+    await bot.start({
+      onStart: (botInfo) => {
+        setTelegramConnected(true);
+        setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
+        logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
+        if (AGENT_ID === 'main') {
+          console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
+          if (!ALLOWED_CHAT_ID) {
+            console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID`);
+          }
+          console.log();
+        } else {
+          console.log(`\n  ClaudeClaw agent [${AGENT_ID}] online: @${botInfo.username}\n`);
         }
-        console.log();
-      } else {
-        console.log(`\n  ClaudeClaw agent [${AGENT_ID}] online: @${botInfo.username}\n`);
-      }
-    },
-  });
+      },
+    });
+  } catch (err) {
+    setTelegramConnected(false);
+    logger.error({ err }, 'Telegram bot failed to start — dashboard stays up WITHOUT the bot (gallery/UI unaffected)');
+  }
 }
 
 main().catch((err: unknown) => {
