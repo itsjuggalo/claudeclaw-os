@@ -8,6 +8,15 @@ interface FrameEntry { seg: number; t_mid: number; file: string; text: string; r
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
 
 const ACCENT = '#10b981';
+const STUDIED_KEY = 'erik-studied-techniques';
+
+function loadStudied(): Set<string> {
+  try { return new Set(JSON.parse(localStorage.getItem(STUDIED_KEY) || '[]')); }
+  catch { return new Set(); }
+}
+function saveStudied(s: Set<string>) {
+  try { localStorage.setItem(STUDIED_KEY, JSON.stringify([...s])); } catch { /* ignore */ }
+}
 
 export function TechniquePlayer({ itemId, videosMap }: {
   itemId: string;
@@ -16,6 +25,14 @@ export function TechniquePlayer({ itemId, videosMap }: {
   const [openCourse, setOpenCourse] = useState<string | null>(null);
   const [videoId, setVideoId] = useState<string | null>(null);
   const [step, setStep] = useState(0);
+  // Which techniques the user has marked studied (persists on this device).
+  const [studied, setStudied] = useState<Set<string>>(loadStudied);
+  const toggleStudied = (id: string) => setStudied((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    saveStudied(next);
+    return next;
+  });
 
   // Group videos by course, sorted; each course's techniques sorted by title.
   const byCourse = useMemo(() => {
@@ -57,7 +74,14 @@ export function TechniquePlayer({ itemId, videosMap }: {
           ← All techniques
         </button>
         <h3 style={{ margin: '0 0 2px', fontSize: '18px', color: 'var(--color-text)' }}>{video.title}</h3>
-        <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '14px' }}>{video.course} · step {step + 1} of {frames.length}</div>
+        <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '10px' }}>{video.course} · step {step + 1} of {frames.length}</div>
+        <button type="button" onClick={() => toggleStudied(video.id)}
+          style={{ marginBottom: '14px', padding: '5px 12px', borderRadius: '7px', fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+            border: '1px solid ' + (studied.has(video.id) ? ACCENT : 'var(--color-border)'),
+            background: studied.has(video.id) ? ACCENT + '22' : 'transparent',
+            color: studied.has(video.id) ? ACCENT : 'var(--color-text-muted)' }}>
+          {studied.has(video.id) ? '✓ Studied — click to unmark' : 'Mark as studied'}
+        </button>
 
         {f && (
           <div style={{ maxWidth: '640px' }}>
@@ -89,10 +113,23 @@ export function TechniquePlayer({ itemId, videosMap }: {
   }
 
   // ── Browse view ──
+  const withFrames = Object.values(videosMap).filter((v) => v.frames?.length);
+  const studiedCount = withFrames.filter((v) => studied.has(v.id)).length;
+  const pct = withFrames.length ? Math.round((studiedCount / withFrames.length) * 100) : 0;
   return (
     <div>
-      <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '14px' }}>
-        {byCourse.length} courses · {Object.values(videosMap).filter((v) => v.frames?.length).length} techniques with frames. Pick a course, then a technique to step through it.
+      <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '10px' }}>
+        {byCourse.length} courses · {withFrames.length} techniques with frames. Pick a course, then a technique to step through it.
+      </div>
+      {/* study progress */}
+      <div style={{ marginBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '4px' }}>
+          <span>Your progress</span>
+          <span><b style={{ color: ACCENT }}>{studiedCount}</b> / {withFrames.length} studied · {pct}%</span>
+        </div>
+        <div style={{ height: '6px', borderRadius: '999px', background: 'var(--color-border)', overflow: 'hidden' }}>
+          <div style={{ width: pct + '%', height: '100%', background: ACCENT, transition: 'width .3s' }} />
+        </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
         {byCourse.map(([course, vids]) => {
@@ -102,14 +139,19 @@ export function TechniquePlayer({ itemId, videosMap }: {
               <button type="button" onClick={() => setOpenCourse(open ? null : course)}
                 style={{ width: '100%', textAlign: 'left', padding: '10px 12px', background: 'var(--color-card)', border: 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)' }}>{course}</span>
-                <span style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>{vids.length} · {open ? '▲' : '▼'}</span>
+                <span style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>
+                  {(() => { const s = vids.filter((v) => studied.has(v.id)).length; return s > 0 ? <span style={{ color: ACCENT }}>{s}/{vids.length} ✓ · </span> : null; })()}
+                  {vids.length} · {open ? '▲' : '▼'}
+                </span>
               </button>
               {open && (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   {vids.map((v) => (
                     <button key={v.id} type="button" onClick={() => openVideo(v.id)}
                       style={{ textAlign: 'left', padding: '8px 14px', background: 'transparent', border: 'none', borderTop: '1px solid var(--color-border)', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>{v.title}</span>
+                      <span style={{ fontSize: '12px', color: studied.has(v.id) ? ACCENT : 'var(--color-text-muted)' }}>
+                        {studied.has(v.id) ? '✓ ' : ''}{v.title}
+                      </span>
                       <span style={{ fontSize: '10px', color: ACCENT }}>{v.frames.length} steps ▶</span>
                     </button>
                   ))}

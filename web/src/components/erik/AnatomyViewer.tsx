@@ -19,9 +19,10 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { ERIK_REGIONS, REGION_BY_KEY } from './regions';
+// GLTFLoader + meshopt decoder (~666KB) are imported DYNAMICALLY below, only
+// when a real anatomy.glb is actually present — so the default procedural-
+// mannequin path stays lean for every Explore visitor.
 
 const ACCENT = '#10b981';
 const ANATOMY_GLB_URL = '/anatomy.glb';
@@ -116,12 +117,13 @@ function buildMannequin(group: THREE.Group): THREE.Mesh[] {
   add(ball(-0.13, -0.46, -0.12, 0.16, 'hip/glutes'));
   add(ball(0.13, -0.46, -0.12, 0.16, 'hip/glutes'));
 
-  // ── Arms (both sides) ──
+  // ── Arms (both sides) — held slightly away from the torso so the
+  // shoulder / upper-arm / forearm / hand regions read as distinct masses.
   for (const s of [-1, 1]) {
-    add(ball(s * 0.33, 0.74, 0, 0.13, 'shoulder'));                                            // deltoid
-    add(segment(new THREE.Vector3(s * 0.36, 0.68, 0), new THREE.Vector3(s * 0.43, 0.28, 0), 0.075, 'arm'));      // upper arm
-    add(segment(new THREE.Vector3(s * 0.43, 0.28, 0), new THREE.Vector3(s * 0.46, -0.08, 0.02), 0.062, 'elbow')); // forearm
-    add(ball(s * 0.47, -0.17, 0.03, 0.07, 'wrist/hand'));                                       // hand
+    add(ball(s * 0.34, 0.74, 0, 0.13, 'shoulder'));                                              // deltoid
+    add(segment(new THREE.Vector3(s * 0.40, 0.69, 0), new THREE.Vector3(s * 0.52, 0.28, 0.02), 0.072, 'arm'));    // upper arm
+    add(segment(new THREE.Vector3(s * 0.52, 0.28, 0.02), new THREE.Vector3(s * 0.58, -0.08, 0.05), 0.058, 'elbow')); // forearm
+    add(ball(s * 0.60, -0.16, 0.07, 0.068, 'wrist/hand'));                                        // hand
   }
 
   // ── Legs (both sides) ──
@@ -145,6 +147,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
   const stateRef = useRef<{
     meshesByRegion: Map<string, THREE.Mesh[]>;
     applyHighlight: () => void;
+    resetView: () => void;
     cleanup: () => void;
   } | null>(null);
 
@@ -182,15 +185,17 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(40, w / h, 0.1, 100);
-    camera.position.set(0.2, 0.25, 3.5);
+    // Distance chosen so the full ~2.85-unit figure fits with margin (feet
+    // and head both clear of the frame). Slight 3/4 offset reads as a pose.
+    camera.position.set(0.35, 0.15, 4.4);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const key = new THREE.DirectionalLight(0xffffff, 0.7);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+    // Hemisphere light = soft, rounded tissue-like shading (cool sky / warm
+    // ground bounce) so the figure reads as a body, not flat clay.
+    scene.add(new THREE.HemisphereLight(0xdfeaff, 0x3a221f, 0.55));
+    const key = new THREE.DirectionalLight(0xffffff, 0.6);
     key.position.set(2, 3, 4);
     scene.add(key);
-    const fill = new THREE.DirectionalLight(0xffffff, 0.25);
-    fill.position.set(-3, 0, 2);
-    scene.add(fill);
     const rim = new THREE.DirectionalLight(0xbfe9d8, 0.3);
     rim.position.set(0, 2, -4);
     scene.add(rim);
@@ -216,12 +221,22 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     controls.enablePan = false;
     controls.target.set(0, -0.1, 0);
     controls.update();
+    const homePos = camera.position.clone();
+    const homeTarget = controls.target.clone();
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     let lastInteract = Date.now();
     controls.addEventListener('start', () => { lastInteract = Date.now(); });
     controls.addEventListener('change', () => { lastInteract = Date.now(); });
+
+    const resetView = () => {
+      camera.position.copy(homePos);
+      controls.target.copy(homeTarget);
+      figure.rotation.set(0, 0, 0);
+      controls.update();
+      lastInteract = Date.now();
+    };
 
     // Highlight: emerald emissive on hovered/selected region meshes.
     const applyHighlight = () => {
@@ -266,7 +281,9 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     const onLeave = () => { hoveredRef.current = null; setHovered(null); setMouse(null); applyHighlight(); };
     const onClick = (ev: PointerEvent) => {
       const r = pickRegion(ev);
-      if (r) onSelectRef.current(r);
+      if (r) { onSelectRef.current(r); return; }
+      // Click on empty space clears the current selection (toggles it off).
+      if (selectedRef.current) onSelectRef.current(selectedRef.current);
     };
     renderer.domElement.addEventListener('pointermove', onMove);
     renderer.domElement.addEventListener('pointerleave', onLeave);
@@ -305,9 +322,15 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     // HEAD-check first so a missing asset doesn't spam a 404 in the console.
     const buildProcedural = () => finish(buildMannequin(figure));
     fetch(ANATOMY_GLB_URL, { method: 'HEAD' })
-      .then((res) => {
+      .then(async (res) => {
         if (disposed) return;
         if (!res.ok) { buildProcedural(); return; }
+        // Real atlas present → pull in the loader on demand.
+        const [{ GLTFLoader }, { MeshoptDecoder }] = await Promise.all([
+          import('three/examples/jsm/loaders/GLTFLoader.js'),
+          import('three/examples/jsm/libs/meshopt_decoder.module.js'),
+        ]);
+        if (disposed) return;
         const loader = new GLTFLoader();
         loader.setMeshoptDecoder(MeshoptDecoder as unknown as Parameters<typeof loader.setMeshoptDecoder>[0]);
         loader.load(
@@ -341,6 +364,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     stateRef.current = {
       meshesByRegion,
       applyHighlight,
+      resetView,
       cleanup: () => {
         disposed = true;
         cancelAnimationFrame(raf);
@@ -389,6 +413,12 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       <div style={{ position: 'absolute', top: '10px', left: '12px', fontSize: '11px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
         Drag to rotate · scroll to zoom · click a region to learn it
       </div>
+      {/* reset view */}
+      <button type="button" onClick={() => stateRef.current?.resetView()}
+        title="Reset camera"
+        style={{ position: 'absolute', bottom: '10px', right: '12px', fontSize: '11px', fontWeight: 600, color: 'var(--color-text-muted)', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '7px', padding: '4px 10px', cursor: 'pointer' }}>
+        ⟲ Reset view
+      </button>
       {/* current region badge (top-right) */}
       {(selected && REGION_BY_KEY[selected]) && (
         <div style={{ position: 'absolute', top: '10px', right: '12px', fontSize: '12px', fontWeight: 700, color: ACCENT, background: 'var(--color-bg)', border: '1px solid ' + ACCENT, borderRadius: '999px', padding: '3px 12px', pointerEvents: 'none' }}>
