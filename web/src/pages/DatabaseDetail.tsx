@@ -13,6 +13,8 @@ import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
 import { ExploreTab } from '@/components/erik/ExploreTab';
+import { TechniquePlayer } from '@/components/erik/TechniquePlayer';
+import { ErikQuiz } from '@/components/erik/ErikQuiz';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { fmtUpdated } from '@/pages/Databases';
 import { renderMarkdown } from '@/lib/markdown';
@@ -644,9 +646,15 @@ function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
 }
 
 function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
-  type KbTab = 'explore' | 'ask' | 'search' | 'sources';
+  type KbTab = 'explore' | 'techniques' | 'quiz' | 'ask' | 'search' | 'sources';
+  const urlTab = (() => {
+    try {
+      const t = new URLSearchParams(window.location.search).get('tab');
+      return (['explore', 'techniques', 'quiz', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
+    } catch { return null; }
+  })();
   const [tab, setTab] = useState<KbTab>(
-    item.id === 'erikdalton' ? 'explore' : item.askable ? 'ask' : 'search',
+    urlTab ?? (item.id === 'erikdalton' ? 'explore' : item.askable ? 'ask' : 'search'),
   );
 
   // Ask state
@@ -785,6 +793,8 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
         tabs={
           <>
             {isErikDalton && <Tab label="Explore" active={tab === 'explore'} onClick={() => setTab('explore')} />}
+            {isErikDalton && <Tab label="Techniques" active={tab === 'techniques'} onClick={() => setTab('techniques')} />}
+            {isErikDalton && <Tab label="Quiz" active={tab === 'quiz'} onClick={() => setTab('quiz')} />}
             {item.askable && <Tab label="Ask" active={tab === 'ask'} onClick={() => setTab('ask')} />}
             <Tab label="Search" active={tab === 'search'} onClick={() => setTab('search')} />
             <Tab label="Sources" active={tab === 'sources'} onClick={() => setTab('sources')} />
@@ -793,6 +803,18 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
       />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '20px 24px', maxWidth: '900px', margin: '0 auto' }}>
+
+          {tab === 'explore' && (
+            <ExploreTab itemId={item.id} anatomy={anatomy} videosMap={videosMap} />
+          )}
+
+          {tab === 'techniques' && (
+            <TechniquePlayer itemId={item.id} videosMap={videosMap} />
+          )}
+
+          {tab === 'quiz' && (
+            <ErikQuiz anatomy={anatomy} />
+          )}
 
           {tab === 'ask' && (
             <>

@@ -3,7 +3,6 @@
 // drive the explorer panel (muscles + Erik's techniques for that area). Pure
 // SVG, fully offline. Emerald = Erik Dalton accent.
 import { useState } from 'preact/hooks';
-import type { JSX } from 'preact';
 
 const ACCENT = '#10b981';
 
@@ -13,8 +12,10 @@ export function BodyMap({ selected, onSelect }: {
 }) {
   const [hover, setHover] = useState<string | null>(null);
 
-  // Shared interactive props for a hotspot shape.
-  const zp = (key: string): JSX.SVGAttributes<SVGElement> => ({
+  // Shared interactive props for a hotspot shape. Typed loosely: we spread these
+  // onto several SVG element kinds (ellipse/rect), so Preact's per-element strict
+  // attribute typing would reject a single shared shape — the attrs are valid SVG.
+  const zp = (key: string): Record<string, unknown> => ({
     fill: ACCENT,
     opacity: selected === key ? 0.74 : hover === key ? 0.5 : 0.16,
     stroke: selected === key ? ACCENT : 'transparent',

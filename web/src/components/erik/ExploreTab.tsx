@@ -3,9 +3,16 @@
 // lessons (KB search). This is the offline 2D learning surface; the 3D model
 // (AnatomyViewer) slots in above the body map when its GLB is available.
 import { useEffect, useMemo, useState } from 'preact/hooks';
+import { lazy, Suspense } from 'preact/compat';
 import { apiGet } from '@/lib/api';
 import { BodyMap } from './BodyMap';
 import { ERIK_REGIONS, REGION_BY_KEY } from './regions';
+
+// 3D viewer is heavy (Three.js ~700KB) — code-split it so the Explore tab
+// stays light. Falls back to the 2D <BodyMap> below if WebGL is unavailable.
+const AnatomyViewer = lazy(() =>
+  import('./AnatomyViewer').then((m) => ({ default: m.AnatomyViewer })),
+);
 
 interface AnatomyMuscle {
   name: string; slug: string;
@@ -24,7 +31,15 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
   anatomy: Record<string, AnatomyMuscle>;
   videosMap: Record<string, VideoFrameData>;
 }) {
-  const [selected, setSelected] = useState<string | null>(null);
+  // Initial region can come from the URL (?region=wrist/hand) so a body area is
+  // shareable/bookmarkable; falls back to no selection.
+  const initialRegion = (() => {
+    try {
+      const q = new URLSearchParams(window.location.search).get('region');
+      return q && REGION_BY_KEY[q] ? q : null;
+    } catch { return null; }
+  })();
+  const [selected, setSelected] = useState<string | null>(initialRegion);
   const region = selected ? REGION_BY_KEY[selected] : null;
 
   // Lessons for the selected region (warm KB search).
@@ -77,8 +92,20 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
   return (
     <div>
       <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '14px', lineHeight: 1.5 }}>
-        Click a region on the body — or a chip below — to see the muscles there and Erik's
-        techniques for that area.
+        Rotate the 3D figure and click a body part — or use the flat map / chips below — to see the
+        muscles there and Erik's techniques for that area.
+      </div>
+
+      {/* Interactive 3D body — the headline learning surface. Shares the same
+          selected/onSelect state as the chips and 2D map below. */}
+      <div style={{ maxWidth: '460px', marginBottom: '18px' }}>
+        <Suspense fallback={
+          <div style={{ height: '420px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--color-border)', borderRadius: '12px', color: 'var(--color-text-faint)', fontSize: '13px' }}>
+            Loading 3D model…
+          </div>
+        }>
+          <AnatomyViewer selected={selected} onSelect={(k) => setSelected((cur) => (cur === k ? null : k))} />
+        </Suspense>
       </div>
 
       {/* Region quick-chips (mobile-friendly, no precise clicking needed) */}

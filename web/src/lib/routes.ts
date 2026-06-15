@@ -95,7 +95,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-aries-system',   label: 'System Analytics', section: 'ops', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
 
   // Wellness — bodywork / MAT self-care (NOT trading)
-  { path: '/databases/erikdalton', label: 'Erik Dalton KB', section: 'wellness', icon: HeartPulse },
+  { path: '/databases/erikdalton', label: 'Erik Dalton — Learn', section: 'wellness', icon: HeartPulse, shortcut: 'g d' },
 ];
 
 export const SECTION_LABEL: Record<RouteSection, string> = {
