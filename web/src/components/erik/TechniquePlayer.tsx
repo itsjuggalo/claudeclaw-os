@@ -2,7 +2,7 @@
 // extracted key-frames in time order, each paired with the transcript at that
 // moment. Turns the 2,107 recovered frames into step-by-step visual lessons.
 // All data comes from the already-loaded frames map (no extra fetch).
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
@@ -25,6 +25,7 @@ export function TechniquePlayer({ itemId, videosMap }: {
   const [openCourse, setOpenCourse] = useState<string | null>(null);
   const [videoId, setVideoId] = useState<string | null>(null);
   const [step, setStep] = useState(0);
+  const [reading, setReading] = useState(false);
   // Which techniques the user has marked studied (persists on this device).
   const [studied, setStudied] = useState<Set<string>>(loadStudied);
   const toggleStudied = (id: string) => setStudied((prev) => {
@@ -33,6 +34,19 @@ export function TechniquePlayer({ itemId, videosMap }: {
     saveStudied(next);
     return next;
   });
+
+  // Deep-link: ?technique=<id>[&reading=1] opens a specific technique directly
+  // (shareable). Applies once, after the frames map has loaded.
+  const appliedDeepLink = useRef(false);
+  useEffect(() => {
+    if (appliedDeepLink.current || Object.keys(videosMap).length === 0) return;
+    appliedDeepLink.current = true;
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const t = sp.get('technique');
+      if (t && videosMap[t]) { setVideoId(t); setStep(0); setReading(sp.get('reading') === '1'); }
+    } catch { /* ignore */ }
+  }, [videosMap]);
 
   // Group videos by course, sorted; each course's techniques sorted by title.
   const byCourse = useMemo(() => {
@@ -58,7 +72,7 @@ export function TechniquePlayer({ itemId, videosMap }: {
     return (m > 0 ? m + 'm' : '') + sec + 's';
   };
 
-  function openVideo(id: string) { setVideoId(id); setStep(0); }
+  function openVideo(id: string) { setVideoId(id); setStep(0); setReading(false); }
 
   if (Object.keys(videosMap).length === 0) {
     return <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Loading techniques…</div>;
@@ -82,8 +96,29 @@ export function TechniquePlayer({ itemId, videosMap }: {
             color: studied.has(video.id) ? ACCENT : 'var(--color-text-muted)' }}>
           {studied.has(video.id) ? '✓ Studied — click to unmark' : 'Mark as studied'}
         </button>
+        <button type="button" onClick={() => setReading((r) => !r)}
+          style={{ marginLeft: '8px', marginBottom: '14px', padding: '5px 12px', borderRadius: '7px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)' }}>
+          {reading ? '▶ Step view' : '📖 Read full lesson'}
+        </button>
 
-        {f && (
+        {reading && (
+          <div style={{ maxWidth: '680px' }}>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '12px' }}>Full transcript · {frames.length} segments in order — click a frame to jump to that step.</div>
+            {frames.map((fr, i) => (
+              <div key={i} style={{ display: 'flex', gap: '12px', marginBottom: '14px', alignItems: 'flex-start' }}>
+                <img src={frameSrc(fr.file)} alt={'segment ' + (i + 1)} loading="lazy"
+                  onClick={() => { setReading(false); setStep(i); }}
+                  style={{ width: '120px', height: '68px', objectFit: 'cover', borderRadius: '6px', flex: '0 0 auto', cursor: 'pointer' }} />
+                <div>
+                  <div style={{ fontSize: '10px', color: ACCENT, fontWeight: 700, marginBottom: '2px', textTransform: 'capitalize' }}>{fmtTime(fr.t_mid)}{fr.region ? ' · ' + fr.region : ''}</div>
+                  <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.55 }}>{fr.text}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!reading && f && (
           <div style={{ maxWidth: '640px' }}>
             <div style={{ position: 'relative', background: '#000', borderRadius: '10px', overflow: 'hidden' }}>
               <img src={frameSrc(f.file)} alt={f.text.slice(0, 60)} style={{ width: '100%', display: 'block' }} />

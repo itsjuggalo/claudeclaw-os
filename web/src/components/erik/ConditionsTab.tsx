@@ -47,6 +47,33 @@ const CONDITIONS: Condition[] = [
   { key: 'hip', label: 'Hip pain / snapping hip', emoji: '🕺', match: ['snapping hip', 'hip pain', 'tensor', 'tfl', 'trochanter'], regions: ['hip/glutes', 'knee'], query: 'hip pain TFL trochanteric bursitis' },
 ];
 
+// Clinical scaffold per condition — standard bodywork guidance (NOT a diagnosis).
+// assess = what to check first · caution = red flags / refer-out · homecare = client self-care.
+interface CondDetail { assess: string; caution: string; homecare: string; }
+const DETAIL: Record<string, CondDetail> = {
+  sciatica:  { assess: 'SLR & slump test; map dermatomal numbness/weakness vs local glute pain.', caution: 'Progressive weakness, saddle numbness, or bowel/bladder change = refer out NOW (cauda equina).', homecare: 'Nerve flossing, glute/piriformis stretch, avoid prolonged sitting.' },
+  piriformis:{ assess: 'FAIR test / resisted external rotation reproduces deep glute pain; rule out true radiculopathy.', caution: 'Differentiate from lumbar nerve-root referral; avoid heavy direct pressure on the nerve.', homecare: 'Piriformis & glute stretch, foam-roll, hip mobility.' },
+  lowback:   { assess: 'Flexion/extension AROM; note centralization vs peripheralization of symptoms.', caution: 'Acute disc with neuro loss, trauma, fever, or unexplained weight loss = refer.', homecare: 'McGill big-3 core, hip-hinge mechanics, frequent position change.' },
+  si:        { assess: 'Provocation cluster: thigh-thrust, compression, Gaenslen, FABER.', caution: 'Young client + night pain/stiffness = screen for inflammatory (ankylosing) pattern.', homecare: 'SI belt during flares, glute-med strengthening.' },
+  scoliosis: { assess: 'Adams forward-bend, leg-length, rib hump — functional vs structural.', caution: 'Rapidly progressing or adolescent structural curves = co-manage with MD.', homecare: 'Side-specific strengthening, breathe into the concavity.' },
+  kyphosis:  { assess: 'Occiput-to-wall, thoracic extension ROM; upper-crossed pattern.', caution: 'Osteoporosis/elderly — no forceful thoracic-extension mobilization.', homecare: 'Extension over a roller, chin tucks, pec-minor stretch.' },
+  lordosis:  { assess: 'Thomas test for hip-flexor tightness; anterior pelvic tilt; lower-crossed.', caution: 'Spondylolisthesis — avoid end-range extension loading.', homecare: 'Hip-flexor stretch, glute/ab activation, posterior-tilt drills.' },
+  frozen:    { assess: 'Capsular pattern (ER > abduction > IR limited); stage = freezing / frozen / thawing.', caution: 'Inflammatory freezing stage — gentle only; aggressive stretch worsens it.', homecare: 'Pendulums, pain-free ROM, heat before motion.' },
+  cuff:      { assess: 'Painful arc, empty-can, drop-arm, Hawkins-Kennedy.', caution: 'Full-thickness tear or post-op = PT/MD scope — don’t force.', homecare: 'Scapular stabilization, posture, sleep positioning.' },
+  tos:       { assess: 'Roos/EAST, Adson’s, costoclavicular; separate neuro vs vascular.', caution: 'Vascular signs (color change, swelling, pulse loss) = urgent referral.', homecare: 'Scalene/pec-minor stretch, nerve glides, posture.' },
+  carpal:    { assess: 'Phalen / Tinel, thenar bulk, median-nerve distribution.', caution: 'Thenar wasting or constant numbness = nerve-conduction study + MD.', homecare: 'Neutral-wrist night splint, nerve glides, ergonomics.' },
+  elbow:     { assess: 'Resisted wrist extension (tennis) / flexion (golfer) reproduces pain; palpate epicondyle.', caution: 'Acute high-pain stage — lower load before deep work.', homecare: 'Eccentric forearm loading, counterforce brace.' },
+  tmj:       { assess: 'Opening range/deviation, palpate masseter-temporalis-pterygoid, note clicking.', caution: 'Locked jaw, recent trauma, or dental pathology = dentist/TMJ specialist.', homecare: 'Soft diet, posture, gentle self-massage, clench awareness.' },
+  headache:  { assess: 'Cervicogenic screen: suboccipital tenderness, C1–2 ROM, referral pattern.', caution: 'Sudden “worst-ever”, neuro signs, or new onset >50 = medical workup.', homecare: 'Suboccipital release, posture, hydration, screen breaks.' },
+  whiplash:  { assess: 'Cervical AROM; acute vs chronic; ligament stress only once cleared.', caution: 'Recent MVA — clear for fracture/instability before any mobilization.', homecare: 'Gentle AROM, isometrics, avoid prolonged collar use.' },
+  plantar:   { assess: 'First-step pain, windlass test, palpate medial calcaneal tubercle.', caution: 'Atypical pain — rule out stress fracture or nerve entrapment.', homecare: 'Calf/plantar stretch, ball roll, supportive shoes, night splint.' },
+  pronation: { assess: 'Navicular drop, single-leg stance, footwear wear pattern.', caution: 'Rigid deformity or acute post-tib dysfunction = podiatry.', homecare: 'Foot-intrinsic & tib-posterior strengthening, orthotics.' },
+  knee:      { assess: 'Patellar tracking, VMO timing, Ober (IT band), squat mechanics.', caution: 'Locking, giving-way, or effusion = MD (meniscus/ligament).', homecare: 'Glute-med/VMO work, IT-band/TFL release, alignment drills.' },
+  psoas:     { assess: 'Thomas test, hip-flexor strength, anterior hip pain on sit-to-stand.', caution: 'Abdominal work — stay off organs/aorta; gentle, with the breath.', homecare: 'Hip-flexor stretch, glute activation, anti-tilt core.' },
+  hip:       { assess: 'Snap location (lateral = IT/TFL, anterior = iliopsoas); palpate trochanter.', caution: 'Deep constant night hip pain or trauma = image for labrum/joint.', homecare: 'TFL/IT release, glute strengthening, lateral-hip stretch.' },
+};
+const DISCLAIMER = 'General bodywork education — not a diagnosis. When red flags appear or you’re unsure, refer out.';
+
 export function ConditionsTab({ itemId, videosMap }: {
   itemId: string;
   videosMap: Record<string, VideoFrameData>;
@@ -61,6 +88,7 @@ export function ConditionsTab({ itemId, videosMap }: {
   })();
   const [selected, setSelected] = useState<string | null>(initial);
   const cond = selected ? CONDITIONS.find((c) => c.key === selected) || null : null;
+  const detail = cond ? DETAIL[cond.key] : undefined;
 
   const list = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -106,6 +134,36 @@ export function ConditionsTab({ itemId, videosMap }: {
     '/api/databases/kb/' + itemId + '/anatomy/frames/' + videoId + '/' + (file.split('/').pop() ?? file);
   const framesReady = Object.keys(videosMap).length > 0;
 
+  // Open a clean, self-contained one-page cheat sheet and print it.
+  const printCheatSheet = () => {
+    if (!cond) return;
+    const d = DETAIL[cond.key];
+    const origin = window.location.origin;
+    const esc = (s: string) => (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+    const areaList = cond.regions.map((r) => esc(REGION_BY_KEY[r]?.label || r)).join(' · ');
+    const techCards = frames.slice(0, 6).map((m) => `<div class="t"><img src="${origin + frameSrc(m.videoId, m.frame.file)}"/><div class="cap"><b>${esc(m.title)}</b><br><span>${esc(m.frame.text.slice(0, 180))}</span></div></div>`).join('');
+    const lessonList = lessons.slice(0, 5).map((h) => `<li><b>${esc(h.heading?.replace(/^\[meta\]\s*/, '') || h.source)}</b> — ${esc((h.preview || '').slice(0, 140))}</li>`).join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(cond.label)} — Erik Dalton cheat sheet</title>
+      <style>*{box-sizing:border-box}body{font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:28px;max-width:760px}
+      h1{font-size:22px;margin:0 0 2px}.sub{color:#666;font-size:12px;margin-bottom:14px}
+      h2{font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#0a7;border-bottom:1px solid #ddd;padding-bottom:3px;margin:16px 0 8px}
+      .areas{font-weight:600;margin-bottom:6px}.caution{background:#fff5e6;border:1px solid #f0c074;border-radius:6px;padding:8px 10px;color:#7a4a00}
+      .grid{display:flex;flex-wrap:wrap;gap:10px}.t{width:230px;border:1px solid #ddd;border-radius:6px;overflow:hidden}
+      .t img{width:100%;height:130px;object-fit:cover;display:block}.cap{padding:5px 7px;font-size:10px}.cap span{color:#555}
+      ul{margin:4px 0;padding-left:18px}li{margin-bottom:4px}.foot{margin-top:18px;font-size:10px;color:#999;border-top:1px solid #eee;padding-top:8px}
+      @media print{body{margin:12mm}}</style></head><body>
+      <h1>${cond.emoji} ${esc(cond.label)}</h1><div class="sub">Erik Dalton Myoskeletal · clinical cheat sheet</div>
+      <h2>Body areas</h2><div class="areas">${areaList}</div>
+      ${d ? `<h2>Assess first</h2><div>${esc(d.assess)}</div><h2>&#9888; Cautions</h2><div class="caution">${esc(d.caution)}</div>` : ''}
+      <h2>Erik's techniques</h2><div class="grid">${techCards || '<i>See lessons.</i>'}</div>
+      ${lessonList ? `<h2>Key lessons</h2><ul>${lessonList}</ul>` : ''}
+      ${d ? `<h2>Client homecare</h2><div>${esc(d.homecare)}</div>` : ''}
+      <div class="foot">${esc(DISCLAIMER)}</div>
+      <script>window.onload=function(){setTimeout(function(){window.print()},500)}</script></body></html>`;
+    const wnd = window.open('', '_blank');
+    if (wnd) { wnd.document.write(html); wnd.document.close(); }
+  };
+
   return (
     <div>
       <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '12px', lineHeight: 1.5 }}>
@@ -137,7 +195,27 @@ export function ConditionsTab({ itemId, videosMap }: {
 
       {cond && (
         <div>
-          <h3 style={{ margin: '0 0 4px', fontSize: '20px', color: 'var(--color-text)' }}>{cond.emoji} {cond.label}</h3>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+            <h3 style={{ margin: '0 0 4px', fontSize: '20px', color: 'var(--color-text)' }}>{cond.emoji} {cond.label}</h3>
+            <button type="button" onClick={printCheatSheet}
+              style={{ fontSize: '12px', fontWeight: 600, padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', border: '1px solid ' + ACCENT, background: ACCENT + '22', color: ACCENT }}>
+              🖨 Print cheat sheet
+            </button>
+          </div>
+
+          {detail && (
+            <>
+              <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '12px 0 5px', textTransform: 'uppercase' }}>① Assess first</div>
+              <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5, marginBottom: '12px' }}>{detail.assess}</div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', padding: '10px 12px', borderRadius: '9px', background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.5)', marginBottom: '16px' }}>
+                <span style={{ fontSize: '15px', lineHeight: 1.3 }}>⚠️</span>
+                <div>
+                  <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: '#f59e0b', textTransform: 'uppercase', marginBottom: '2px' }}>Cautions / refer out</div>
+                  <div style={{ fontSize: '12.5px', color: 'var(--color-text)', lineHeight: 1.5 }}>{detail.caution}</div>
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Involved areas */}
           <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '12px 0 6px', textTransform: 'uppercase' }}>Body areas involved</div>
@@ -153,7 +231,7 @@ export function ConditionsTab({ itemId, videosMap }: {
 
           {/* Erik's matching techniques */}
           <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
-            Erik's techniques for this {framesReady ? `· ${frames.length} found` : ''}
+            ② Treat — Erik's techniques {framesReady ? `· ${frames.length} found` : ''}
           </div>
           {!framesReady && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>Loading frames…</div>}
           {framesReady && frames.length === 0 && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>No direct frame matches — see the lessons below.</div>}
@@ -187,6 +265,14 @@ export function ConditionsTab({ itemId, videosMap }: {
               </div>
             ))}
           </div>
+
+          {detail && (
+            <>
+              <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '18px 0 5px', textTransform: 'uppercase' }}>③ Client homecare</div>
+              <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>{detail.homecare}</div>
+            </>
+          )}
+          <div style={{ marginTop: '16px', fontSize: '10.5px', color: 'var(--color-text-faint)', fontStyle: 'italic' }}>{DISCLAIMER}</div>
         </div>
       )}
 

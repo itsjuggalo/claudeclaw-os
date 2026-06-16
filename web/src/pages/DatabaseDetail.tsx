@@ -819,7 +819,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
           )}
 
           {tab === 'quiz' && (
-            <ErikQuiz anatomy={anatomy} />
+            <ErikQuiz anatomy={anatomy} itemId={item.id} videosMap={videosMap} />
           )}
 
           {tab === 'ask' && (
