@@ -16,6 +16,8 @@ import { ExploreTab } from '@/components/erik/ExploreTab';
 import { ConditionsTab } from '@/components/erik/ConditionsTab';
 import { TechniquePlayer } from '@/components/erik/TechniquePlayer';
 import { ErikQuiz } from '@/components/erik/ErikQuiz';
+import { ClayQuiz } from '@/components/clay/ClayQuiz';
+import { ClayExamples } from '@/components/clay/ClayExamples';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { fmtUpdated } from '@/pages/Databases';
 import { renderMarkdown } from '@/lib/markdown';
@@ -647,15 +649,17 @@ function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
 }
 
 function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
-  type KbTab = 'explore' | 'conditions' | 'techniques' | 'quiz' | 'ask' | 'search' | 'sources';
+  type KbTab = 'explore' | 'conditions' | 'techniques' | 'quiz' | 'examples' | 'ask' | 'search' | 'sources';
   const urlTab = (() => {
     try {
       const t = new URLSearchParams(window.location.search).get('tab');
-      return (['explore', 'conditions', 'techniques', 'quiz', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
+      return (['explore', 'conditions', 'techniques', 'quiz', 'examples', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
     } catch { return null; }
   })();
   const [tab, setTab] = useState<KbTab>(
-    urlTab ?? (item.id === 'erikdalton' ? 'explore' : item.askable ? 'ask' : 'search'),
+    urlTab ?? (item.id === 'erikdalton' ? 'explore'
+      : item.id === 'claytrader' ? 'examples'
+      : item.askable ? 'ask' : 'search'),
   );
 
   // Ask state
@@ -699,7 +703,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
   const [videosMap, setVideosMap] = useState<Record<string, VideoFrameData>>({});
   const videosLoaded = useRef(false);
   useEffect(() => {
-    if (!isErikDalton || videosLoaded.current) return;
+    if ((!isErikDalton && !isClayTrader) || videosLoaded.current) return;
     videosLoaded.current = true;
     // Load the _index.json to get the list of video IDs, then load each frames.json
     apiGet<Record<string, { title: string; course: string; n_frames: number }>>('/api/databases/kb/' + item.id + '/frames-index')
@@ -715,7 +719,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
         setVideosMap(map);
       })
       .catch(() => { /* no frames for this KB or backend not yet restarted */ });
-  }, [item.id, isErikDalton]);
+  }, [item.id, isErikDalton, isClayTrader]);
 
   // Jump from a citation to the Search tab, pre-filled with the lesson heading.
   function jumpToSearch(heading: string) {
@@ -797,6 +801,8 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             {isErikDalton && <Tab label="Conditions" active={tab === 'conditions'} onClick={() => setTab('conditions')} />}
             {isErikDalton && <Tab label="Techniques" active={tab === 'techniques'} onClick={() => setTab('techniques')} />}
             {isErikDalton && <Tab label="Quiz" active={tab === 'quiz'} onClick={() => setTab('quiz')} />}
+            {isClayTrader && <Tab label="Examples" active={tab === 'examples'} onClick={() => setTab('examples')} />}
+            {isClayTrader && <Tab label="Quiz" active={tab === 'quiz'} onClick={() => setTab('quiz')} />}
             {item.askable && <Tab label="Ask" active={tab === 'ask'} onClick={() => setTab('ask')} />}
             <Tab label="Search" active={tab === 'search'} onClick={() => setTab('search')} />
             <Tab label="Sources" active={tab === 'sources'} onClick={() => setTab('sources')} />
@@ -818,8 +824,16 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             <TechniquePlayer itemId={item.id} videosMap={videosMap} />
           )}
 
-          {tab === 'quiz' && (
+          {tab === 'quiz' && isErikDalton && (
             <ErikQuiz anatomy={anatomy} itemId={item.id} videosMap={videosMap} />
+          )}
+
+          {tab === 'examples' && isClayTrader && (
+            <ClayExamples itemId={item.id} videosMap={videosMap} />
+          )}
+
+          {tab === 'quiz' && isClayTrader && (
+            <ClayQuiz itemId={item.id} videosMap={videosMap} />
           )}
 
           {tab === 'ask' && (
