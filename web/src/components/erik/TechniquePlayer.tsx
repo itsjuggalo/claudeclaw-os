@@ -18,6 +18,21 @@ function saveStudied(s: Set<string>) {
   try { localStorage.setItem(STUDIED_KEY, JSON.stringify([...s])); } catch { /* ignore */ }
 }
 
+// Plays Erik's REAL teaching voice for the current step (sliced from the source
+// DVD per t_start/t_end). Hides itself if the clip is missing or the audio route
+// isn't live yet — so the player degrades gracefully, never shows a broken control.
+function StepAudio({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <div style={{ marginTop: '10px' }}>
+      <div style={{ fontSize: '11px', color: ACCENT, fontWeight: 700, marginBottom: '4px' }}>🔊 Erik’s voice — this step</div>
+      <audio controls preload="none" src={src} onError={() => setFailed(true)}
+        style={{ width: '100%', maxWidth: '440px', height: '38px' }} />
+    </div>
+  );
+}
+
 export function TechniquePlayer({ itemId, videosMap }: {
   itemId: string;
   videosMap: Record<string, VideoFrameData>;
@@ -67,6 +82,8 @@ export function TechniquePlayer({ itemId, videosMap }: {
 
   const frameSrc = (file: string) =>
     '/api/databases/kb/' + itemId + '/anatomy/frames/' + (videoId ?? '') + '/' + (file.split('/').pop() ?? file);
+  const audioSrc = (fr: FrameEntry) =>
+    '/api/databases/kb/' + itemId + '/anatomy/audio/' + (videoId ?? '') + '/seg-' + String(fr.seg).padStart(3, '0') + '.mp3';
   const fmtTime = (s: number) => {
     const t = Math.round(s); const m = Math.floor(t / 60); const sec = t % 60;
     return (m > 0 ? m + 'm' : '') + sec + 's';
@@ -126,6 +143,8 @@ export function TechniquePlayer({ itemId, videosMap }: {
               {f.region && <span style={{ position: 'absolute', top: '8px', left: '10px', fontSize: '11px', fontWeight: 700, color: '#fff', background: 'rgba(16,120,90,0.85)', padding: '2px 7px', borderRadius: '4px', textTransform: 'capitalize' }}>{f.region}</span>}
             </div>
             <div style={{ marginTop: '10px', fontSize: '14px', lineHeight: 1.55, color: 'var(--color-text)' }}>{f.text}</div>
+
+            <StepAudio key={step} src={audioSrc(f)} />
 
             <div style={{ display: 'flex', gap: '8px', marginTop: '14px', alignItems: 'center' }}>
               <button type="button" disabled={step === 0} onClick={() => setStep((s) => Math.max(0, s - 1))}

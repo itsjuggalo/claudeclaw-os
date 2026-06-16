@@ -14,7 +14,7 @@ import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getEquity } from './equity.js';
 import { getTokenBurn } from './tokenburn.js';
-import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
+import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
@@ -4901,6 +4901,14 @@ init();
   // Serve extracted DVD frames: /api/databases/kb/:id/anatomy/frames/:videoId/:file
   app.get('/api/databases/kb/:id/anatomy/frames/:videoId/:file', (c) => {
     const res = kbAnatomyFrame(c.req.param('id'), c.req.param('videoId'), c.req.param('file'));
+    if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+    const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
+    return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  // Serve per-segment technique audio (Erik's real voice): /api/databases/kb/:id/anatomy/audio/:videoId/:file
+  app.get('/api/databases/kb/:id/anatomy/audio/:videoId/:file', (c) => {
+    const res = kbAnatomyAudio(c.req.param('id'), c.req.param('videoId'), c.req.param('file'));
     if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
     const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
     return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
