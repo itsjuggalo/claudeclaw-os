@@ -1,14 +1,15 @@
 import { Api, RawApi } from 'grammy';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { getCookie, setCookie } from 'hono/cookie';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { serve } from '@hono/node-server';
 
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
+import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, MC_ACCESS_SECRET, MC_ACCESS_DISABLED, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
+import { MC_COOKIE, MASTER_TTL_SEC, verifyToken, masterToken, signToken, isLoopbackAddr, nowSec, mcLoginPage } from './mc-access.js';
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
@@ -360,6 +361,23 @@ function safeTokenEqual(provided: string | null | undefined, expected: string | 
   return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
 }
 
+// ── mc-access (fleet password gate) helpers ─────────────────────────────────
+// Master passphrase is read from disk at REQUEST time so `mc-grant set-password`
+// takes effect with no rebuild/restart. /home/ubuntu → /home/itsju (symlink).
+function readMasterPassword(): string {
+  for (const p of [
+    '/home/itsju/.openclaw/secrets/mc-access-password',
+    '/home/ubuntu/.openclaw/secrets/mc-access-password',
+  ]) {
+    try { const v = fs.readFileSync(p, 'utf-8').trim(); if (v) return v; } catch { /* next */ }
+  }
+  return (process.env.MC_ACCESS_PASSWORD || '').trim();
+}
+function safeStrEqual(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  try { return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b)); } catch { return false; }
+}
+
 /**
  * Build the dashboard Hono app without binding it to a port. Exported for
  * contract tests so the route surface can be exercised via `app.request()`
@@ -503,54 +521,142 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // catch-all unless an earlier route matched. Legacy HTML routes that
   // DO embed the token (warroom?mode=picker|voice, /warroom/text,
   // / under DASHBOARD_LEGACY=true) call requireToken() inline.
+  // ── Fleet-wide password gate (mc-access) ──────────────────────────────────
+  // Was: gate /api/* by DASHBOARD_TOKEN only (SPA shell + deep links rendered
+  // unauthenticated, relying on the API 401 + re-auth overlay). Now the WHOLE
+  // surface is gated so a bookmark/deep-link can't render before auth, and the
+  // credential is the shared `mc_access` cookie — one login unlocks missionctrl
+  // + aries + claudeclaw because cookies ignore port.
+  //
+  // Trust model: LOCAL = trusted, REMOTE = password. Loopback is judged by the
+  // real socket peer (c.env.incoming.socket.remoteAddress) — NOT headers, which
+  // are spoofable here since Hono sits behind no trusted proxy. So the laptop on
+  // localhost is never prompted and local automation/cron keep working; a phone
+  // over Tailscale gets the password once, then the cookie remembers it.
+  //
+  // Authorized if: gate disabled / no secret (fail-open so a misconfig can't
+  // brick local use) OR loopback OR a valid mc_access cookie OR a valid
+  // claudeclaw_token (query or cookie — keeps existing scripts + the ?token=
+  // bookmark working and bridges the legacy token into an mc_access session).
   app.use('*', async (c, next) => {
     const path = new URL(c.req.url).pathname;
-    // Persist a valid ?token= as an HttpOnly cookie so the dashboard JUST
-    // WORKS after a reboot / browser restart without re-pasting the token.
-    // sessionStorage (the SPA's old store) is wiped on browser close; this
-    // cookie survives. Runs on EVERY path (incl. the SPA shell `/`) so the
-    // first `?token=` visit on any device sets it. We only ever write the
-    // cookie when the query token already matches DASHBOARD_TOKEN, so an
-    // unauthenticated visitor never receives it. HttpOnly = JS/XSS can't
-    // read it; no Secure flag because :3141 is plain HTTP over the Tailscale
-    // WG tunnel (Secure would drop the cookie). SameSite=Lax is fine for a
-    // same-origin SPA.
-    //
-    // SLIDING REFRESH: re-stamp the cookie on EVERY authenticated request
-    // (token from query OR an existing valid cookie). maxAge is pinned to
-    // 34560000s = 400 days, which is the hard ceiling — Chrome/Safari clamp
-    // ANY cookie to 400 days and Hono's setCookie THROWS above it (a larger
-    // value 500s every request). Re-stamping on each use means the 400-day
-    // clock resets on every visit, so for any device used within a 400-day
-    // window the login is effectively permanent (survives reboot, browser
-    // close, cache-clear). Only a deliberate cookies/site-data wipe or a
-    // 400-day cold gap removes it — and the SPA re-auth overlay covers both.
-    if (!DASHBOARD_AUTH_DISABLED) {
-      const provided = c.req.query('token') || getCookie(c, 'claudeclaw_token');
-      if (provided && safeTokenEqual(provided, DASHBOARD_TOKEN)) {
-        setCookie(c, 'claudeclaw_token', DASHBOARD_TOKEN, {
-          httpOnly: true,
-          sameSite: 'Lax',
-          path: '/',
-          maxAge: 34560000,
+    const gateOff = DASHBOARD_AUTH_DISABLED || MC_ACCESS_DISABLED || !MC_ACCESS_SECRET;
+
+    const remoteAddr = (c.env as { incoming?: { socket?: { remoteAddress?: string } } })
+      ?.incoming?.socket?.remoteAddress;
+    const local = isLoopbackAddr(remoteAddr);
+
+    const legacyTok = c.req.query('token') || getCookie(c, 'claudeclaw_token');
+    const legacyOk = !!legacyTok && safeTokenEqual(legacyTok, DASHBOARD_TOKEN);
+
+    const mc = MC_ACCESS_SECRET
+      ? await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET)
+      : null;
+
+    const authed = gateOff || local || legacyOk || !!mc;
+
+    // (Re)issue + slide a 400-day master mc_access cookie whenever the user
+    // proves identity via the legacy token or an existing master cookie, so the
+    // device is remembered and SSO propagates to the other two apps. Guests keep
+    // their own (shorter) exp untouched.
+    if (MC_ACCESS_SECRET && (legacyOk || (mc && mc.kind === 'master'))) {
+      try {
+        setCookie(c, MC_COOKIE, await masterToken(MC_ACCESS_SECRET), {
+          httpOnly: true, sameSite: 'Lax', path: '/', maxAge: MASTER_TTL_SEC,
+        });
+      } catch { /* maxAge pinned ≤400d; setCookie throws only above the ceiling */ }
+    }
+    // Back-compat: keep sliding the legacy cookie too.
+    if (legacyOk) {
+      setCookie(c, 'claudeclaw_token', DASHBOARD_TOKEN, {
+        httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 34560000,
+      });
+    }
+
+    if (authed) { await next(); return; }
+
+    // Unauthorized: allow the login surface + static assets through so the
+    // password page (and, post-login, the SPA) can load; block everything else.
+    const isOpen =
+      path === '/favicon.ico' ||
+      path === '/login' ||
+      path.startsWith('/api/mc-login') ||
+      path.startsWith('/api/mc-logout') ||
+      path.startsWith('/assets/') ||
+      /\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico|css|js|map|woff2?|ttf)$/i.test(path);
+    if (isOpen) { await next(); return; }
+
+    if (path.startsWith('/api/')) return c.json({ error: 'Unauthorized' }, 401);
+    const back = encodeURIComponent(path + (new URL(c.req.url).search || ''));
+    return c.redirect(`/login?next=${back}`, 302);
+  });
+
+  // ── Login surface (allowlisted in the gate above) ─────────────────────────
+  app.get('/login', (c) => {
+    const nextUrl = c.req.query('next') || '/';
+    const err = c.req.query('error') ? 'Wrong password — try again.' : '';
+    return c.html(mcLoginPage(nextUrl, err));
+  });
+
+  // Accepts: POST form (password page), POST JSON (programmatic), or GET with
+  // ?guest=<signed-token> (tap-to-unlock guest links). On success sets mc_access.
+  app.on(['GET', 'POST'], '/api/mc-login', async (c) => {
+    let password = c.req.query('password') || '';
+    let nextUrl = c.req.query('next') || '/';
+    const guest = c.req.query('guest') || '';
+    const isJson = (c.req.header('content-type') || '').includes('application/json');
+    if (c.req.method === 'POST') {
+      if (isJson) {
+        const b = await c.req.json().catch(() => ({} as Record<string, string>));
+        password = b.password || password;
+        nextUrl = b.next || nextUrl;
+      } else {
+        const b = await c.req.parseBody().catch(() => ({} as Record<string, unknown>));
+        password = (b.password as string) || password;
+        nextUrl = (b.next as string) || nextUrl;
+      }
+    }
+    // Same-origin path only (no open redirect).
+    if (!nextUrl.startsWith('/') || nextUrl.startsWith('//')) nextUrl = '/';
+
+    let kind: 'master' | 'guest' | null = null;
+    let exp = 0;
+    let label: string | undefined;
+    const candidate = guest || password;
+    if (MC_ACCESS_SECRET && candidate.includes('.')) {
+      const v = await verifyToken(candidate, MC_ACCESS_SECRET);
+      if (v && v.kind === 'guest') { kind = 'guest'; exp = v.exp; label = v.label; }
+    }
+    if (!kind && password) {
+      const master = readMasterPassword();
+      if (master && safeStrEqual(password, master)) kind = 'master';
+    }
+
+    if (!kind) {
+      if (isJson) return c.json({ error: 'Access denied' }, 401);
+      return c.redirect(`/login?error=1&next=${encodeURIComponent(nextUrl)}`, 302);
+    }
+
+    if (MC_ACCESS_SECRET) {
+      if (kind === 'master') {
+        setCookie(c, MC_COOKIE, await masterToken(MC_ACCESS_SECRET), {
+          httpOnly: true, sameSite: 'Lax', path: '/', maxAge: MASTER_TTL_SEC,
+        });
+      } else {
+        const ttl = Math.max(1, exp - nowSec());
+        setCookie(c, MC_COOKIE, await signToken({ exp, kind: 'guest', label }, MC_ACCESS_SECRET), {
+          httpOnly: true, sameSite: 'Lax', path: '/', maxAge: ttl,
         });
       }
     }
-    // Only gate the API surface. Static and HTML pass through.
-    if (!path.startsWith('/api/')) {
-      await next();
-      return;
-    }
-    if (!DASHBOARD_AUTH_DISABLED) {
-      // Accept the token from the query param OR the persisted cookie.
-      // Same-origin fetch()/EventSource auto-send the cookie, so once set
-      // the bare URL authenticates every /api/* call across reboots.
-      const token = c.req.query('token') || getCookie(c, 'claudeclaw_token');
-      if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-    }
-    await next();
+    if (isJson) return c.json({ ok: true, next: nextUrl });
+    return c.redirect(nextUrl, 302);
+  });
+
+  app.on(['GET', 'POST'], '/api/mc-logout', (c) => {
+    deleteCookie(c, MC_COOKIE, { path: '/' });
+    deleteCookie(c, 'claudeclaw_token', { path: '/' });
+    return c.redirect('/login', 302);
   });
 
   // Inline token check for handlers that USED to rely on the global

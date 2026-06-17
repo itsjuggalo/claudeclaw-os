@@ -46,6 +46,8 @@ const envConfig = readEnvFile([
   'AIME_SESSION_COOKIE',
   'STREAM_STRATEGY',
   'ENABLE_ACP',
+  'MC_ACCESS_SECRET',
+  'MC_ACCESS_DISABLED',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -200,6 +202,17 @@ export const DASHBOARD_BIND =
 export const DASHBOARD_AUTH_DISABLED =
   ['1', 'true', 'yes'].includes(
     (process.env.DASHBOARD_AUTH_DISABLED || envConfig.DASHBOARD_AUTH_DISABLED || '').toLowerCase()
+  );
+
+// Fleet-wide password gate (mc-access). Shared HMAC secret across missionctrl +
+// aries + claudeclaw — one login (cookie ignores port) unlocks all three. The
+// existing DASHBOARD_TOKEN keeps working for scripts/SSO. MC_ACCESS_DISABLED=1 is
+// the lockout escape hatch (gate off; loopback already always bypasses).
+export const MC_ACCESS_SECRET =
+  process.env.MC_ACCESS_SECRET || envConfig.MC_ACCESS_SECRET || '';
+export const MC_ACCESS_DISABLED =
+  ['1', 'true', 'yes'].includes(
+    (process.env.MC_ACCESS_DISABLED || envConfig.MC_ACCESS_DISABLED || '').toLowerCase()
   );
 
 // Database encryption key (SQLCipher). Required for encrypted database access.
