@@ -500,7 +500,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
 
   const layerBtn = (on: boolean, set: (v: boolean) => void, icon: string, text: string, tone: string) => (
     <button type="button" onClick={() => set(!on)}
-      style={{ padding: '4px 10px', borderRadius: '7px', fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+      style={{ padding: '6px 11px', borderRadius: '7px', fontSize: '11px', fontWeight: 700, cursor: 'pointer',
         border: '1px solid ' + (on ? tone : 'var(--color-border)'),
         background: on ? tone + '22' : 'var(--color-bg)',
         color: on ? tone : 'var(--color-text-faint)' }}>
@@ -519,9 +519,9 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
           touchAction: 'none', cursor: 'grab',
         }}
       />
-      {/* hint */}
-      <div style={{ position: 'absolute', top: '10px', left: '12px', fontSize: '11px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
-        Drag to rotate · scroll to zoom · click a region to learn it
+      {/* hint — sits below the layer toggles when the real atlas is loaded so the two never overlap on a narrow phone canvas */}
+      <div style={{ position: 'absolute', top: (hasBone || hasMuscle) ? '44px' : '10px', left: '12px', maxWidth: '60%', lineHeight: 1.3, fontSize: '11px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
+        Drag to rotate · scroll to zoom · tap a region
       </div>
       {/* first-load indicator (the real atlas is ~14MB) */}
       {loading && (
@@ -531,9 +531,9 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
           <style>{'@keyframes erik-spin{to{transform:rotate(360deg)}}'}</style>
         </div>
       )}
-      {/* layer toggles (real atlas only) */}
+      {/* layer toggles (real atlas only) — pinned top-left; the rotate hint flows beneath them */}
       {(hasBone || hasMuscle) && (
-        <div style={{ position: 'absolute', top: '34px', left: '12px', display: 'flex', gap: '6px' }}>
+        <div style={{ position: 'absolute', top: '10px', left: '12px', display: 'flex', gap: '6px' }}>
           {hasMuscle && layerBtn(showMuscles, setShowMuscles, '💪', 'Muscle', '#b23b3b')}
           {hasBone && layerBtn(showBones, setShowBones, '🦴', 'Bone', '#c9b98a')}
         </div>
