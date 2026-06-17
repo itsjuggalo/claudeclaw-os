@@ -54,6 +54,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/trade-desk/flow-rank',label: 'Flow Rank',     section: 'trade', icon: BarChart2              },
   { path: '/trade-desk/portfolio',label: 'Portfolio AI',  section: 'trade', icon: Briefcase              },
   { path: '/trade-desk/flow-winners', label: 'Flow Winners', section: 'trade', icon: Trophy             },
+  { path: '/options-academy',         label: 'Options Academy', section: 'trade', icon: GraduationCap, shortcut: 'g x' },
   { path: '/databases/claytrader',    label: 'ClayTrader KB', section: 'trade', icon: GraduationCap,   shortcut: 'g y' },
   { path: '/lewis-trading',       label: 'Lewis Trading', section: 'trade', icon: GraduationCap, inSidebar: false },
   { path: '/wallets',    label: 'Wallets',         section: 'trade',        icon: Wallet,        shortcut: 'g $' },
