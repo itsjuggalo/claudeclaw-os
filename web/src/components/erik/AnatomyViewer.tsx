@@ -198,6 +198,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
   const [hasMuscle, setHasMuscle] = useState(false);
   const [showBones, setShowBones] = useState(true);
   const [showMuscles, setShowMuscles] = useState(true);
+  const [loading, setLoading] = useState(true);   // true until the figure is built
 
   // Refs so the once-only init effect's event handlers read latest values.
   const selectedRef = useRef<string | null>(selected);
@@ -381,6 +382,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       if (nBone > 0) setHasBone(true);
       if (nMuscle > 0) setHasMuscle(true);
       applyHighlight();
+      setLoading(false);
     };
 
     // Prefer a real segmented atlas if one was dropped in; else mannequin.
@@ -521,6 +523,14 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       <div style={{ position: 'absolute', top: '10px', left: '12px', fontSize: '11px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
         Drag to rotate · scroll to zoom · click a region to learn it
       </div>
+      {/* first-load indicator (the real atlas is ~14MB) */}
+      {loading && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '10px', pointerEvents: 'none' }}>
+          <div style={{ width: '26px', height: '26px', border: '3px solid var(--color-border)', borderTopColor: ACCENT, borderRadius: '50%', animation: 'erik-spin 0.8s linear infinite' }} />
+          <div style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>Loading 3D anatomy…</div>
+          <style>{'@keyframes erik-spin{to{transform:rotate(360deg)}}'}</style>
+        </div>
+      )}
       {/* layer toggles (real atlas only) */}
       {(hasBone || hasMuscle) && (
         <div style={{ position: 'absolute', top: '34px', left: '12px', display: 'flex', gap: '6px' }}>
