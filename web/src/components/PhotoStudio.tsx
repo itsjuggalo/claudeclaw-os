@@ -232,7 +232,7 @@ export function PhotoStudio({ onDone }: { onDone: () => void }) {
 
             {busy && (
               <div style={{ fontSize: '11px', color: '#8a97a8', fontFamily: MONO }}>
-                {isEdit ? 'Nano Banana Pro is working — usually 30–90s. Keep this tab open.' : 'Generating — local gens can take 30–120s on a busy box.'}
+                {isEdit ? 'Nano Banana Pro is transforming your photo — usually 1–3 min. Keep this tab open.' : 'Generating — local gens can take 30–120s on a busy box.'}
               </div>
             )}
             {err && (

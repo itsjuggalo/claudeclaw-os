@@ -55,7 +55,10 @@ export function generateImage(opts: GenInput): Promise<GenResult> {
       {
         cwd: BM,
         env: { ...process.env, HOME, GOOGLE_API_KEY, GEMINI_API_KEY: GOOGLE_API_KEY },
-        timeout: 180_000,
+        // 240s: Nano Banana Pro with a reference image (img2img edits) + thinking
+        // mode runs ~145s at 1K and can exceed 180s — give real headroom so a slow
+        // cloud round-trip doesn't fail an otherwise-good transform.
+        timeout: 240_000,
         maxBuffer: 4 * 1024 * 1024,
       },
       (err, stdout, stderr) => {
@@ -78,7 +81,7 @@ export function generateImage(opts: GenInput): Promise<GenResult> {
         // Friendly mapping of the common failure modes.
         let error = 'Generation failed.';
         if (err && (err as NodeJS.ErrnoException & { killed?: boolean }).killed) {
-          error = 'Generation timed out (180s). Try Flash, or a simpler prompt.';
+          error = 'Generation timed out (240s). Try Flash, a smaller size (1K), or a simpler prompt.';
         } else if (/RESOURCE_EXHAUSTED|prepayment credits are depleted|\b429\b/.test(out)) {
           error = 'Gemini image credits are depleted — add billing/credits at AI Studio (ai.studio) to enable generation.';
         } else if (/Neither GOOGLE_API_KEY/.test(out)) {

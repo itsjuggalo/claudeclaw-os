@@ -2292,7 +2292,9 @@ init();
         model,
         references: [tmp],
         aspectRatio: typeof form?.aspectRatio === 'string' ? String(form.aspectRatio) : undefined,
-        size: typeof form?.size === 'string' ? String(form.size) : undefined,
+        // Default edits to 1K: Pro img2img at 2K can blow past the timeout (~145s
+        // at 1K vs >180s at 2K). 1K is plenty for a phone-viewed transform.
+        size: typeof form?.size === 'string' ? String(form.size) : '1K',
       });
       if (result.ok) {
         invalidateGalleryCache();
