@@ -20,7 +20,7 @@ const SIZES = new Set(['512', '1K', '2K', '4K']);
 // credits, so we serialize — reject a new request while one is still running.
 let _busy = false;
 
-export interface GenInput { prompt: string; model?: string; aspectRatio?: string; size?: string; }
+export interface GenInput { prompt: string; model?: string; aspectRatio?: string; size?: string; references?: string[]; }
 export interface GenResult { ok: boolean; file?: string; url?: string; notes?: string; error?: string; }
 
 export function generateImage(opts: GenInput): Promise<GenResult> {
@@ -41,7 +41,13 @@ export function generateImage(opts: GenInput): Promise<GenResult> {
     // Args are passed as an array (no shell) → the prompt cannot inject commands.
     // The `--` terminator means a flag-like prompt (e.g. "--v2") is still parsed
     // as the positional prompt, never mistaken for an option.
-    const args = [SCRIPT, '--model', model, '--aspect-ratio', aspectRatio, '--size', size, '--', prompt];
+    // Reference images (img2img / "edit my photo") are passed as repeated
+    // --reference flags BEFORE the `--` terminator (the skill supports up to 14).
+    const refArgs = (opts.references || [])
+      .filter((r) => typeof r === 'string' && r.trim())
+      .slice(0, 14)
+      .flatMap((r) => ['--reference', r]);
+    const args = [SCRIPT, '--model', model, '--aspect-ratio', aspectRatio, '--size', size, ...refArgs, '--', prompt];
 
     execFile(
       PY,

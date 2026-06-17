@@ -2255,6 +2255,57 @@ init();
     return c.json(result);
   });
 
+  // Photo Studio EDIT (img2img) — upload a photo + an instruction and Nano Banana
+  // Pro transforms it while keeping the subject ("make me half-wolf", "bionic",
+  // "film-noir filter"). Multipart form: photo (file) + prompt + optional
+  // model/aspectRatio/size. The result lands in the gallery "Generated" section
+  // exactly like /generate, so it shows up in the Media & Gens view automatically.
+  // This is the upload-from-phone path the Create page (text→image) can't do.
+  app.post('/api/gallery/edit', async (c) => {
+    let tmp = '';
+    try {
+      const form = await c.req.parseBody();
+      const prompt = String(form?.prompt ?? '').trim();
+      const photo = form?.photo;
+      if (!prompt) return c.json({ ok: false, error: 'Describe the edit — e.g. "make me half-wolf with glowing amber eyes".' }, 400);
+      if (!photo || typeof photo === 'string') return c.json({ ok: false, error: 'No photo uploaded.' }, 400);
+
+      const buf = Buffer.from(await photo.arrayBuffer());
+      if (buf.length > 12 * 1024 * 1024) return c.json({ ok: false, error: 'Photo too large (max 12 MB).' }, 400);
+      if (buf.length < 64) return c.json({ ok: false, error: 'Photo is empty or unreadable.' }, 400);
+      // Magic-byte sniff so a renamed non-image can't reach the generator.
+      const isJpg = buf[0] === 0xFF && buf[1] === 0xD8;
+      const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47;
+      const isWebp = buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+                     buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50;
+      if (!isJpg && !isPng && !isWebp) return c.json({ ok: false, error: 'Unsupported image — use JPG, PNG, or WebP.' }, 400);
+
+      const ext = isPng ? 'png' : isWebp ? 'webp' : 'jpg';
+      tmp = `/tmp/cc-studio-${Date.now()}-${Math.floor(Math.random() * 1e6)}.${ext}`;
+      fs.writeFileSync(tmp, buf);
+
+      // Default to Nano Banana PRO for edits — it holds the subject's likeness far
+      // better than Flash, which matters for "turn ME into X" transforms.
+      const model = typeof form?.model === 'string' && form.model ? String(form.model) : 'pro';
+      const result = await generateImage({
+        prompt,
+        model,
+        references: [tmp],
+        aspectRatio: typeof form?.aspectRatio === 'string' ? String(form.aspectRatio) : undefined,
+        size: typeof form?.size === 'string' ? String(form.size) : undefined,
+      });
+      if (result.ok) {
+        invalidateGalleryCache();
+        notify(`✅ Photo edit ready: ${result.file}`);
+      }
+      return c.json(result);
+    } catch (e) {
+      return c.json({ ok: false, error: `Edit failed: ${String((e as Error)?.message || e).slice(0, 200)}` }, 500);
+    } finally {
+      if (tmp) { try { fs.unlinkSync(tmp); } catch { /* best-effort temp cleanup */ } }
+    }
+  });
+
   // Batch generation — generate N images in one call.
   // Banana: runs sequentially (Gemini rate-limited, up to 5).
   // Local: runs sequentially (single GPU, up to 3).

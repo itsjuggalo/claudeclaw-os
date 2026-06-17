@@ -4,6 +4,7 @@
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { PhotoStudio } from '@/components/PhotoStudio';
 import { useFetch } from '@/lib/useFetch';
 import { dashboardToken, apiPost } from '@/lib/api';
 
@@ -11,9 +12,6 @@ interface GFile { name: string; url: string; type: 'image' | 'video'; }
 interface GSection { id: string; root: string; sub: string; title: string; desc: string; count: number; files: GFile[]; }
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
-
-// Sections that support blur (NSFW-adjacent generated content)
-const BLUR_IDS = new Set(['nano', 'gen', 'comfyui']);
 
 // Per-section accent colours
 const ACCENT: Record<string, string> = {
@@ -39,8 +37,20 @@ export function Gallery() {
 
   const [lightbox, setLightbox] = useState<GFile | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadSet('gallery.collapsed'));
-  const [blurred, setBlurred] = useState<Set<string>>(() => loadSet('gallery.blurred', ['nano', 'gen']));
+  const [blurred, setBlurred] = useState<Set<string>>(() => loadSet('gallery.blurred', []));
   const [hoveredFile, setHoveredFile] = useState<string | null>(null);
+
+  // Default: EVERY section blurred until the user reveals it. Seed once when sections
+  // first load and no saved preference exists. Not persisted here — so closing/reopening
+  // re-blurs everything (the safe default); an explicit per-section toggle writes the set.
+  const blurSeeded = useRef(false);
+  useEffect(() => {
+    if (blurSeeded.current || sections.length === 0) return;
+    blurSeeded.current = true;
+    if (localStorage.getItem('gallery.blurred') === null) {
+      setBlurred(new Set(sections.map(s => s.id)));
+    }
+  }, [sections.length]);
 
   // Drag-and-drop state (use a ref so drop handlers always see current value)
   const dragSrcRef = useRef<{ name: string; root: string; sub: string; secId: string } | null>(null);
@@ -110,6 +120,9 @@ export function Gallery() {
       <PageHeader title="Gallery" />
       <div style={{ flex: 1, overflowY: 'auto', position: 'relative' }}>
 
+        {/* ── Photo Studio: upload→edit / text→create (the Media & Gens generator) ── */}
+        <PhotoStudio onDone={refresh} />
+
         {/* ── Sticky section nav ─────────────────────────────────────── */}
         <div style={{
           position: 'sticky', top: 0, zIndex: 10,
@@ -174,7 +187,7 @@ export function Gallery() {
           ) : sections.map(sec => {
             const isCollapsed = collapsed.has(sec.id);
             const isBlurred = blurred.has(sec.id);
-            const canBlur = BLUR_IDS.has(sec.id);
+            const canBlur = true;  // every section is blurrable (default-blurred below)
             const ac = accent(sec.id);
             const isDragTarget = dragOverSec === sec.id && dragSrcRef.current?.secId !== sec.id;
 
@@ -289,7 +302,11 @@ export function Gallery() {
                                 <video
                                   src={withTok(f.url)}
                                   controls preload="metadata"
-                                  style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }}
+                                  style={{
+                                    maxWidth: '100%', maxHeight: '100%', display: 'block',
+                                    filter: isBlurred && !isHov ? 'blur(14px) brightness(0.6)' : 'none',
+                                    transition: 'filter 0.2s',
+                                  }}
                                 />
                               ) : (
                                 <img

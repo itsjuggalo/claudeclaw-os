@@ -120,6 +120,18 @@ export async function apiPost<T = unknown>(path: string, body?: unknown): Promis
   return res.json();
 }
 
+// Multipart POST (file uploads). Do NOT set content-type — the browser adds the
+// multipart boundary itself. Shares the token query + 401 re-auth flow with apiPost.
+export async function apiPostForm<T = unknown>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(withToken(path), { method: 'POST', body: form });
+  if (!res.ok) {
+    handleFailure(res.status);
+    const errBody = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, errBody, `POST ${path} failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function apiPatch<T = unknown>(path: string, body: unknown): Promise<T> {
   const res = await fetch(withToken(path), {
     method: 'PATCH',
