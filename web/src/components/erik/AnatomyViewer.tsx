@@ -86,6 +86,9 @@ function tissueMat(t: 'bone' | 'muscle' | 'other'): THREE.MeshStandardMaterial {
     metalness: 0,
     emissive: new THREE.Color('#000000'),
     emissiveIntensity: 0,
+    // DoubleSide so the mirrored (negative-scaled) left half isn't back-face
+    // culled, and open shells shade their interior.
+    side: THREE.DoubleSide,
   });
 }
 
@@ -399,13 +402,8 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
           ANATOMY_GLB_URL,
           (gltf) => {
             if (disposed) return;
-            const box = new THREE.Box3().setFromObject(gltf.scene);
-            const size = box.getSize(new THREE.Vector3());
-            const center = box.getCenter(new THREE.Vector3());
-            const scale = 2.6 / Math.max(size.x, size.y, size.z, 0.0001);
-            gltf.scene.scale.setScalar(scale);
-            gltf.scene.position.copy(center).multiplyScalar(-scale);
             const tagged: THREE.Mesh[] = [];
+            const lateral: THREE.Mesh[] = [];
             gltf.scene.traverse((o) => {
               if (!(o instanceof THREE.Mesh)) return;
               const path = namePath(o);
@@ -415,8 +413,35 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
               const r = meshRegion(path);
               if (r) o.userData.region = r;
               tagged.push(o);
+              // Lateralized (right-side ".r" / "right") parts → mirror to the left.
+              if (/(^|[\s._-])r($|[\s._-])|right/i.test(o.name)) lateral.push(o);
             });
             if (tagged.length === 0) { buildProcedural(); return; } // empty → mannequin
+            // Open anatomy atlases (BodyParts3D / Z-Anatomy / Open3DModel) often
+            // ship only the RIGHT half + midline structures, mirrored at view
+            // time. Reflect the lateralized meshes across the model midline (x=0)
+            // BEFORE centering so the learner sees a whole body.
+            if (lateral.length) {
+              const mirror = new THREE.Group();
+              mirror.scale.x = -1;
+              for (const o of lateral) {
+                o.updateWorldMatrix(true, false);
+                const mm = new THREE.Mesh(o.geometry, tissueMat(o.userData.tissue as 'bone' | 'muscle' | 'other'));
+                mm.applyMatrix4(o.matrixWorld);
+                mm.userData.region = o.userData.region;
+                mm.userData.tissue = o.userData.tissue;
+                mirror.add(mm);
+                tagged.push(mm);
+              }
+              gltf.scene.add(mirror);
+            }
+            // Center + scale the full (mirrored) figure to fit the frame.
+            const box = new THREE.Box3().setFromObject(gltf.scene);
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+            const scale = 2.6 / Math.max(size.x, size.y, size.z, 0.0001);
+            gltf.scene.scale.setScalar(scale);
+            gltf.scene.position.copy(center).multiplyScalar(-scale);
             figure.add(gltf.scene);
             finish(tagged);
           },
