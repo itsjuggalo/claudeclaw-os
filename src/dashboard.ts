@@ -540,37 +540,32 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // bookmark working and bridges the legacy token into an mc_access session).
   app.use('*', async (c, next) => {
     const path = new URL(c.req.url).pathname;
-    const gateOff = DASHBOARD_AUTH_DISABLED || MC_ACCESS_DISABLED || !MC_ACCESS_SECRET;
+    // The mc-access gate is INDEPENDENT of the legacy DASHBOARD_AUTH_DISABLED flag
+    // (which only ever governed the old token-only /api/* check). It's currently
+    // 'true' in .env, so honoring it here would leave claudeclaw wide open — the
+    // gate's only off-switches are MC_ACCESS_DISABLED or a missing secret.
+    const gateOff = MC_ACCESS_DISABLED || !MC_ACCESS_SECRET;
 
     const remoteAddr = (c.env as { incoming?: { socket?: { remoteAddress?: string } } })
       ?.incoming?.socket?.remoteAddress;
     const local = isLoopbackAddr(remoteAddr);
 
-    const legacyTok = c.req.query('token') || getCookie(c, 'claudeclaw_token');
-    const legacyOk = !!legacyTok && safeTokenEqual(legacyTok, DASHBOARD_TOKEN);
-
     const mc = MC_ACCESS_SECRET
       ? await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET)
       : null;
 
-    const authed = gateOff || local || legacyOk || !!mc;
+    // m123 (via the mc_access cookie) is the SOLE credential (Mike's call 06-17).
+    // The legacy DASHBOARD_TOKEN no longer authenticates the site. Local scripts
+    // reach claudeclaw over loopback, which stays open.
+    const authed = gateOff || local || !!mc;
 
-    // (Re)issue + slide a 400-day master mc_access cookie whenever the user
-    // proves identity via the legacy token or an existing master cookie, so the
-    // device is remembered and SSO propagates to the other two apps. Guests keep
-    // their own (shorter) exp untouched.
-    if (MC_ACCESS_SECRET && (legacyOk || (mc && mc.kind === 'master'))) {
+    // Slide the master cookie so the device stays remembered.
+    if (MC_ACCESS_SECRET && mc && mc.kind === 'master') {
       try {
         setCookie(c, MC_COOKIE, await masterToken(MC_ACCESS_SECRET), {
           httpOnly: true, sameSite: 'Lax', path: '/', maxAge: MASTER_TTL_SEC,
         });
       } catch { /* maxAge pinned ≤400d; setCookie throws only above the ceiling */ }
-    }
-    // Back-compat: keep sliding the legacy cookie too.
-    if (legacyOk) {
-      setCookie(c, 'claudeclaw_token', DASHBOARD_TOKEN, {
-        httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 34560000,
-      });
     }
 
     if (authed) { await next(); return; }
@@ -664,12 +659,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // Inline token check for handlers that USED to rely on the global
   // middleware but now serve a public SPA shell on the same path. Used
   // by legacy fallbacks that DO embed the token in the page source.
-  function requireToken(c: any): Response | null {
-    if (DASHBOARD_AUTH_DISABLED) return null;
-    const token = c.req.query('token') || getCookie(c, 'claudeclaw_token');
-    if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
-      return c.json({ error: 'Unauthorized' }, 401) as Response;
-    }
+  function requireToken(_c: any): Response | null {
+    // Auth is enforced upstream by the global mc-access gate (app.use('*')); any
+    // request reaching a legacy handler has already passed it. No-op kept for the
+    // legacy call sites (legacy GET / under DASHBOARD_LEGACY, warroom HTML routes).
     return null;
   }
 
