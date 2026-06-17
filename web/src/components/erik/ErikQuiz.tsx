@@ -1,18 +1,32 @@
 // ErikQuiz — self-testing flashcards generated from the region↔muscle model.
-// Two question types (muscle→region, region→muscle); multiple choice with
-// instant feedback. Progress (answered / best streak) persists in localStorage.
-// Pure frontend, derived from regions.ts — no backend, no fetch.
-import { useMemo, useState } from 'preact/hooks';
+// Three question types: muscle→region & region→muscle (Recall), plus "Spot the
+// region" which now plays a real MOTION CLIP (5s of the technique, centered on the
+// teaching moment, with Erik's voice) instead of a single mis-timed still. Clips
+// come from the vision-curated quiz bank; if that route isn't live yet it falls
+// back to the old region-tagged stills so the quiz never breaks. Multiple choice
+// with instant feedback + an answer reveal (technique name + cue). Progress
+// (best streak) persists in localStorage.
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { apiGet } from '@/lib/api';
 import { ERIK_REGIONS, REGION_BY_KEY } from './regions';
 
 interface AnatomyMuscle { name: string; slug: string; }
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
+interface QuizBankItem {
+  clipUrl: string; stillUrl: string; videoId: string;
+  technique: string; region: string; caption: string;
+  difficulty: string; lesson: string; course: string;
+}
 
 const ACCENT = '#10b981';
 const LS_KEY = 'erik-quiz-progress';
 
-interface Q { prompt: string; answer: string; options: string[]; img?: string }
+interface Q {
+  prompt: string; answer: string; options: string[];
+  img?: string; clip?: string; poster?: string;
+  technique?: string; caption?: string; difficulty?: string;
+}
 
 function shuffle<T>(a: T[]): T[] {
   const r = [...a];
@@ -51,7 +65,24 @@ function buildBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
   return shuffle(bank);
 }
 
-// "Spot the region" — show a real region-tagged technique frame, guess the area.
+// "Spot the region" via MOTION CLIPS — preferred. Each curated clip shows the
+// hands-on technique in motion; guess the area, then the reveal names it.
+function buildClipBank(items: QuizBankItem[]): Q[] {
+  const labels = ERIK_REGIONS.map((r) => r.label);
+  const usable = items.filter((it) => it.region && REGION_BY_KEY[it.region]);
+  return shuffle(usable).map((it) => {
+    const label = REGION_BY_KEY[it.region].label;
+    const distractors = shuffle(labels.filter((l) => l !== label)).slice(0, 3);
+    return {
+      prompt: 'Which area is Erik working here?',
+      answer: label, options: shuffle([label, ...distractors]),
+      clip: it.clipUrl, poster: it.stillUrl,
+      technique: it.technique, caption: it.caption, difficulty: it.difficulty,
+    };
+  });
+}
+
+// Fallback: region-tagged stills (used only if the clip bank route isn't live).
 function buildFrameBank(itemId: string, videosMap: Record<string, VideoFrameData>): Q[] {
   const labels = ERIK_REGIONS.map((r) => r.label);
   const tagged: Array<{ src: string; label: string }> = [];
@@ -72,15 +103,30 @@ export function ErikQuiz({ anatomy, itemId, videosMap }: {
   itemId: string;
   videosMap: Record<string, VideoFrameData>;
 }) {
+  // Load the curated motion-clip bank once. Falls back silently to stills.
+  const [clipItems, setClipItems] = useState<QuizBankItem[]>([]);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ items?: QuizBankItem[] }>('/api/databases/kb/' + itemId + '/quiz-bank')
+      .then((r) => { if (live && Array.isArray(r.items)) setClipItems(r.items); })
+      .catch(() => { /* route not live yet → stills fallback */ });
+    return () => { live = false; };
+  }, [itemId]);
+
   const recallBank = useMemo(() => buildBank(anatomy), [anatomy]);
+  const clipBank = useMemo(() => buildClipBank(clipItems), [clipItems]);
   const frameBank = useMemo(() => buildFrameBank(itemId, videosMap), [itemId, videosMap]);
+  const spotBank = clipBank.length ? clipBank : frameBank;
+
   const initialMode = (() => { try { return new URLSearchParams(window.location.search).get('quizmode') === 'frames' ? 'frames' : 'recall'; } catch { return 'recall'; } })();
   const [mode, setMode] = useState<'recall' | 'frames'>(initialMode);
-  const bank = mode === 'frames' ? frameBank : recallBank;
+  const bank = mode === 'frames' ? spotBank : recallBank;
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [score, setScore] = useState(0);
   const [answered, setAnswered] = useState(0);
+  const [muted, setMuted] = useState(true);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const switchMode = (m: 'recall' | 'frames') => { setMode(m); setIdx(0); setPicked(null); };
 
   const saved = (() => { try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch { return {}; } })();
@@ -88,6 +134,9 @@ export function ErikQuiz({ anatomy, itemId, videosMap }: {
   const [streak, setStreak] = useState(0);
 
   const q = bank.length ? bank[idx % bank.length] : null;
+
+  // Keep the actual <video>.muted in sync with the toggle (Preact attr is unreliable).
+  useEffect(() => { if (videoRef.current) videoRef.current.muted = muted; }, [muted, idx, mode]);
 
   function pick(opt: string) {
     if (!q || picked) return;
@@ -111,11 +160,13 @@ export function ErikQuiz({ anatomy, itemId, videosMap }: {
         color: mode === m ? ACCENT : 'var(--color-text-muted)' }}>{label}</button>
   );
 
+  const diffColor = (d?: string) => d === 'hard' ? '#ef4444' : d === 'easy' ? ACCENT : '#f59e0b';
+
   return (
     <div style={{ maxWidth: '560px' }}>
       <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
         {tabBtn('recall', '🧠 Recall')}
-        {tabBtn('frames', '👁 Spot the region')}
+        {tabBtn('frames', clipBank.length ? '🎬 Spot the region' : '👁 Spot the region')}
       </div>
 
       {!q && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Loading quiz…</div>}
@@ -130,7 +181,18 @@ export function ErikQuiz({ anatomy, itemId, videosMap }: {
           </div>
 
           <div style={{ padding: '18px', border: '1px solid var(--color-border)', borderRadius: '12px', background: 'var(--color-card)' }}>
-            {q.img && (
+            {q.clip && (
+              <div style={{ position: 'relative', marginBottom: '14px' }}>
+                <video ref={videoRef} key={q.clip} src={q.clip} poster={q.poster}
+                  autoPlay loop muted playsInline controls
+                  style={{ width: '100%', maxHeight: '320px', borderRadius: '9px', display: 'block', background: '#000' }} />
+                <button type="button" onClick={() => setMuted((m) => !m)}
+                  style={{ position: 'absolute', top: '8px', right: '8px', padding: '4px 10px', borderRadius: '7px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', border: 'none', background: 'rgba(0,0,0,0.62)', color: '#fff' }}>
+                  {muted ? '🔇 Tap for Erik’s voice' : '🔊 Voice on'}
+                </button>
+              </div>
+            )}
+            {!q.clip && q.img && (
               <img src={q.img} alt="Erik technique frame" loading="lazy"
                 style={{ width: '100%', maxHeight: '300px', objectFit: 'cover', borderRadius: '9px', marginBottom: '14px', display: 'block', background: '#000' }} />
             )}
@@ -152,6 +214,17 @@ export function ErikQuiz({ anatomy, itemId, videosMap }: {
                 );
               })}
             </div>
+            {picked && (q.technique || q.caption) && (
+              <div style={{ marginTop: '14px', padding: '12px 14px', borderRadius: '9px', border: '1px solid ' + ACCENT + '55', background: ACCENT + '11' }}>
+                {q.technique && (
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: ACCENT, marginBottom: q.caption ? '4px' : 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {q.technique}
+                    {q.difficulty && <span style={{ fontSize: '10px', fontWeight: 700, color: diffColor(q.difficulty), border: '1px solid ' + diffColor(q.difficulty) + '88', borderRadius: '5px', padding: '1px 6px', textTransform: 'uppercase' }}>{q.difficulty}</span>}
+                  </div>
+                )}
+                {q.caption && <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>{q.caption}</div>}
+              </div>
+            )}
             {picked && (
               <button type="button" onClick={next}
                 style={{ marginTop: '16px', padding: '8px 18px', borderRadius: '8px', border: '1px solid ' + ACCENT, background: ACCENT + '22', color: ACCENT, cursor: 'pointer', fontSize: '14px', fontWeight: 600 }}>
@@ -160,7 +233,9 @@ export function ErikQuiz({ anatomy, itemId, videosMap }: {
             )}
           </div>
           <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '10px' }}>
-            {mode === 'frames' ? 'Identify the body area in real technique stills from Erik’s library.' : 'Recall practice from Erik’s region ↔ muscle map.'} Best streak saved on this device.
+            {mode === 'frames'
+              ? (clipBank.length ? 'Watch the technique in motion (tap for Erik’s voice), guess the area, then see what it is.' : 'Identify the body area in real technique stills from Erik’s library.')
+              : 'Recall practice from Erik’s region ↔ muscle map.'} Best streak saved on this device.
           </div>
         </>
       )}

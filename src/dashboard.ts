@@ -15,7 +15,7 @@ import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getEquity } from './equity.js';
 import { getTokenBurn } from './tokenburn.js';
-import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
+import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
@@ -5066,6 +5066,23 @@ init();
     if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
     const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
     return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  // Serve a curated quiz mini-clip (motion + Erik's voice): /api/databases/kb/:id/anatomy/clip/:file
+  app.get('/api/databases/kb/:id/anatomy/clip/:file', (c) => {
+    const res = kbAnatomyClip(c.req.param('id'), c.req.param('file'));
+    if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+    const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
+    return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  // Curated quiz bank (vision-filtered hands-on moments) with media URLs rewritten.
+  app.get('/api/databases/kb/:id/quiz-bank', (c) => {
+    try {
+      return c.json(kbQuizBank(c.req.param('id')));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
   });
 
   // Return the frames _index.json for a KB.

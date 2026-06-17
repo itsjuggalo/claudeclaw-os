@@ -733,6 +733,63 @@ export function kbVideoFrames(
   }
 }
 
+// Serve a curated quiz MINI-CLIP (5s motion + Erik's real voice) from
+// anatomy/quiz_clips/<file>.mp4. Same hardening as the frame/audio routes —
+// filename regex-gated + realpath-confirmed (no traversal), video-only.
+export function kbAnatomyClip(
+  id: string, file: string,
+): { data: Buffer; mime: string } | { error: string } {
+  const dir = getKbDir(id);
+  if (!dir) return { error: 'unknown kb' };
+  // file: "<videoId>-segNNN.mp4"
+  if (!/^[A-Za-z0-9._-]+\.mp4$/.test(file)) return { error: 'bad filename' };
+  const clipsDir = join(dir, 'anatomy', 'quiz_clips');
+  const full = join(clipsDir, file);
+  try {
+    if (!existsSync(full)) return { error: 'not found' };
+    if (!realpathSync(full).startsWith(realpathSync(clipsDir) + pathSep)) return { error: 'denied' };
+    return { data: readFileSync(full), mime: 'video/mp4' };
+  } catch (e) {
+    return { error: String((e as Error).message || e) };
+  }
+}
+
+// Curated quiz bank (vision-filtered hands-on technique moments). Each entry pairs
+// a motion clip with its CENTER still (clip and still now show the same instant).
+// Media paths are rewritten to the served API routes so the client stays dumb.
+export interface QuizBankItem {
+  clipUrl: string; stillUrl: string; videoId: string;
+  technique: string; region: string; caption: string;
+  difficulty: string; lesson: string; course: string;
+}
+export function kbQuizBank(id: string): { items: QuizBankItem[] } {
+  const dir = getKbDir(id);
+  if (!dir) return { items: [] };
+  const bankFile = join(dir, 'anatomy', 'quiz_bank.json');
+  if (!existsSync(bankFile)) return { items: [] };
+  try {
+    const raw = JSON.parse(readFileSync(bankFile, 'utf8')) as Array<Record<string, string>>;
+    const items: QuizBankItem[] = [];
+    for (const e of raw) {
+      const clipFile = (e.clip || '').split('/').pop() || '';
+      const stillFile = (e.still || '').split('/').pop() || '';
+      const videoId = (e.still || '').split('/').slice(-2, -1)[0] || '';
+      if (!clipFile || !stillFile || !videoId) continue;
+      items.push({
+        clipUrl: `/api/databases/kb/${id}/anatomy/clip/${clipFile}`,
+        stillUrl: `/api/databases/kb/${id}/anatomy/frames/${videoId}/${stillFile}`,
+        videoId,
+        technique: e.technique || '', region: e.region || '',
+        caption: e.caption || '', difficulty: e.difficulty || 'medium',
+        lesson: e.lesson || '', course: e.course || '',
+      });
+    }
+    return { items };
+  } catch {
+    return { items: [] };
+  }
+}
+
 // ── SQL meta / select ────────────────────────────────────────────────
 export interface SqlMeta {
   size: string;

@@ -3,9 +3,11 @@
 // moment. Turns the 2,107 recovered frames into step-by-step visual lessons.
 // All data comes from the already-loaded frames map (no extra fetch).
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { apiGet } from '@/lib/api';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
+interface QuizBankItem { clipUrl: string; videoId: string; technique: string; caption: string; }
 
 const ACCENT = '#10b981';
 const STUDIED_KEY = 'erik-studied-techniques';
@@ -33,6 +35,31 @@ function StepAudio({ src }: { src: string }) {
   );
 }
 
+// Plays the curated MOTION CLIP for this technique (5s, centered on the teaching
+// moment, with Erik's voice) — muted autoplay with a one-tap unmute. Hides itself
+// if the clip route isn't live yet, so the player degrades gracefully.
+function TechClip({ src, caption }: { src: string; caption?: string }) {
+  const ref = useRef<HTMLVideoElement | null>(null);
+  const [muted, setMuted] = useState(true);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { if (ref.current) ref.current.muted = muted; }, [muted]);
+  if (failed) return null;
+  return (
+    <div style={{ marginBottom: '14px' }}>
+      <div style={{ fontSize: '11px', color: ACCENT, fontWeight: 700, marginBottom: '4px' }}>🎬 Technique in motion</div>
+      <div style={{ position: 'relative', maxWidth: '640px' }}>
+        <video ref={ref} src={src} autoPlay loop muted playsInline controls onError={() => setFailed(true)}
+          style={{ width: '100%', borderRadius: '10px', display: 'block', background: '#000' }} />
+        <button type="button" onClick={() => setMuted((m) => !m)}
+          style={{ position: 'absolute', top: '8px', right: '8px', padding: '4px 10px', borderRadius: '7px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', border: 'none', background: 'rgba(0,0,0,0.62)', color: '#fff' }}>
+          {muted ? '🔇 Tap for Erik’s voice' : '🔊 Voice on'}
+        </button>
+      </div>
+      {caption && <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '6px', lineHeight: 1.5 }}>{caption}</div>}
+    </div>
+  );
+}
+
 export function TechniquePlayer({ itemId, videosMap }: {
   itemId: string;
   videosMap: Record<string, VideoFrameData>;
@@ -49,6 +76,21 @@ export function TechniquePlayer({ itemId, videosMap }: {
     saveStudied(next);
     return next;
   });
+
+  // Curated motion clips, indexed by video id (one key teaching moment per technique).
+  const [clipByVideo, setClipByVideo] = useState<Record<string, QuizBankItem>>({});
+  useEffect(() => {
+    let live = true;
+    apiGet<{ items?: QuizBankItem[] }>('/api/databases/kb/' + itemId + '/quiz-bank')
+      .then((r) => {
+        if (!live || !Array.isArray(r.items)) return;
+        const m: Record<string, QuizBankItem> = {};
+        for (const it of r.items) if (it.videoId && !m[it.videoId]) m[it.videoId] = it;
+        setClipByVideo(m);
+      })
+      .catch(() => { /* clips route not live yet → frames-only */ });
+    return () => { live = false; };
+  }, [itemId]);
 
   // Deep-link: ?technique=<id>[&reading=1] opens a specific technique directly
   // (shareable). Applies once, after the frames map has loaded.
@@ -117,6 +159,10 @@ export function TechniquePlayer({ itemId, videosMap }: {
           style={{ marginLeft: '8px', marginBottom: '14px', padding: '5px 12px', borderRadius: '7px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)' }}>
           {reading ? '▶ Step view' : '📖 Read full lesson'}
         </button>
+
+        {clipByVideo[video.id] && (
+          <TechClip src={clipByVideo[video.id].clipUrl} caption={clipByVideo[video.id].caption} />
+        )}
 
         {reading && (
           <div style={{ maxWidth: '680px' }}>
