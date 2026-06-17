@@ -629,7 +629,9 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
     if (!kind && password) {
       const master = readMasterPassword();
-      if (master && safeStrEqual(password, master)) kind = 'master';
+      // Master password is case-INSENSITIVE by design (Mike's call). Guest tokens
+      // above stay exact (HMAC). Lowercasing preserves length for the timing-safe cmp.
+      if (master && safeStrEqual(password.toLowerCase(), master.toLowerCase())) kind = 'master';
     }
 
     if (!kind) {

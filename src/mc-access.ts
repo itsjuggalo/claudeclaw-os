@@ -51,14 +51,17 @@ function utf8(s: string): Uint8Array {
 }
 
 async function hmac(secret: string, msg: string): Promise<Uint8Array> {
+  // Cast to ArrayBuffer: at runtime Web Crypto accepts any BufferSource (Uint8Array
+  // included), but TS lib.dom's generic Uint8Array<ArrayBufferLike> doesn't satisfy
+  // the BufferSource overload across all three apps' tsconfigs — the cast is sound.
   const key = await crypto.subtle.importKey(
     'raw',
-    utf8(secret),
+    utf8(secret) as unknown as ArrayBuffer,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
-  const sig = await crypto.subtle.sign('HMAC', key, utf8(msg));
+  const sig = await crypto.subtle.sign('HMAC', key, utf8(msg) as unknown as ArrayBuffer);
   return new Uint8Array(sig);
 }
 
