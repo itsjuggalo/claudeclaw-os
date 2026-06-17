@@ -8,14 +8,16 @@
 // so the two stay in lockstep.
 //
 // Engine = the proven Three.js + OrbitControls + raycaster stack from
-// BrainGraph3D, minus the bloom (a clean anatomical mannequin, not a glowing
-// brain). The geometry is procedural so it needs NO external asset — fully
-// offline, instant, tiny, and immune to the box's RAM/disk limits.
+// BrainGraph3D, minus the bloom.
 //
-// Upgrade path: if a real segmented atlas is ever dropped at
-// web/public/anatomy.glb (each bone/muscle a separately-named mesh), this
-// component HEAD-checks for it on mount and, when present, loads it and maps
-// mesh names → regions via meshRegion(); otherwise it builds the mannequin.
+// TWO render paths:
+//   1. REAL ATLAS — if a segmented anatomy.glb is present at web/public/, load
+//      it, classify each mesh as bone / muscle by name, give it a tissue
+//      material (ivory bone, deep-red muscle), and expose Bone/Muscle LAYER
+//      toggles so you can peel muscle off to see the skeleton. Mesh names also
+//      map → our 15 regions for click-to-learn + highlight.
+//   2. PROCEDURAL MANNEQUIN — fallback when no atlas: a clean clickable body
+//      built from primitives. Offline, instant, tiny — never a broken viewer.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -26,11 +28,14 @@ import { ERIK_REGIONS, REGION_BY_KEY } from './regions';
 
 const ACCENT = '#10b981';
 const ANATOMY_GLB_URL = '/anatomy.glb';
+// On-screen credit for the loaded atlas (CC/public-domain attribution). Filled
+// from anatomy.glb.LICENSE.txt at build time; shown only if non-empty.
+const ANATOMY_CREDIT = '3D atlas: BodyParts3D / Z-Anatomy · CC BY-SA';
 
 // ── Region → mesh helpers ──────────────────────────────────────────
-// Map a loaded GLB mesh name (if we ever ship a real atlas) to one of our
-// 15 region keys. Tolerant substring match against the region key + label
-// words + the region's muscle slugs.
+// Map a loaded GLB mesh name to one of our 15 region keys. Tolerant substring
+// match against the region key + label words + the region's muscle slugs. We
+// pass the mesh's full ancestor name-path so group-level naming still resolves.
 function meshRegion(rawName: string): string | null {
   const n = rawName.toLowerCase().replace(/[_\-.]/g, ' ');
   for (const r of ERIK_REGIONS) {
@@ -44,18 +49,48 @@ function meshRegion(rawName: string): string | null {
   return null;
 }
 
-// ── Procedural mannequin ───────────────────────────────────────────
-const BODY_TONE = new THREE.Color('#bd6a60');     // muscle tone
+// Classify a mesh (by its full ancestor name-path) as bone, muscle, or other.
+// Tuned for BodyParts3D / Z-Anatomy / NIH-3D naming (latin anatomical names +
+// "skeletal system" / "muscular system" group nodes).
+function classifyTissue(path: string): 'bone' | 'muscle' | 'other' {
+  const n = path.toLowerCase();
+  if (/(bone|skelet|osseous|\boss\b|vertebra|spine|spinal column|rib\b|costa|sternum|clavicle|scapula|humerus|radius|ulna|carpal|metacarp|phalan|femur|tibia|fibula|patella|pelvis|pelvic|ilium|ischium|pubis|sacrum|coccyx|skull|crani|mandible|maxilla|hyoid|tarsal|calcaneus|talus)/.test(n)) return 'bone';
+  if (/(muscle|muscul|tendon|deltoid|pectoral|trapez|latissimus|rhomboid|erector|oblique|rectus|glute|biceps|triceps|brachi|quadricep|hamstring|gastrocn|soleus|sartorius|gracilis|adductor|psoas|iliacus|teres|infraspinatus|supraspinatus|subscapular|sternocleidomastoid|scalene|splenius|masseter|temporalis|piriformis|tensor|flexor|extensor|pronator|supinator|levator|serratus|quadratus|semitendinosus|semimembranosus|vastus|gemellus|obturator|diaphragm)/.test(n)) return 'muscle';
+  return 'other';
+}
+
+// Full lowercased name-path: the mesh's own name plus a few ancestors, so a
+// mesh named "L_femur" inside a "Skeletal system" node still classifies right.
+function namePath(o: THREE.Object3D): string {
+  const parts: string[] = [];
+  let cur: THREE.Object3D | null = o;
+  let depth = 0;
+  while (cur && depth < 6) { if (cur.name) parts.push(cur.name); cur = cur.parent; depth++; }
+  return parts.join(' ');
+}
+
+// ── Tissue + mannequin materials ───────────────────────────────────
+const BODY_TONE = new THREE.Color('#bd6a60');   // procedural skin/muscle tone
+const BONE_TONE = new THREE.Color('#e9e2cf');   // ivory bone
+const MUSCLE_TONE = new THREE.Color('#b23b3b'); // deep red muscle
 const EMISSIVE_HI = new THREE.Color(ACCENT);
 
-function bodyMat(): THREE.MeshStandardMaterial {
+function tissueColor(t: 'bone' | 'muscle' | 'other'): THREE.Color {
+  return t === 'bone' ? BONE_TONE.clone() : t === 'muscle' ? MUSCLE_TONE.clone() : BODY_TONE.clone();
+}
+
+function tissueMat(t: 'bone' | 'muscle' | 'other'): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
-    color: BODY_TONE.clone(),
-    roughness: 0.74,
-    metalness: 0.0,
+    color: tissueColor(t),
+    roughness: t === 'bone' ? 0.55 : 0.8,
+    metalness: 0,
     emissive: new THREE.Color('#000000'),
     emissiveIntensity: 0,
   });
+}
+
+function bodyMat(): THREE.MeshStandardMaterial {
+  return tissueMat('other');
 }
 
 // A capsule spanning two joint centers, tagged with a region.
@@ -147,6 +182,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
   const stateRef = useRef<{
     meshesByRegion: Map<string, THREE.Mesh[]>;
     applyHighlight: () => void;
+    setLayerVisible: (bones: boolean, muscles: boolean) => void;
     resetView: () => void;
     cleanup: () => void;
   } | null>(null);
@@ -154,6 +190,11 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [mouse, setMouse] = useState<{ x: number; y: number } | null>(null);
   const [failed, setFailed] = useState(false);
+  // Layer toggles (real atlas only). hasBone/hasMuscle gate which pills show.
+  const [hasBone, setHasBone] = useState(false);
+  const [hasMuscle, setHasMuscle] = useState(false);
+  const [showBones, setShowBones] = useState(true);
+  const [showMuscles, setShowMuscles] = useState(true);
 
   // Refs so the once-only init effect's event handlers read latest values.
   const selectedRef = useRef<string | null>(selected);
@@ -189,11 +230,11 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     // and head both clear of the frame). Slight 3/4 offset reads as a pose.
     camera.position.set(0.35, 0.15, 4.4);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
     // Hemisphere light = soft, rounded tissue-like shading (cool sky / warm
     // ground bounce) so the figure reads as a body, not flat clay.
-    scene.add(new THREE.HemisphereLight(0xdfeaff, 0x3a221f, 0.55));
-    const key = new THREE.DirectionalLight(0xffffff, 0.6);
+    scene.add(new THREE.HemisphereLight(0xdfeaff, 0x3a221f, 0.6));
+    const key = new THREE.DirectionalLight(0xffffff, 0.65);
     key.position.set(2, 3, 4);
     scene.add(key);
     const rim = new THREE.DirectionalLight(0xbfe9d8, 0.3);
@@ -204,11 +245,20 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     scene.add(figure);
 
     const meshesByRegion = new Map<string, THREE.Mesh[]>();
+    const meshesByTissue = new Map<'bone' | 'muscle' | 'other', THREE.Mesh[]>();
+    const pushTo = <K,>(map: Map<K, THREE.Mesh[]>, k: K, m: THREE.Mesh) => {
+      (map.get(k) ?? map.set(k, []).get(k)!).push(m);
+    };
     const indexMeshes = (meshes: THREE.Mesh[]) => {
       for (const m of meshes) {
+        // Remember each mesh's own base color so highlight lerps from IT (not a
+        // single shared tone) — keeps bone ivory + muscle red distinct.
+        const mat = m.material as THREE.MeshStandardMaterial;
+        if (!m.userData.baseColor && mat?.color) m.userData.baseColor = mat.color.clone();
         const r = m.userData.region as string | undefined;
-        if (!r) continue;
-        (meshesByRegion.get(r) ?? meshesByRegion.set(r, []).get(r)!).push(m);
+        if (r) pushTo(meshesByRegion, r, m);
+        const t = (m.userData.tissue as 'bone' | 'muscle' | 'other') || 'other';
+        pushTo(meshesByTissue, t, m);
       }
     };
 
@@ -238,7 +288,8 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       lastInteract = Date.now();
     };
 
-    // Highlight: emerald emissive on hovered/selected region meshes.
+    // Highlight: emerald emissive on hovered/selected region meshes, lerped
+    // from each mesh's own base tissue color.
     const applyHighlight = () => {
       const sel = selectedRef.current;
       const hov = hoveredRef.current;
@@ -248,13 +299,19 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
         const intensity = isSel ? 0.9 : isHov ? 0.5 : 0;
         for (const m of meshes) {
           const mat = m.material as THREE.MeshStandardMaterial;
+          const base = (m.userData.baseColor as THREE.Color) || BODY_TONE;
           mat.emissive.copy(EMISSIVE_HI);
           mat.emissiveIntensity = intensity;
-          // selected also tints the base color toward emerald so it's
-          // identifiable even on the far side while rotating.
-          mat.color.copy(BODY_TONE).lerp(EMISSIVE_HI, isSel ? 0.4 : 0);
+          // selected also tints the base toward emerald so it's identifiable
+          // even on the far side while rotating.
+          mat.color.copy(base).lerp(EMISSIVE_HI, isSel ? 0.4 : 0);
         }
       });
+    };
+
+    const setLayerVisible = (bones: boolean, muscles: boolean) => {
+      (meshesByTissue.get('bone') || []).forEach((m) => { m.visible = bones; });
+      (meshesByTissue.get('muscle') || []).forEach((m) => { m.visible = muscles; });
     };
 
     const pickRegion = (ev: PointerEvent): string | null => {
@@ -264,6 +321,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       raycaster.setFromCamera(pointer, camera);
       const hits = raycaster.intersectObjects(figure.children, true);
       for (const hit of hits) {
+        if (hit.object.visible === false) continue;
         const r = hit.object.userData.region as string | undefined;
         if (r) return r;
       }
@@ -315,6 +373,10 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     const finish = (meshes: THREE.Mesh[]) => {
       if (disposed) return;
       indexMeshes(meshes);
+      const nBone = (meshesByTissue.get('bone') || []).length;
+      const nMuscle = (meshesByTissue.get('muscle') || []).length;
+      if (nBone > 0) setHasBone(true);
+      if (nMuscle > 0) setHasMuscle(true);
       applyHighlight();
     };
 
@@ -346,10 +408,15 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
             const tagged: THREE.Mesh[] = [];
             gltf.scene.traverse((o) => {
               if (!(o instanceof THREE.Mesh)) return;
-              const r = meshRegion(o.name);
-              if (r) { o.userData.region = r; o.material = bodyMat(); tagged.push(o); }
+              const path = namePath(o);
+              const tissue = classifyTissue(path);
+              o.userData.tissue = tissue;
+              o.material = tissueMat(tissue);  // clean teaching tissue color
+              const r = meshRegion(path);
+              if (r) o.userData.region = r;
+              tagged.push(o);
             });
-            if (tagged.length === 0) { buildProcedural(); return; } // unnamed → mannequin
+            if (tagged.length === 0) { buildProcedural(); return; } // empty → mannequin
             figure.add(gltf.scene);
             finish(tagged);
           },
@@ -364,6 +431,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     stateRef.current = {
       meshesByRegion,
       applyHighlight,
+      setLayerVisible,
       resetView,
       cleanup: () => {
         disposed = true;
@@ -392,11 +460,26 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     stateRef.current?.applyHighlight();
   }, [selected]);
 
+  // Apply layer visibility when the toggles change.
+  useEffect(() => {
+    stateRef.current?.setLayerVisible(showBones, showMuscles);
+  }, [showBones, showMuscles, hasBone, hasMuscle]);
+
   const label = (hovered && REGION_BY_KEY[hovered]?.label)
     || (selected && REGION_BY_KEY[selected]?.label)
     || null;
 
   if (failed) return null; // ExploreTab's 2D body map remains the fallback
+
+  const layerBtn = (on: boolean, set: (v: boolean) => void, icon: string, text: string, tone: string) => (
+    <button type="button" onClick={() => set(!on)}
+      style={{ padding: '4px 10px', borderRadius: '7px', fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+        border: '1px solid ' + (on ? tone : 'var(--color-border)'),
+        background: on ? tone + '22' : 'var(--color-bg)',
+        color: on ? tone : 'var(--color-text-faint)' }}>
+      {icon} {text} {on ? '' : '·off'}
+    </button>
+  );
 
   return (
     <div style={{ position: 'relative' }}>
@@ -413,12 +496,25 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       <div style={{ position: 'absolute', top: '10px', left: '12px', fontSize: '11px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
         Drag to rotate · scroll to zoom · click a region to learn it
       </div>
+      {/* layer toggles (real atlas only) */}
+      {(hasBone || hasMuscle) && (
+        <div style={{ position: 'absolute', top: '34px', left: '12px', display: 'flex', gap: '6px' }}>
+          {hasMuscle && layerBtn(showMuscles, setShowMuscles, '💪', 'Muscle', '#b23b3b')}
+          {hasBone && layerBtn(showBones, setShowBones, '🦴', 'Bone', '#c9b98a')}
+        </div>
+      )}
       {/* reset view */}
       <button type="button" onClick={() => stateRef.current?.resetView()}
         title="Reset camera"
         style={{ position: 'absolute', bottom: '10px', right: '12px', fontSize: '11px', fontWeight: 600, color: 'var(--color-text-muted)', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '7px', padding: '4px 10px', cursor: 'pointer' }}>
         ⟲ Reset view
       </button>
+      {/* attribution credit (only when a real atlas is loaded) */}
+      {(hasBone || hasMuscle) && ANATOMY_CREDIT && (
+        <div style={{ position: 'absolute', bottom: '10px', left: '12px', fontSize: '9px', color: 'var(--color-text-faint)', pointerEvents: 'none', maxWidth: '60%' }}>
+          {ANATOMY_CREDIT}
+        </div>
+      )}
       {/* current region badge (top-right) */}
       {(selected && REGION_BY_KEY[selected]) && (
         <div style={{ position: 'absolute', top: '10px', right: '12px', fontSize: '12px', fontWeight: 700, color: ACCENT, background: 'var(--color-bg)', border: '1px solid ' + ACCENT, borderRadius: '999px', padding: '3px 12px', pointerEvents: 'none' }}>
