@@ -5,13 +5,16 @@
 // Mirror of erik/ErikQuiz.tsx (amber ClayTrader accent).
 import { useMemo, useState } from 'preact/hooks';
 
-interface FrameEntry { seg: number; t?: number; file: string; text?: string; topic?: string; }
+interface FrameEntry {
+  seg: number; t?: number; file: string; text?: string; topic?: string;
+  keep?: boolean; concept?: string; caption?: string; difficulty?: string;
+}
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
 
 const ACCENT = '#f59e0b';
 const LS_KEY = 'clay-quiz-progress';
 
-interface Q { prompt: string; answer: string; options: string[]; img?: string }
+interface Q { prompt: string; answer: string; options: string[]; img?: string; caption?: string }
 
 function shuffle<T>(a: T[]): T[] {
   const r = [...a];
@@ -22,22 +25,32 @@ function shuffle<T>(a: T[]): T[] {
   return r;
 }
 
-// Build "which setup/concept" cards from topic-tagged chart frames.
+// Build "which setup/concept" cards from the vision-curated chart frames. Prefers the
+// kept frames (precise `concept` answer + teaching `caption`); falls back to the coarse
+// `topic` label only if a KB has no kept frames yet.
 function buildFrameBank(itemId: string, videosMap: Record<string, VideoFrameData>): Q[] {
-  const tagged: Array<{ src: string; topic: string }> = [];
-  const topics = new Set<string>();
-  for (const [vid, vd] of Object.entries(videosMap)) {
+  const all = Object.entries(videosMap);
+  const anyKeep = all.some(([, vd]) => vd.frames.some((f) => f.keep));
+  const tagged: Array<{ src: string; label: string; caption: string }> = [];
+  const labels = new Set<string>();
+  for (const [vid, vd] of all) {
     for (const f of vd.frames) {
-      if (!f.topic) continue;
-      topics.add(f.topic);
-      tagged.push({ src: '/api/databases/kb/' + itemId + '/anatomy/frames/' + vid + '/' + (f.file.split('/').pop() || f.file), topic: f.topic });
+      const ok = anyKeep ? f.keep : !!f.topic;
+      if (!ok) continue;
+      const label = (anyKeep ? f.concept : f.topic) || f.topic || '';
+      if (!label) continue;
+      labels.add(label);
+      tagged.push({
+        src: '/api/databases/kb/' + itemId + '/anatomy/frames/' + vid + '/' + (f.file.split('/').pop() || f.file),
+        label, caption: f.caption || '',
+      });
     }
   }
-  const allTopics = [...topics];
-  if (allTopics.length < 3) return [];
+  const allLabels = [...labels];
+  if (allLabels.length < 3) return [];
   return shuffle(tagged).slice(0, 60).map((t) => {
-    const distractors = shuffle(allTopics.filter((l) => l !== t.topic)).slice(0, 3);
-    return { prompt: 'Which ClayTrader concept/setup is this chart showing?', answer: t.topic, options: shuffle([t.topic, ...distractors]), img: t.src };
+    const distractors = shuffle(allLabels.filter((l) => l !== t.label)).slice(0, 3);
+    return { prompt: 'Which ClayTrader concept/setup is this chart showing?', answer: t.label, options: shuffle([t.label, ...distractors]), img: t.src, caption: t.caption };
   });
 }
 
@@ -111,6 +124,11 @@ export function ClayQuiz({ itemId, videosMap }: {
                 );
               })}
             </div>
+            {picked && q.caption && (
+              <div style={{ marginTop: '14px', padding: '10px 12px', borderRadius: '8px', background: 'var(--color-bg-subtle, rgba(255,255,255,.03))', border: '1px solid var(--color-border)', fontSize: '13px', lineHeight: 1.5, color: 'var(--color-text-muted)' }}>
+                <b style={{ color: ACCENT }}>{q.answer}</b> — {q.caption}
+              </div>
+            )}
             {picked && (
               <button type="button" onClick={next}
                 style={{ marginTop: '16px', padding: '8px 18px', borderRadius: '8px', border: '1px solid ' + ACCENT, background: ACCENT + '22', color: ACCENT, cursor: 'pointer', fontSize: '14px', fontWeight: 600 }}>
