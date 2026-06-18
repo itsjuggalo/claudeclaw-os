@@ -58,6 +58,22 @@ export function Sidebar() {
         <X size={16} />
       </button>
 
+      {/* Flag a UI issue — opens the markup overlay (draw on the problem + note). */}
+      <button
+        type="button"
+        onClick={() => {
+          const w = window as unknown as { __annotateOverlay?: { toggle: () => void } };
+          if (w.__annotateOverlay) w.__annotateOverlay.toggle();
+          else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true }));
+          closeSidebar();
+        }}
+        title="Flag a UI issue — draw on the problem + add a note"
+        class="mx-3 mt-1 mb-1 flex items-center gap-2 px-3 py-2 rounded-md text-[13px] font-semibold border border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-soft)] hover:opacity-90 transition-colors"
+      >
+        <span class="text-[15px] leading-none">🖍</span>
+        <span>Flag Issue</span>
+      </button>
+
       <div class="mx-3 mt-1 mb-2 flex items-center gap-1.5">
         <button
           type="button"
