@@ -140,7 +140,7 @@ async function buildWallets(): Promise<Wallet[]> {
           cash: 0,
           buying_power: 0,
           status: 'live',
-          positions: (rhData.crypto || []).map((c: any) => ({ symbol: c.symbol, quantity: c.quantity, price: c.price, equity: c.equity, type: 'crypto' })),
+          positions: (rhData.crypto || []).map((c: any) => ({ symbol: c.symbol, quantity: c.quantity, avg_cost: c.avg_cost, price: c.price, equity: c.equity, type: 'crypto' })),
           notes: `${(rhData.crypto || []).filter((c: any) => c.equity > 0.5).length} assets`,
         });
       }

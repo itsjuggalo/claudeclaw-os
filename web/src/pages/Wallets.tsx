@@ -194,16 +194,20 @@ function nextMoves(book: any, target: Record<string, number>) {
   });
   const losers = book.positions.filter((p: any) => p.cls === 'stock' && p.upl != null && p.upl <= -1).sort((a: any, b: any) => a.upl - b.upl);
   const tlhTotal = losers.reduce((s: number, p: any) => s + p.upl, 0);
+  // Crypto losers WITH basis (FIFO-derived) — no wash-sale, harvest+rebuy free.
+  const cryptoLosers = book.positions.filter((p: any) => p.cls === 'crypto' && p.upl != null && p.upl <= -1).sort((a: any, b: any) => a.upl - b.upl);
+  const cryptoTlh = cryptoLosers.reduce((s: number, p: any) => s + p.upl, 0);
   const cryptoNoBasis = book.positions.filter((p: any) => p.cls === 'crypto' && p.avg <= 0 && p.equity >= DUST_USD);
   const dust = book.positions.filter((p: any) => p.equity > 0 && p.equity < DUST_USD);
   const conc = book.positions.filter((p: any) => (p.equity / total) * 100 >= CONC_CAP);
-  return { drift, losers, tlhTotal, cryptoNoBasis, dust, conc };
+  return { drift, losers, tlhTotal, cryptoLosers, cryptoTlh, cryptoNoBasis, dust, conc };
 }
 
 // ──────────────────────────────── page ──────────────────────────────────────
 export function Wallets() {
   const real = useFetch<any[]>('/api/wallets', 60_000);
   const paper = useFetch<any>('/api/equity', 120_000);
+  const hist = useFetch<any>('/api/trade-history', 600_000);
   const [target, setTarget] = useState<Record<string, number>>(() => {
     try { const r = localStorage.getItem('ccw:target-alloc'); if (r) return JSON.parse(r); } catch { /* */ }
     return { ...DEFAULT_TARGET };
@@ -256,6 +260,8 @@ export function Wallets() {
 
           <RealSection book={book} moves={moves} target={target} setTarget={setTarget}
             liveWallets={liveWallets} collapsed={collapsed} setCollapsed={setCollapsed} expanded={expanded} setExpanded={setExpanded} />
+
+          <TradeHistorySection data={hist.data && !hist.data.error ? hist.data : null} loading={hist.loading} />
 
           <PaperSection data={paperData} loading={paper.loading} total={paperTotal} />
 
@@ -360,10 +366,11 @@ function NextMovesCard({ book, moves, target, setTarget }: any) {
         <div style={{ borderTop: '1px solid #1a2332', paddingTop: '9px' }}>
           <div style={{ fontSize: '9px', color: MUTED, letterSpacing: '1.5px', marginBottom: '5px' }}>HARVEST LOSSES (TLH)</div>
           <div style={{ fontSize: '12px', color: TEXT, marginBottom: '5px' }}>
-            <span style={{ color: RED, fontWeight: 800 }}>${fmt0(Math.abs(moves.tlhTotal))}</span> harvestable
-            <span style={{ color: MUTED }}> · ≈ ${fmt0(Math.abs(moves.tlhTotal) * 0.24)} shield @24%</span>
+            <span style={{ color: RED, fontWeight: 800 }}>${fmt0(Math.abs(moves.tlhTotal + moves.cryptoTlh))}</span> harvestable
+            <span style={{ color: MUTED }}> · ≈ ${fmt0(Math.abs(moves.tlhTotal + moves.cryptoTlh) * 0.24)} shield @24%</span>
           </div>
-          {moves.losers.slice(0, 4).map((p: any) => (
+          {moves.tlhTotal < 0 && <div style={{ fontSize: '9px', color: MUTED, marginBottom: '2px' }}>stocks ${fmt0(Math.abs(moves.tlhTotal))} (wash-sale) · crypto ${fmt0(Math.abs(moves.cryptoTlh))} (rebuy free)</div>}
+          {moves.losers.slice(0, 3).map((p: any) => (
             <div key={p.symbol} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginBottom: '2px' }}>
               <span style={{ color: TEXT, width: '54px' }}>{p.symbol}</span>
               <span style={{ color: RED, width: '60px', textAlign: 'right' }}>${fmt0(p.upl)}</span>
@@ -372,9 +379,16 @@ function NextMovesCard({ book, moves, target, setTarget }: any) {
               </span>
             </div>
           ))}
+          {moves.cryptoLosers.slice(0, 3).map((p: any) => (
+            <div key={p.symbol + p.broker} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginBottom: '2px' }}>
+              <span style={{ color: PURPLE, width: '54px' }}>{p.symbol}</span>
+              <span style={{ color: RED, width: '60px', textAlign: 'right' }}>${fmt0(p.upl)}</span>
+              <span style={{ color: GREEN, flex: 1, textAlign: 'right', marginLeft: '8px' }}>harvest + rebuy</span>
+            </div>
+          ))}
           {moves.cryptoNoBasis.length > 0 && (
             <div style={{ fontSize: '9px', color: MUTED, marginTop: '4px' }}>
-              {moves.cryptoNoBasis.length} crypto need basis (Coinbase CSV) · no wash-sale on crypto
+              {moves.cryptoNoBasis.length} crypto still need basis (Coinbase) · no wash-sale on crypto
             </div>
           )}
         </div>
@@ -482,6 +496,96 @@ function PaperAccount({ a }: { a: any }) {
         )}
       </div>
     </Card>
+  );
+}
+
+// ─────────────────── TRADE HISTORY & WHAT-IF (RH crypto) ─────────────────────
+function TradeHistorySection({ data, loading }: { data: any; loading: boolean }) {
+  if (loading && !data) {
+    return <div class="animate-pulse" style={{ height: '140px', background: '#0d1420', border: '1px solid #1a2332', borderRadius: '8px' }} />;
+  }
+  if (!data) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <SectionBanner label="📜 TRADE HISTORY & WHAT-IF" accent={PURPLE} glow={false} total={0} sub="RH-crypto buy/sell ledger + never-sold counterfactual" />
+        <div style={{ padding: '18px', textAlign: 'center', color: MUTED, fontSize: '11px', fontFamily: MONO, border: '1px dashed #1a2332', borderRadius: '8px' }}>
+          Endpoint not live yet — needs <span style={{ color: AMBER }}>pm2 restart claudeclaw</span> to activate <code>/api/trade-history</code>. (Charts above work without it.)
+        </div>
+      </div>
+    );
+  }
+  const t = data.tot || {};
+  const sd = data.sell_delta_total || 0;
+  const saved = sd <= 0;               // sd<0 → coins fell after you sold = selling saved you
+  const sellRows = (data.rows || []).filter((r: any) => r.n_sell > 0).slice(0, 7);
+  const maxDelta = Math.max(...sellRows.map((r: any) => Math.abs(r.sell_delta)), 1);
+  const recent = data.recent || [];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <SectionBanner label="📜 TRADE HISTORY & WHAT-IF" accent={PURPLE} glow={false} total={t.current || 0}
+        sub={`RH crypto · ${data.n_orders} fills · deployed $${fmt0(t.deployed || 0)} / withdrawn $${fmt0(t.withdrawn || 0)} / realized ${sgn(t.realized || 0)}$${fmt0(Math.abs(t.realized || 0))}`} />
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Card title="💎 IF YOU NEVER SOLD" accent={saved ? GREEN : AMBER}>
+          <div style={{ fontFamily: MONO }}>
+            <div style={{ fontSize: '13px', color: TEXT, marginBottom: '6px' }}>
+              Selling {saved ? 'SAVED' : 'COST'} you{' '}
+              <span style={{ color: saved ? GREEN : RED, fontWeight: 800, fontSize: '20px' }}>${fmt0(Math.abs(sd))}</span>
+            </div>
+            <div style={{ fontSize: '10px', color: MUTED, lineHeight: 1.6 }}>
+              Coins you sold are worth <b style={{ color: TEXT }}>${fmt0(t.sold_now || 0)}</b> today; you sold them for <b style={{ color: TEXT }}>${fmt0(t.withdrawn || 0)}</b>.<br />
+              Held EVERY buy (never sold): ≈ <b style={{ color: TEXT }}>${fmt0(t.never_sold || 0)}</b> vs <b style={{ color: TEXT }}>${fmt0(t.current || 0)}</b> actually held.
+            </div>
+            <div style={{ fontSize: '9px', color: MUTED, marginTop: '6px', fontStyle: 'italic' }}>Assumes no transfers off RH. RH crypto only.</div>
+          </div>
+        </Card>
+
+        <Card title="SELLING IMPACT BY COIN" accent={PURPLE}>
+          <BarRow max={maxDelta} items={sellRows.map((r: any) => ({
+            label: r.symbol, value: Math.abs(r.sell_delta),
+            color: r.sell_delta <= 0 ? GREEN : RED,
+            sub: `${r.sell_delta <= 0 ? '+' : '-'}$${fmt0(Math.abs(r.sell_delta))}`,
+          }))} />
+          <div style={{ fontSize: '9px', color: MUTED, marginTop: '8px', fontFamily: MONO }}>green = selling helped · red = sold too early</div>
+        </Card>
+
+        <Card title="📈 FORWARD PROJECTION" accent={BLUE}
+          right={<span style={{ fontSize: '9px', color: MUTED, fontFamily: MONO }}>assumption</span>}>
+          <div style={{ fontFamily: MONO, fontSize: '10px' }}>
+            <div style={{ display: 'flex', color: MUTED, marginBottom: '4px' }}>
+              <span style={{ width: '42px' }}>rate</span><span style={{ flex: 1, textAlign: 'right' }}>1yr</span>
+              <span style={{ flex: 1, textAlign: 'right' }}>3yr</span><span style={{ flex: 1, textAlign: 'right' }}>5yr</span>
+              <span style={{ flex: 1, textAlign: 'right' }}>10yr</span>
+            </div>
+            {(data.projection || []).map((p: any) => (
+              <div key={p.rate} style={{ display: 'flex', color: TEXT, marginBottom: '3px' }}>
+                <span style={{ width: '42px', color: BLUE }}>{(p.rate * 100).toFixed(0)}%</span>
+                <span style={{ flex: 1, textAlign: 'right' }}>${fmt0(p.y1)}</span>
+                <span style={{ flex: 1, textAlign: 'right' }}>${fmt0(p.y3)}</span>
+                <span style={{ flex: 1, textAlign: 'right' }}>${fmt0(p.y5)}</span>
+                <span style={{ flex: 1, textAlign: 'right', color: GREEN }}>${fmt0(p.y10)}</span>
+              </div>
+            ))}
+            <div style={{ fontSize: '9px', color: MUTED, marginTop: '6px' }}>book ${fmt0(data.book_total || 0)} compounded — you pick the rate, not a forecast</div>
+          </div>
+        </Card>
+      </div>
+
+      <Card title="RECENT TRADES" accent={PURPLE}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontFamily: MONO, fontSize: '10px' }}>
+          {recent.slice(0, 12).map((o: any, i: number) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', color: MUTED }}>
+              <span style={{ width: '74px' }}>{o.at}</span>
+              <span style={{ width: '38px', fontWeight: 800, color: o.side === 'buy' ? GREEN : RED }}>{(o.side || '').toUpperCase()}</span>
+              <span style={{ width: '46px', color: PURPLE, fontWeight: 700 }}>{o.sym}</span>
+              <span style={{ flex: 1, textAlign: 'right', color: GREY }}>{Number(o.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} @ ${Number(o.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
+              <span style={{ width: '64px', textAlign: 'right', color: TEXT }}>${fmt0(o.usd)}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
   );
 }
 
