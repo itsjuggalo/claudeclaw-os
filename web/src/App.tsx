@@ -22,6 +22,7 @@ import { WarRoom } from '@/pages/WarRoom';
 import { AgentFiles } from '@/pages/AgentFiles';
 import { Peon } from '@/pages/Peon';
 import { Wallets } from '@/pages/Wallets';
+import { MassageOps } from '@/pages/MassageOps';
 import { Gallery } from '@/pages/Gallery';
 import { SkoolBuilds } from '@/pages/SkoolBuilds';
 import { LewisTrading } from '@/pages/LewisTrading';
@@ -82,6 +83,7 @@ export function App() {
           <Route path="/usage"><Usage /></Route>
           <Route path="/audit"><Audit /></Route>
           <Route path="/wallets"><Wallets /></Route>
+          <Route path="/massage-ops"><MassageOps /></Route>
           <Route path="/gallery"><Gallery /></Route>
           <Route path="/skool-builds"><SkoolBuilds /></Route>
           <Route path="/lewis-trading"><LewisTrading /></Route>

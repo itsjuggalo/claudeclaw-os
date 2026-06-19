@@ -80,6 +80,7 @@ export const ROUTES: RouteDef[] = [
   // Ops & Admin — non-trading pages parked here from the trading apps (MissionCtrl
   // :3000 + ARIES :1337). Sidebar links only; the source pages still live in their
   // apps. Open in a new tab. (Relocated 2026-06-13 to keep the trading apps lean.)
+  { path: '/massage-ops',        label: 'Massage Ops',      section: 'ops', icon: HeartPulse },
   { path: '/ext-mc-projects',    label: 'Projects',         section: 'ops', icon: FolderKanban,   href: 'http://100.91.39.122:3000/?page=projects' },
   { path: '/ext-mc-sessions',    label: 'Sessions',         section: 'ops', icon: MessageSquare,  href: 'http://100.91.39.122:3000/?page=sessions' },
   { path: '/ext-mc-memory',      label: 'MC Memory',        section: 'ops', icon: Brain,          href: 'http://100.91.39.122:3000/?page=memory' },

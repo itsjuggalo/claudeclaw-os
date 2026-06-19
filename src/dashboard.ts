@@ -13,6 +13,7 @@ import { MC_COOKIE, MASTER_TTL_SEC, verifyToken, masterToken, signToken, isLoopb
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
+import { getMassageMonitor, keepAccount, deleteAccount, setReaper } from './massage.js';
 import { getEquity } from './equity.js';
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
@@ -2190,6 +2191,28 @@ init();
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
+  });
+
+  // ── Massage By Mike — ops cockpit. Proxies the massage server's token-guarded admin API
+  //    (localhost:3003); the bearer token is injected server-side so it never reaches a browser.
+  //    See src/massage.ts. Read = account health + lifecycle countdowns; POST = keep/delete/reaper.
+  app.get('/api/massage/monitor', async (c) => {
+    try { return c.json(await getMassageMonitor(c.req.query('force') === '1')); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage/account/:id/keep', async (c) => {
+    try { return c.json(await keepAccount(c.req.param('id'))); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage/account/:id/delete', async (c) => {
+    try { return c.json(await deleteAccount(c.req.param('id'))); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage/reaper', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      return c.json(await setReaper(body));
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
   });
 
   // ── Trade History & What-If — RH-crypto buy/sell ledger + "never sold"
