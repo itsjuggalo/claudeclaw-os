@@ -14,6 +14,7 @@ import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderD
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getMassageMonitor, keepAccount, deleteAccount, setReaper } from './massage.js';
+import { getSqlCatalog, getSqlTables, runSqlSelect } from './sqlmonitor.js';
 import { getEquity } from './equity.js';
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
@@ -2213,6 +2214,30 @@ init();
       const body = await c.req.json().catch(() => ({}));
       return c.json(await setReaper(body));
     } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+
+  // ── SQL Monitor — read-only inventory + browse for every operational SQLite DB
+  //    on the box (see src/sqlmonitor.ts). Self-contained; shares no code with the
+  //    /databases catalog. SELECT-only queries; no write/action routes. Localhost is
+  //    auto-authed by the global token middleware, so no extra auth wiring here.
+  app.get('/api/sql', async (c) => {
+    try { return c.json(await getSqlCatalog()); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.get('/api/sql/:id/meta', async (c) => {
+    try {
+      const result = await getSqlTables(c.req.param('id'));
+      if ('error' in result) return c.json(result, 404);
+      return c.json(result);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/:id/query', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({} as { sql?: string }));
+      const result = runSqlSelect(c.req.param('id'), (body as { sql?: string }).sql || '');
+      if ('error' in result) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
 
   // ── Trade History & What-If — RH-crypto buy/sell ledger + "never sold"
