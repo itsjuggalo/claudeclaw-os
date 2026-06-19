@@ -354,8 +354,14 @@ h1 .n{color:var(--amber)}
         '<span class="chip lv l'+q.level+'">'+lvName+'</span>'+
         '<span class="qcount">'+(s.exam?'EXAM ':'')+(s.idx+1)+' / '+s.queue.length+'</span>'+
       '</div>';
-    var opts = '<div class="opts">'+ q.options.map(function(o,i){
-      return '<button class="opt" data-i="'+i+'"><span class="k">'+LETTERS[i]+'</span><span class="tx">'+esc(o)+'</span><span class="mk"></span></button>';
+    // shuffle option ORDER per question (kills the "answer is always B" pattern tell);
+    // data-i keeps the ORIGINAL index so grading/correctness logic is unchanged — only the
+    // displayed letter is re-mapped to the visual slot. Order is stable within a session.
+    s.order = s.order || {};
+    if(!s.order[q.id]){ var _a=[]; for(var _k=0;_k<q.options.length;_k++)_a.push(_k); s.order[q.id]=shuffle(_a); }
+    var order = s.order[q.id];
+    var opts = '<div class="opts">'+ order.map(function(origIdx,slot){
+      return '<button class="opt" data-i="'+origIdx+'"><span class="k">'+LETTERS[slot]+'</span><span class="tx">'+esc(q.options[origIdx])+'</span><span class="mk"></span></button>';
     }).join('') +'</div>';
     var visual = q.svg ? '<div class="svgwrap">'+q.svg+'</div>' : '';   // trusted inline SVG from the bank
     var card = el('<div class="qcard">'+head+'<p class="qtext">'+esc(q.question)+'</p>'+visual+opts+'<div class="after"></div></div>');
@@ -380,7 +386,8 @@ h1 .n{color:var(--amber)}
     });
     // in the exam we still teach (show why), but keep it tight
     var after = app.querySelector('.after');
-    var why = '<div class="why"><div class="ct">'+(correct?'✓ WHY YOU\'RE RIGHT':'✗ WHY THE ANSWER IS '+LETTERS[q.correct_index])+'</div><p>'+esc(q.why)+'</p></div>';
+    var corrSlot = (s.order && s.order[q.id]) ? s.order[q.id].indexOf(q.correct_index) : q.correct_index;
+    var why = '<div class="why"><div class="ct">'+(correct?'✓ WHY YOU\'RE RIGHT':'✗ WHY THE ANSWER IS '+LETTERS[corrSlot])+'</div><p>'+esc(q.why)+'</p></div>';
     var debate = (q.debate && q.debate.length) ? '<div class="debate"><div class="ct">HOW THE PROS SEE IT</div>'+
       q.debate.map(function(d){ return '<div class="lens"><span class="who">'+esc(d.author)+'</span><span class="stance">'+esc(d.stance)+'</span></div>'; }).join('')+
       '</div>' : '';
@@ -885,7 +892,7 @@ h1 .n{color:var(--amber)}
   document.addEventListener('keydown', function(e){
     if(!session) return;
     if(!session.answered && /^[1-4]$/.test(e.key)){
-      var i=parseInt(e.key,10)-1; var b=app.querySelector('.opt[data-i="'+i+'"]'); if(b){ e.preventDefault(); b.click(); }
+      var i=parseInt(e.key,10)-1; var b=app.querySelectorAll('.opt')[i]; if(b){ e.preventDefault(); b.click(); }
     } else if(session.answered && (e.key==='Enter'||e.key===' ')){
       var nx=document.getElementById('next'); if(nx){ e.preventDefault(); nx.click(); }
     }
