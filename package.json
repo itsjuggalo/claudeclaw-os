@@ -39,6 +39,7 @@
     "@zed-industries/codex-acp": "^0.14.0",
     "better-sqlite3": "^11.8.1",
     "cron-parser": "^5.5.0",
+    "framer-motion": "^12.40.0",
     "grammy": "^1.34.0",
     "hono": "^4.12.3",
     "js-yaml": "^4.1.1",
