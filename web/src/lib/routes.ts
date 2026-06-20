@@ -10,7 +10,7 @@ import {
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
-export type RouteSection = 'workspace' | 'studio' | 'intelligence' | 'collaborate' | 'configure' | 'system' | 'mc' | 'trade' | 'ops' | 'wellness';
+export type RouteSection = 'workspace' | 'studio' | 'intelligence' | 'collaborate' | 'configure' | 'system' | 'mc' | 'trade' | 'ops' | 'wellness' | 'mcctrl';
 
 export interface RouteDef {
   path: string;
@@ -78,21 +78,33 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-hub',      label: 'Mobile Hub',      section: 'mc', icon: Radio,       href: 'https://100.91.39.122:8443' },
   { path: '/ext-n8n',      label: 'n8n',             section: 'mc', icon: Workflow,    href: 'http://100.91.39.122:5678' },
 
-  // Ops & Admin — non-trading pages parked here from the trading apps (MissionCtrl
-  // :3000 + ARIES :1337). Sidebar links only; the source pages still live in their
-  // apps. Open in a new tab. (Relocated 2026-06-13 to keep the trading apps lean.)
+  // Mission Control — ALL operator/personal pages moved off the PUBLIC missionctrl site
+  // (2026-06-20, Mike's call). missionctrl :3000 is now a clean public product (signal8-style);
+  // anything Mike-specific (money/positions), internal admin, or infra lives HERE. Deep-links
+  // into MC :3000 (pages still resolve via ?page=<slug>); open in a new tab.
+  { path: '/ext-mc-wallets',   label: 'Wallets',       section: 'mcctrl', icon: Wallet,       href: 'http://100.91.39.122:3000/?page=wallets' },
+  { path: '/ext-mc-trades',    label: 'Trades',        section: 'mcctrl', icon: Briefcase,    href: 'http://100.91.39.122:3000/?page=trades' },
+  { path: '/ext-mc-llmport',   label: 'LLM Portfolio', section: 'mcctrl', icon: BarChart2,    href: 'http://100.91.39.122:3000/?page=llm-portfolio' },
+  { path: '/ext-mc-risk',      label: 'Risk',          section: 'mcctrl', icon: ShieldCheck,  href: 'http://100.91.39.122:3000/?page=risk' },
+  { path: '/ext-mc-perf',      label: 'Performance',   section: 'mcctrl', icon: Gauge,        href: 'http://100.91.39.122:3000/?page=performance' },
+  { path: '/ext-mc-journal',   label: 'MC Journal',    section: 'mcctrl', icon: BookOpen,     href: 'http://100.91.39.122:3000/?page=journal' },
+  { path: '/ext-mc-telegram',  label: 'Telegram',      section: 'mcctrl', icon: MessageSquare, href: 'http://100.91.39.122:3000/?page=telegram' },
+  { path: '/ext-mc-approvals', label: 'Approvals',     section: 'mcctrl', icon: ListTodo,     href: 'http://100.91.39.122:3000/?page=approvals' },
+  { path: '/ext-mc-activity',  label: 'Activity',      section: 'mcctrl', icon: Activity,     href: 'http://100.91.39.122:3000/?page=activity' },
+  { path: '/ext-mc-agents',    label: 'Agents',        section: 'mcctrl', icon: Bot,          href: 'http://100.91.39.122:3000/?page=agents' },
+  { path: '/ext-mc-pm2',       label: 'PM2 Control',   section: 'mcctrl', icon: Server,       href: 'http://100.91.39.122:3000/?page=pm2-control' },
+  { path: '/ext-mc-sessions',  label: 'Sessions',      section: 'mcctrl', icon: MessageSquare, href: 'http://100.91.39.122:3000/?page=sessions' },
+  { path: '/ext-mc-memory',    label: 'Memory',        section: 'mcctrl', icon: Brain,        href: 'http://100.91.39.122:3000/?page=memory' },
+  { path: '/ext-mc-memgraph',  label: 'Memory Graph',  section: 'mcctrl', icon: Network,      href: 'http://100.91.39.122:3000/?page=memory-graph' },
+  { path: '/ext-mc-tasks',     label: 'Tasks',         section: 'mcctrl', icon: ListTodo,     href: 'http://100.91.39.122:3000/?page=tasks' },
+  { path: '/ext-mc-skills',    label: 'Skills',        section: 'mcctrl', icon: Database,     href: 'http://100.91.39.122:3000/?page=skills' },
+  { path: '/ext-mc-docs',      label: 'Docs',          section: 'mcctrl', icon: BookOpen,     href: 'http://100.91.39.122:3000/?page=docs' },
+  { path: '/ext-mc-usage',     label: 'Usage',         section: 'mcctrl', icon: Activity,     href: 'http://100.91.39.122:3000/?page=usage' },
+  { path: '/ext-mc-office',    label: 'Office',        section: 'mcctrl', icon: Building2,    href: 'http://100.91.39.122:3000/?page=office' },
+  { path: '/ext-mc-projects',  label: 'Projects',      section: 'mcctrl', icon: FolderKanban, href: 'http://100.91.39.122:3000/?page=projects' },
+
+  // Ops & Admin — ARIES + massage (non-MC) external links.
   { path: '/massage-ops',        label: 'Massage Ops',      section: 'ops', icon: HeartPulse },
-  { path: '/ext-mc-projects',    label: 'Projects',         section: 'ops', icon: FolderKanban,   href: 'http://100.91.39.122:3000/?page=projects' },
-  { path: '/ext-mc-sessions',    label: 'Sessions',         section: 'ops', icon: MessageSquare,  href: 'http://100.91.39.122:3000/?page=sessions' },
-  { path: '/ext-mc-memory',      label: 'MC Memory',        section: 'ops', icon: Brain,          href: 'http://100.91.39.122:3000/?page=memory' },
-  { path: '/ext-mc-memgraph',    label: 'Memory Graph',     section: 'ops', icon: Network,        href: 'http://100.91.39.122:3000/?page=memory-graph' },
-  { path: '/ext-mc-skills',      label: 'Skills',           section: 'ops', icon: Database,       href: 'http://100.91.39.122:3000/?page=skills' },
-  { path: '/ext-mc-usage',       label: 'MC Usage',         section: 'ops', icon: Activity,       href: 'http://100.91.39.122:3000/?page=usage' },
-  { path: '/ext-mc-pm2',         label: 'PM2 Control',      section: 'ops', icon: Server,         href: 'http://100.91.39.122:3000/?page=pm2-control' },
-  { path: '/ext-mc-docs',        label: 'MC Docs',          section: 'ops', icon: BookOpen,       href: 'http://100.91.39.122:3000/?page=docs' },
-  { path: '/ext-mc-office',      label: 'MC Office',        section: 'ops', icon: Building2,      href: 'http://100.91.39.122:3000/?page=office' },
-  { path: '/ext-mc-tasks',       label: 'MC Tasks',         section: 'ops', icon: ListTodo,       href: 'http://100.91.39.122:3000/?page=tasks' },
-  { path: '/ext-mc-agents',      label: 'MC Agents',        section: 'ops', icon: Bot,            href: 'http://100.91.39.122:3000/?page=agents' },
   { path: '/ext-aries-log',      label: 'Mission Log',      section: 'ops', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
   { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'ops', icon: Settings,       href: 'http://100.91.39.122:1337/settings' },
   { path: '/ext-aries-system',   label: 'System Analytics', section: 'ops', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
@@ -110,6 +122,7 @@ export const SECTION_LABEL: Record<RouteSection, string> = {
   configure:    'Configure',
   system:       'System',
   mc:           'MC Apps',
+  mcctrl:       'Mission Control',
   ops:          'Ops & Admin',
   wellness:     'Wellness',
 };
