@@ -21,6 +21,7 @@ import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
 import { getSelectedProviderConfig } from './active-provider.js';
+import { evaluateAcceptance } from './acceptance.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -132,8 +133,16 @@ async function runDueTasks(): Promise<void> {
         }
 
         const text = result.text?.trim() || 'Task completed with no output.';
+        const acceptancePassed = evaluateAcceptance(task.acceptance_check, result.text ?? '');
+        const lastStatus: 'success' | 'failed' = acceptancePassed ? 'success' : 'failed';
+        const resultText = acceptancePassed
+          ? text
+          : `Acceptance check not met: output did not contain "${task.acceptance_check}".\n\n${text}`;
         for (const chunk of splitMessage(formatForTelegram(text))) {
           await sender(chunk);
+        }
+        if (!acceptancePassed) {
+          await sender(`⚠ Acceptance check not met: expected output to contain "${task.acceptance_check}".`);
         }
 
         // Inject task output into the active chat session so user replies have context
@@ -152,8 +161,8 @@ async function runDueTasks(): Promise<void> {
           logger.error({ err, taskId: task.id }, 'Memory ingestion fire-and-forget failed (scheduled task)');
         });
 
-        updateTaskAfterRun(task.id, nextRun, text, 'success');
-        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'scheduled_task_run', `${task.id}: success (${text.length} chars)`, false);
+        updateTaskAfterRun(task.id, nextRun, resultText, lastStatus);
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'scheduled_task_run', `${task.id}: ${lastStatus} (${text.length} chars)`, !acceptancePassed);
 
         logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
       } catch (err) {

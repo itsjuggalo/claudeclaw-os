@@ -408,6 +408,37 @@ The skill reads `GOOGLE_API_KEY` from the environment automatically.
 
 ---
 
+### OpenRouter (native, no CLI required)
+
+**What it does:** Talks directly to OpenRouter's OpenAI-compatible API from inside ClaudeClaw. No CLI install, no subprocess, no ACP — just an API key in `.env`. Use it to chat through any of the hundreds of models OpenRouter aggregates (free or paid).
+
+**Setup (one-time):**
+
+1. Set `ENABLE_ACP=true` in `.env` (gates the alternate-provider UI in the dashboard).
+2. Get a key at [openrouter.ai/keys](https://openrouter.ai/keys), then add it to `.env`:
+   ```
+   OPENROUTER_API_KEY=sk-or-v1-...
+   ```
+3. Restart with `pm2 restart claudeclaw --update-env`.
+4. In the dashboard: **Settings → Provider = OpenRouter (native)**, pick a model from the dropdown, **Save provider**.
+
+The model dropdown is populated live from OpenRouter's `/models` endpoint (cached 5 minutes server-side). Type-ahead works — start typing `openai/`, `anthropic/`, `:free` to narrow.
+
+**Known-good models to try:**
+
+| Model id | Notes |
+|---|---|
+| `z-ai/glm-4.5-air:free` | Free, conversational, currently responsive |
+| `openai/gpt-4o-mini` | Paid, fast (~1s), cheap |
+| `anthropic/claude-3.5-sonnet` | Paid, billed by OpenRouter |
+| `openai/gpt-oss-120b:free` | Free, agentic-trained — works for instruction tasks |
+
+**Scope:** v1 is **chat-only** (no tool calling) and **single-turn** — each message is an independent `[system, user]` exchange (the system message is the project `CLAUDE.md`). Prior turns are **not** replayed, so pronoun and "rephrase that" follow-ups won't resolve against earlier messages. Persistent facts still reach the model through ClaudeClaw's memory injection (keyword-selective), but recent dialogue is not. For tool-heavy or multi-turn workflows (Read/Bash/Obsidian, threaded back-and-forth), use Claude. Paid models report per-turn cost (from OpenRouter's `usage.cost`) to the dashboard cost footer and the daily budget tracker.
+
+**Caveats:** Free models (suffix `:free`) are rate-limited by their upstream providers and rotate frequently — if one starts returning 429s or hangs, switch to a different one in the dashboard.
+
+---
+
 ### ACP provider keys (optional)
 
 **What it does:** Lets an ACP provider call whichever model provider you choose, such as GLM, Qwen, DeepSeek, Gemini, local providers, or any other provider supported by that ACP command.
@@ -546,6 +577,31 @@ Provider sessions carry context across messages. ClaudeClaw namespaces session i
 ### Skills load automatically
 
 Every skill in `~/.claude/skills/` loads on every session. Call them directly (`/gmail check inbox`) or describe what you want. Claude routes automatically if you've listed the skill in `CLAUDE.md`.
+
+### Memory isolation
+
+Memory recall is **per-agent** by default. Each agent recalls only its own memories plus anything explicitly promoted to the **shared tier**. This prevents one agent absorbing another agent's disposition through recall (e.g. a community agent picking up a builder agent's code-fix reflexes).
+
+- **Single-agent setups** are unaffected — one agent owns everything it recalls.
+- **Existing multi-agent installs** flip from the old shared-everything behavior to per-agent isolation on upgrade. The primary agent posts a one-time heads-up when this happens. Existing memories are never retroactively shared.
+- **Promote system-wide truths** (date handling, deploy steps, the agent roster, lane rules) to the shared tier so every agent still sees them. The `memory-share` skill surfaces candidates and lets you approve them one by one; it stays conservative on purpose — don't bulk-share per-agent role or code-fix memories.
+- **Revert to shared recall** (all agents contribute to recall, like before). Two ways, with the env seed being the simplest for an upgrade:
+
+  1. **Set it once in `.env`** and forget it — ideal if you upgraded and just want the old behavior back:
+
+     ```sh
+     MEMORY_RECALL_MODE=shared
+     ```
+
+     This only *seeds* the default. Anything other than `shared` (including unset) means `isolated`.
+
+  2. **Toggle it live** via the `memory_recall_mode` dashboard setting — useful for flipping without editing `.env`:
+
+     ```sh
+     sqlite3 store/claudeclaw.db "INSERT INTO dashboard_settings (key, value, updated_at) VALUES ('memory_recall_mode','shared',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value='shared';"
+     ```
+
+  **Precedence:** an explicit `dashboard_settings` row always wins over the `.env` seed, so the live toggle (set it back to `isolated`, or delete the row) is authoritative. The dashboard change takes effect on the next message — no restart needed; the `.env` seed is read at startup.
 
 ---
 
@@ -1512,7 +1568,15 @@ cp -r skills/slack ~/.claude/skills/slack
 
 # TLDR: summarize conversations and save as notes
 cp -r skills/tldr ~/.claude/skills/tldr
+
+# Memory hygiene: propose-only review (pin / dedup / resolve conflicts / decay)
+cp -r skills/memory-hygiene ~/.claude/skills/memory-hygiene
+
+# Memory share: promote genuinely universal memories to the shared tier (pairs with per-agent isolation)
+cp -r skills/memory-share ~/.claude/skills/memory-share
 ```
+
+**Memory skills pair with per-agent isolation.** `memory-share` only does anything once the shared-tier schema from this release is in place; `memory-hygiene` works standalone. Both are propose-only and never write without your approval.
 
 **Gmail + Calendar require Google OAuth credentials.** See `.env.example` for the variables and each skill's `SKILL.md` for one-time setup instructions (create a Google Cloud project, enable the API, download credentials, run auth once).
 

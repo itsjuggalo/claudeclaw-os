@@ -35,6 +35,7 @@ const envConfig = readEnvFile([
   'SMART_ROUTING_CHEAP_MODEL',
   'SHOW_COST_FOOTER',
   'MEMORY_NOTIFY',
+  'MEMORY_RECALL_MODE',
   'DAILY_COST_BUDGET',
   'HOURLY_TOKEN_BUDGET',
   'MEMORY_NUDGE_INTERVAL_TURNS',
@@ -48,6 +49,8 @@ const envConfig = readEnvFile([
   'ENABLE_ACP',
   'MC_ACCESS_SECRET',
   'MC_ACCESS_DISABLED',
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_MODEL',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -235,6 +238,19 @@ export const OLLAMA_EMBED_URL =
 export const OLLAMA_EMBED_MODEL =
   process.env.OLLAMA_EMBED_MODEL || envConfig.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
 
+// OpenRouter API key — for the native OpenRouter provider engine.
+// Get at https://openrouter.ai/keys. ClaudeClaw uses this only when the
+// active provider is type: 'openrouter'.
+export const OPENROUTER_API_KEY =
+  process.env.OPENROUTER_API_KEY || envConfig.OPENROUTER_API_KEY || '';
+
+// Default OpenRouter model when none is configured/selected. Single source of
+// truth shared by the adapter, the dashboard model list, the setup wizard, and
+// the Sidebar quick-switch. Override via OPENROUTER_MODEL in .env so a new
+// default lands on restart without a code change.
+export const DEFAULT_OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL || envConfig.OPENROUTER_MODEL || 'z-ai/glm-4.5-air:free';
+
 // Streaming strategy for progressive Telegram updates.
 // 'global-throttle' (default): edits a placeholder message with streamed text,
 //   rate-limited to ~24 edits/min per chat to respect Telegram limits.
@@ -303,6 +319,19 @@ export const SHOW_COST_FOOTER: CostFooterMode =
 export const MEMORY_NOTIFY: boolean = !['off', 'false', '0'].includes(
   (process.env.MEMORY_NOTIFY || envConfig.MEMORY_NOTIFY || 'on').toLowerCase(),
 );
+
+// Memory recall mode SEED for installs upgrading past PR #96 (per-agent isolation).
+// PR #96 made recall strictly per-agent ('isolated') for everyone — the right default
+// for new installs. An existing multi-agent install that wants the pre-#96 behaviour
+// (recall draws from every agent on the chat) can set MEMORY_RECALL_MODE=shared once in
+// .env and be done, instead of running a sqlite command after every upgrade.
+// This ONLY seeds the default: the live dashboard toggle (/keep-shared, stored in
+// dashboard_settings) always wins when it has been set explicitly. Anything other than
+// 'shared' (including unset) resolves to 'isolated'.
+export const MEMORY_RECALL_MODE_ENV: 'isolated' | 'shared' =
+  (process.env.MEMORY_RECALL_MODE || envConfig.MEMORY_RECALL_MODE || '').toLowerCase() === 'shared'
+    ? 'shared'
+    : 'isolated';
 
 // Daily cost budget in USD. Warns at 80%. Set to 0 to disable (default).
 // Only useful for API/pay-per-use users. Subscription users should leave off.

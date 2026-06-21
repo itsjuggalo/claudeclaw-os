@@ -8,7 +8,7 @@ import { PROJECT_ROOT } from '../config.js';
 import { logger } from '../logger.js';
 import type { ProviderConfig } from '../provider.js';
 import { getScrubbedSdkEnv } from '../security.js';
-import type { AgentEngine, AgentEngineEvent, AgentEngineProgressEvent, AgentTurnInput } from './types.js';
+import type { AgentEngine, AgentEngineEvent, AgentEngineProgressEvent, AgentTurnInput, McpStdioConfig } from './types.js';
 import { emptyUsage } from './types.js';
 
 class ClaudeClawAcpClient {
@@ -352,15 +352,20 @@ function isLockedDownToolPolicy(input: AgentTurnInput): boolean {
 
 function toAcpMcpServers(mcpServers?: AgentTurnInput['mcpServers']): acp.McpServer[] {
   if (!mcpServers) return [];
-  return Object.entries(mcpServers).map(([name, cfg]) => ({
-    name,
-    command: cfg.command,
-    args: cfg.args ?? [],
-    env: Object.entries(cfg.env ?? {}).map(([envName, value]) => ({
-      name: envName,
-      value,
-    })),
-  }));
+  return Object.entries(mcpServers)
+    // ACP providers only support stdio (command-based) MCP servers. HTTP/SSE
+    // configs are Claude-SDK-only; skip them here rather than send a malformed
+    // stdio entry with no command.
+    .filter((entry): entry is [string, McpStdioConfig] => 'command' in entry[1])
+    .map(([name, cfg]) => ({
+      name,
+      command: cfg.command,
+      args: cfg.args ?? [],
+      env: Object.entries(cfg.env ?? {}).map(([envName, value]) => ({
+        name: envName,
+        value,
+      })),
+    }));
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -414,6 +419,7 @@ export async function inspectAcpProviderRuntimeOptions(
     stdio: ['pipe', 'pipe', 'pipe'],
     env: getAcpEnv(),
     shell: useShell,
+    windowsHide: true,
   });
   const spawnErrorPromise = new Promise<never>((_, reject) => {
     child.once('error', (err: NodeJS.ErrnoException) => {
@@ -492,6 +498,7 @@ export class AcpEngineAdapter implements AgentEngine {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: getAcpEnv(input.env),
       shell: useShell,
+      windowsHide: true,
     });
     const spawnErrorPromise = new Promise<never>((_, reject) => {
       child.once('error', (err: NodeJS.ErrnoException) => {

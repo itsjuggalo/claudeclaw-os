@@ -116,6 +116,7 @@ import {
   suggestBotNames,
   isAgentRunning,
 } from './agent-create.js';
+import { getSelectedProviderConfig } from './active-provider.js';
 import { getMainModelOverride, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
@@ -134,7 +135,7 @@ import {
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
-import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU } from './config.js';
+import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU, DEFAULT_OPENROUTER_MODEL } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
@@ -245,13 +246,53 @@ function stripAnsi(s: string): string {
 }
 
 function getOpenCodeModels(): Array<{ id: string; label: string }> {
-  const result = spawnSync('opencode', ['models'], { stdio: 'pipe', encoding: 'utf-8' });
+  const result = spawnSync('opencode', ['models'], { stdio: 'pipe', encoding: 'utf-8', windowsHide: true });
   if (result.status !== 0) return [];
   return stripAnsi(result.stdout)
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => /^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(line))
     .map((id) => ({ id, label: id }));
+}
+
+// In-memory cache for OpenRouter /models (5-minute TTL). The dashboard hits
+// /api/providers/models on every Settings page load, so we don't want to call
+// OpenRouter for every poll. Cache survives only as long as the process.
+const openRouterModelsCache: { fetchedAt: number; models: Array<{ id: string; label: string }> } = {
+  fetchedAt: 0,
+  models: [],
+};
+const OPENROUTER_MODELS_TTL_MS = 5 * 60 * 1000;
+
+async function fetchOpenRouterModels(): Promise<Array<{ id: string; label: string }>> {
+  const now = Date.now();
+  if (openRouterModelsCache.models.length > 0 && now - openRouterModelsCache.fetchedAt < OPENROUTER_MODELS_TTL_MS) {
+    return openRouterModelsCache.models;
+  }
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: { Accept: 'application/json' },
+      // Keep this short — the dashboard shouldn't block on a slow network.
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return openRouterModelsCache.models; // serve stale on transient failure
+    const data = await res.json() as { data?: Array<{ id?: string; name?: string }> };
+    const models = (data.data ?? [])
+      .map((m) => ({ id: typeof m.id === 'string' ? m.id : '', label: typeof m.id === 'string' ? m.id : '' }))
+      .filter((m) => m.id.length > 0)
+      .sort((a, b) => {
+        // Free tier first for discoverability, then alphabetic.
+        const aFree = a.id.endsWith(':free');
+        const bFree = b.id.endsWith(':free');
+        if (aFree !== bFree) return aFree ? -1 : 1;
+        return a.id.localeCompare(b.id);
+      });
+    openRouterModelsCache.fetchedAt = now;
+    openRouterModelsCache.models = models;
+    return models;
+  } catch {
+    return openRouterModelsCache.models; // serve stale on error
+  }
 }
 
 function getOpenCodeDefaultModel(): string | undefined {
@@ -269,7 +310,11 @@ function getOpenCodeDefaultModel(): string | undefined {
 }
 
 function getProviderStatus() {
-  const provider = getMainProviderConfig();
+  // Use getSelectedProviderConfig so the dashboard reflects the EFFECTIVE
+  // runtime engine, not the stored config. When ENABLE_ACP=false, the gate
+  // forces Claude regardless of what's in main-config.json, and the sidebar
+  // should show that truth instead of a stale Gemini/OpenCode label.
+  const provider = getSelectedProviderConfig();
   const model = provider.type === 'claude'
     ? (getMainModelOverride() ?? provider.model ?? agentDefaultModel ?? DEFAULT_CLAUDE_MODEL)
     : provider.type === 'opencode'
@@ -291,7 +336,9 @@ function getProviderStatus() {
           ? 'Gemini'
           : provider.type === 'codex'
             ? 'Codex'
-            : 'ACP',
+            : provider.type === 'openrouter'
+              ? 'OpenRouter'
+              : 'ACP',
     runtime: getProviderDisplay(provider),
     model,
     // Surfaced so the dashboard can hide the provider picker when the
@@ -3966,11 +4013,16 @@ init();
         }
         const stats = getAgentTokenStats(id);
         const mainOverride = id === 'main' ? getMainModelOverride() : undefined;
+        const provider = id === 'main' ? getSelectedProviderConfig() : config.provider;
+        const model = provider.type === 'claude'
+          ? (mainOverride ?? provider.model ?? config.model ?? DEFAULT_CLAUDE_MODEL)
+          : provider.model;
         return {
           id,
           name: config.name,
           description: config.description,
-          model: mainOverride ?? config.model ?? 'claude-opus-4-6',
+          model,
+          provider,
           running,
           todayTurns: stats.todayTurns,
           todayCost: stats.todayCost,
@@ -4087,7 +4139,7 @@ init();
     return c.json(getProviderStatus());
   });
 
-  app.get('/api/providers/models', (c) => {
+  app.get('/api/providers/models', async (c) => {
     const provider = (c.req.query('provider') || '').toLowerCase();
     const current = getMainProviderConfig();
     if (!ENABLE_ACP && provider !== 'claude') {
@@ -4147,6 +4199,23 @@ init();
         note: 'Custom ACP model ids are provider-specific. Use provider-default to skip session/set_model.',
       });
     }
+    if (provider === 'openrouter') {
+      const models = await fetchOpenRouterModels();
+      const fallback = [{ id: DEFAULT_OPENROUTER_MODEL, label: DEFAULT_OPENROUTER_MODEL }];
+      const list = models.length > 0 ? models : fallback;
+      const currentModel = current.type === 'openrouter' ? current.model : undefined;
+      const defaultModel = currentModel && list.some((m) => m.id === currentModel)
+        ? currentModel
+        : list[0]?.id ?? DEFAULT_OPENROUTER_MODEL;
+      return c.json({
+        provider,
+        models: list,
+        defaultModel,
+        selectable: true,
+        allowCustom: true,
+        note: 'Single-turn chat only — each message is an independent exchange with no prior-turn context (memory injection still applies). Free models (suffix :free) rotate and may be upstream-rate-limited; if one hangs or 429s, try another.',
+      });
+    }
     return c.json({ error: 'Invalid provider' }, 400);
   });
 
@@ -4170,6 +4239,17 @@ init();
         provider: base.type,
         modeOptions: CLAUDE_RUNTIME_OPTIONS,
         thinkingOptions: CLAUDE_THINKING_OPTIONS,
+        rawConfigOptions: [],
+        source: 'static',
+      });
+    }
+    if (base.type === 'openrouter') {
+      // OpenRouter is a plain OpenAI-compatible HTTP gateway — no ACP-style
+      // session/configuration. No mode/thinking dropdowns to surface.
+      return c.json({
+        provider: base.type,
+        modeOptions: [],
+        thinkingOptions: [],
         rawConfigOptions: [],
         source: 'static',
       });

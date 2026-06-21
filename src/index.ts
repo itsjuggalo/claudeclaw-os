@@ -111,7 +111,13 @@ function acquireLock(): void {
 }
 
 function releaseLock(): void {
-  try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
+  // Only remove the pidfile if it still points at us. Prevents a dying process
+  // from deleting the pidfile a successor already claimed (which left the
+  // dashboard's isProcessAlive() check pointing at a dead PID).
+  try {
+    const cur = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
+    if (cur === process.pid) fs.unlinkSync(PID_FILE);
+  } catch { /* ignore */ }
 }
 
 async function main(): Promise<void> {
@@ -256,7 +262,6 @@ async function main(): Promise<void> {
 
       if (fs.existsSync(venvPython) && fs.existsSync(serverScript)) {
         // Pre-flight: verify Python dependencies are actually installed
-
         const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000, windowsHide: true });
         if (depCheck.status !== 0) {
           const msg = uvAvailable

@@ -1,11 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { createRequire } from 'module';
 import yaml from 'js-yaml';
 
 import { STORE_DIR, DEFAULT_CLAUDE_MODEL } from './config.js';
+import { readEnvFile } from './env.js';
 
-export type ProviderType = 'claude' | 'acp' | 'opencode' | 'gemini' | 'codex';
+export type ProviderType = 'claude' | 'acp' | 'opencode' | 'gemini' | 'codex' | 'openrouter';
 export type ProviderRuntimeMode = string;
 export type ProviderThinkingMode = string;
 
@@ -42,7 +44,7 @@ export function normalizeProviderConfig(input: unknown, legacyModel?: string): P
   const raw = input && typeof input === 'object' ? input as Record<string, unknown> : {};
   const typeRaw = typeof raw.type === 'string' ? raw.type.toLowerCase() : undefined;
 
-  if (typeRaw === 'claude' || typeRaw === 'acp' || typeRaw === 'opencode' || typeRaw === 'gemini' || typeRaw === 'codex') {
+  if (typeRaw === 'claude' || typeRaw === 'acp' || typeRaw === 'opencode' || typeRaw === 'gemini' || typeRaw === 'codex' || typeRaw === 'openrouter') {
     const cfg: ProviderConfig = { type: typeRaw };
     if (typeof raw.model === 'string' && raw.model.trim()) cfg.model = raw.model.trim();
     if (typeof raw.runtimeMode === 'string' && raw.runtimeMode.trim()) cfg.runtimeMode = raw.runtimeMode.trim();
@@ -126,6 +128,7 @@ export function getProviderDisplay(provider: ProviderConfig): string {
   if (provider.type === 'opencode') return `OpenCode${suffix ? ` (${suffix})` : ' (model from OpenCode config)'}`;
   if (provider.type === 'gemini') return `Gemini CLI${suffix ? ` (${suffix})` : ' (ACP)'}`;
   if (provider.type === 'codex') return `Codex${suffix ? ` (${suffix})` : ' (codex-acp adapter)'}`;
+  if (provider.type === 'openrouter') return `OpenRouter${suffix ? ` (${suffix})` : ' (no model selected)'}`;
   return `ACP (${provider.command ?? 'custom command'}${provider.args?.length ? ` ${provider.args.join(' ')}` : ''}${suffix ? `; ${suffix}` : ''})`;
 }
 
@@ -178,7 +181,7 @@ export interface ProviderAvailability {
 
 function commandExists(command: string): boolean {
   const lookup = process.platform === 'win32' ? 'where' : 'which';
-  return spawnSync(lookup, [command], { stdio: 'pipe' }).status === 0;
+  return spawnSync(lookup, [command], { stdio: 'pipe', windowsHide: true }).status === 0;
 }
 
 /**
@@ -194,17 +197,31 @@ function commandExists(command: string): boolean {
  */
 export function checkProviderAvailability(provider: ProviderConfig): ProviderAvailability {
   switch (provider.type) {
-    case 'claude':
+    case 'claude': {
+      // The claude-agent-sdk bundles its own Claude Code runtime and resolves it
+      // internally — it does NOT require a standalone `claude` binary on PATH.
+      // Daemon deployments (launchd/systemd/docker) typically run with a minimal
+      // PATH that does not include the dir where a globally-installed CLI lives,
+      // so gating the claude provider on `which claude` produced false
+      // "Claude Code CLI not found on PATH" 400s when switching providers from
+      // the dashboard — even though agent turns run fine. Treat the claude
+      // provider as available whenever the SDK package resolves; fall back to the
+      // PATH check (and its install hint) only when the SDK itself is absent.
+      try {
+        createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk');
+        return { ok: true };
+      } catch { /* SDK not resolvable — fall through to the PATH-based check */ }
       if (!commandExists('claude')) {
         return {
           ok: false,
-          error: 'Claude Code CLI not found on PATH.',
-          installCommand: 'npm install -g @anthropic-ai/claude-code',
-          setupHint: 'Run `claude login` to authenticate (free, Pro, or Max plan), or set ANTHROPIC_API_KEY in .env for pay-per-token billing.',
+          error: 'Claude Code SDK not installed and `claude` CLI not found on PATH.',
+          installCommand: 'npm install',
+          setupHint: 'Run `npm install` to pull the bundled claude-agent-sdk, then `claude login` (free/Pro/Max) or set ANTHROPIC_API_KEY in .env for pay-per-token billing.',
           docsUrl: 'https://docs.claude.com/en/docs/claude-code/overview',
         };
       }
       return { ok: true };
+    }
     case 'opencode':
       if (!commandExists('opencode')) {
         return {
@@ -250,6 +267,21 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
         };
       }
       return { ok: true };
+    }
+    case 'openrouter': {
+      // OpenRouter has no CLI — just check the env var is present.
+      // Read directly from process.env first (set by PM2 --update-env) with a
+      // fallback to the .env file via readEnvFile (same quote/comment handling
+      // used everywhere else) so the dashboard preflight matches runtime.
+      const fromProcess = process.env.OPENROUTER_API_KEY?.trim();
+      if (fromProcess) return { ok: true };
+      if (readEnvFile(['OPENROUTER_API_KEY']).OPENROUTER_API_KEY) return { ok: true };
+      return {
+        ok: false,
+        error: 'OPENROUTER_API_KEY is not set.',
+        setupHint: 'Get a key from https://openrouter.ai/keys, then add OPENROUTER_API_KEY=sk-or-v1-... to .env and restart with `pm2 restart claudeclaw --update-env`.',
+        docsUrl: 'https://openrouter.ai/docs',
+      };
     }
     default:
       return { ok: true };
