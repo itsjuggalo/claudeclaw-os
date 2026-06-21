@@ -52,6 +52,8 @@ export const ROUTES: RouteDef[] = [
   { path: '/trade-desk',          label: 'Trade Desk',    section: 'trade', icon: TrendingUp,  shortcut: 'g t' },
   { path: '/equity',              label: 'Equity Mgmt',   section: 'trade', icon: Gauge,       shortcut: 'g q' },
   { path: '/trade-desk/signals',  label: 'Signal Feed',   section: 'trade', icon: Activity               },
+  { path: '/signal-monitor',      label: 'Signal Monitor',section: 'trade', icon: Radio                  },
+  { path: '/live-apps',           label: 'Live Apps',     section: 'trade', icon: Smartphone             },
   { path: '/trade-desk/flow-rank',label: 'Flow Rank',     section: 'trade', icon: BarChart2              },
   { path: '/trade-desk/portfolio',label: 'Portfolio AI',  section: 'trade', icon: Briefcase              },
   { path: '/trade-desk/flow-winners', label: 'Flow Winners', section: 'trade', icon: Trophy             },

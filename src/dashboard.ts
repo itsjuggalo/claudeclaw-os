@@ -20,6 +20,8 @@ import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
+import { getSignalMonitor } from './signal-monitor.js';
+import { getLiveAppsStatus } from './live-apps.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
 import { getSkoolBuilds, readSkoolArtifact } from './skoolbuilds.js';
@@ -2309,6 +2311,19 @@ init();
 
   app.get('/api/trade-desk/flow-rank', (c) => {
     try { return c.json(getFlowRank()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // Signal Monitor — live option/flow app feeds + headless-listener health.
+  app.get('/api/signal-monitor', (c) => {
+    const perApp = Math.min(parseInt(c.req.query('perApp') || '30', 10), 100);
+    try { return c.json(getSignalMonitor(perApp)); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // Live Apps — redroid + ws-scrcpy setup status / embed gate (B2).
+  app.get('/api/live-apps/status', async (c) => {
+    try { return c.json(await getLiveAppsStatus()); }
     catch (e) { return c.json({ error: String(e) }, 500); }
   });
 

@@ -11,7 +11,9 @@ const HOME = process.env.HOME || '/home/itsju';
 const FLOW_DB     = join(HOME, '02_DATA/flow-data/flow.db');
 const PIPELINE_DB = join(HOME, 'LapClaw/pipeline/desk_pipeline.sqlite');
 const LEDGER_DB   = join(HOME, 'LapClaw/pipeline/trade_ledger.sqlite');
-const SIGNALS_FILE = join(HOME, 'LapClaw/firebase-signals/latest.json');
+// LIVE capture dir — the fcm-rtdb daemon writes here. (Was 'LapClaw/firebase-signals',
+// a stale May-28 copy that left the Signal Feed page showing month-old data.)
+const SIGNALS_FILE = join(HOME, 'firebase-signals/latest.json');
 const BRIEF_CACHE  = join(HOME, '02_DATA/trade-brief-cache.json');
 
 // Priority feeds for the signal panel (flow data first, then alerts)

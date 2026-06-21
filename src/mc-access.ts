@@ -22,10 +22,18 @@ export const MC_COOKIE = 'mc_access';
 export const MASTER_TTL_SEC = 400 * 24 * 3600;
 
 export type McKind = 'master' | 'guest';
+/** Signed-in identity, carried in the token when an IdP (Aries Google) minted it. */
+export interface McUser {
+  email: string;
+  name?: string;
+  sub?: string;     // stable provider user id (Google sub / Aries user id)
+  picture?: string;
+}
 export interface McPayload {
   exp: number; // unix seconds; token invalid once passed
   kind: McKind;
   label?: string; // guest grants carry a human label for logs
+  user?: McUser; // present when Aries' Google login minted it → SSO identity
 }
 
 export function nowSec(): number {
@@ -114,6 +122,17 @@ export function masterToken(secret: string): Promise<string> {
   return signToken({ exp: nowSec() + MASTER_TTL_SEC, kind: 'master' }, secret);
 }
 
+/**
+ * Mint a master-session token that ALSO carries the signed-in user identity.
+ * Aries (the identity home) calls this after a Google login. Because every app
+ * shares MC_ACCESS_SECRET, the one cookie both UNLOCKS the gate and tells every
+ * app WHO the user is — one login → all apps recognise the same user (SSO).
+ * Reads back via `verifyToken(...).user`.
+ */
+export function userToken(secret: string, user: McUser, ttlSec: number = MASTER_TTL_SEC): Promise<string> {
+  return signToken({ exp: nowSec() + ttlSec, kind: 'master', user }, secret);
+}
+
 /** Parse "24h" | "90m" | "7d" | "30s" | "3600" → seconds. Null if malformed. */
 export function parseDuration(s: string): number | null {
   const m = /^\s*(\d+)\s*([smhd])?\s*$/i.exec(s);
@@ -179,9 +198,13 @@ export function isLoopbackHeaders(get: (k: string) => string | null | undefined)
  * while the rest of the site is gated). House dark palette + red accent. Shared
  * by all three apps. `nextUrl` is the post-login destination; `err` a message.
  */
-export function mcLoginPage(nextUrl: string, err: string): string {
+export function mcLoginPage(nextUrl: string, err: string, googleHref?: string): string {
   const safeNext = String(nextUrl || '/').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   const errHtml = err ? `<div class="err">${err.replace(/</g, '&lt;')}</div>` : '';
+  const safeGoogle = googleHref ? String(googleHref).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') : '';
+  const googleHtml = safeGoogle
+    ? `<a class="gbtn" href="${safeGoogle}"><svg width="17" height="17" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.9 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.3 6.1 29.4 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.3-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.3 6.1 29.4 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 10-2 13.6-5.2l-6.3-5.3C29.2 35 26.7 36 24 36c-5.3 0-9.7-3.1-11.3-7.6l-6.5 5C9.6 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4 5.5l6.3 5.3C41.9 35.7 44 30.4 44 24c0-1.3-.1-2.3-.4-3.5z"/></svg>Continue with Google</a><div class="or"><span>or</span></div>`
+    : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <meta name="theme-color" content="#0e0e10"><title>Mission Control · Unlock</title>
@@ -203,11 +226,18 @@ padding:12px;font-size:15px;font-weight:600;cursor:pointer}button:active{transfo
 .err{background:rgba(224,36,52,.12);border:1px solid rgba(224,36,52,.4);color:#ffb4bc;
 border-radius:9px;padding:9px 11px;font-size:13px;margin-bottom:14px}
 .foot{color:var(--mut);font-size:11px;text-align:center;margin-top:16px}
+.gbtn{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;background:#fff;color:#1f2329;
+border:0;border-radius:10px;padding:11px;font-size:14.5px;font-weight:600;cursor:pointer;text-decoration:none;margin-bottom:4px}
+.gbtn:active{transform:translateY(1px)}
+.or{display:flex;align-items:center;text-align:center;color:var(--mut);font-size:11px;margin:14px 0 10px}
+.or::before,.or::after{content:"";flex:1;height:1px;background:var(--bd)}
+.or span{padding:0 10px;text-transform:uppercase;letter-spacing:.1em}
 </style></head><body>
 <form class="card" method="POST" action="/api/mc-login">
 <div class="brand"><span class="dot"></span>Mission Control</div>
-<div class="sub">Enter the access password to continue.</div>
+<div class="sub">${safeGoogle ? 'Sign in to continue.' : 'Enter the access password to continue.'}</div>
 ${errHtml}
+${googleHtml}
 <input type="hidden" name="next" value="${safeNext}">
 <label for="p">Password</label>
 <input id="p" name="password" type="password" autocomplete="current-password" autofocus
