@@ -141,10 +141,16 @@ export function Sidebar() {
                     )}
                   </>
                 );
+                // 'self:PORT' resolves to whatever host claudeclaw is being
+                // viewed on (localhost on the laptop, the tailscale IP on the
+                // phone) — so the board link works without a hardcoded IP.
+                const resolvedHref = r.href?.startsWith('self:')
+                  ? `${location.protocol}//${location.hostname}:${r.href.slice(5)}`
+                  : r.href;
                 return r.href ? (
                   <a
                     key={r.path}
-                    href={r.href}
+                    href={resolvedHref}
                     target="_blank"
                     rel="noopener noreferrer"
                     class={itemClass}

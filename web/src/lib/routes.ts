@@ -73,6 +73,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/settings',   label: 'Settings',        section: 'system',       icon: Settings                  },
 
   // Mission Control quick-launch (external links, open in new tab)
+  { path: '/ext-board',    label: 'Session Board',   section: 'mc', icon: FolderKanban, href: 'self:3222' },
   { path: '/ext-aries',    label: 'ARIES',           section: 'mc', icon: Rocket,      href: 'http://100.91.39.122:1337' },
   { path: '/ext-mcv2',     label: 'MissionCtrl V2',  section: 'mc', icon: LayoutGrid,  href: 'http://100.91.39.122:3000' },
   { path: '/ext-kronos',   label: 'Kronos',          section: 'mc', icon: TrendingUp,  href: 'http://100.91.39.122:7070' },
