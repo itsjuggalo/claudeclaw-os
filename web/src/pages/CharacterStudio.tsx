@@ -243,6 +243,69 @@ function QaPanel() {
   );
 }
 
+function KeyframePanel() {
+  const { data } = useFetch<GallerySection[]>('/api/gallery', 60_000);
+  const [init, setInit] = useState<{ root: string; sub: string; name: string; url: string } | null>(null);
+  const [motion, setMotion] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
+
+  const sections = Array.isArray(data) ? data : [];
+  const stills = sections
+    .filter((s) => ['comfyui', 'generated', 'nano'].includes(s.root))
+    .flatMap((s) => s.files.filter((f) => f.type === 'image').slice(0, 8).map((f) => ({ ...f, root: s.root, sub: s.sub })));
+
+  async function animate() {
+    if (!init) return;
+    setBusy(true); setMsg(null); setResultUrl(null);
+    try {
+      const r = await apiPost<{ ok: boolean; url?: string; error?: string }>('/api/comfy/keyframe-video', {
+        init: { root: init.root, sub: init.sub, name: init.name }, prompt: motion || undefined,
+      });
+      if (r.ok && r.url) { setResultUrl(r.url); setMsg('✓ rendered'); }
+      else setMsg(r.error || 'failed');
+    } catch (e) { setMsg(String(e)); }
+    setBusy(false);
+  }
+
+  return (
+    <div style={{ border: '1px solid #2a2f3a', borderRadius: 12, padding: 16, background: '#14171f' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <Clapperboard size={18} style={{ color: '#ab47bc' }} />
+        <strong>Keyframe → motion</strong>
+        <span style={{ fontSize: 12, color: '#90a4ae' }}>— pin a still, add only motion (no character drift). Heavy GPU gen — preflight-gated.</span>
+      </div>
+      {stills.length === 0 ? (
+        <div style={{ fontSize: 13, color: '#6b7280', padding: '8px 0' }}>No stills to animate yet — make one in Create (a character keyframe is ideal).</div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '4px 0' }}>
+            {stills.slice(0, 16).map((g) => (
+              <button key={g.url} onClick={() => setInit(g)} disabled={busy} title={g.name}
+                style={{ flex: '0 0 auto', border: init?.name === g.name ? '2px solid #ab47bc' : '1px solid #333',
+                  borderRadius: 8, padding: 0, background: '#0d0f14', cursor: 'pointer', width: 72, height: 72, overflow: 'hidden' }}>
+                <img src={g.url} alt={g.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            <input value={motion} onInput={(e) => setMotion((e.target as HTMLInputElement).value)}
+              placeholder="motion only (e.g. a slow head turn, a blink) — leave blank for subtle"
+              style={{ flex: 1, minWidth: 220, padding: '8px 10px', borderRadius: 8, border: '1px solid #333',
+                background: '#0d0f14', color: '#e0e0e0', fontSize: 13 }} />
+            <button disabled={!init || busy} onClick={animate} style={btn('#ab47bc')}>
+              {busy ? <RefreshCw size={13} /> : <Clapperboard size={13} />} Animate keyframe
+            </button>
+          </div>
+          {msg && <div style={{ fontSize: 12, color: resultUrl ? '#66bb6a' : '#cfd3da', marginTop: 8 }}>{msg}</div>}
+          {resultUrl && <video src={resultUrl} controls style={{ marginTop: 10, maxWidth: 280, borderRadius: 8 }} />}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function CharacterStudio() {
   const { data, loading, error, refresh } = useFetch<{ ok: boolean; characters: Character[] }>('/api/characters', 30_000);
   const characters = data?.characters || [];
@@ -271,7 +334,8 @@ export function CharacterStudio() {
         </div>
       </div>
 
-      <div style={{ marginBottom: 24 }}><QaPanel /></div>
+      <div style={{ marginBottom: 16 }}><QaPanel /></div>
+      <div style={{ marginBottom: 24 }}><KeyframePanel /></div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
         <ImageIcon size={16} style={{ color: '#90a4ae' }} />

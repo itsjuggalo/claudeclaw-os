@@ -100,3 +100,33 @@ export function generateLocalVideo(opts: { prompt: string; frames?: number; step
   // transformer, so peak RAM fits the cgroup (the 2026-06-14 LTX OOM fix).
   return run(`${LG}/run-video-safe.sh`, args, /Video saved to (.+)/, (f) => `/api/gallery/file?root=video&sub=&name=${encodeURIComponent(f)}`, 1_200_000, `${LG}/LTX_READY`, 'LTX-Video');
 }
+
+// Keyframe drift-free video (DaForge no-drift method): pin the clip to a locked
+// keyframe and let LTX add ONLY motion on top — so a trained character stays
+// on-model for the whole clip instead of melting. One keyframe = subtle i2v; a
+// second (end) keyframe = first-last-frame interpolation (front+side → fill).
+// Reuses the SAME LTX weights as t2v (no new download) and the SAME 14G cgroup
+// guard (run-keyframe-safe.sh), so it's exactly as crash-safe as the t2v path.
+export function generateKeyframeVideo(opts: {
+  initImage: string; endImage?: string; prompt?: string;
+  frames?: number; steps?: number; seed?: number;
+}): Promise<LocalResult> {
+  if (!opts.initImage || !fs.existsSync(opts.initImage)) {
+    return Promise.resolve({ ok: false, error: 'Keyframe image not found.' });
+  }
+  if (opts.endImage && !fs.existsSync(opts.endImage)) {
+    return Promise.resolve({ ok: false, error: 'End keyframe not found.' });
+  }
+  // The keyframe sets the scene; the prompt describes only motion. Strip camera/
+  // tripod tokens (Rule 3) so the model doesn't render the object into the clip.
+  const raw = (opts.prompt || 'subtle natural motion: a slow breath, a blink, a small head turn').trim();
+  const prompt = applyGenRules({ prompt: raw, kind: 'video', hasLora: false }).prompt;
+  const frames = opts.frames && opts.frames > 0 ? Math.min(161, opts.frames) : 97;
+  const steps = opts.steps && opts.steps > 0 ? Math.min(60, opts.steps) : 40;
+  const args = ['--init-image', opts.initImage];
+  if (opts.endImage) args.push('--end-image', opts.endImage);
+  args.push('--frames', String(frames), '--steps', String(steps));
+  if (Number.isFinite(opts.seed as number)) args.push('--seed', String(opts.seed));
+  args.push('--', prompt);
+  return run(`${LG}/run-keyframe-safe.sh`, args, /Video saved to (.+)/, (f) => `/api/gallery/file?root=video&sub=&name=${encodeURIComponent(f)}`, 1_200_000, `${LG}/LTX_READY`, 'Keyframe video');
+}

@@ -27,7 +27,7 @@ import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
 import { getSkoolBuilds, readSkoolArtifact } from './skoolbuilds.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
 import { generateImage } from './generate.js';
-import { generateLocalImage, generateLocalVideo } from './localgen.js';
+import { generateLocalImage, generateLocalVideo, generateKeyframeVideo } from './localgen.js';
 import { generateHiggsfield, listHiggsfieldModels } from './higgsfield.js';
 import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
 import { readManifest, metaFor, upsertMeta, mergeMeta, normalizeFamily, loraCompat, readCurated, enrichedMetaFor, familyFromFilename, ModelMeta } from './modelmeta.js';
@@ -2159,6 +2159,30 @@ init();
     const r = await publishCharacter(c.req.param('name'));
     return c.json(r, r.ok ? 200 : 400);
   });
+  // Keyframe drift-free video: pin a clip to a locked keyframe (a gallery still)
+  // and let LTX add only motion (no character drift). One keyframe = subtle i2v;
+  // add an end keyframe for first-last-frame. Preflight-gated + 14G cgroup via
+  // generateKeyframeVideo (same crash-safety as t2v). Body: {init:{root,sub,name},
+  // end?:{root,sub,name}, prompt?, frames?, steps?, seed?}.
+  app.post('/api/comfy/keyframe-video', async (c) => {
+    const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const init = (b.init || {}) as { root?: string; sub?: string; name?: string };
+    const initPath = resolveGalleryFile(String(init.root || 'generated'), String(init.sub || ''), String(init.name || ''));
+    if (!initPath) return c.json({ ok: false, error: 'keyframe (init) not found' }, 404);
+    let endPath: string | undefined;
+    if (b.end && typeof b.end === 'object') {
+      const end = b.end as { root?: string; sub?: string; name?: string };
+      endPath = resolveGalleryFile(String(end.root || 'generated'), String(end.sub || ''), String(end.name || '')) || undefined;
+    }
+    const result = await generateKeyframeVideo({
+      initImage: initPath, endImage: endPath,
+      prompt: typeof b.prompt === 'string' ? b.prompt : undefined,
+      frames: Number(b.frames) || undefined, steps: Number(b.steps) || undefined,
+      seed: Number.isFinite(Number(b.seed)) ? Number(b.seed) : undefined,
+    });
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
   // Auto-QA a generated still/clip. Accepts a gallery {root,sub,name} (resolved
   // safely, same as /api/gallery/file) so it can't read arbitrary paths.
   app.post('/api/qa/review', async (c) => {

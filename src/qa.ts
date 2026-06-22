@@ -11,6 +11,10 @@ import path from 'path';
 const execFileAsync = promisify(execFile);
 const STUDIO = process.env.CHARACTER_STUDIO || '/AIWorkWSL/tools/character-studio';
 const QA = path.join(STUDIO, 'lib', 'qa_review.py');
+// The measured checks run on plain python3 (PIL + ffmpeg). The VLM "AI eye" needs
+// torch+transformers, which live in the trainer venv — so use that interpreter when
+// --vlm is requested AND it exists. Falls back to python3 (→ VLM reports unavailable).
+const VENV_PY = path.join(STUDIO, '.venv', 'bin', 'python');
 
 export interface QaIssue { code: string; severity: 'error' | 'warn' | 'info'; msg: string; }
 export interface QaVerdict {
@@ -37,9 +41,12 @@ export async function reviewGen(filePath: string, useVlm = false): Promise<QaVer
   if (!fs.existsSync(QA)) return FAIL('qa_review.py not found — Character Studio missing');
   const args = [QA, filePath];
   if (useVlm) args.push('--vlm');
+  // VLM pass loads a ~6GB model — give it the torch venv + a longer timeout.
+  const py = useVlm && fs.existsSync(VENV_PY) ? VENV_PY : 'python3';
+  const timeout = useVlm ? 180_000 : 60_000;
   try {
-    const { stdout } = await execFileAsync('python3', args, {
-      timeout: 60_000, maxBuffer: 4 * 1024 * 1024,
+    const { stdout } = await execFileAsync(py, args, {
+      timeout, maxBuffer: 4 * 1024 * 1024,
       env: { ...process.env, HOME: process.env.HOME || '/home/itsju' },
     });
     const v = JSON.parse(stdout.trim()) as QaVerdict;
