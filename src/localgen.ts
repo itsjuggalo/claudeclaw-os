@@ -16,6 +16,7 @@ import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { preflightGate } from './genguard.js';
+import { applyGenRules } from './genrules.js';
 
 const HOME = process.env.HOME || '/home/itsju';
 const LG = `${HOME}/01_ACTIVE/local-gen`;
@@ -71,8 +72,9 @@ async function run(cmd: string, cmdArgs: string[], saveRe: RegExp, urlFor: (file
 }
 
 export function generateLocalImage(opts: { prompt: string; model?: string; steps?: number; seed?: number }): Promise<LocalResult> {
-  const prompt = (opts.prompt || '').trim();
-  if (!prompt) return Promise.resolve({ ok: false, error: 'Prompt is required.' });
+  const raw = (opts.prompt || '').trim();
+  if (!raw) return Promise.resolve({ ok: false, error: 'Prompt is required.' });
+  const prompt = applyGenRules({ prompt: raw, kind: 'image', hasLora: false }).prompt;
   const model = opts.model === 'sd-turbo' ? 'sd-turbo' : 'sdxl-turbo';
   const steps = opts.steps && opts.steps > 0 ? Math.min(8, opts.steps) : 3;
   const args = ['--model', model, '--steps', String(steps)];
@@ -83,8 +85,10 @@ export function generateLocalImage(opts: { prompt: string; model?: string; steps
 }
 
 export function generateLocalVideo(opts: { prompt: string; frames?: number; steps?: number; seed?: number }): Promise<LocalResult> {
-  const prompt = (opts.prompt || '').trim();
-  if (!prompt) return Promise.resolve({ ok: false, error: 'Prompt is required.' });
+  const raw = (opts.prompt || '').trim();
+  if (!raw) return Promise.resolve({ ok: false, error: 'Prompt is required.' });
+  // Rule 3: strip camera/tripod tokens from motion prompts (they render the object).
+  const prompt = applyGenRules({ prompt: raw, kind: 'video', hasLora: false }).prompt;
   const frames = opts.frames && opts.frames > 0 ? Math.min(161, opts.frames) : 97;
   const steps = opts.steps && opts.steps > 0 ? Math.min(60, opts.steps) : 40;
   const args = ['--frames', String(frames), '--steps', String(steps)];

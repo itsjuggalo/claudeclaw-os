@@ -31,6 +31,7 @@ import { generateLocalImage, generateLocalVideo } from './localgen.js';
 import { generateHiggsfield, listHiggsfieldModels } from './higgsfield.js';
 import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
 import { readManifest, metaFor, upsertMeta, mergeMeta, normalizeFamily, loraCompat, readCurated, enrichedMetaFor, familyFromFilename, ModelMeta } from './modelmeta.js';
+import { applyGenRules, loraStrength } from './genrules.js';
 import { listLooks, saveUserLook, deleteUserLook } from './looks.js';
 import Database from 'better-sqlite3';
 import {
@@ -1761,7 +1762,10 @@ init();
       let clipRef:  [string, number] = ["4", 1];
       for (let i = 0; i < loraList.length; i++) {
         const nodeId = String(100 + i);
-        const strength = loraList[i].strength ?? 0.8;
+        // Rule 5: character/identity LoRAs default to ~0.95 (never lower — drifts
+        // identity); style LoRAs keep the prior 0.8 default. Explicit values honored.
+        const lmeta = metaFor(loraList[i].name, manifest);
+        const strength = loraStrength(loraList[i].strength, lmeta.category === 'character', lmeta.recommendedStrength);
         workflow[nodeId] = {
           inputs: { lora_name: loraList[i].name, strength_model: strength, strength_clip: strength, model: modelRef, clip: clipRef },
           class_type: "LoraLoader",
@@ -1780,8 +1784,15 @@ init();
         modelRef = [nodeId, 0];
         clipRef  = [nodeId, 1];
       }
-      workflow["6"] = { inputs: { text: prompt, clip: clipRef }, class_type: "CLIPTextEncode" };
-      workflow["7"] = { inputs: { text: body.negative_prompt || "deformed, ugly, blurry, low quality, bad anatomy, watermark, text", clip: clipRef }, class_type: "CLIPTextEncode" };
+      // ── Hard-rules pass (DaForgeLayer studio method): framing/lighting/cfg
+      // discipline applied to every gen so quality holds without the user
+      // remembering the footguns. cfg is 1.0 under fast/DMD2, else body.cfg.
+      const effCfg = fastMode ? 1.0 : (body.cfg ?? 7.0);
+      const baseNeg = body.negative_prompt || "deformed, ugly, blurry, low quality, bad anatomy, watermark, text";
+      const ruled = applyGenRules({ prompt, negative: baseNeg, cfg: effCfg, kind: 'image', hasLora: loraList.length > 0 });
+      if (ruled.notes.length) logger.info({ notes: ruled.notes }, 'gen hard-rules applied');
+      workflow["6"] = { inputs: { text: ruled.prompt, clip: clipRef }, class_type: "CLIPTextEncode" };
+      workflow["7"] = { inputs: { text: ruled.negative ?? "", clip: clipRef }, class_type: "CLIPTextEncode" };
       workflow["5"] = { inputs: { width: body.width ?? 512, height: body.height ?? 768, batch_size: 1 }, class_type: "EmptyLatentImage" };
       workflow["3"] = fastMode
         // DMD2 contract: cfg MUST be 1.0 (no CFG), lcm sampler, 4-8 steps.
