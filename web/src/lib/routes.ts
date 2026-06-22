@@ -6,7 +6,7 @@ import {
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
   Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot, Flame,
-  HeartPulse, DatabaseZap,
+  HeartPulse, DatabaseZap, Drama,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -36,6 +36,7 @@ export const ROUTES: RouteDef[] = [
   // Studio — creative / media
   { path: '/create',     label: 'Create',          section: 'studio',       icon: Wand2,         shortcut: 'g n' },
   { path: '/gallery',    label: 'Gallery',         section: 'studio',       icon: Images,        shortcut: 'g i' },
+  { path: '/characters', label: 'Character Studio', section: 'studio',      icon: Drama,         shortcut: 'g d' },
 
   // Intelligence — knowledge / AI
   { path: '/memories',   label: 'Memories',        section: 'intelligence', icon: Brain,         shortcut: 'g e' },

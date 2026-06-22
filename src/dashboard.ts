@@ -141,6 +141,8 @@ import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
 import { inspectAcpProviderRuntimeOptions, type AcpProviderRuntimeOptions } from './agent-engine/acp-adapter.js';
+import { listCharacters, getCharacter, configureCharacter, publishCharacter, trainCommandFor } from './character.js';
+import { reviewGen, qaSummary } from './qa.js';
 
 // Selectable/valid Claude models for the dashboard pickers and the model-set
 // endpoints. The current lineup is derived from the CLAUDE_MODEL_* config
@@ -2128,6 +2130,45 @@ init();
   app.get('/api/comfy/thumbs/refresh/:id', (c) => {
     const j = thumbJobs.get(c.req.param('id'));
     return j ? c.json({ ok: true, ...j }) : c.json({ ok: false, error: 'unknown job' }, 404);
+  });
+
+  // ── Character Studio — trained, reusable character LoRAs (local, SDXL) ────
+  // Read/manage the Character Studio (/AIWorkWSL/tools/character-studio). Training
+  // is a heavy GPU step owned by the CLI (returned as a command); these routes are
+  // light: list/status, write the kohya config, publish (symlink, C:-safe), and QA.
+  app.get('/api/characters', (c) => {
+    try { return c.json({ ok: true, characters: listCharacters() }); }
+    catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+  app.get('/api/characters/:name', (c) => {
+    const ch = getCharacter(c.req.param('name'));
+    if (!ch) return c.json({ ok: false, error: 'unknown character' }, 404);
+    return c.json({ ok: true, character: ch, trainCommand: trainCommandFor(ch.name) });
+  });
+  app.post('/api/characters/:name/config', async (c) => {
+    const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const r = await configureCharacter(
+      c.req.param('name'),
+      typeof b.base === 'string' ? b.base : undefined,
+      Number(b.res) || 768,
+      Number(b.steps) || 0,
+    );
+    return c.json(r, r.ok ? 200 : 400);
+  });
+  app.post('/api/characters/:name/publish', async (c) => {
+    const r = await publishCharacter(c.req.param('name'));
+    return c.json(r, r.ok ? 200 : 400);
+  });
+  // Auto-QA a generated still/clip. Accepts a gallery {root,sub,name} (resolved
+  // safely, same as /api/gallery/file) so it can't read arbitrary paths.
+  app.post('/api/qa/review', async (c) => {
+    const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const full = resolveGalleryFile(
+      String(b.root || 'generated'), String(b.sub || ''), String(b.name || ''),
+    );
+    if (!full) return c.json({ ok: false, error: 'file not found' }, 404);
+    const verdict = await reviewGen(full, b.vlm === true);
+    return c.json({ ok: true, verdict, summary: qaSummary(verdict) });
   });
 
   // ── Looks — curated checkpoint+LoRA presets for the Create page ──────────

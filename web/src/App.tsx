@@ -30,6 +30,7 @@ import { Gallery } from '@/pages/Gallery';
 import { SkoolBuilds } from '@/pages/SkoolBuilds';
 import { LewisTrading } from '@/pages/LewisTrading';
 import { Create } from '@/pages/Create';
+import { CharacterStudio } from '@/pages/CharacterStudio';
 import { Hermes } from '@/pages/Hermes';
 import { ClaudeOffice } from '@/pages/ClaudeOffice';
 import { TokenUsage } from '@/pages/TokenUsage';
@@ -94,6 +95,7 @@ export function App() {
           <Route path="/skool-builds"><SkoolBuilds /></Route>
           <Route path="/lewis-trading"><LewisTrading /></Route>
           <Route path="/create"><Create /></Route>
+          <Route path="/characters"><CharacterStudio /></Route>
           <Route path="/hermes"><Hermes /></Route>
           <Route path="/warroom"><WarRoom /></Route>
           <Route path="/office"><ClaudeOffice /></Route>
