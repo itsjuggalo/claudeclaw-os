@@ -21,7 +21,10 @@ const DEFAULT_WORKSPACE_NAME = 'ClaudeClaw';
 // Secondary sections start collapsed so the nav stays short out of the box;
 // the trader-focused groups (workspace / intelligence / trade) stay open. The
 // user's own toggles override this and persist server-side.
-const DEFAULT_COLLAPSED: string[] = ['collaborate', 'system', 'mc', 'ops'];
+// All sections COLLAPSED by default (Mike's call 06-23) — nav opens compact
+// (headers only); the user's own toggles still override + persist server-side.
+// Keep in sync with SECTIONS in components/Sidebar.tsx.
+const DEFAULT_COLLAPSED: string[] = ['workspace', 'studio', 'intelligence', 'trade', 'collaborate', 'system', 'mc', 'mcctrl', 'ops', 'wellness'];
 
 // hotkey mod is 'auto' by default; resolveModKey() consults navigator.platform
 // when this is 'auto' so Mac users get ⌘ and everyone else gets Ctrl.
@@ -51,10 +54,10 @@ export async function hydratePersonalization(): Promise<void> {
     if (data?.hotkey_mod === 'meta' || data?.hotkey_mod === 'ctrl' || data?.hotkey_mod === 'auto') {
       hotkeyMod.value = data.hotkey_mod;
     }
-    if (typeof data?.sidebar_collapsed_sections === 'string') {
-      const parsed = safeParseArray(data.sidebar_collapsed_sections);
-      if (parsed) collapsedSections.value = new Set(parsed);
-    }
+    // Deliberately NOT hydrated from the server (Mike's call 06-23): every fresh
+    // load starts with all sections collapsed (DEFAULT_COLLAPSED) so the nav is
+    // never messy. In-session toggles still expand what you want; a reload returns
+    // to the clean collapsed nav. (Other settings below still hydrate normally.)
     if (typeof data?.mission_column_order === 'string') {
       const parsed = safeParseArray(data.mission_column_order);
       if (parsed) missionColumnOrder.value = parsed;
