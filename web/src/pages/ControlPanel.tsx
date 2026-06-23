@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { SlidersHorizontal, RefreshCw, AlertTriangle, Zap, ShieldAlert } from 'lucide-preact';
+import { SlidersHorizontal, RefreshCw, AlertTriangle, Zap, ShieldAlert, Server, RotateCw } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Toggle } from '@/components/Toggle';
@@ -19,6 +19,7 @@ interface ControlRow {
   description: string;
   dangerWhen?: DangerWhen;
   dangerVerb?: string;
+  actionLabel?: string;
   on: boolean;
   detail?: string;
 }
@@ -40,7 +41,10 @@ function statusTone(row: ControlRow): { color: string; bg: string; text: string 
   if (row.kind === 'trading') {
     return row.on ? { ...green, text: 'TRADING' } : { ...red, text: 'HALTED' };
   }
-  // media / service / system
+  if (row.kind === 'service') {
+    return row.on ? { ...green, text: 'ONLINE' } : { ...red, text: 'DOWN' };
+  }
+  // media / system
   return row.on ? { ...green, text: 'ON' } : { ...gray, text: 'OFF' };
 }
 
@@ -104,6 +108,7 @@ export function ControlPanel() {
         {groups.map((group) => {
           const rows = controls.filter((c) => c.group === group);
           const isTrading = rows.some((r) => r.kind === 'trading');
+          const isService = !isTrading && rows.some((r) => r.kind === 'service');
           return (
             <section
               key={group}
@@ -113,7 +118,11 @@ export function ControlPanel() {
                 : 'border-color:var(--color-border)'}
             >
               <div class="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-elevated)]">
-                {isTrading ? <ShieldAlert size={14} class="text-[#ef4444]" /> : <SlidersHorizontal size={14} class="text-[var(--color-text-muted)]" />}
+                {isTrading
+                  ? <ShieldAlert size={14} class="text-[#ef4444]" />
+                  : isService
+                    ? <Server size={14} class="text-[var(--color-text-muted)]" />
+                    : <SlidersHorizontal size={14} class="text-[var(--color-text-muted)]" />}
                 <span class="text-[12px] font-semibold tracking-wide uppercase text-[var(--color-text-muted)]">{group}</span>
               </div>
 
@@ -138,7 +147,7 @@ export function ControlPanel() {
 
                     {row.type === 'toggle' ? (
                       <Toggle on={row.on} disabled={rowBusy} onChange={() => requestToggle(row)} ariaLabel={row.label} />
-                    ) : (
+                    ) : row.kind === 'trading' ? (
                       <button
                         type="button"
                         disabled={rowBusy}
@@ -146,7 +155,16 @@ export function ControlPanel() {
                         class="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-[12px] font-semibold text-white disabled:opacity-50"
                         style="background:#ef4444"
                       >
-                        <Zap size={13} /> {row.on ? 'Halted' : 'Halt'}
+                        <Zap size={13} /> {row.on ? 'Halted' : (row.actionLabel || 'Halt')}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={rowBusy}
+                        onClick={() => requestAction(row)}
+                        class="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-[12px] font-semibold disabled:opacity-50 border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
+                      >
+                        <RotateCw size={13} class={rowBusy ? 'animate-spin' : ''} /> {row.actionLabel || 'Run'}
                       </button>
                     )}
                   </div>

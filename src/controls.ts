@@ -10,13 +10,33 @@
  * (turning a killswitch OFF) is danger-gated so a stray tap can't un-halt the desk.
  */
 import fs from 'fs';
-import { spawn, execSync } from 'child_process';
+import path from 'path';
+import { spawn, execSync, execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileP = promisify(execFile);
 
 const HOME = process.env.HOME || '/home/itsju';
 const STATE = `${HOME}/.openclaw/workspace/state`;
 const KEEP_AWAKE = `${STATE}/comfyui_keep_awake`;
 const BOBA_KS = `${STATE}/boba_killswitch`;
 const JAZZY_KS = `${STATE}/jazzy_killswitch`;
+// Decipher (the live cron executor) has its OWN gate: decipher_HALT freezes NEW
+// buys while open-position exits + monitoring keep running. That's the lever we
+// want — never the blunt "kill the daemon" (there is no daemon; it's cron).
+const DECIPHER_HALT = `${HOME}/.openclaw/decipher_HALT`;
+const GEN_MODE_STATE = '/tmp/gen-mode-state.json';
+
+// pm2 lives in the same nvm bin dir as the node running us. Resolve absolutely so
+// a stripped PATH can't make `pm2` un-findable; pass an enriched PATH to children
+// (gen-mode shells out to pm2 itself).
+const NODE_BIN_DIR = path.dirname(process.execPath);
+const PM2 = fs.existsSync(path.join(NODE_BIN_DIR, 'pm2')) ? path.join(NODE_BIN_DIR, 'pm2') : 'pm2';
+const CHILD_ENV = { ...process.env, PATH: `${NODE_BIN_DIR}:${process.env.PATH || ''}` };
+
+// Only these PM2 processes may be restarted from the panel. Restarting anything
+// else (live-flow relays, the panel itself) is intentionally NOT possible here.
+const RESTARTABLE = new Set(['missionctrl', 'mc-telegram-listener', 'hermes-gateway', 'rh-session-keeper']);
 
 export type ControlKind = 'media' | 'trading' | 'service' | 'system';
 /** Which direction of a control is destructive and must be confirmed. */
@@ -38,6 +58,8 @@ export interface ControlMeta {
   dangerWhen?: DangerWhen;
   /** Button/confirm verb for the dangerous direction (e.g. "Resume Boba"). */
   dangerVerb?: string;
+  /** For `action` controls: the button label (e.g. "Restart"). Defaults to "Run". */
+  actionLabel?: string;
 }
 
 interface ControlDef extends ControlMeta {
@@ -91,6 +113,55 @@ function comfyStop(): void {
   try { execSync('rm -f /tmp/heavy-gpu-job.lock 2>/dev/null || true'); } catch { /* ignore */ }
 }
 
+// ── gen-mode (free the box for a heavy generation) ───────────────────────────
+async function genMode(on: boolean): Promise<void> {
+  // Awaited: pausing/restoring ~11 pm2 procs takes a few seconds; the caller
+  // wants the returned state to be truthful. 90s ceiling guards a stuck pm2.
+  await execFileP('bash', [`${HOME}/bin/gen-mode`, on ? 'on' : 'off'], {
+    env: CHILD_ENV, timeout: 90_000, maxBuffer: 4 * 1024 * 1024,
+  });
+}
+
+// ── pm2 status (cached) + restart (allowlist-only) ───────────────────────────
+type Pm2Stat = { status: string; restarts: number };
+let pm2Cache: { at: number; map: Record<string, Pm2Stat> } | null = null;
+let pm2InFlight: Promise<Record<string, Pm2Stat>> | null = null;
+
+/** One `pm2 jlist`, cached 4s + shared across concurrent callers, so polling N
+ *  service controls every 5s never spawns N pm2 processes. */
+async function pm2StatusMap(): Promise<Record<string, Pm2Stat>> {
+  if (pm2Cache && Date.now() - pm2Cache.at < 4000) return pm2Cache.map;
+  if (pm2InFlight) return pm2InFlight;
+  pm2InFlight = (async () => {
+    try {
+      const { stdout } = await execFileP(PM2, ['jlist'], { env: CHILD_ENV, maxBuffer: 16 * 1024 * 1024 });
+      const arr = JSON.parse(stdout) as Array<{ name: string; pm2_env?: { status?: string; restart_time?: number } }>;
+      const map: Record<string, Pm2Stat> = {};
+      for (const p of arr) map[p.name] = { status: p.pm2_env?.status || 'unknown', restarts: p.pm2_env?.restart_time ?? 0 };
+      pm2Cache = { at: Date.now(), map };
+      return map;
+    } catch {
+      return pm2Cache?.map || {};
+    } finally {
+      pm2InFlight = null;
+    }
+  })();
+  return pm2InFlight;
+}
+
+async function pm2Restart(name: string): Promise<void> {
+  if (!RESTARTABLE.has(name)) throw new Error(`not restartable: ${name}`);
+  await execFileP(PM2, ['restart', name, '--update-env'], { env: CHILD_ENV, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
+  pm2Cache = null; // bust so the next poll reflects the fresh restart count
+}
+
+/** Service status row backed by live pm2 state. */
+async function svc(id: string, pm2name: string): Promise<ControlState> {
+  const st = (await pm2StatusMap())[pm2name];
+  const online = st?.status === 'online';
+  return { id, on: online, detail: st ? `${st.status} · ↺${st.restarts}` : 'not found' };
+}
+
 // ── the registry ─────────────────────────────────────────────────────────────
 // To add a control: append one entry. `status` probes live state; `apply`
 // effects the change. Set dangerWhen+dangerVerb for anything that needs a
@@ -121,6 +192,19 @@ const CONTROLS: ControlDef[] = [
       return { id: 'comfyui-keep-awake', on, detail: on ? 'auto-stop OFF' : 'auto-stops after 30m idle' };
     },
     apply: (on) => { if (on) touch(KEEP_AWAKE); else rm(KEEP_AWAKE); },
+  },
+  {
+    id: 'gen-mode',
+    label: 'Gen Mode — free the box',
+    group: 'Media & GPU',
+    kind: 'media',
+    type: 'toggle',
+    description: 'Pauses ~11 non-critical services (kronos, n8n, kb-server, uptime-kuma…) to free VRAM/RAM for a heavy generation. Trading + dashboards stay alive. Off restores them.',
+    status: () => {
+      const on = fileExists(GEN_MODE_STATE);
+      return { id: 'gen-mode', on, detail: on ? 'paused for gens' : 'normal — all services up' };
+    },
+    apply: (on) => genMode(on),
   },
   {
     id: 'boba-killswitch',
@@ -158,19 +242,82 @@ const CONTROLS: ControlDef[] = [
     apply: (on) => { if (on) rm(JAZZY_KS); else touch(JAZZY_KS); },
   },
   {
+    id: 'decipher-buys',
+    label: 'Decipher — live buys',
+    group: 'Trading Safety',
+    kind: 'trading',
+    type: 'toggle',
+    description: 'ON = the decipher executor places new live (paper) buys each cycle. OFF = freeze NEW buys only — open-position exits & monitoring keep running.',
+    dangerWhen: 'on',
+    dangerVerb: 'Resume Decipher buys',
+    status: () => {
+      const halted = fileExists(DECIPHER_HALT);
+      return { id: 'decipher-buys', on: !halted, detail: halted ? '🔴 buys frozen (exits live)' : 'buying enabled' };
+    },
+    // on=true → resume (remove HALT, DANGER). on=false → freeze new buys.
+    apply: (on) => { if (on) rm(DECIPHER_HALT); else touch(DECIPHER_HALT); },
+  },
+  {
     id: 'halt-all',
     label: 'HALT ALL TRADING',
     group: 'Trading Safety',
     kind: 'trading',
     type: 'action',
-    description: 'Panic button — sets both Boba & Jazzy killswitches at once.',
+    actionLabel: 'Halt',
+    description: 'Panic button — freezes Boba & Jazzy decision cycles AND Decipher live buys at once. Open-position exits keep running.',
     dangerWhen: 'always',
     dangerVerb: 'Halt everything now',
     status: () => {
-      const on = fileExists(BOBA_KS) && fileExists(JAZZY_KS);
+      const on = fileExists(BOBA_KS) && fileExists(JAZZY_KS) && fileExists(DECIPHER_HALT);
       return { id: 'halt-all', on, detail: on ? 'all desks halted' : '' };
     },
-    apply: () => { touch(BOBA_KS); touch(JAZZY_KS); },
+    apply: () => { touch(BOBA_KS); touch(JAZZY_KS); touch(DECIPHER_HALT); },
+  },
+
+  // ── Services — restart a wedged process from your phone (allowlist-only) ──
+  {
+    id: 'restart-missionctrl',
+    label: 'MissionCtrl — :3000 dashboard + pipeline',
+    group: 'Services',
+    kind: 'service',
+    type: 'action',
+    actionLabel: 'Restart',
+    description: 'Kick the :3000 site + pipeline server if it wedges (historically the flakiest).',
+    status: () => svc('restart-missionctrl', 'missionctrl'),
+    apply: () => pm2Restart('missionctrl'),
+  },
+  {
+    id: 'restart-tg-listener',
+    label: 'Telegram signal listener',
+    group: 'Services',
+    kind: 'service',
+    type: 'action',
+    actionLabel: 'Restart',
+    description: 'Restart the MTProto signal intake if Telegram signals stop flowing in.',
+    status: () => svc('restart-tg-listener', 'mc-telegram-listener'),
+    apply: () => pm2Restart('mc-telegram-listener'),
+  },
+  {
+    id: 'restart-hermes',
+    label: 'Hermes — LLM gateway',
+    group: 'Services',
+    kind: 'service',
+    type: 'action',
+    actionLabel: 'Restart',
+    description: 'Restart the shared LLM gateway if agent calls hang or error.',
+    status: () => svc('restart-hermes', 'hermes-gateway'),
+    apply: () => pm2Restart('hermes-gateway'),
+  },
+  {
+    id: 'restart-rh-session',
+    label: 'Robinhood session keeper',
+    group: 'Services',
+    kind: 'service',
+    type: 'action',
+    actionLabel: 'Restart',
+    description: 'Restart the RH session daemon when the token drops and broker reads go stale.',
+    status: () => svc('restart-rh-session', 'rh-session-keeper'),
+    apply: () => pm2Restart('rh-session-keeper'),
   },
 ];
 
