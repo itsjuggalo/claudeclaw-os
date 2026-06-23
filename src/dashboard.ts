@@ -33,6 +33,7 @@ import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js
 import { readManifest, metaFor, upsertMeta, mergeMeta, normalizeFamily, loraCompat, readCurated, enrichedMetaFor, familyFromFilename, ModelMeta } from './modelmeta.js';
 import { applyGenRules, loraStrength } from './genrules.js';
 import { listLooks, saveUserLook, deleteUserLook } from './looks.js';
+import { readControlPanel, applyControl } from './controls.js';
 import Database from 'better-sqlite3';
 import {
   getAllScheduledTasks,
@@ -1453,6 +1454,29 @@ init();
       return c.json({ running, vram, checkpoints, loras, url: running ? 'http://localhost:8188' : null });
     } catch (e) {
       return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Master Control Panel (/control) — phone-first operator toggles ──
+  // Registry lives in src/controls.ts; add a control there and it shows up here.
+  // These routes sit behind the same mc-access gate as the rest of /api/* (remote
+  // needs the cookie; loopback open), so only an authed device can flip anything.
+  app.get('/api/control/state', async (c) => {
+    try {
+      return c.json({ controls: await readControlPanel() });
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+  app.post('/api/control/:id', async (c) => {
+    try {
+      const id = c.req.param('id');
+      const body = (await c.req.json().catch(() => ({}))) as { on?: boolean; confirm?: boolean };
+      const on = body.on !== false; // default true (actions / enable)
+      const result = await applyControl(id, on, body.confirm === true);
+      return c.json(result, result.ok ? 200 : (result.error === 'confirm required' ? 409 : 400));
+    } catch (e) {
+      return c.json({ ok: false, error: String(e) }, 500);
     }
   });
 

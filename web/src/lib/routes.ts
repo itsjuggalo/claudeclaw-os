@@ -6,7 +6,7 @@ import {
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
   Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot, Flame,
-  HeartPulse, DatabaseZap, Drama,
+  HeartPulse, DatabaseZap, Drama, SlidersHorizontal,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -29,6 +29,7 @@ export interface RouteDef {
 // "Voice config" sub-tab and is reachable via /warroom?mode=voices.
 export const ROUTES: RouteDef[] = [
   { path: '/mission',    label: 'Mission Control', section: 'workspace',    icon: LayoutGrid,    shortcut: 'g m' },
+  { path: '/control',    label: 'Control Panel',   section: 'workspace',    icon: SlidersHorizontal, shortcut: 'g .' },
   { path: '/scheduled',  label: 'Scheduled',       section: 'workspace',    icon: ListTodo,      shortcut: 'g s' },
   { path: '/agents',     label: 'Agents',          section: 'workspace',    icon: Users,         shortcut: 'g a' },
   { path: '/chat',       label: 'Chat',            section: 'workspace',    icon: MessageSquare, shortcut: 'g c' },
