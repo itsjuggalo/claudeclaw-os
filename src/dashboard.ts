@@ -417,16 +417,20 @@ function safeTokenEqual(provided: string | null | undefined, expected: string | 
 }
 
 // ── mc-access (fleet password gate) helpers ─────────────────────────────────
-// Master passphrase is read from disk at REQUEST time so `mc-grant set-password`
+// Master passphrases are read from disk at REQUEST time so `mc-grant set-password`
 // takes effect with no rebuild/restart. /home/ubuntu → /home/itsju (symlink).
-function readMasterPassword(): string {
+// MULTIPLE values supported (newline / comma / semicolon separated) — ANY one
+// unlocks, so outsiders can't tell which of the N strings is "the" password.
+function readMasterPasswords(): string[] {
+  let raw = '';
   for (const p of [
     '/home/itsju/.openclaw/secrets/mc-access-password',
     '/home/ubuntu/.openclaw/secrets/mc-access-password',
   ]) {
-    try { const v = fs.readFileSync(p, 'utf-8').trim(); if (v) return v; } catch { /* next */ }
+    try { const v = fs.readFileSync(p, 'utf-8').trim(); if (v) { raw = v; break; } } catch { /* next */ }
   }
-  return (process.env.MC_ACCESS_PASSWORD || '').trim();
+  if (!raw) raw = (process.env.MC_ACCESS_PASSWORD || '').trim();
+  return raw.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
 }
 function safeStrEqual(a: string, b: string): boolean {
   if (!a || !b || a.length !== b.length) return false;
@@ -609,9 +613,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       ? await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET)
       : null;
 
-    // m123 (via the mc_access cookie) is the SOLE credential (Mike's call 06-17).
-    // The legacy DASHBOARD_TOKEN no longer authenticates the site. Local scripts
-    // reach claudeclaw over loopback, which stays open.
+    // The mc_access cookie (set after entering any one of the fleet master
+    // passwords — see readMasterPasswords) is the SOLE credential (Mike's call
+    // 06-17). The legacy DASHBOARD_TOKEN no longer authenticates the site. Local
+    // scripts reach claudeclaw over loopback, which stays open.
     const authed = gateOff || local || !!mc;
 
     // Slide the master cookie so the device stays remembered.
@@ -678,10 +683,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       if (v && v.kind === 'guest') { kind = 'guest'; exp = v.exp; label = v.label; }
     }
     if (!kind && password) {
-      const master = readMasterPassword();
-      // Master password is case-INSENSITIVE by design (Mike's call). Guest tokens
-      // above stay exact (HMAC). Lowercasing preserves length for the timing-safe cmp.
-      if (master && safeStrEqual(password.toLowerCase(), master.toLowerCase())) kind = 'master';
+      // Master passwords are case-INSENSITIVE by design (Mike's call) and MULTIPLE
+      // values are accepted — ANY one unlocks. Guest tokens above stay exact (HMAC).
+      // Lowercasing preserves length for the timing-safe cmp.
+      const pw = password.toLowerCase();
+      if (readMasterPasswords().some((m) => safeStrEqual(pw, m.toLowerCase()))) kind = 'master';
     }
 
     if (!kind) {
