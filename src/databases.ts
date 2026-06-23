@@ -761,6 +761,7 @@ export interface QuizBankItem {
   clipUrl: string; stillUrl: string; videoId: string;
   technique: string; region: string; caption: string;
   difficulty: string; lesson: string; course: string;
+  regionConfidence?: number; // 0-1, from the vision re-audit; low-conf cards are deprioritised in the quiz
 }
 export function kbQuizBank(id: string): { items: QuizBankItem[] } {
   const dir = getKbDir(id);
@@ -768,20 +769,22 @@ export function kbQuizBank(id: string): { items: QuizBankItem[] } {
   const bankFile = join(dir, 'anatomy', 'quiz_bank.json');
   if (!existsSync(bankFile)) return { items: [] };
   try {
-    const raw = JSON.parse(readFileSync(bankFile, 'utf8')) as Array<Record<string, string>>;
+    const raw = JSON.parse(readFileSync(bankFile, 'utf8')) as Array<Record<string, unknown>>;
     const items: QuizBankItem[] = [];
+    const str = (v: unknown) => (typeof v === 'string' ? v : '');
     for (const e of raw) {
-      const clipFile = (e.clip || '').split('/').pop() || '';
-      const stillFile = (e.still || '').split('/').pop() || '';
-      const videoId = (e.still || '').split('/').slice(-2, -1)[0] || '';
+      const clipFile = str(e.clip).split('/').pop() || '';
+      const stillFile = str(e.still).split('/').pop() || '';
+      const videoId = str(e.still).split('/').slice(-2, -1)[0] || '';
       if (!clipFile || !stillFile || !videoId) continue;
       items.push({
         clipUrl: `/api/databases/kb/${id}/anatomy/clip/${clipFile}`,
         stillUrl: `/api/databases/kb/${id}/anatomy/frames/${videoId}/${stillFile}`,
         videoId,
-        technique: e.technique || '', region: e.region || '',
-        caption: e.caption || '', difficulty: e.difficulty || 'medium',
-        lesson: e.lesson || '', course: e.course || '',
+        technique: str(e.technique), region: str(e.region),
+        caption: str(e.caption), difficulty: str(e.difficulty) || 'medium',
+        lesson: str(e.lesson), course: str(e.course),
+        regionConfidence: typeof e.regionConfidence === 'number' ? e.regionConfidence : undefined,
       });
     }
     return { items };

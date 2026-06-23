@@ -53,3 +53,36 @@ export const ERIK_REGIONS: ErikRegion[] = [
 
 export const REGION_BY_KEY: Record<string, ErikRegion> =
   Object.fromEntries(ERIK_REGIONS.map((r) => [r.key, r]));
+
+export const LABEL_BY_KEY: Record<string, string> =
+  Object.fromEntries(ERIK_REGIONS.map((r) => [r.key, r.label]));
+export const KEY_BY_LABEL: Record<string, string> =
+  Object.fromEntries(ERIK_REGIONS.map((r) => [r.label, r.key]));
+
+// Anatomically-adjacent / easily-confused region pairs. Used by the "Spot the
+// region" quiz to (a) avoid offering near-synonym distractors (so the 4 chips are
+// clearly distinct and answerable from a clip) and (b) grade a neighbouring guess
+// as "close" (amber) instead of a hard miss. Bidirectional; keys are region keys.
+export const REGION_NEIGHBORS: Record<string, string[]> = {
+  'head/face': ['jaw/TMJ', 'neck'],
+  'jaw/TMJ': ['head/face', 'neck'],
+  'neck': ['head/face', 'jaw/TMJ', 'shoulder', 'thoracic/ribs'],
+  'shoulder': ['neck', 'arm', 'thoracic/ribs'],
+  'arm': ['shoulder', 'elbow'],
+  'elbow': ['arm', 'wrist/hand'],
+  'wrist/hand': ['elbow'],
+  'thoracic/ribs': ['neck', 'shoulder', 'spine/general', 'low back'],
+  'spine/general': ['thoracic/ribs', 'low back', 'neck'],
+  'core/abdomen': ['low back', 'pelvis/SI', 'thoracic/ribs'],
+  'low back': ['thoracic/ribs', 'spine/general', 'pelvis/SI', 'hip/glutes', 'core/abdomen'],
+  'pelvis/SI': ['low back', 'hip/glutes', 'core/abdomen'],
+  'hip/glutes': ['pelvis/SI', 'low back', 'knee'],
+  'knee': ['hip/glutes', 'foot/ankle'],
+  'foot/ankle': ['knee'],
+};
+
+// Are two region KEYS adjacent (one is in the other's neighbour set)?
+export function regionsAreNeighbors(a: string, b: string): boolean {
+  if (!a || !b || a === b) return false;
+  return (REGION_NEIGHBORS[a] || []).includes(b) || (REGION_NEIGHBORS[b] || []).includes(a);
+}

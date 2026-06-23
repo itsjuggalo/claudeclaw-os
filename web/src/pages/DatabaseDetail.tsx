@@ -16,6 +16,7 @@ import { ExploreTab } from '@/components/erik/ExploreTab';
 import { ConditionsTab } from '@/components/erik/ConditionsTab';
 import { TechniquePlayer } from '@/components/erik/TechniquePlayer';
 import { ErikQuiz } from '@/components/erik/ErikQuiz';
+import { ErikLibrary } from '@/components/erik/ErikLibrary';
 import { ClayQuiz } from '@/components/clay/ClayQuiz';
 import { ClayExamples } from '@/components/clay/ClayExamples';
 import { useDebouncedValue } from '@/lib/useDebounce';
@@ -727,6 +728,30 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
     setTab('search');
   }
 
+  // Cross-tab deep-link navigation: set the URL params the target tab reads on
+  // mount (?region=, ?technique=, ?quizmode=…), then switch tabs. Used by the
+  // quiz reveal ("Explore this region" / "See full technique") and the Library.
+  function goTo(t: KbTab, params: Record<string, string> = {}) {
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set('tab', t);
+      ['region', 'condition', 'technique', 'quizmode', 'reading'].forEach((k) => u.searchParams.delete(k));
+      for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+      window.history.replaceState({}, '', u.toString());
+    } catch { /* ignore */ }
+    setTab(t);
+  }
+
+  // First-visit onboarding strip (Erik Dalton page only), dismissible per device.
+  const [showIntro, setShowIntro] = useState(() => {
+    try { return item.id === 'erikdalton' && localStorage.getItem('erik-intro-dismissed') !== '1'; }
+    catch { return item.id === 'erikdalton'; }
+  });
+  function dismissIntro() {
+    setShowIntro(false);
+    try { localStorage.setItem('erik-intro-dismissed', '1'); } catch { /* ignore */ }
+  }
+
   async function runAsk() {
     if (!question.trim()) return;
     setAsking(true);
@@ -805,12 +830,28 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             {isClayTrader && <Tab label="Quiz" active={tab === 'quiz'} onClick={() => setTab('quiz')} />}
             {item.askable && <Tab label="Ask" active={tab === 'ask'} onClick={() => setTab('ask')} />}
             <Tab label="Search" active={tab === 'search'} onClick={() => setTab('search')} />
-            <Tab label="Sources" active={tab === 'sources'} onClick={() => setTab('sources')} />
+            <Tab label={isErikDalton ? 'Library' : 'Sources'} active={tab === 'sources'} onClick={() => setTab('sources')} />
           </>
         }
       />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '20px 24px', maxWidth: '900px', margin: '0 auto' }}>
+
+          {isErikDalton && showIntro && (
+            <div style={{ position: 'relative', marginBottom: '18px', padding: '14px 16px', border: '1px solid var(--color-accent)', borderRadius: '12px', background: 'color-mix(in srgb, var(--color-accent) 8%, transparent)' }}>
+              <button type="button" onClick={dismissIntro} aria-label="Dismiss"
+                style={{ position: 'absolute', top: '8px', right: '10px', background: 'none', border: 'none', color: 'var(--color-text-faint)', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }}>×</button>
+              <div style={{ fontSize: '14px', fontWeight: 800, color: 'var(--color-text)', marginBottom: '6px' }}>👋 Learn Erik Dalton's bodywork — start anywhere</div>
+              <div style={{ fontSize: '12.5px', color: 'var(--color-text-muted)', lineHeight: 1.6, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '2px 18px' }}>
+                <div><b style={{ color: 'var(--color-text)' }}>Explore</b> — tap a body region to see its muscles & techniques.</div>
+                <div><b style={{ color: 'var(--color-text)' }}>Conditions</b> — start from a client complaint (sciatica, frozen shoulder…).</div>
+                <div><b style={{ color: 'var(--color-text)' }}>Techniques</b> — step through each lesson frame-by-frame with Erik's voice.</div>
+                <div><b style={{ color: 'var(--color-text)' }}>Quiz</b> — test yourself: watch a clip, name the body area worked.</div>
+                <div><b style={{ color: 'var(--color-text)' }}>Library</b> — browse every course & lesson.</div>
+                <div><b style={{ color: 'var(--color-text)' }}>Search / Ask</b> — find or ask anything across the library.</div>
+              </div>
+            </div>
+          )}
 
           {tab === 'explore' && (
             <ExploreTab itemId={item.id} anatomy={anatomy} videosMap={videosMap} />
@@ -825,7 +866,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
           )}
 
           {tab === 'quiz' && isErikDalton && (
-            <ErikQuiz anatomy={anatomy} itemId={item.id} videosMap={videosMap} />
+            <ErikQuiz anatomy={anatomy} itemId={item.id} videosMap={videosMap} onNavigate={(t, p) => goTo(t as KbTab, p)} />
           )}
 
           {tab === 'examples' && isClayTrader && (
@@ -1034,7 +1075,11 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             </>
           )}
 
-          {tab === 'sources' && (
+          {tab === 'sources' && isErikDalton && (
+            <ErikLibrary videosMap={videosMap} onOpen={(id) => goTo('techniques', { technique: id })} />
+          )}
+
+          {tab === 'sources' && !isErikDalton && (
             <>
               <div style={{
                 background: 'var(--color-card)', border: '1px solid var(--color-border)',

@@ -42,6 +42,10 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
   const [selected, setSelected] = useState<string | null>(initialRegion);
   const region = selected ? REGION_BY_KEY[selected] : null;
 
+  // The 3D atlas is ~14 MB + Three.js — heavy on phones. Auto-load on wide
+  // screens; on mobile show the light 2D body map and load 3D only on tap.
+  const [show3d, setShow3d] = useState(() => { try { return window.innerWidth >= 700; } catch { return true; } });
+
   // Lessons for the selected region (warm KB search).
   const [lessons, setLessons] = useState<KbHit[]>([]);
   const [loadingLessons, setLoadingLessons] = useState(false);
@@ -125,15 +129,24 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
       </div>
 
       {/* Interactive 3D body — the headline learning surface. Shares the same
-          selected/onSelect state as the chips and 2D map below. */}
+          selected/onSelect state as the chips and 2D map below. On mobile it's
+          opt-in (the 2D map below works the same) so phones don't auto-pull ~14 MB. */}
       <div style={{ maxWidth: '460px', marginBottom: '18px' }}>
-        <Suspense fallback={
-          <div style={{ height: '420px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--color-border)', borderRadius: '12px', color: 'var(--color-text-faint)', fontSize: '13px' }}>
-            Loading 3D model…
-          </div>
-        }>
-          <AnatomyViewer selected={selected} onSelect={(k) => setSelected((cur) => (cur === k ? null : k))} />
-        </Suspense>
+        {show3d ? (
+          <Suspense fallback={
+            <div style={{ height: '420px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--color-border)', borderRadius: '12px', color: 'var(--color-text-faint)', fontSize: '13px' }}>
+              Loading 3D model…
+            </div>
+          }>
+            <AnatomyViewer selected={selected} onSelect={(k) => setSelected((cur) => (cur === k ? null : k))} />
+          </Suspense>
+        ) : (
+          <button type="button" onClick={() => setShow3d(true)}
+            style={{ width: '100%', padding: '16px', border: '1px dashed var(--color-border)', borderRadius: '12px', background: 'var(--color-card)', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '13px', lineHeight: 1.5 }}>
+            <div style={{ fontSize: '15px', fontWeight: 700, color: ACCENT, marginBottom: '2px' }}>🧍 Load 3D anatomy model</div>
+            ~14 MB — or just use the flat body map below (it works the same).
+          </button>
+        )}
       </div>
 
       {/* Region quick-chips (mobile-friendly, no precise clicking needed) */}

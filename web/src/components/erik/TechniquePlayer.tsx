@@ -65,6 +65,7 @@ export function TechniquePlayer({ itemId, videosMap }: {
   videosMap: Record<string, VideoFrameData>;
 }) {
   const [openCourse, setOpenCourse] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
   const [videoId, setVideoId] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [reading, setReading] = useState(false);
@@ -231,7 +232,41 @@ export function TechniquePlayer({ itemId, videosMap }: {
           <div style={{ width: pct + '%', height: '100%', background: ACCENT, transition: 'width .3s' }} />
         </div>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+
+      {/* Jump straight to a technique by name/keyword across all courses. */}
+      <input
+        type="text"
+        value={filter}
+        onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
+        placeholder="Search techniques (e.g. scalene, sciatica, shoulder)…"
+        class="w-full px-3 py-2 rounded-md bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
+        style={{ marginBottom: '14px' }}
+      />
+
+      {(() => {
+        const fq = filter.trim().toLowerCase();
+        if (!fq) return null;
+        const matches = withFrames
+          .filter((v) => (v.title + ' ' + v.course).toLowerCase().includes(fq))
+          .sort((a, b) => a.title.localeCompare(b.title));
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden', marginBottom: '4px' }}>
+            {matches.length === 0 && <div style={{ padding: '12px 14px', fontSize: '13px', color: 'var(--color-text-faint)' }}>No techniques match “{filter}”.</div>}
+            {matches.map((v, i) => (
+              <button key={v.id} type="button" onClick={() => openVideo(v.id)}
+                style={{ textAlign: 'left', padding: '9px 13px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: '12.5px', color: studied.has(v.id) ? ACCENT : 'var(--color-text)' }}>{studied.has(v.id) ? '✓ ' : ''}{v.title}</span>
+                  <span style={{ fontSize: '10.5px', color: 'var(--color-text-faint)', marginLeft: '8px' }}>{v.course}</span>
+                </span>
+                <span style={{ flexShrink: 0, fontSize: '10.5px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
+      <div style={{ display: filter.trim() ? 'none' : 'flex', flexDirection: 'column', gap: '6px' }}>
         {byCourse.map(([course, vids]) => {
           const open = openCourse === course;
           return (
