@@ -29,6 +29,7 @@ export interface RouteDef {
 // "Voice config" sub-tab and is reachable via /warroom?mode=voices.
 export const ROUTES: RouteDef[] = [
   { path: '/mission',    label: 'Mission Control', section: 'workspace',    icon: LayoutGrid,    shortcut: 'g m' },
+  { path: '/quick-trade', label: 'Quick Trade',    section: 'workspace',    icon: Coins,         href: 'self:3000/phone.html' },
   { path: '/control',    label: 'Control Panel',   section: 'workspace',    icon: SlidersHorizontal, shortcut: 'g .' },
   { path: '/scheduled',  label: 'Scheduled',       section: 'workspace',    icon: ListTodo,      shortcut: 'g s' },
   { path: '/agents',     label: 'Agents',          section: 'workspace',    icon: Users,         shortcut: 'g a' },
