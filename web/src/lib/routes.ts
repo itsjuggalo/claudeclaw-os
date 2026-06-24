@@ -10,7 +10,7 @@ import {
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
-export type RouteSection = 'workspace' | 'studio' | 'intelligence' | 'collaborate' | 'configure' | 'system' | 'mc' | 'trade' | 'ops' | 'wellness' | 'mcctrl';
+export type RouteSection = 'workspace' | 'studio' | 'intelligence' | 'collaborate' | 'configure' | 'system' | 'mc' | 'trade' | 'lewis' | 'ops' | 'wellness' | 'mcctrl';
 
 export interface RouteDef {
   path: string;
@@ -109,6 +109,12 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-mc-office',    label: 'Office',        section: 'mcctrl', icon: Building2,    href: 'http://100.91.39.122:3000/?page=office' },
   { path: '/ext-mc-projects',  label: 'Projects',      section: 'mcctrl', icon: FolderKanban, href: 'http://100.91.39.122:3000/?page=projects' },
 
+  // Lewis Lab — paper/experimental TradingView strategy program (moved off the MC
+  // trader sidebar 2026-06-24). Deep-links into MC :3000 (?page= resolves); new tab.
+  { path: '/ext-lewis-program', label: 'Lewis Program',   section: 'lewis', icon: GraduationCap, href: 'http://100.91.39.122:3000/?page=lewis-program' },
+  { path: '/ext-lewis-live',    label: 'Lewis Live',      section: 'lewis', icon: Activity,      href: 'http://100.91.39.122:3000/?page=lewis-live' },
+  { path: '/ext-lewis-compare', label: 'Strategy Compare',section: 'lewis', icon: BarChart2,     href: 'http://100.91.39.122:3000/?page=strategy-compare' },
+
   // Ops & Admin — ARIES + massage (non-MC) external links.
   { path: '/massage-ops',        label: 'Massage Ops',      section: 'ops', icon: HeartPulse },
   { path: '/ext-aries-log',      label: 'Mission Log',      section: 'ops', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
@@ -129,6 +135,7 @@ export const SECTION_LABEL: Record<RouteSection, string> = {
   system:       'System',
   mc:           'MC Apps',
   mcctrl:       'Mission Control',
+  lewis:        'Lewis Lab',
   ops:          'Ops & Admin',
   wellness:     'Wellness',
 };
