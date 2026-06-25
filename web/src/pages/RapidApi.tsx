@@ -9,7 +9,7 @@ import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
 
 interface ApiDef { id: string; label: string; nsfw?: boolean; }
-interface MediaResult { title: string; url: string; thumbnail?: string; stream?: string; duration?: string; }
+interface MediaResult { title: string; url: string; thumbnail?: string; stream?: string; duration?: string; meta?: string; }
 
 export function RapidApi() {
   const { data: apisData } = useFetch<{ apis: ApiDef[] }>('/api/rapidapi/apis');
@@ -110,14 +110,19 @@ export function RapidApi() {
                   )}
                   <div class="p-2 flex flex-col gap-1">
                     <div class="text-[12px] text-[var(--color-text)] line-clamp-2" title={r.title}>{r.title}</div>
-                    <a
-                      href={r.url}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      class="text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] flex items-center gap-1 w-fit"
-                    >
-                      <ExternalLink size={11} /> Open
-                    </a>
+                    <div class="flex items-center justify-between gap-2">
+                      <a
+                        href={r.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        class="text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] flex items-center gap-1 w-fit"
+                      >
+                        <ExternalLink size={11} /> Open
+                      </a>
+                      {r.meta && (
+                        <span class="text-[10px] text-[var(--color-text-faint)] tabular-nums shrink-0" title="views">{r.meta}</span>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}

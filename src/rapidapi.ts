@@ -57,12 +57,14 @@ function normalizeVideo(it: any): MediaResult {
   const thumbnail = pick(it, ['thumbnail', 'thumb', 'image', 'preview', 'poster', 'cover', 'img']);
   const title = pick(it, ['title', 'name', 'text', 'caption']) || '(untitled)';
   const duration = pick(it, ['duration', 'length', 'time']);
+  const meta = pick(it, ['views', 'view_count', 'meta', 'info', 'rating']);
   return {
     title,
     url: url || stream || '',
     stream: stream || undefined,
     thumbnail: thumbnail || undefined,
     duration: duration || undefined,
+    meta: meta || undefined,
   };
 }
 
@@ -72,7 +74,8 @@ async function rapidFetch(host: string, path: string, key: string, init: Request
     res = await fetch(`https://${host}${path}`, {
       ...init,
       headers: {
-        'Content-Type': 'application/json',
+        // Only declare a JSON body when we're actually sending one (GET has none).
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
         'x-rapidapi-host': host,
         'x-rapidapi-key': key,
         ...(init.headers || {}),
@@ -101,12 +104,12 @@ const xnxx: RapidApiAdapter = {
   host: 'porn-xnxx-api.p.rapidapi.com',
   nsfw: true,
   async search(q, key) {
-    // POST {query} to the "Search video" endpoint. The exact body field may
-    // need a 1-line tweak after the first live call (the response is mapped
-    // defensively regardless of field names).
+    // Verified live contract (2026-06-25): POST /search with body {q}. Returns a
+    // bare JSON array of {duration, thumbnail, title, video_link, views}. The
+    // body param is "q" (NOT "query" — that yields 400 "Missing q parameter").
     const data = await rapidFetch(this.host, '/search', key, {
       method: 'POST',
-      body: JSON.stringify({ query: q }),
+      body: JSON.stringify({ q }),
     });
     return extractItems(data).slice(0, 40).map(normalizeVideo).filter((r) => r.url || r.stream);
   },
