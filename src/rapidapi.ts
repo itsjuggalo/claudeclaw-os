@@ -202,7 +202,77 @@ const hotPics = imageListAdapter(
   { allowEmpty: true },
 );
 
-const ADAPTERS: RapidApiAdapter[] = [xnxx, aiPornGen, girlsNude, hotPics];
+// pornhub2 video search: GET /v2/search?search=<q> -> {data:{videos:[{video_id,
+// title, default_thumb, url, duration, views}]}}. Inline play via PornHub's own
+// embed (verified embeddable, no X-Frame-Options) — same trick as xnxx.
+const pornhub: RapidApiAdapter = {
+  id: 'phub',
+  label: 'PornHub (video search)',
+  host: 'pornhub2.p.rapidapi.com',
+  nsfw: true,
+  async search(q, key) {
+    const data = await rapidFetch(this.host, `/v2/search?search=${encodeURIComponent(q)}`, key, { method: 'GET' });
+    const vids = data?.data?.videos ?? data?.videos ?? [];
+    return (Array.isArray(vids) ? vids : []).slice(0, 40).map((v: any) => ({
+      title: pick(v, ['title']) || '(untitled)',
+      url: pick(v, ['url']) || '',
+      thumbnail: pick(v, ['default_thumb', 'thumb']),
+      embed: v?.video_id ? `https://www.pornhub.com/embed/${v.video_id}` : undefined,
+      duration: pick(v, ['duration']),
+      meta: v?.views != null ? `${Number(v.views).toLocaleString()} views` : undefined,
+    })).filter((r) => r.url || r.embed);
+  },
+};
+// pornhub2 stars directory: GET /v2/stars_detailed?offset=N&limit=40 ->
+// {stars:[{star_name,star_thumb,star_url,videos_count_all}]}. Browse feed; a
+// star card opens their PornHub page. Empty query = first page; a number pages.
+const pornhubStars: RapidApiAdapter = {
+  id: 'phubstars',
+  label: 'PornHub Stars (directory)',
+  host: 'pornhub2.p.rapidapi.com',
+  nsfw: true,
+  allowEmpty: true,
+  async search(q, key) {
+    const off = /^\d+$/.test(q.trim()) ? Number(q.trim()) * 40 : 0;
+    const data = await rapidFetch(this.host, `/v2/stars_detailed?offset=${off}&limit=40`, key, { method: 'GET' });
+    const stars = Array.isArray(data?.stars) ? data.stars : [];
+    return stars.map((s: any) => ({
+      title: pick(s, ['star_name']) || '(unknown)',
+      url: pick(s, ['star_url', 'star_thumb']) || '',
+      thumbnail: pick(s, ['star_thumb']),
+      meta: s?.videos_count_all != null ? `${s.videos_count_all} vids` : undefined,
+    })).filter((r: MediaResult) => r.thumbnail || r.url).slice(0, 60);
+  },
+};
+
+// pornhub-api-xnxx trending feed: GET /api/trending?page=N -> [{duration,
+// thumbnail,title,url,views}] (url = view_video.php?viewkey=<key>). No search
+// endpoint; embed derived from the viewkey. Empty query = page 1.
+const pornhubTrending: RapidApiAdapter = {
+  id: 'phubtrend',
+  label: 'PornHub Trending (feed)',
+  host: 'pornhub-api-xnxx.p.rapidapi.com',
+  nsfw: true,
+  allowEmpty: true,
+  async search(q, key) {
+    const page = /^\d+$/.test(q.trim()) ? q.trim() : '1';
+    const data = await rapidFetch(this.host, `/api/trending?page=${page}`, key, { method: 'GET' });
+    return (Array.isArray(data) ? data : []).slice(0, 40).map((v: any) => {
+      const url = pick(v, ['url']) || '';
+      const vk = url.match(/viewkey=([a-z0-9]+)/i);
+      return {
+        title: pick(v, ['title']) || '(untitled)',
+        url,
+        thumbnail: pick(v, ['thumbnail', 'thumb', 'default_thumb']),
+        embed: vk ? `https://www.pornhub.com/embed/${vk[1]}` : undefined,
+        duration: pick(v, ['duration']),
+        meta: pick(v, ['views']),
+      } as MediaResult;
+    }).filter((r: MediaResult) => r.url || r.embed);
+  },
+};
+
+const ADAPTERS: RapidApiAdapter[] = [xnxx, pornhub, pornhubStars, pornhubTrending, aiPornGen, girlsNude, hotPics];
 const REGISTRY = new Map(ADAPTERS.map((a) => [a.id, a]));
 
 // ── Public API ───────────────────────────────────────────────────────────────
