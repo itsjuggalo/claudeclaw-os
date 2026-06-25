@@ -6,7 +6,7 @@ import {
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
   Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot, Flame,
-  HeartPulse, DatabaseZap, Drama, SlidersHorizontal,
+  HeartPulse, DatabaseZap, Drama, SlidersHorizontal, Film,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -39,6 +39,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/create',     label: 'Create',          section: 'studio',       icon: Wand2,         shortcut: 'g n' },
   { path: '/gallery',    label: 'Gallery',         section: 'studio',       icon: Images,        shortcut: 'g i' },
   { path: '/characters', label: 'Character Studio', section: 'studio',      icon: Drama,         shortcut: 'g d' },
+  { path: '/rapidapi',   label: 'RapidAPI',        section: 'studio',       icon: Film,          shortcut: 'g v' },
 
   // Intelligence — knowledge / AI
   { path: '/memories',   label: 'Memories',        section: 'intelligence', icon: Brain,         shortcut: 'g e' },
@@ -109,11 +110,9 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-mc-office',    label: 'Office',        section: 'mcctrl', icon: Building2,    href: 'http://100.91.39.122:3000/?page=office' },
   { path: '/ext-mc-projects',  label: 'Projects',      section: 'mcctrl', icon: FolderKanban, href: 'http://100.91.39.122:3000/?page=projects' },
 
-  // Lewis Lab — paper/experimental TradingView strategy program (moved off the MC
-  // trader sidebar 2026-06-24). Deep-links into MC :3000 (?page= resolves); new tab.
-  { path: '/ext-lewis-program', label: 'Lewis Program',   section: 'lewis', icon: GraduationCap, href: 'http://100.91.39.122:3000/?page=lewis-program' },
-  { path: '/ext-lewis-live',    label: 'Lewis Live',      section: 'lewis', icon: Activity,      href: 'http://100.91.39.122:3000/?page=lewis-live' },
-  { path: '/ext-lewis-compare', label: 'Strategy Compare',section: 'lewis', icon: BarChart2,     href: 'http://100.91.39.122:3000/?page=strategy-compare' },
+  // Lewis Lab — only Lewis PROGRAM was moved off the MC trader sidebar (2026-06-24,
+  // Mike's call); Lewis Live + Strategy Compare stayed on MC. Deep-link into MC :3000.
+  { path: '/ext-lewis-program', label: 'Lewis Program', section: 'lewis', icon: GraduationCap, href: 'http://100.91.39.122:3000/?page=lewis-program' },
 
   // Ops & Admin — ARIES + massage (non-MC) external links.
   { path: '/massage-ops',        label: 'Massage Ops',      section: 'ops', icon: HeartPulse },

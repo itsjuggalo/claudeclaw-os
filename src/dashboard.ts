@@ -26,6 +26,7 @@ import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, mo
 import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
 import { getSkoolBuilds, readSkoolArtifact } from './skoolbuilds.js';
 import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
+import { listRapidApis, rapidApiSearch } from './rapidapi.js';
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo, generateKeyframeVideo } from './localgen.js';
 import { generateHiggsfield, listHiggsfieldModels } from './higgsfield.js';
@@ -2763,6 +2764,25 @@ init();
 
   app.post('/api/hermes/restart', async (c) => {
     return c.json(hermesRestartGateway());
+  });
+
+  // ── RapidAPI search console ───────────────────────────────────────────────
+  // Generic console over any RapidAPI the account subscribes to. Key is read
+  // server-side (config.ts) and never sent to the browser.
+  app.get('/api/rapidapi/apis', (c) => {
+    try { return c.json({ apis: listRapidApis() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/rapidapi/search', async (c) => {
+    const api = c.req.query('api') || '';
+    const q = c.req.query('q') || '';
+    try {
+      return c.json(await rapidApiSearch(api, q));
+    } catch (e: any) {
+      const status = (e && typeof e.status === 'number') ? e.status : 500;
+      return c.json({ error: e?.message || String(e) }, status);
+    }
   });
 
   // ── War Room meeting history & transcript persistence ──────────────

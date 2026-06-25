@@ -51,6 +51,7 @@ const envConfig = readEnvFile([
   'MC_ACCESS_DISABLED',
   'OPENROUTER_API_KEY',
   'OPENROUTER_MODEL',
+  'RAPIDAPI_KEY',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -383,3 +384,8 @@ export const WARROOM_PORT = parseInt(
 // Set via .env: AIME_SESSION_COOKIE=<browser cookie string>
 export const AIME_SESSION_COOKIE: string =
   process.env.AIME_SESSION_COOKIE || envConfig.AIME_SESSION_COOKIE || '';
+
+// RapidAPI key — single key authorizes every API the account is subscribed to.
+// Powers the "RapidAPI" dashboard search console (src/rapidapi.ts). Read via
+// readEnvFile so the secret stays out of process.env / child processes.
+export const RAPIDAPI_KEY = envConfig.RAPIDAPI_KEY ?? '';

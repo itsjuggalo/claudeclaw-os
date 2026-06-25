@@ -33,6 +33,7 @@ import { LewisTrading } from '@/pages/LewisTrading';
 import { Create } from '@/pages/Create';
 import { CharacterStudio } from '@/pages/CharacterStudio';
 import { Hermes } from '@/pages/Hermes';
+import { RapidApi } from '@/pages/RapidApi';
 import { ClaudeOffice } from '@/pages/ClaudeOffice';
 import { TokenUsage } from '@/pages/TokenUsage';
 import { TokenBurn } from '@/pages/TokenBurn';
@@ -99,6 +100,7 @@ export function App() {
           <Route path="/create"><Create /></Route>
           <Route path="/characters"><CharacterStudio /></Route>
           <Route path="/hermes"><Hermes /></Route>
+          <Route path="/rapidapi"><RapidApi /></Route>
           <Route path="/warroom"><WarRoom /></Route>
           <Route path="/office"><ClaudeOffice /></Route>
           <Route path="/token-usage"><TokenUsage /></Route>
