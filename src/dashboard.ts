@@ -14,7 +14,7 @@ import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderD
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getMassageMonitor, keepAccount, deleteAccount, setReaper } from './massage.js';
-import { getSqlCatalog, getSqlTables, runSqlSelect } from './sqlmonitor.js';
+import { getSqlCatalog, getSqlTables, runSqlSelect, getModerationRows, updateRow, deleteRow, insertRow, getAuditLog as getSqlAuditLog, undoMutation } from './sqlmonitor.js';
 import { getEquity } from './equity.js';
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
@@ -2420,6 +2420,56 @@ init();
       const result = runSqlSelect(c.req.param('id'), (body as { sql?: string }).sql || '');
       if ('error' in result) return c.json(result, 400);
       return c.json(result);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+
+  // ── SQL MODERATION — single-row writes on `writable` DBs only. Each write is
+  //    auto-backed-up (file snapshot + before-image) and audited to a separate
+  //    moderation_audit.sqlite (one-click undo). Read-only DBs reject these.
+  const modIp = (c: { req: { header: (k: string) => string | undefined } }) =>
+    (c.req.header('x-forwarded-for') || '').split(',')[0].trim() || (c.req.header('x-real-ip') || '');
+
+  // Addressable rows (rowid + columns) for an editable table.
+  app.get('/api/sql/:id/rows', (c) => {
+    try {
+      const r = getModerationRows(c.req.param('id'), c.req.query('table') || '',
+        Number(c.req.query('limit')) || 200, Number(c.req.query('offset')) || 0);
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/:id/row/update', async (c) => {
+    try {
+      const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const r = await updateRow(c.req.param('id'), (b.table as string) || '',
+        (b.key as { rowid?: number | string; pk?: Record<string, unknown> }) || {},
+        (b.changes as Record<string, unknown>) || {}, modIp(c));
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/:id/row/delete', async (c) => {
+    try {
+      const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const r = await deleteRow(c.req.param('id'), (b.table as string) || '',
+        (b.key as { rowid?: number | string; pk?: Record<string, unknown> }) || {}, modIp(c));
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/:id/row/insert', async (c) => {
+    try {
+      const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const r = await insertRow(c.req.param('id'), (b.table as string) || '',
+        (b.values as Record<string, unknown>) || {}, modIp(c));
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.get('/api/sql/audit', (c) => {
+    try { return c.json(getSqlAuditLog(Number(c.req.query('limit')) || 100, c.req.query('db') || undefined)); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/audit/:auditId/undo', async (c) => {
+    try {
+      const r = await undoMutation(Number(c.req.param('auditId')), modIp(c));
+      return 'error' in r ? c.json(r, 400) : c.json(r);
     } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
 
