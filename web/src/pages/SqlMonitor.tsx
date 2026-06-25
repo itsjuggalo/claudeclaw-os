@@ -1,11 +1,19 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { Database, RefreshCw, ChevronRight, ChevronDown, Play, AlertTriangle, Table2, Pencil, Trash2, Plus, Undo2, Shield, ShieldCheck, X, History } from 'lucide-preact';
+import { Database, RefreshCw, ChevronRight, ChevronDown, Play, AlertTriangle, Table2, Pencil, Trash2, Plus, Undo2, Shield, ShieldCheck, X, History, HardDrive, Clock } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
 import { apiGet, apiPost } from '@/lib/api';
 import { formatRelativeTime, formatNumber } from '@/lib/format';
+// Page-scoped fonts (self-hosted) — injected under private family names so the
+// rest of the dashboard keeps its own type. See injectSqlMonFonts().
+import interReg from '@fontsource/inter/files/inter-latin-400-normal.woff2';
+import interMed from '@fontsource/inter/files/inter-latin-500-normal.woff2';
+import interSemi from '@fontsource/inter/files/inter-latin-600-normal.woff2';
+import interBold from '@fontsource/inter/files/inter-latin-700-normal.woff2';
+import jbReg from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2';
+import jbMed from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2';
 
 interface SqlDbInfo {
   id: string; label: string; subtitle?: string; group: string;
@@ -38,6 +46,27 @@ const agoFromIso = (iso: string | null) => (iso ? formatRelativeTime(Math.floor(
 const cellStr = (v: unknown) => (v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
 const keyStr = (k: RowKey) => (k.rowid != null ? `r:${k.rowid}` : `pk:${JSON.stringify(k.pk || {})}`);
 
+// ── Page-scoped font injection (once) ─────────────────────────────────
+// We register Inter + JetBrains Mono under PRIVATE family names and apply them
+// only inside `.sqlmon`, so the global dashboard typography is untouched.
+let _fontsInjected = false;
+function injectSqlMonFonts(): void {
+  if (_fontsInjected || typeof document === 'undefined') return;
+  _fontsInjected = true;
+  const ff = (fam: string, url: string, w: number) =>
+    `@font-face{font-family:'${fam}';src:url(${url}) format('woff2');font-weight:${w};font-style:normal;font-display:swap}`;
+  const css = [
+    ff('SqlMonSans', interReg, 400), ff('SqlMonSans', interMed, 500), ff('SqlMonSans', interSemi, 600), ff('SqlMonSans', interBold, 700),
+    ff('SqlMonMono', jbReg, 400), ff('SqlMonMono', jbMed, 500),
+    `.sqlmon{font-family:'SqlMonSans',ui-sans-serif,system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter-spacing:-0.006em}`,
+    `.sqlmon .font-mono,.sqlmon code,.sqlmon kbd,.sqlmon textarea,.sqlmon input{font-family:'SqlMonMono',ui-monospace,'SFMono-Regular',monospace;letter-spacing:0;font-feature-settings:'tnum' 1}`,
+  ].join('');
+  const el = document.createElement('style');
+  el.id = 'sqlmon-fonts';
+  el.textContent = css;
+  document.head.appendChild(el);
+}
+
 // ── Confirm modal (typed-confirm for destructive actions) ─────────────
 function ConfirmModal({ title, destructive, requireWord, body, busy, err, onCancel, onConfirm }: {
   title: string; destructive?: boolean; requireWord?: string;
@@ -47,33 +76,48 @@ function ConfirmModal({ title, destructive, requireWord, body, busy, err, onCanc
   const [typed, setTyped] = useState('');
   const ok = !requireWord || typed.trim().toLowerCase() === requireWord.toLowerCase();
   return (
-    <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 px-4" onClick={onCancel}>
-      <div class="w-full max-w-lg rounded-xl border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] shadow-2xl"
+    <div class="sqlmon fixed inset-0 z-[200] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm" onClick={onCancel}>
+      <div class="w-full max-w-lg rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] shadow-2xl"
         onClick={(e) => e.stopPropagation()}>
         <div class="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
-          <div class="flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]">
-            {destructive && <AlertTriangle size={15} class="text-[var(--color-status-failed)]" />} {title}
+          <div class="flex items-center gap-2 text-[14px] font-semibold text-[var(--color-text)]">
+            {destructive && <AlertTriangle size={16} class="text-[var(--color-status-failed)]" />} {title}
           </div>
-          <button type="button" onClick={onCancel} class="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"><X size={15} /></button>
+          <button type="button" onClick={onCancel} class="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"><X size={16} /></button>
         </div>
         <div class="px-4 py-3 max-h-[50vh] overflow-y-auto text-[12px] text-[var(--color-text-muted)]">{body}</div>
         {requireWord && (
           <div class="px-4 pb-1">
             <div class="text-[11px] text-[var(--color-text-faint)] mb-1">Type <span class="font-mono font-semibold text-[var(--color-status-failed)]">{requireWord}</span> to confirm</div>
             <input value={typed} onInput={(e) => setTyped((e.target as HTMLInputElement).value)} spellcheck={false}
-              class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[12px] font-mono text-[var(--color-text)]" />
+              class="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[12px] font-mono text-[var(--color-text)]" />
           </div>
         )}
-        {err && <div class="mx-4 mb-2 rounded-md border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-failed)_8%,transparent)] px-2.5 py-1.5 text-[11px] font-mono text-[var(--color-status-failed)]">{err}</div>}
+        {err && <div class="mx-4 mb-2 rounded-lg border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-failed)_8%,transparent)] px-2.5 py-1.5 text-[11px] font-mono text-[var(--color-status-failed)]">{err}</div>}
         <div class="flex items-center justify-end gap-2 px-4 py-3 border-t border-[var(--color-border)]">
-          <button type="button" onClick={onCancel} class="rounded-md px-3 py-1.5 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">Cancel</button>
+          <button type="button" onClick={onCancel} class="rounded-lg px-3 py-1.5 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">Cancel</button>
           <button type="button" onClick={onConfirm} disabled={busy || !ok}
-            class="rounded-md px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-40"
+            class="rounded-lg px-3.5 py-1.5 text-[12px] font-semibold text-white disabled:opacity-40 shadow-sm"
             style={`background:${destructive ? 'var(--color-status-failed)' : 'var(--color-accent)'}`}>
             {busy ? 'Working…' : destructive ? 'Confirm delete' : 'Save'}
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// One editable cell: text input + a "null" toggle.
+function cellEditor(col: string, draft: Record<string, { v: string; isNull: boolean }>, setDraft: (f: (d: Record<string, { v: string; isNull: boolean }>) => Record<string, { v: string; isNull: boolean }>) => void) {
+  const d = draft[col];
+  if (!d) return null;
+  return (
+    <div class="flex items-center gap-1 min-w-[120px]">
+      <input value={d.v} disabled={d.isNull} spellcheck={false}
+        onInput={(e) => { const v = (e.target as HTMLInputElement).value; setDraft((p) => ({ ...p, [col]: { v, isNull: false } })); }}
+        class="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-[11px] font-mono text-[var(--color-text)] disabled:opacity-40 focus:border-[var(--color-accent)] outline-none" />
+      <button type="button" title="set NULL" onClick={() => setDraft((p) => ({ ...p, [col]: { v: d.isNull ? '' : p[col].v, isNull: !d.isNull } }))}
+        class={`shrink-0 rounded px-1 py-0.5 text-[9px] font-mono border ${d.isNull ? 'border-[var(--color-accent)] text-[var(--color-accent)]' : 'border-[var(--color-border)] text-[var(--color-text-faint)]'}`}>∅</button>
     </div>
   );
 }
@@ -146,14 +190,11 @@ function ModerationGrid({ db, table, onClose, onChanged }: { db: SqlDbInfo; tabl
     });
   }
   function askInsert() {
-    const values: Record<string, unknown> = {};
-    cols.forEach((c) => { const v = draftValue(c); if (!(v == null && draft[c].isNull && draft[c].v === '')) values[c] = v; });
-    // include only columns the user set (non-null OR explicitly typed); drop untouched all-null blanks
     const provided: Record<string, unknown> = {};
     cols.forEach((c) => { if (!draft[c].isNull || draft[c].v !== '') provided[c] = draftValue(c); });
     setCErr(null);
     setConfirm({
-      kind: 'insert', values: Object.keys(provided).length ? provided : values,
+      kind: 'insert', values: provided,
       body: (
         <div>
           <div class="mb-2 text-[var(--color-text-faint)]">Inserting a new row into <span class="font-mono text-[var(--color-text)]">{table}</span></div>
@@ -175,7 +216,7 @@ function ModerationGrid({ db, table, onClose, onChanged }: { db: SqlDbInfo; tabl
       kind: 'delete', key: orig.__key,
       body: (
         <div>
-          <div class="mb-2 text-[var(--color-status-failed)] font-medium">This permanently deletes a row from <span class="font-mono">{table}</span>. A backup + before-image is saved (undoable from the history below).</div>
+          <div class="mb-2 text-[var(--color-status-failed)] font-medium">This permanently deletes a row from <span class="font-mono">{table}</span>. A backup + before-image is saved (undoable from the history panel).</div>
           <table class="w-full text-[11px]"><tbody>
             {cols.map((c, i) => (
               <tr key={c} class="border-b border-[var(--color-border)] last:border-0">
@@ -204,55 +245,55 @@ function ModerationGrid({ db, table, onClose, onChanged }: { db: SqlDbInfo; tabl
   }
 
   return (
-    <div class="rounded-lg border border-[var(--color-accent)]/40 bg-[var(--color-bg)]">
-      <div class="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border)]">
-        <div class="flex items-center gap-2 text-[12px] font-medium text-[var(--color-text)]">
+    <div class="rounded-xl border border-[color-mix(in_srgb,var(--color-accent)_45%,var(--color-border))] bg-[var(--color-bg)] overflow-hidden shadow-sm">
+      <div class="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)]">
+        <div class="flex items-center gap-2 text-[12px] font-semibold text-[var(--color-text)]">
           <Table2 size={13} class="text-[var(--color-accent)]" /> <span class="font-mono">{table}</span>
-          {data && <span class="text-[var(--color-text-faint)] tabular-nums">· {formatNumber(data.total)} rows</span>}
+          {data && <span class="text-[var(--color-text-faint)] font-normal font-mono">· {formatNumber(data.total)} rows</span>}
         </div>
         <div class="flex items-center gap-2">
           <button type="button" onClick={startInsert} disabled={!data || editing === 'NEW'}
-            class="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-white disabled:opacity-40" style="background:var(--color-accent)">
-            <Plus size={11} /> Add row
+            class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-40 shadow-sm" style="background:var(--color-accent)">
+            <Plus size={12} /> Add row
           </button>
-          <button type="button" onClick={onClose} class="text-[var(--color-text-faint)] hover:text-[var(--color-text)]" title="Close"><X size={14} /></button>
+          <button type="button" onClick={onClose} class="text-[var(--color-text-faint)] hover:text-[var(--color-text)]" title="Close"><X size={15} /></button>
         </div>
       </div>
 
-      {loading && !data && <div class="px-3 py-2 text-[11px] text-[var(--color-text-faint)]">Loading rows…</div>}
-      {err && <div class="px-3 py-2 text-[11px] font-mono text-[var(--color-status-failed)]">{err}</div>}
+      {loading && !data && <div class="px-3 py-3 text-[11px] text-[var(--color-text-faint)]">Loading rows…</div>}
+      {err && <div class="px-3 py-3 text-[11px] font-mono text-[var(--color-status-failed)]">{err}</div>}
 
       {data && (
-        <div class="overflow-x-auto max-h-[460px] overflow-y-auto">
-          <table class="w-full text-[11px]">
-            <thead class="bg-[var(--color-elevated)] border-b border-[var(--color-border)] text-left sticky top-0 z-10">
+        <div class="overflow-x-auto max-h-[52vh] overflow-y-auto">
+          <table class="w-full text-[11px] border-separate border-spacing-0">
+            <thead class="bg-[var(--color-elevated)] text-left sticky top-0 z-10">
               <tr>
-                <th class="px-2 py-1.5 w-[72px]"></th>
-                {cols.map((c) => <th key={c} class="px-2.5 py-1.5 font-medium text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] whitespace-nowrap">{c}</th>)}
+                <th class="px-2 py-2 w-[72px] border-b border-[var(--color-border)]"></th>
+                {cols.map((c) => <th key={c} class="px-2.5 py-2 font-semibold text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] whitespace-nowrap border-b border-[var(--color-border)]">{c}</th>)}
               </tr>
             </thead>
             <tbody>
               {editing === 'NEW' && (
-                <tr class="border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-accent)_8%,transparent)]">
-                  <td class="px-2 py-1 align-top">
+                <tr class="bg-[color-mix(in_srgb,var(--color-accent)_8%,transparent)]">
+                  <td class="px-2 py-1 align-top border-b border-[var(--color-border)]">
                     <div class="flex gap-1">
-                      <button type="button" onClick={askInsert} title="Save new row" class="text-[var(--color-status-done)] hover:opacity-80"><Plus size={13} /></button>
-                      <button type="button" onClick={() => setEditing(null)} title="Cancel" class="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"><X size={13} /></button>
+                      <button type="button" onClick={askInsert} title="Save new row" class="text-[var(--color-status-done)] hover:opacity-80"><Plus size={14} /></button>
+                      <button type="button" onClick={() => setEditing(null)} title="Cancel" class="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"><X size={14} /></button>
                     </div>
                   </td>
-                  {cols.map((c) => <td key={c} class="px-1 py-1 align-top">{cellEditor(c, draft, setDraft)}</td>)}
+                  {cols.map((c) => <td key={c} class="px-1 py-1 align-top border-b border-[var(--color-border)]">{cellEditor(c, draft, setDraft)}</td>)}
                 </tr>
               )}
               {data.rows.map((row) => {
                 const ks = keyStr(row.__key);
                 const isEd = editing === ks;
                 return (
-                  <tr key={ks} class={`border-b border-[var(--color-border)] last:border-0 ${isEd ? 'bg-[color-mix(in_srgb,var(--color-accent)_8%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
-                    <td class="px-2 py-1 align-top whitespace-nowrap">
+                  <tr key={ks} class={isEd ? 'bg-[color-mix(in_srgb,var(--color-accent)_8%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}>
+                    <td class="px-2 py-1 align-top whitespace-nowrap border-b border-[var(--color-border)]">
                       {isEd ? (
                         <div class="flex gap-1">
-                          <button type="button" onClick={() => askSaveEdit(row)} title="Save" class="text-[var(--color-status-done)] hover:opacity-80"><Pencil size={13} /></button>
-                          <button type="button" onClick={() => setEditing(null)} title="Cancel" class="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"><X size={13} /></button>
+                          <button type="button" onClick={() => askSaveEdit(row)} title="Save" class="text-[var(--color-status-done)] hover:opacity-80"><Pencil size={14} /></button>
+                          <button type="button" onClick={() => setEditing(null)} title="Cancel" class="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"><X size={14} /></button>
                         </div>
                       ) : (
                         <div class="flex gap-1.5">
@@ -262,7 +303,7 @@ function ModerationGrid({ db, table, onClose, onChanged }: { db: SqlDbInfo; tabl
                       )}
                     </td>
                     {row.cells.map((cell, ci) => (
-                      <td key={ci} class="px-1 py-1 align-top">
+                      <td key={ci} class="px-1 py-1 align-top border-b border-[var(--color-border)]">
                         {isEd ? cellEditor(cols[ci], draft, setDraft)
                           : <span class="block px-1.5 font-mono text-[var(--color-text-muted)] whitespace-nowrap max-w-[360px] truncate" title={cellStr(cell)}>{cell == null ? <span class="text-[var(--color-text-faint)] italic">null</span> : cellStr(cell)}</span>}
                       </td>
@@ -276,11 +317,11 @@ function ModerationGrid({ db, table, onClose, onChanged }: { db: SqlDbInfo; tabl
       )}
 
       {data && (data.total > data.rows.length || offset > 0) && (
-        <div class="flex items-center justify-between px-3 py-2 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-faint)] tabular-nums">
+        <div class="flex items-center justify-between px-3 py-2 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-faint)] font-mono">
           <span>rows {offset + 1}–{offset + data.rows.length} of {formatNumber(data.total)}</span>
           <div class="flex gap-2">
-            <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 200))} class="rounded px-2 py-0.5 border border-[var(--color-border)] disabled:opacity-30 hover:text-[var(--color-text)]">‹ prev</button>
-            <button type="button" disabled={!data.capped} onClick={() => setOffset(offset + 200)} class="rounded px-2 py-0.5 border border-[var(--color-border)] disabled:opacity-30 hover:text-[var(--color-text)]">next ›</button>
+            <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 200))} class="rounded-lg px-2 py-0.5 border border-[var(--color-border)] disabled:opacity-30 hover:text-[var(--color-text)]">‹ prev</button>
+            <button type="button" disabled={!data.capped} onClick={() => setOffset(offset + 200)} class="rounded-lg px-2 py-0.5 border border-[var(--color-border)] disabled:opacity-30 hover:text-[var(--color-text)]">next ›</button>
           </div>
         </div>
       )}
@@ -292,21 +333,6 @@ function ModerationGrid({ db, table, onClose, onChanged }: { db: SqlDbInfo; tabl
           body={confirm.body} busy={busy} err={cErr}
           onCancel={() => { setConfirm(null); setCErr(null); }} onConfirm={doConfirm} />
       )}
-    </div>
-  );
-}
-
-// One editable cell: text input + a "null" toggle.
-function cellEditor(col: string, draft: Record<string, { v: string; isNull: boolean }>, setDraft: (f: (d: Record<string, { v: string; isNull: boolean }>) => Record<string, { v: string; isNull: boolean }>) => void) {
-  const d = draft[col];
-  if (!d) return null;
-  return (
-    <div class="flex items-center gap-1 min-w-[120px]">
-      <input value={d.v} disabled={d.isNull} spellcheck={false}
-        onInput={(e) => { const v = (e.target as HTMLInputElement).value; setDraft((p) => ({ ...p, [col]: { v, isNull: false } })); }}
-        class="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-[11px] font-mono text-[var(--color-text)] disabled:opacity-40" />
-      <button type="button" title="set NULL" onClick={() => setDraft((p) => ({ ...p, [col]: { v: d.isNull ? '' : p[col].v, isNull: !d.isNull } }))}
-        class={`shrink-0 rounded px-1 py-0.5 text-[9px] font-mono border ${d.isNull ? 'border-[var(--color-accent)] text-[var(--color-accent)]' : 'border-[var(--color-border)] text-[var(--color-text-faint)]'}`}>∅</button>
     </div>
   );
 }
@@ -326,9 +352,9 @@ function AuditPanel({ db, refreshKey }: { db: SqlDbInfo; refreshKey: number }) {
     catch (e: any) { setErr(e?.message || String(e)); } finally { setBusy(null); }
   }
   return (
-    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
-      <div class="flex items-center gap-1.5 px-3 py-2 border-b border-[var(--color-border)] text-[11px] font-medium text-[var(--color-text-muted)]">
-        <History size={12} /> Change history <span class="text-[var(--color-text-faint)] font-normal">({entries.length})</span>
+    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] overflow-hidden">
+      <div class="flex items-center gap-1.5 px-3 py-2 border-b border-[var(--color-border)] text-[11px] font-semibold text-[var(--color-text-muted)]">
+        <History size={13} /> Change history <span class="text-[var(--color-text-faint)] font-normal font-mono">({entries.length})</span>
       </div>
       {err && <div class="px-3 py-1.5 text-[11px] font-mono text-[var(--color-status-failed)]">{err}</div>}
       <div class="max-h-[220px] overflow-y-auto divide-y divide-[var(--color-border)]">
@@ -337,15 +363,15 @@ function AuditPanel({ db, refreshKey }: { db: SqlDbInfo; refreshKey: number }) {
           return (
             <div key={m.id} class="flex items-center justify-between gap-2 px-3 py-1.5 text-[11px]">
               <div class="min-w-0 flex items-center gap-2">
-                <span class="font-semibold uppercase tabular-nums" style={`color:${color}`}>{m.action}</span>
+                <span class="font-semibold uppercase font-mono text-[10px] px-1.5 py-0.5 rounded" style={`color:${color};background:color-mix(in srgb,${color} 12%,transparent)`}>{m.action}</span>
                 <span class="font-mono text-[var(--color-text-muted)] truncate">{m.tbl}</span>
-                <span class="text-[var(--color-text-faint)] truncate">{m.row_key}</span>
+                <span class="text-[var(--color-text-faint)] font-mono truncate">{m.row_key}</span>
                 <span class="text-[var(--color-text-faint)] whitespace-nowrap">{agoFromIso(m.ts)}</span>
               </div>
               {m.undone_at ? <span class="text-[10px] text-[var(--color-text-faint)] italic whitespace-nowrap">undone</span>
                 : !m.action.startsWith('undo') && (
                   <button type="button" disabled={busy === m.id} onClick={() => undo(m.id)}
-                    class="inline-flex items-center gap-1 rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)] disabled:opacity-40">
+                    class="inline-flex items-center gap-1 rounded-lg border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)] disabled:opacity-40">
                     <Undo2 size={10} /> {busy === m.id ? '…' : 'undo'}
                   </button>
                 )}
@@ -357,8 +383,45 @@ function AuditPanel({ db, refreshKey }: { db: SqlDbInfo; refreshKey: number }) {
   );
 }
 
-// ── One DB's expandable detail: tables + (read) query + (write) moderation ──
-function DbDetail({ db }: { db: SqlDbInfo }) {
+// ── Small badge ───────────────────────────────────────────────────────
+function Badge({ kind }: { kind: 'moderate' | 'readonly' | 'live' | 'stale' }) {
+  if (kind === 'moderate') return (
+    <span class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap"
+      style="color:var(--color-accent);background:color-mix(in srgb,var(--color-accent) 14%,transparent)"><ShieldCheck size={10} /> moderate</span>);
+  if (kind === 'readonly') return (
+    <span class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-[var(--color-text-faint)]"
+      style="background:color-mix(in srgb,var(--color-text-faint) 12%,transparent)"><Shield size={10} /> read-only</span>);
+  if (kind === 'stale') return (
+    <span class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap"
+      style="color:var(--color-warn);background:color-mix(in srgb,var(--color-warn) 14%,transparent)"><AlertTriangle size={10} /> stale</span>);
+  return (
+    <span class="inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap"
+      style="color:var(--color-status-done);background:color-mix(in srgb,var(--color-status-done) 14%,transparent)">live</span>);
+}
+
+// ── Left rail item (one DB) ───────────────────────────────────────────
+function RailItem({ db, selected, onSelect }: { db: SqlDbInfo; selected: boolean; onSelect: () => void }) {
+  return (
+    <button type="button" onClick={onSelect}
+      class={`w-full flex items-center gap-2 pl-3 pr-2.5 py-2 text-left border-l-2 transition-colors ${selected
+        ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]'
+        : 'border-transparent hover:bg-[var(--color-elevated)]'}`}>
+      <Database size={13} class={selected ? 'text-[var(--color-accent)] shrink-0' : 'text-[var(--color-text-faint)] shrink-0'} />
+      <div class="min-w-0 flex-1">
+        <div class={`text-[12px] truncate ${selected ? 'font-semibold text-[var(--color-text)]' : 'font-medium text-[var(--color-text-muted)]'}`}>{db.label}</div>
+        <div class="flex items-center gap-1.5 mt-0.5">
+          {db.writable && <span class="inline-flex items-center gap-0.5 text-[9px] font-semibold text-[var(--color-accent)]"><ShieldCheck size={9} /> edit</span>}
+          {db.live && !db.stale && <span class="w-1.5 h-1.5 rounded-full bg-[var(--color-status-done)]" title="live" />}
+          {db.stale && <span class="w-1.5 h-1.5 rounded-full bg-[var(--color-warn)]" title="stale" />}
+          <span class="text-[9px] text-[var(--color-text-faint)] font-mono">{db.size}</span>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+// ── Detail pane: tables + (read) query + (write) moderation ───────────
+function DetailPane({ db }: { db: SqlDbInfo }) {
   const { data, loading, error } = useFetch<SqlTablesResult | { error: string }>(`/api/sql/${db.id}/meta`, 0);
   const [sql, setSql] = useState('');
   const [result, setResult] = useState<SqlSelectResult | null>(null);
@@ -366,6 +429,9 @@ function DbDetail({ db }: { db: SqlDbInfo }) {
   const [running, setRunning] = useState(false);
   const [modTable, setModTable] = useState<string | null>(null);
   const [auditKey, setAuditKey] = useState(0);
+
+  // Reset table selection / query when the selected DB changes.
+  useEffect(() => { setModTable(null); setResult(null); setSql(''); setQErr(null); }, [db.id]);
 
   const meta = data && !('error' in data) ? data : null;
   const metaErr = data && 'error' in data ? data.error : error;
@@ -382,29 +448,49 @@ function DbDetail({ db }: { db: SqlDbInfo }) {
   }
 
   return (
-    <div class="border-t border-[var(--color-border)] bg-[var(--color-bg)] px-3.5 py-3 space-y-3">
-      {loading && !meta && <div class="text-[11px] text-[var(--color-text-faint)]">Loading tables…</div>}
-      {metaErr && <div class="text-[11px] text-[var(--color-status-failed)] font-mono">{metaErr}</div>}
+    <div class="px-4 py-4 space-y-4">
+      {/* Detail header */}
+      <div class="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] px-4 py-3.5">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <h2 class="text-[16px] font-semibold text-[var(--color-text)] truncate">{db.label}</h2>
+              <Badge kind={db.writable ? 'moderate' : 'readonly'} />
+              {db.live && !db.stale && <Badge kind="live" />}
+              {db.stale && <Badge kind="stale" />}
+            </div>
+            {db.subtitle && <div class="text-[12px] text-[var(--color-text-faint)] mt-0.5">{db.subtitle}</div>}
+          </div>
+          <div class="flex items-center gap-3.5 text-[11px] text-[var(--color-text-muted)] font-mono shrink-0 pt-1">
+            <span class="inline-flex items-center gap-1" title="size on disk"><HardDrive size={11} class="opacity-60" />{db.size}{db.walSize && <span class="text-[var(--color-text-faint)]"> +{db.walSize}</span>}</span>
+            <span class="hidden sm:inline-flex items-center gap-1" title="tables"><Table2 size={11} class="opacity-60" />{db.tables < 0 ? '—' : db.tables}</span>
+            <span class="hidden md:inline-flex items-center gap-1 text-[var(--color-text-faint)]" title={db.updated || ''}><Clock size={11} class="opacity-60" />{agoFromIso(db.updated)}</span>
+          </div>
+        </div>
+      </div>
+
+      {loading && !meta && <div class="text-[12px] text-[var(--color-text-faint)] px-1">Loading tables…</div>}
+      {metaErr && <div class="text-[12px] text-[var(--color-status-failed)] font-mono px-1">{metaErr}</div>}
 
       {meta && (
         <>
-          {/* Tables — on a writable DB, a chip opens the editable grid; else it browses (read-only). */}
+          {/* Tables — writable: chip opens the editable grid; else it browses (read-only). */}
           <div>
-            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1.5">
-              Tables ({meta.tables.length}){db.writable && <span class="ml-1 text-[var(--color-accent)] normal-case tracking-normal">— click to moderate</span>}
+            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1.5 font-semibold">
+              Tables ({meta.tables.length}){db.writable && <span class="ml-1.5 text-[var(--color-accent)] normal-case tracking-normal font-medium">— click to moderate</span>}
             </div>
             {meta.tables.length === 0 ? (
-              <div class="text-[11px] text-[var(--color-text-faint)]">No user tables.</div>
+              <div class="text-[12px] text-[var(--color-text-faint)]">No user tables.</div>
             ) : (
               <div class="flex flex-wrap gap-1.5">
                 {meta.tables.map((t) => (
                   <button key={t.name} type="button"
                     onClick={() => (db.writable ? setModTable(modTable === t.name ? null : t.name) : run(`SELECT * FROM "${t.name.replace(/"/g, '""')}" LIMIT 100`))}
                     title={db.writable ? `Moderate ${t.name}` : `Browse ${t.name}`}
-                    class={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${modTable === t.name ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'border-[var(--color-border)] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]'}`}>
+                    class={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] transition-colors ${modTable === t.name ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'border-[var(--color-border)] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]'}`}>
                     <Table2 size={11} class="opacity-60" />
                     <span class="font-mono">{t.name}</span>
-                    <span class="tabular-nums text-[var(--color-text-faint)]">{t.rows < 0 ? '?' : formatNumber(t.rows)}</span>
+                    <span class="font-mono text-[var(--color-text-faint)]">{t.rows < 0 ? '?' : formatNumber(t.rows)}</span>
                   </button>
                 ))}
               </div>
@@ -420,9 +506,9 @@ function DbDetail({ db }: { db: SqlDbInfo }) {
           {/* SELECT-only query box (read — available on every DB) */}
           <div>
             <div class="flex items-center justify-between mb-1.5">
-              <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Query (SELECT-only)</div>
+              <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] font-semibold">Query (SELECT-only)</div>
               <button type="button" onClick={() => run()} disabled={running || !sql.trim()}
-                class="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-white disabled:opacity-40"
+                class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-40 shadow-sm"
                 style="background:var(--color-accent)">
                 <Play size={11} /> {running ? 'Running…' : 'Run'}
               </button>
@@ -434,35 +520,35 @@ function DbDetail({ db }: { db: SqlDbInfo }) {
               placeholder={`SELECT * FROM ... LIMIT 100   (⌘/Ctrl+Enter to run)`}
               rows={2}
               spellcheck={false}
-              class="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[12px] font-mono text-[var(--color-text)] resize-y" />
+              class="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 text-[12px] font-mono text-[var(--color-text)] resize-y focus:border-[var(--color-accent)] outline-none" />
           </div>
 
           {qErr && (
-            <div class="rounded-md border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-failed)_8%,transparent)] px-2.5 py-1.5 text-[11px] font-mono text-[var(--color-status-failed)]">
+            <div class="rounded-xl border border-[color-mix(in_srgb,var(--color-status-failed)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-status-failed)_8%,transparent)] px-3 py-2 text-[11px] font-mono text-[var(--color-status-failed)]">
               {qErr}
             </div>
           )}
 
           {result && (
             <div>
-              <div class="text-[10px] text-[var(--color-text-faint)] mb-1 tabular-nums">
+              <div class="text-[10px] text-[var(--color-text-faint)] mb-1 font-mono">
                 {result.rows.length} row{result.rows.length === 1 ? '' : 's'} · {result.elapsed_ms}ms
                 {result.capped && <span class="text-[var(--color-warn)]"> · capped at 500</span>}
               </div>
-              <div class="overflow-x-auto rounded-md border border-[var(--color-border)] max-h-[360px] overflow-y-auto">
-                <table class="w-full text-[11px]">
-                  <thead class="bg-[var(--color-elevated)] border-b border-[var(--color-border)] text-left sticky top-0">
+              <div class="overflow-x-auto rounded-xl border border-[var(--color-border)] max-h-[360px] overflow-y-auto">
+                <table class="w-full text-[11px] border-separate border-spacing-0">
+                  <thead class="bg-[var(--color-elevated)] text-left sticky top-0">
                     <tr>
                       {result.columns.map((c, i) => (
-                        <th key={i} class="px-2.5 py-1.5 font-medium text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] whitespace-nowrap">{c}</th>
+                        <th key={i} class="px-2.5 py-2 font-semibold text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] whitespace-nowrap border-b border-[var(--color-border)]">{c}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {result.rows.map((row, ri) => (
-                      <tr key={ri} class="border-b border-[var(--color-border)] last:border-0 hover:bg-[var(--color-elevated)]">
+                      <tr key={ri} class="hover:bg-[var(--color-elevated)]">
                         {row.map((cell, ci) => (
-                          <td key={ci} class="px-2.5 py-1.5 font-mono text-[var(--color-text-muted)] whitespace-nowrap max-w-[420px] truncate"
+                          <td key={ci} class="px-2.5 py-1.5 font-mono text-[var(--color-text-muted)] whitespace-nowrap max-w-[420px] truncate border-b border-[var(--color-border)]"
                             title={cell == null ? '' : String(cell)}>
                             {cell == null ? <span class="text-[var(--color-text-faint)] italic">null</span> : String(cell)}
                           </td>
@@ -480,65 +566,31 @@ function DbDetail({ db }: { db: SqlDbInfo }) {
   );
 }
 
-function DbCard({ db }: { db: SqlDbInfo }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div class="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] overflow-hidden">
-      <button type="button" onClick={() => setOpen((o) => !o)}
-        class="w-full flex items-center gap-3 px-3.5 py-3 text-left hover:bg-[var(--color-elevated)] transition-colors">
-        {open ? <ChevronDown size={14} class="text-[var(--color-text-faint)] shrink-0" /> : <ChevronRight size={14} class="text-[var(--color-text-faint)] shrink-0" />}
-        <Database size={15} class="text-[var(--color-accent)] shrink-0" />
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="text-[13px] font-medium text-[var(--color-text)] truncate">{db.label}</span>
-            {db.writable ? (
-              <span class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap"
-                style="color:var(--color-accent);background:color-mix(in srgb,var(--color-accent) 14%,transparent)">
-                <ShieldCheck size={10} /> moderate
-              </span>
-            ) : (
-              <span class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-[var(--color-text-faint)]"
-                style="background:color-mix(in srgb,var(--color-text-faint) 12%,transparent)">
-                <Shield size={10} /> read-only
-              </span>
-            )}
-            {db.stale && (
-              <span class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap"
-                style="color:var(--color-warn);background:color-mix(in srgb,var(--color-warn) 14%,transparent)">
-                <AlertTriangle size={10} /> stale
-              </span>
-            )}
-            {db.live && !db.stale && (
-              <span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap"
-                style="color:var(--color-status-done);background:color-mix(in srgb,var(--color-status-done) 14%,transparent)">live</span>
-            )}
-          </div>
-          {db.subtitle && <div class="text-[10px] text-[var(--color-text-faint)] truncate">{db.subtitle}</div>}
-        </div>
-        <div class="flex items-center gap-4 text-[11px] text-[var(--color-text-muted)] tabular-nums shrink-0">
-          <span title="size on disk">{db.size}{db.walSize && <span class="text-[var(--color-text-faint)]"> +{db.walSize} wal</span>}</span>
-          <span class="hidden sm:inline" title="tables">{db.tables < 0 ? '—' : db.tables} {db.tables === 1 ? 'table' : 'tables'}</span>
-          <span class="hidden md:inline text-[var(--color-text-faint)]" title={db.updated || ''}>{agoFromIso(db.updated)}</span>
-        </div>
-      </button>
-      {open && <DbDetail db={db} />}
-    </div>
-  );
-}
-
 export function SqlMonitor() {
+  injectSqlMonFonts();
   const { data, loading, error, refresh } = useFetch<SqlCatalog>('/api/sql', 30000);
+  const [selId, setSelId] = useState<string | null>(null);
   const [showInternals, setShowInternals] = useState(false);
 
   const groups = data?.groups ?? [];
+  const allDbs = groups.flatMap((g) => g.items);
   const mainGroups = groups.filter((g) => g.id !== 'internals');
   const internals = groups.find((g) => g.id === 'internals');
-  const writableCount = groups.flatMap((g) => g.items).filter((d) => d.writable).length;
+  const writableCount = allDbs.filter((d) => d.writable).length;
+
+  // Auto-select the first moderatable DB (or the first DB) once data arrives.
+  useEffect(() => {
+    if (!allDbs.length) return;
+    if (!selId || !allDbs.some((d) => d.id === selId)) setSelId((allDbs.find((d) => d.writable) || allDbs[0]).id);
+    // eslint-disable-next-line
+  }, [data]);
+
+  const sel = allDbs.find((d) => d.id === selId) || null;
 
   return (
-    <div class="flex flex-col h-full">
+    <div class="sqlmon flex flex-col h-full">
       <PageHeader
-        title="SQL Monitor"
+        title="SQL Databases"
         actions={
           <button type="button" onClick={() => refresh()} title="Refresh"
             class="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
@@ -551,44 +603,41 @@ export function SqlMonitor() {
       {loading && !data && <PageState loading />}
 
       {data && (
-        <div class="flex-1 overflow-y-auto px-4 py-4 space-y-6">
-          <p class="text-[11px] text-[var(--color-text-faint)] leading-snug">
-            Every operational SQLite DB on the box, kept separate and organized. Click a DB to browse its tables and run
-            SELECT-only queries.{' '}
-            {writableCount > 0 && (
-              <>
-                <span class="text-[var(--color-accent)] font-medium">{writableCount} app DB{writableCount === 1 ? '' : 's'}</span> are
-                flagged <span class="font-medium text-[var(--color-accent)]">moderate</span> — there you can edit/delete/add rows;
-                every write is confirmed, auto-backed-up, and logged with one-click undo. All other DBs are strictly read-only.
-              </>
-            )}
-          </p>
+        <div class="flex-1 min-h-0 flex flex-col md:flex-row">
+          {/* ── Left rail: every DB, grouped, kept separate ── */}
+          <aside class="md:w-[268px] md:shrink-0 md:h-full md:border-r border-b md:border-b-0 border-[var(--color-border)] overflow-y-auto bg-[var(--color-bg)]">
+            <div class="px-3 py-2.5 border-b border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)]">
+              <span class="font-mono font-semibold text-[var(--color-text)]">{allDbs.length}</span> databases ·{' '}
+              <span class="text-[var(--color-accent)] font-semibold">{writableCount}</span> moderatable
+            </div>
 
-          {mainGroups.map((g) => (
-            <section key={g.id}>
-              <h2 class="text-[12px] font-semibold text-[var(--color-text-muted)] mb-2">
-                {g.label} <span class="text-[var(--color-text-faint)]">({g.items.length})</span>
-              </h2>
-              <div class="space-y-2">
-                {g.items.map((db) => <DbCard key={db.id} db={db} />)}
-              </div>
-            </section>
-          ))}
-
-          {internals && internals.items.length > 0 && (
-            <section>
-              <button type="button" onClick={() => setShowInternals((s) => !s)}
-                class="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text)] mb-2">
-                {showInternals ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                Internals <span class="text-[var(--color-text-faint)] font-normal">({internals.items.length}) — agent memory, watchdog, tools with their own UI</span>
-              </button>
-              {showInternals && (
-                <div class="space-y-2">
-                  {internals.items.map((db) => <DbCard key={db.id} db={db} />)}
+            {mainGroups.map((g) => (
+              <div key={g.id} class="py-1">
+                <div class="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-faint)]">
+                  {g.label} <span class="font-mono font-normal">({g.items.length})</span>
                 </div>
-              )}
-            </section>
-          )}
+                {g.items.map((db) => <RailItem key={db.id} db={db} selected={db.id === selId} onSelect={() => setSelId(db.id)} />)}
+              </div>
+            ))}
+
+            {internals && internals.items.length > 0 && (
+              <div class="py-1 border-t border-[var(--color-border)] mt-1">
+                <button type="button" onClick={() => setShowInternals((s) => !s)}
+                  class="w-full flex items-center gap-1 px-3 py-2 text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-faint)] hover:text-[var(--color-text)]">
+                  {showInternals ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  Internals <span class="font-mono font-normal normal-case tracking-normal">({internals.items.length})</span>
+                </button>
+                {showInternals && internals.items.map((db) => <RailItem key={db.id} db={db} selected={db.id === selId} onSelect={() => setSelId(db.id)} />)}
+              </div>
+            )}
+          </aside>
+
+          {/* ── Right pane: selected DB detail + moderation ── */}
+          <main class="flex-1 min-w-0 md:h-full overflow-y-auto">
+            {sel ? <DetailPane db={sel} /> : (
+              <div class="h-full flex items-center justify-center text-[12px] text-[var(--color-text-faint)]">Select a database from the left.</div>
+            )}
+          </main>
         </div>
       )}
     </div>

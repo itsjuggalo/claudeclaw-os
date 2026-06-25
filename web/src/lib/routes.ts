@@ -46,7 +46,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/hive',       label: 'Hive Mind',       section: 'intelligence', icon: Network,       shortcut: 'g h' },
   { path: '/knowledge-graph', label: 'Knowledge Graph', section: 'intelligence', icon: Workflow              },
   { path: '/databases',  label: 'Databases',       section: 'intelligence', icon: Database                      },
-  { path: '/sql-monitor', label: 'SQL Monitor',    section: 'intelligence', icon: DatabaseZap                   },
+  { path: '/sql-monitor', label: 'SQL Databases',    section: 'intelligence', icon: DatabaseZap                   },
   { path: '/journal',    label: 'Journal',         section: 'intelligence', icon: BookOpen,      shortcut: 'g j' },
   { path: '/audit',      label: 'Audit',           section: 'intelligence', icon: ShieldCheck                   },
   { path: '/skool-builds', label: 'Skool Builds',  section: 'intelligence', icon: GraduationCap, inSidebar: false },

@@ -19,6 +19,7 @@ import { getEquity } from './equity.js';
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
+import { registerAccounts } from './accounts.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getSignalMonitor } from './signal-monitor.js';
 import { getLiveAppsStatus } from './live-apps.js';
@@ -856,6 +857,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       { name: 'Gallery',        port: 3141, path: '/#/gallery',      desc: 'Nano Banana generations' },
       { name: 'Token Dashboard', port: 3141, path: '/token-dashboard', desc: 'Per-prompt cost analytics & cache stats' },
       { name: 'CLI Tools',       port: 3141, path: '/cli-tools',       desc: 'Printing Press Library + CLI-Anything inventory' },
+      { name: 'Accounts',        port: 3141, path: '/accounts',        desc: 'Users per product (ARIES / MissionCtrl / Massage) — read-only' },
     ];
     const rows = services.map(s =>
       `<a href="${(s as any).https ? 'https' : 'http'}://${ts}:${s.port}${s.path}" class="card">
@@ -5615,6 +5617,11 @@ init();
   // /hive, /usage, /audit, /settings work without a token: the page
   // loads the SPA, which reads ?token= from the URL or sessionStorage
   // before making any API call.
+  // Accounts — read-only cross-product user inventory (ARIES / MissionCtrl /
+  // Massage). MUST be registered BEFORE the SPA catch-all below, or app.get('*')
+  // swallows /accounts + /api/accounts. See src/accounts.ts.
+  registerAccounts(app);
+
   app.get('*', (c) => {
     const path = new URL(c.req.url).pathname;
     // /api/* would have been gated earlier, but if it slipped through
