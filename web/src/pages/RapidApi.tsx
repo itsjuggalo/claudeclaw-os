@@ -9,7 +9,7 @@ import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
 
 interface ApiDef { id: string; label: string; nsfw?: boolean; }
-interface MediaResult { title: string; url: string; thumbnail?: string; stream?: string; duration?: string; meta?: string; }
+interface MediaResult { title: string; url: string; thumbnail?: string; stream?: string; embed?: string; duration?: string; meta?: string; }
 
 export function RapidApi() {
   const { data: apisData } = useFetch<{ apis: ApiDef[] }>('/api/rapidapi/apis');
@@ -85,29 +85,45 @@ export function RapidApi() {
             <div class="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
               {results.map((r, i) => (
                 <div key={i} class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg overflow-hidden flex flex-col">
-                  {playing && playing === r.stream ? (
-                    <video src={r.stream} controls autoPlay class="w-full aspect-video bg-black" />
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => (r.stream ? setPlaying(r.stream!) : window.open(r.url, '_blank', 'noopener'))}
-                      class="relative block w-full aspect-video bg-black/40 cursor-pointer"
-                    >
-                      {r.thumbnail ? (
-                        <img src={r.thumbnail} alt="" class="w-full h-full object-cover" loading="lazy" />
-                      ) : (
-                        <div class="w-full h-full flex items-center justify-center text-[var(--color-text-faint)] text-[12px]">no preview</div>
-                      )}
-                      {r.stream && (
-                        <span class="absolute inset-0 flex items-center justify-center">
-                          <Play size={30} class="text-white/90" style={{ filter: 'drop-shadow(0 1px 3px rgba(0,0,0,.6))' }} />
-                        </span>
-                      )}
-                      {r.duration && (
-                        <span class="absolute bottom-1 right-1 text-[10px] bg-black/70 text-white px-1 rounded tabular-nums">{r.duration}</span>
-                      )}
-                    </button>
-                  )}
+                  {(() => {
+                    const playable = r.embed || r.stream;        // embed iframe preferred; raw mp4 fallback
+                    const isOpen = !!playable && playing === playable;
+                    if (isOpen && r.embed) {
+                      return (
+                        <iframe
+                          src={r.embed}
+                          class="w-full aspect-video bg-black border-0"
+                          allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                          allowFullScreen
+                          referrerPolicy="no-referrer"
+                        />
+                      );
+                    }
+                    if (isOpen && r.stream) {
+                      return <video src={r.stream} controls autoPlay class="w-full aspect-video bg-black" />;
+                    }
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => (playable ? setPlaying(playable) : window.open(r.url, '_blank', 'noopener'))}
+                        class="relative block w-full aspect-video bg-black/40 cursor-pointer"
+                      >
+                        {r.thumbnail ? (
+                          <img src={r.thumbnail} alt="" class="w-full h-full object-cover" loading="lazy" />
+                        ) : (
+                          <div class="w-full h-full flex items-center justify-center text-[var(--color-text-faint)] text-[12px]">no preview</div>
+                        )}
+                        {playable && (
+                          <span class="absolute inset-0 flex items-center justify-center">
+                            <Play size={30} class="text-white/90" style={{ filter: 'drop-shadow(0 1px 3px rgba(0,0,0,.6))' }} />
+                          </span>
+                        )}
+                        {r.duration && (
+                          <span class="absolute bottom-1 right-1 text-[10px] bg-black/70 text-white px-1 rounded tabular-nums">{r.duration}</span>
+                        )}
+                      </button>
+                    );
+                  })()}
                   <div class="p-2 flex flex-col gap-1">
                     <div class="text-[12px] text-[var(--color-text)] line-clamp-2" title={r.title}>{r.title}</div>
                     <div class="flex items-center justify-between gap-2">

@@ -13,7 +13,8 @@ export interface MediaResult {
   title: string;
   url: string;          // canonical page — always "Open" in a new tab
   thumbnail?: string;   // preview image
-  stream?: string;      // direct mp4 / embeddable URL -> inline player
+  stream?: string;      // direct mp4 -> inline <video> player
+  embed?: string;       // provider embed/iframe URL -> inline <iframe> player
   duration?: string;
   meta?: string;
 }
@@ -30,6 +31,7 @@ interface RapidApiAdapter {
   label: string;
   host: string;       // x-rapidapi-host
   nsfw?: boolean;
+  allowEmpty?: boolean; // true for feeds that need no query (return page 1 on empty search)
   search(q: string, key: string): Promise<MediaResult[]>;
 }
 
@@ -68,7 +70,7 @@ function normalizeVideo(it: any): MediaResult {
   };
 }
 
-async function rapidFetch(host: string, path: string, key: string, init: RequestInit): Promise<any> {
+async function rapidFetch(host: string, path: string, key: string, init: RequestInit, timeoutMs = 15_000): Promise<any> {
   let res: Response;
   try {
     res = await fetch(`https://${host}${path}`, {
@@ -80,7 +82,7 @@ async function rapidFetch(host: string, path: string, key: string, init: Request
         'x-rapidapi-key': key,
         ...(init.headers || {}),
       },
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
     throw new RapidApiError(502, `Could not reach ${host}: ${e}`);
@@ -111,11 +113,96 @@ const xnxx: RapidApiAdapter = {
       method: 'POST',
       body: JSON.stringify({ q }),
     });
-    return extractItems(data).slice(0, 40).map(normalizeVideo).filter((r) => r.url || r.stream);
+    return extractItems(data)
+      .slice(0, 40)
+      .map(normalizeVideo)
+      .map((r) => {
+        // Inline play uses xnxx's own embed iframe — the direct mp4 CDN
+        // (mp4-cdn77) is hotlink-protected with per-IP CDN77 tokens, so a raw
+        // <video> 403s. The embed player runs in the viewer's browser and does
+        // the token handshake itself. Encoded id lives in /video-<id>/...
+        const m = r.url.match(/\/video-([a-z0-9]+)\//i);
+        return m ? { ...r, embed: `https://www.xnxx.com/embedframe/${m[1]}` } : r;
+      })
+      .filter((r) => r.url || r.stream || r.embed);
   },
 };
 
-const ADAPTERS: RapidApiAdapter[] = [xnxx];
+/** Factory for "one image per query" APIs (generators + single-pic endpoints).
+ *  Most NSFW image APIs on RapidAPI are GET <path> -> a JSON object with the
+ *  image URL under some field; this maps that to one viewable card. Adding a new
+ *  such API is one line at the registry below. `path` builds the request path
+ *  from the query (prompt / type / etc); `timeoutMs` is bumped for slow gens. */
+function imageGenAdapter(
+  id: string,
+  label: string,
+  host: string,
+  path: (q: string) => string,
+  timeoutMs = 30_000,
+): RapidApiAdapter {
+  return {
+    id,
+    label,
+    host,
+    nsfw: true,
+    async search(q, key) {
+      const data = await rapidFetch(host, path(q), key, { method: 'GET' }, timeoutMs);
+      const img = pick(data, ['image', 'image_url', 'url', 'output', 'result', 'src', 'link']);
+      return img ? [{ title: q || label, url: img, thumbnail: img }] : [];
+    },
+  };
+}
+
+/** Factory for "many images per query" APIs (galleries / paginated feeds).
+ *  Pulls the result array out of any envelope, maps each row's image URL to a
+ *  card, and drops junk rows (header placeholders, non-URL values). */
+function imageListAdapter(
+  id: string,
+  label: string,
+  host: string,
+  path: (q: string) => string,
+  opts: { timeoutMs?: number; allowEmpty?: boolean } = {},
+): RapidApiAdapter {
+  const { timeoutMs = 30_000, allowEmpty = false } = opts;
+  return {
+    id,
+    label,
+    host,
+    nsfw: true,
+    allowEmpty,
+    async search(q, key) {
+      const data = await rapidFetch(host, path(q), key, { method: 'GET' }, timeoutMs);
+      const out: MediaResult[] = [];
+      for (const it of extractItems(data)) {
+        const img = pick(it, ['imgLink', 'image', 'image_url', 'imageUrl', 'url', 'thumbnail', 'thumb', 'src', 'link', 'photo']);
+        if (!img || !/^https?:\/\//i.test(img)) continue; // skip header/placeholder rows
+        out.push({ title: pick(it, ['title', 'category', 'name', 'tags', 'caption']) || label, url: img, thumbnail: img });
+        if (out.length >= 60) break;
+      }
+      return out;
+    },
+  };
+}
+
+// ai-porn-nsfw-generator: GET /?prompt=<text> -> {"image":"<png>"} (slow gen).
+const aiPornGen = imageGenAdapter(
+  'aiporn', 'AI Image Generator (NSFW)', 'ai-porn-nsfw-generator.p.rapidapi.com',
+  (q) => `/?prompt=${encodeURIComponent(q)}`, 90_000,
+);
+// girls-nude-image: GET /?type=<category> -> {"url":"<gif/img>"} (boobs/ass/etc).
+const girlsNude = imageGenAdapter(
+  'girlsnude', 'Girls Nude Image (by type)', 'girls-nude-image.p.rapidapi.com',
+  (q) => `/?type=${encodeURIComponent(q || 'boobs')}`,
+);
+// hot-porn-pictures: GET /hotphotos?pagenumber=<n>&pagesize=20 -> [{imgLink,category}].
+// No search term — the query is treated as a page number (default 1).
+const hotPics = imageListAdapter(
+  'hotpics', 'Hot Porn Pictures (feed)', 'hot-porn-pictures.p.rapidapi.com',
+  (q) => `/hotphotos?pagenumber=${/^\d+$/.test(q.trim()) ? q.trim() : 1}&pagesize=20`,
+  { allowEmpty: true },
+);
+
+const ADAPTERS: RapidApiAdapter[] = [xnxx, aiPornGen, girlsNude, hotPics];
 const REGISTRY = new Map(ADAPTERS.map((a) => [a.id, a]));
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -134,7 +221,7 @@ export async function rapidApiSearch(
   const adapter = REGISTRY.get(apiId);
   if (!adapter) throw new RapidApiError(400, `Unknown API '${apiId}'.`);
   const query = (q || '').trim();
-  if (!query) return { results: [] };
+  if (!query && !adapter.allowEmpty) return { results: [] };
   if (!RAPIDAPI_KEY) throw new RapidApiError(500, 'RAPIDAPI_KEY is not set in claudeclaw .env.');
 
   const ck = `${apiId}::${query.toLowerCase()}`;
