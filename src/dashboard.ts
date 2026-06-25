@@ -609,7 +609,15 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
     const remoteAddr = (c.env as { incoming?: { socket?: { remoteAddress?: string } } })
       ?.incoming?.socket?.remoteAddress;
-    const local = isLoopbackAddr(remoteAddr);
+    // Behind the Tailscale Serve HTTPS proxy the upstream socket is ALWAYS 127.0.0.1,
+    // so a bare socket check would treat every phone/remote request as local and skip
+    // the password gate. Serve forwards the real client (tailnet) IP in x-forwarded-for,
+    // so only count a loopback socket as LOCAL when there's no non-loopback forwarded
+    // client. A DIRECT LAN hit has a non-loopback SOCKET (unspoofable) → still gated.
+    const socketLocal = isLoopbackAddr(remoteAddr);
+    const xffClient = (c.req.header('x-forwarded-for') || '').split(',')[0].trim();
+    const proxiedRemote = socketLocal && !!xffClient && !isLoopbackAddr(xffClient);
+    const local = socketLocal && !proxiedRemote;
 
     const mc = MC_ACCESS_SECRET
       ? await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET)
@@ -655,6 +663,20 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return c.html(mcLoginPage(nextUrl, err));
   });
 
+  // Fire-and-forget login audit → aries' shared LoginEvent table (Postgres) via its
+  // loopback /api/login-event sink. NEVER blocks the login. Same secret-guarded sink
+  // missionctrl uses; claudeclaw already holds MC_ACCESS_SECRET.
+  const logFleetLogin = (ev: Record<string, unknown>): void => {
+    try {
+      if (!MC_ACCESS_SECRET) return;
+      void fetch('http://127.0.0.1:1337/api/login-event', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-mc-secret': MC_ACCESS_SECRET },
+        body: JSON.stringify({ appName: 'claudeclaw', ...ev }),
+      }).catch(() => {});
+    } catch { /* never block login on audit */ }
+  };
+
   // Accepts: POST form (password page), POST JSON (programmatic), or GET with
   // ?guest=<signed-token> (tap-to-unlock guest links). On success sets mc_access.
   app.on(['GET', 'POST'], '/api/mc-login', async (c) => {
@@ -692,10 +714,15 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       if (readMasterPasswords().some((m) => safeStrEqual(pw, m.toLowerCase()))) kind = 'master';
     }
 
+    const ip = (c.req.header('x-forwarded-for') || '').split(',')[0].trim() || null;
+    const ua = c.req.header('user-agent') || null;
+
     if (!kind) {
+      logFleetLogin({ authMethod: guest ? 'guest' : 'password', status: 'failure', failureReason: 'invalid_credentials', ipAddress: ip, userAgent: ua });
       if (isJson) return c.json({ error: 'Access denied' }, 401);
       return c.redirect(`/login?error=1&next=${encodeURIComponent(nextUrl)}`, 302);
     }
+    logFleetLogin({ authMethod: kind === 'guest' ? 'guest' : 'password', accountId: kind === 'guest' ? (label ?? 'guest') : null, status: 'success', ipAddress: ip, userAgent: ua });
 
     if (MC_ACCESS_SECRET) {
       if (kind === 'master') {
