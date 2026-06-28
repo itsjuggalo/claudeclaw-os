@@ -24,6 +24,7 @@ import { AgentFiles } from '@/pages/AgentFiles';
 import { Peon } from '@/pages/Peon';
 import { Wallets } from '@/pages/Wallets';
 import { MassageOps } from '@/pages/MassageOps';
+import { MassageAdmin } from '@/pages/MassageAdmin';
 import { SqlMonitor } from '@/pages/SqlMonitor';
 import { SignalMonitor } from '@/pages/SignalMonitor';
 import { LiveApps } from '@/pages/LiveApps';
@@ -91,6 +92,7 @@ export function App() {
           <Route path="/audit"><Audit /></Route>
           <Route path="/wallets"><Wallets /></Route>
           <Route path="/massage-ops"><MassageOps /></Route>
+          <Route path="/massage-admin"><MassageAdmin /></Route>
           <Route path="/sql-monitor"><SqlMonitor /></Route>
           <Route path="/signal-monitor"><SignalMonitor /></Route>
           <Route path="/live-apps"><LiveApps /></Route>

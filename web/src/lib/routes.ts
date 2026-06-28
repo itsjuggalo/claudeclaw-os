@@ -6,7 +6,7 @@ import {
   Rocket, Radio, TrendingUp, Workflow, Bot, Building2,
   BarChart2, Briefcase, Trophy, GraduationCap,
   Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot, Flame,
-  HeartPulse, DatabaseZap, Drama, SlidersHorizontal, Film,
+  HeartPulse, DatabaseZap, Drama, SlidersHorizontal, Film, ClipboardList,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -116,6 +116,7 @@ export const ROUTES: RouteDef[] = [
 
   // Ops & Admin — ARIES + massage (non-MC) external links.
   { path: '/massage-ops',        label: 'Massage Ops',      section: 'ops', icon: HeartPulse },
+  { path: '/massage-admin',      label: 'Massage Admin',    section: 'ops', icon: ClipboardList },
   { path: '/ext-aries-log',      label: 'Mission Log',      section: 'ops', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
   { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'ops', icon: Settings,       href: 'http://100.91.39.122:1337/settings' },
   { path: '/ext-aries-system',   label: 'System Analytics', section: 'ops', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
