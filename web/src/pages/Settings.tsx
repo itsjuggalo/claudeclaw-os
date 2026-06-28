@@ -5,6 +5,7 @@ import { PageState } from '@/components/PageState';
 import { Toggle } from '@/components/Toggle';
 import { invalidateFetchCache, useFetch, type FetchState } from '@/lib/useFetch';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
+import { contextDetail, contextSummary, type ContextHealth } from '@/lib/context-display';
 import { pushToast } from '@/lib/toasts';
 import {
   theme, themeMeta, setTheme, type ThemeName,
@@ -21,11 +22,10 @@ import {
   type HotkeyMod,
 } from '@/lib/personalization';
 
-interface Health {
+interface Health extends ContextHealth {
   killSwitches: Record<string, boolean>;
   killSwitchRefusals: Record<string, number>;
   model: string;
-  contextPct: number;
   provider?: { type: string; command?: string; args?: string[]; model?: string; runtimeMode?: RuntimeMode; thinkingMode?: ThinkingMode };
   providerType?: string;
   runtime?: string;
@@ -191,7 +191,7 @@ export function Settings() {
 
           <Section title="Read-only" subtitle="System limits and bundled assets.">
             <Card>
-              <ReadOnlyRow label="Context window" value={health.data.contextPct + '%'} />
+              <ReadOnlyRow label="Context window" value={contextSummary(health.data)} title={contextDetail(health.data)} />
             </Card>
           </Section>
 
@@ -804,11 +804,11 @@ function Divider() {
   return <div class="border-t border-[var(--color-border)] my-1" />;
 }
 
-function ReadOnlyRow({ label, value }: { label: string; value: string }) {
+function ReadOnlyRow({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <div class="flex items-center justify-between py-1.5">
       <span class="text-[13px] text-[var(--color-text-muted)]">{label}</span>
-      <span class="font-mono text-[12.5px] text-[var(--color-text)] tabular-nums">{value}</span>
+      <span class="font-mono text-[12.5px] text-[var(--color-text)] tabular-nums" title={title}>{value}</span>
     </div>
   );
 }

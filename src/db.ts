@@ -1800,6 +1800,7 @@ export interface SessionTokenSummary {
   compactions: number;
   firstTurnAt: number;
   lastTurnAt: number;
+  lastContextUpdatedAt: number | null;
 }
 
 // ── Dashboard Queries ──────────────────────────────────────────────────
@@ -2122,23 +2123,32 @@ export function getSessionTokenUsage(sessionId: string): SessionTokenSummary | n
   // Falls back to cache_read for backward compat with rows before the migration
   const lastRow = db
     .prepare(
-      `SELECT cache_read, context_tokens, context_window FROM token_usage
+      `SELECT cache_read, context_tokens, context_window, created_at FROM token_usage
        WHERE session_id = ?
        ORDER BY created_at DESC LIMIT 1`,
     )
-    .get(sessionId) as { cache_read: number; context_tokens: number; context_window: number | null } | undefined;
+    .get(sessionId) as {
+      cache_read: number;
+      context_tokens: number;
+      context_window: number | null;
+      created_at: number;
+    } | undefined;
+  const lastContextTokens = lastRow?.context_tokens && lastRow.context_tokens > 0
+    ? lastRow.context_tokens
+    : lastRow?.cache_read ?? 0;
 
   return {
     turns: row.turns,
     totalInputTokens: row.totalInputTokens,
     totalOutputTokens: row.totalOutputTokens,
     lastCacheRead: lastRow?.cache_read ?? 0,
-    lastContextTokens: lastRow?.context_tokens ?? lastRow?.cache_read ?? 0,
+    lastContextTokens,
     lastContextWindow: lastRow?.context_window ?? null,
     totalCostUsd: row.totalCostUsd,
     compactions: row.compactions,
     firstTurnAt: row.firstTurnAt,
     lastTurnAt: row.lastTurnAt,
+    lastContextUpdatedAt: lastRow?.created_at ?? null,
   };
 }
 

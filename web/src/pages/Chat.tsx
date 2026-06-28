@@ -7,6 +7,7 @@ import { useFetch } from '@/lib/useFetch';
 import { apiGet, apiPost, chatId } from '@/lib/api';
 import { renderMarkdown } from '@/lib/markdown';
 import { formatCost, formatNumber } from '@/lib/format';
+import { contextDetail, contextSummary, type ContextHealth } from '@/lib/context-display';
 import { showCosts } from '@/lib/theme';
 import { subscribeChatStream, chatStreamConnected, resetUnread } from '@/lib/chat-stream';
 
@@ -25,7 +26,7 @@ interface ProgressItem {
 }
 
 interface AgentTokens { todayCost: number; todayTurns: number; allTimeCost: number; }
-interface Health { contextPct: number; turns: number; model: string; }
+interface Health extends ContextHealth { turns: number; model: string; }
 
 const QUICK_ACTIONS = [
   { label: 'Status update', prompt: "Quick status update: what are you working on right now?", send: true },
@@ -221,6 +222,11 @@ export function Chat() {
 
       <SessionBar
         contextPct={health.data?.contextPct}
+        contextUsedTokens={health.data?.contextUsedTokens}
+        contextWindowTokens={health.data?.contextWindowTokens}
+        contextLeftTokens={health.data?.contextLeftTokens}
+        contextUpdatedAt={health.data?.contextUpdatedAt}
+        healthRefreshedAt={health.data?.healthRefreshedAt}
         turnsToday={todayTurns}
         costToday={todayCost}
         model={activeAgent === 'all' ? health.data?.model : undefined}
@@ -306,17 +312,41 @@ export function Chat() {
 }
 
 function SessionBar({
-  contextPct, turnsToday, costToday, model, agentLabel,
+  contextPct, contextUsedTokens, contextWindowTokens, contextLeftTokens, contextUpdatedAt, healthRefreshedAt, turnsToday, costToday, model, agentLabel,
 }: {
-  contextPct?: number; turnsToday: number; costToday: number; model?: string; agentLabel?: string;
+  contextPct?: number;
+  contextUsedTokens?: number;
+  contextWindowTokens?: number;
+  contextLeftTokens?: number;
+  contextUpdatedAt?: number | null;
+  healthRefreshedAt?: number | null;
+  turnsToday: number;
+  costToday: number;
+  model?: string;
+  agentLabel?: string;
 }) {
+  const context: ContextHealth = {
+    contextPct,
+    contextUsedTokens,
+    contextWindowTokens,
+    contextLeftTokens,
+    contextUpdatedAt,
+    healthRefreshedAt,
+  };
+  const pct = typeof contextPct === 'number' ? Math.max(0, Math.min(100, contextPct)) : 0;
   return (
     <div class="flex items-center gap-4 px-6 py-1.5 border-b border-[var(--color-border)] text-[10.5px] text-[var(--color-text-faint)] tabular-nums">
       {agentLabel && (
         <span><span class="uppercase tracking-wider">Agent</span> <span class="text-[var(--color-text-muted)] normal-case tracking-normal">{agentLabel}</span></span>
       )}
       {typeof contextPct === 'number' && (
-        <span><span class="uppercase tracking-wider">Ctx</span> <span class="text-[var(--color-text-muted)]">{contextPct}%</span></span>
+        <span class="inline-flex items-center gap-1.5" title={contextDetail(context)}>
+          <span class="uppercase tracking-wider">Ctx</span>
+          <span class="text-[var(--color-text-muted)]">{contextSummary(context)}</span>
+          <span class="h-1 w-14 rounded-full bg-[var(--color-elevated)] overflow-hidden">
+            <span class="block h-full bg-[var(--color-accent)]" style={{ width: `${pct}%` }} />
+          </span>
+        </span>
       )}
       <span><span class="uppercase tracking-wider">Turns today</span> <span class="text-[var(--color-text-muted)]">{formatNumber(turnsToday)}</span></span>
       {showCosts.value && (

@@ -214,6 +214,10 @@ describe('GET /api/health', () => {
     const body = await jsonOf(res);
     expect(body).toMatchObject({
       contextPct: expect.any(Number),
+      contextUsedTokens: expect.any(Number),
+      contextWindowTokens: expect.any(Number),
+      contextLeftTokens: expect.any(Number),
+      healthRefreshedAt: expect.any(Number),
       turns: expect.any(Number),
       compactions: expect.any(Number),
       sessionAge: expect.any(String),

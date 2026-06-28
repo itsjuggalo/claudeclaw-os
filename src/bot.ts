@@ -40,7 +40,7 @@ import {
   CLAUDE_MODEL_SONNET,
   CLAUDE_MODEL_HAIKU,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount, getMemoryMigrationNotice, setMemoryMigrationNotice } from './db.js';
+import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, getSessionTokenUsage, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount, getMemoryMigrationNotice, setMemoryMigrationNotice } from './db.js';
 import { resolvePrimaryAgentId } from './agent-config.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
@@ -141,15 +141,50 @@ function activeProvider(): ProviderConfig {
   return agentProvider ?? getMainProviderConfig();
 }
 
-export function modelStatusLine(provider: ProviderConfig, chatId: string): string {
-  if (provider.type === 'claude') {
-    return `Model: ${chatModelOverride.get(chatId) ?? agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL}`;
+function formatCompactTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
+}
+
+function formatContextStatusLine(chatId: string): string | null {
+  let summary: ReturnType<typeof getSessionTokenUsage> = null;
+  try {
+    const sessionId = getSession(chatId, AGENT_ID);
+    if (!sessionId) return null;
+    summary = getSessionTokenUsage(sessionId);
+    if (!summary) return null;
+  } catch {
+    return null;
   }
-  if (provider.model) return `Model: ${provider.model}`;
-  if (provider.type === 'codex') return 'Model: Codex default';
-  if (provider.type === 'gemini') return 'Model: Gemini CLI default';
-  if (provider.type === 'opencode') return 'Model: OpenCode default';
-  return 'Model: Provider default';
+
+  const used = Math.max(0, summary.lastContextTokens || summary.lastCacheRead || 0);
+  const windowTokens = summary.lastContextWindow || CONTEXT_LIMIT;
+  const left = Math.max(0, windowTokens - used);
+  const pct = used > 0 ? Math.round((used / windowTokens) * 100) : 0;
+  const updated = summary.lastContextUpdatedAt
+    ? new Date(summary.lastContextUpdatedAt * 1000).toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+    : 'unknown';
+
+  return `Context: ${formatCompactTokenCount(left)} left / ${formatCompactTokenCount(windowTokens)} (${pct}% used, updated ${updated})`;
+}
+
+export function modelStatusLine(provider: ProviderConfig, chatId: string): string {
+  const contextLine = formatContextStatusLine(chatId);
+  const withContext = (modelLine: string) => contextLine ? `${modelLine}\n${contextLine}` : modelLine;
+
+  if (provider.type === 'claude') {
+    return withContext(`Model: ${chatModelOverride.get(chatId) ?? agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL}`);
+  }
+  if (provider.model) return withContext(`Model: ${provider.model}`);
+  if (provider.type === 'codex') return withContext('Model: Codex default');
+  if (provider.type === 'gemini') return withContext('Model: Gemini CLI default');
+  if (provider.type === 'opencode') return withContext('Model: OpenCode default');
+  return withContext('Model: Provider default');
 }
 
 function canUseTelegramUrlButton(rawUrl: string): boolean {

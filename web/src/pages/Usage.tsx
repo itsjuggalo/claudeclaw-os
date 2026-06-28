@@ -2,6 +2,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
+import { contextDetail, contextSummary, formatClock, formatTokenCount, type ContextHealth } from '@/lib/context-display';
 import { formatCost, formatNumber } from '@/lib/format';
 import { showCosts } from '@/lib/theme';
 import { chatId } from '@/lib/api';
@@ -17,8 +18,7 @@ interface TokenStats {
 
 interface CostTimelineEntry { date: string; cost: number; turns: number; }
 
-interface Health {
-  contextPct: number;
+interface Health extends ContextHealth {
   turns: number;
   compactions: number;
   sessionAge: string;
@@ -87,7 +87,12 @@ export function Usage() {
               <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4">
                 <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-3">System health</div>
                 <div class="grid grid-cols-2 gap-3">
-                  <Stat label="Context" value={health.data.contextPct + '%'} />
+                  <Stat label="Context" value={contextSummary(health.data)} hint={contextDetail(health.data)} colSpan={2} />
+                  <ContextMeter pct={health.data.contextPct ?? 0} />
+                  <Stat label="Context used" value={formatTokenCount(health.data.contextUsedTokens)} />
+                  <Stat label="Context window" value={formatTokenCount(health.data.contextWindowTokens)} />
+                  <Stat label="Context sample" value={formatClock(health.data.contextUpdatedAt)} />
+                  <Stat label="Health refreshed" value={formatClock(health.data.healthRefreshedAt)} />
                   <Stat label="Turns" value={String(health.data.turns)} />
                   <Stat label="Session age" value={health.data.sessionAge} />
                   <Stat label="Compactions" value={String(health.data.compactions)} />
@@ -129,11 +134,20 @@ function KpiCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Stat({ label, value, colSpan = 1 }: { label: string; value: string; colSpan?: number }) {
+function Stat({ label, value, hint, colSpan = 1 }: { label: string; value: string; hint?: string; colSpan?: number }) {
   return (
-    <div style={{ gridColumn: 'span ' + colSpan }}>
+    <div style={{ gridColumn: 'span ' + colSpan }} title={hint}>
       <div class="text-[10px] text-[var(--color-text-faint)] uppercase tracking-wider mb-0.5">{label}</div>
       <div class="text-[12.5px] tabular-nums text-[var(--color-text)]">{value}</div>
+    </div>
+  );
+}
+
+function ContextMeter({ pct }: { pct: number }) {
+  const width = Math.max(0, Math.min(100, pct));
+  return (
+    <div class="col-span-2 h-2 rounded-full bg-[var(--color-elevated)] overflow-hidden">
+      <div class="h-full bg-[var(--color-accent)]" style={{ width: `${width}%` }} />
     </div>
   );
 }

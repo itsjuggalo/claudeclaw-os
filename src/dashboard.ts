@@ -4162,6 +4162,10 @@ init();
     const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const sessionId = getSession(chatId);
     let contextPct = 0;
+    let contextUsedTokens = 0;
+    let contextWindowTokens = CONTEXT_LIMIT;
+    let contextLeftTokens = CONTEXT_LIMIT;
+    let contextUpdatedAt: number | null = null;
     let turns = 0;
     let compactions = 0;
     let sessionAge = '-';
@@ -4171,11 +4175,13 @@ init();
       if (summary) {
         turns = summary.turns;
         compactions = summary.compactions;
-        const contextTokens = (summary.lastContextTokens || 0) + (summary.lastCacheRead || 0);
+        contextUsedTokens = Math.max(0, summary.lastContextTokens || summary.lastCacheRead || 0);
         // Size the gauge against the model's real window when the SDK reported
         // one (e.g. Opus 4.8 = 1M, Sonnet 4.6 = 200k); fall back to CONTEXT_LIMIT.
-        const contextLimit = summary.lastContextWindow || CONTEXT_LIMIT;
-        contextPct = contextTokens > 0 ? Math.round((contextTokens / contextLimit) * 100) : 0;
+        contextWindowTokens = summary.lastContextWindow || CONTEXT_LIMIT;
+        contextLeftTokens = Math.max(0, contextWindowTokens - contextUsedTokens);
+        contextPct = contextUsedTokens > 0 ? Math.round((contextUsedTokens / contextWindowTokens) * 100) : 0;
+        contextUpdatedAt = summary.lastContextUpdatedAt;
         const ageSec = Math.floor(Date.now() / 1000) - summary.firstTurnAt;
         if (ageSec < 3600) sessionAge = Math.floor(ageSec / 60) + 'm';
         else if (ageSec < 86400) sessionAge = Math.floor(ageSec / 3600) + 'h';
@@ -4196,6 +4202,11 @@ init();
 
     return c.json({
       contextPct,
+      contextUsedTokens,
+      contextWindowTokens,
+      contextLeftTokens,
+      contextUpdatedAt,
+      healthRefreshedAt: Math.floor(Date.now() / 1000),
       turns,
       compactions,
       sessionAge,
