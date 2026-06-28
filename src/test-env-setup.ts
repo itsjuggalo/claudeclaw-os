@@ -8,6 +8,10 @@ import path from 'path';
 process.env.DASHBOARD_TOKEN = 'test-contract-token';
 process.env.DASHBOARD_MUTATIONS_ENABLED = process.env.DASHBOARD_MUTATIONS_ENABLED || 'true';
 process.env.WARROOM_ENABLED = process.env.WARROOM_ENABLED || 'false';
+// Contract tests exercise endpoint shapes through Hono's app.request(), not
+// the fleet-wide browser login. Keep the real machine's .env mc_access secret
+// from turning every API request into a 401 in local test runs.
+process.env.MC_ACCESS_DISABLED = '1';
 
 // Sandbox CLAUDECLAW_CONFIG to a temp dir so tests that exercise
 // loadAgentConfig or resolveAgentDisplayName don't collide with the

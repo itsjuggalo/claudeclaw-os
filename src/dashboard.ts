@@ -98,7 +98,7 @@ import {
 import { computeNextRun } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
-import { AGENT_ID_RE, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel, setAgentProvider } from './agent-config.js';
+import { AGENT_ID_RE, DEFAULT_MAIN_DESCRIPTION, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, resolveAgentDisplayName, setAgentModel, setAgentProvider } from './agent-config.js';
 import {
   resolveAgentAvatar,
   avatarEtag,
@@ -1425,7 +1425,7 @@ init();
     const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
     const agents = ids.map((id) => {
       try {
-        if (id === 'main') return { id: 'main', name: 'Main', description: 'General ops and triage' };
+        if (id === 'main') return { id: 'main', name: resolveAgentDisplayName('main'), description: DEFAULT_MAIN_DESCRIPTION };
         const cfg = loadAgentConfig(id);
         return { id, name: cfg.name || id, description: cfg.description || '' };
       } catch {
@@ -4252,7 +4252,7 @@ init();
     }
     const mainStats = getAgentTokenStats('main');
     const allAgents = [
-      { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: getMainModelOverride() ?? 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
+      { id: 'main', name: resolveAgentDisplayName('main'), description: DEFAULT_MAIN_DESCRIPTION, model: getMainModelOverride() ?? 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
       ...agents,
     ];
 
