@@ -34,6 +34,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/scheduled',  label: 'Scheduled',       section: 'workspace',    icon: ListTodo,      shortcut: 'g s' },
   { path: '/agents',     label: 'Agents',          section: 'workspace',    icon: Users,         shortcut: 'g a' },
   { path: '/chat',       label: 'Chat',            section: 'workspace',    icon: MessageSquare, shortcut: 'g c' },
+  { path: '/massage-admin', label: 'Massage Admin', section: 'workspace',   icon: ClipboardList },
 
   // Studio — creative / media
   { path: '/create',     label: 'Create',          section: 'studio',       icon: Wand2,         shortcut: 'g n' },
@@ -116,7 +117,6 @@ export const ROUTES: RouteDef[] = [
 
   // Ops & Admin — ARIES + massage (non-MC) external links.
   { path: '/massage-ops',        label: 'Massage Ops',      section: 'ops', icon: HeartPulse },
-  { path: '/massage-admin',      label: 'Massage Admin',    section: 'ops', icon: ClipboardList },
   { path: '/ext-aries-log',      label: 'Mission Log',      section: 'ops', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
   { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'ops', icon: Settings,       href: 'http://100.91.39.122:1337/settings' },
   { path: '/ext-aries-system',   label: 'System Analytics', section: 'ops', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
