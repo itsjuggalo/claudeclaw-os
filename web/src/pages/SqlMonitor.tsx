@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
+import { useSearch } from 'wouter-preact';
 import { Database, RefreshCw, ChevronRight, ChevronDown, Play, AlertTriangle, Table2, Pencil, Trash2, Plus, Undo2, Shield, ShieldCheck, X, History, HardDrive, Clock } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
@@ -45,6 +46,9 @@ interface AuditEntry {
 const agoFromIso = (iso: string | null) => (iso ? formatRelativeTime(Math.floor(Date.parse(iso) / 1000)) : '—');
 const cellStr = (v: unknown) => (v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
 const keyStr = (k: RowKey) => (k.rowid != null ? `r:${k.rowid}` : `pk:${JSON.stringify(k.pk || {})}`);
+const dbIdFromSearch = (search: string) => {
+  try { return new URLSearchParams(search).get('db'); } catch { return null; }
+};
 
 // ── Page-scoped font injection (once) ─────────────────────────────────
 // We register Inter + JetBrains Mono under PRIVATE family names and apply them
@@ -568,9 +572,11 @@ function DetailPane({ db }: { db: SqlDbInfo }) {
 
 export function SqlMonitor() {
   injectSqlMonFonts();
+  const search = useSearch();
   const { data, loading, error, refresh } = useFetch<SqlCatalog>('/api/sql', 30000);
   const [selId, setSelId] = useState<string | null>(null);
   const [showInternals, setShowInternals] = useState(false);
+  const requestedDbId = dbIdFromSearch(search);
 
   const groups = data?.groups ?? [];
   const allDbs = groups.flatMap((g) => g.items);
@@ -578,14 +584,27 @@ export function SqlMonitor() {
   const internals = groups.find((g) => g.id === 'internals');
   const writableCount = allDbs.filter((d) => d.writable).length;
 
-  // Auto-select the first moderatable DB (or the first DB) once data arrives.
+  // Auto-select a linked DB first, then the first moderatable DB (or first DB).
   useEffect(() => {
     if (!allDbs.length) return;
+    if (requestedDbId && allDbs.some((d) => d.id === requestedDbId)) {
+      setSelId(requestedDbId);
+      return;
+    }
     if (!selId || !allDbs.some((d) => d.id === selId)) setSelId((allDbs.find((d) => d.writable) || allDbs[0]).id);
     // eslint-disable-next-line
-  }, [data]);
+  }, [data, requestedDbId]);
 
   const sel = allDbs.find((d) => d.id === selId) || null;
+
+  function selectDb(id: string) {
+    setSelId(id);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('db', id);
+      window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    } catch {}
+  }
 
   return (
     <div class="sqlmon flex flex-col h-full">
@@ -616,7 +635,7 @@ export function SqlMonitor() {
                 <div class="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-faint)]">
                   {g.label} <span class="font-mono font-normal">({g.items.length})</span>
                 </div>
-                {g.items.map((db) => <RailItem key={db.id} db={db} selected={db.id === selId} onSelect={() => setSelId(db.id)} />)}
+                {g.items.map((db) => <RailItem key={db.id} db={db} selected={db.id === selId} onSelect={() => selectDb(db.id)} />)}
               </div>
             ))}
 
@@ -627,7 +646,7 @@ export function SqlMonitor() {
                   {showInternals ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   Internals <span class="font-mono font-normal normal-case tracking-normal">({internals.items.length})</span>
                 </button>
-                {showInternals && internals.items.map((db) => <RailItem key={db.id} db={db} selected={db.id === selId} onSelect={() => setSelId(db.id)} />)}
+                {showInternals && internals.items.map((db) => <RailItem key={db.id} db={db} selected={db.id === selId} onSelect={() => selectDb(db.id)} />)}
               </div>
             )}
           </aside>

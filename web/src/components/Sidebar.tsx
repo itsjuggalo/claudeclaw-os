@@ -1,5 +1,5 @@
-import { Link, useLocation } from 'wouter-preact';
-import { Search, ChevronDown, ChevronRight, X, Monitor, Smartphone, PanelLeftClose, PanelLeftOpen } from 'lucide-preact';
+import { Link, useLocation, useSearch } from 'wouter-preact';
+import { Search, ChevronDown, ChevronRight, X, Monitor, Smartphone, PanelLeftClose, PanelLeftOpen, Database, DatabaseZap, ShieldCheck } from 'lucide-preact';
 import { useEffect, useState } from 'preact/hooks';
 import { ROUTES, SECTION_LABEL, type RouteDef, type RouteSection } from '@/lib/routes';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -19,26 +19,34 @@ import {
 const SECTIONS: RouteSection[] = ['workspace', 'studio', 'intelligence', 'trade', 'lewis', 'collaborate', 'system', 'mc', 'mcctrl', 'ops', 'wellness'];
 const RUNTIME_PANEL_KEY = 'claudeclaw.sidebar.runtime.expanded';
 const SIDEBAR_COLLAPSED_KEY = 'claudeclaw.sidebar.nav.collapsed';
+const SQL_DB_NAV_KEY = 'claudeclaw.sidebar.sqlDatabases.expanded';
+const SQL_DB_GROUPS_KEY = 'claudeclaw.sidebar.sqlDatabases.groups';
 
 export function Sidebar() {
   const [pathname] = useLocation();
+  const search = useSearch();
+  const routePathname = pathname.split(/[?#]/)[0] || '/';
   const modLabel = modKeyLabel();
   const open = sidebarOpen.value;
 
   // Only show routes where inSidebar is not explicitly false.
   const sidebarRoutes = ROUTES.filter((r) => r.inSidebar !== false);
   const liveSections = SECTIONS.filter((s) => sidebarRoutes.some((r) => r.section === s));
-  const matchedRoute = findActiveRoute(pathname, sidebarRoutes);
+  const matchedRoute = findActiveRoute(routePathname, sidebarRoutes);
   const [selectedSection, setSelectedSection] = useState<RouteSection>(() => matchedRoute?.section ?? liveSections[0] ?? 'workspace');
   const [navCollapsed, setNavCollapsed] = useState(() => {
     try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'closed'; } catch { return false; }
   });
+  const [sqlPanelOpen, setSqlPanelOpen] = useState(() => {
+    try { return localStorage.getItem(SQL_DB_NAV_KEY) !== 'closed'; } catch { return true; }
+  });
   const activePath = matchedRoute?.path;
+  const activeSqlDbId = routePathname === '/sql-monitor' ? getSqlDbIdFromSearch(search) : null;
 
   useEffect(() => {
-    const next = findActiveRoute(pathname, sidebarRoutes)?.section;
+    const next = findActiveRoute(routePathname, sidebarRoutes)?.section;
     if (next) setSelectedSection(next);
-  }, [pathname]);
+  }, [routePathname]);
 
   // Mobile: fixed drawer that slides in from the left. Desktop (>=md):
   // always-visible inline two-panel navigation.
@@ -50,6 +58,7 @@ export function Sidebar() {
   ].join(' ');
   const secondaryItems = sidebarRoutes.filter((r) => r.section === selectedSection);
   const primaryWidthClass = navCollapsed ? 'w-[64px] md:w-[68px]' : 'w-[210px] md:w-[224px]';
+  const showSqlPanel = !navCollapsed && selectedSection === 'intelligence' && sqlPanelOpen;
 
   function setNavCollapsedPersisted(next: boolean) {
     setNavCollapsed(next);
@@ -59,6 +68,11 @@ export function Sidebar() {
   function selectSection(section: RouteSection) {
     setSelectedSection(section);
     if (navCollapsed) setNavCollapsedPersisted(false);
+  }
+
+  function setSqlPanelOpenPersisted(next: boolean) {
+    setSqlPanelOpen(next);
+    try { localStorage.setItem(SQL_DB_NAV_KEY, next ? 'open' : 'closed'); } catch {}
   }
 
   return (
@@ -177,8 +191,30 @@ export function Sidebar() {
           style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 88%, var(--color-bg))' }}
         >
           <div class="border-b border-[var(--color-border)] px-4 py-3">
-            <div class="section-label">Selected</div>
-            <div class="mt-1 truncate text-[14px] font-semibold text-[var(--color-text)]">{SECTION_LABEL[selectedSection]}</div>
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="section-label">Selected</div>
+                <div class="mt-1 truncate text-[14px] font-semibold text-[var(--color-text)]">{SECTION_LABEL[selectedSection]}</div>
+              </div>
+              {selectedSection === 'intelligence' && (
+                <button
+                  type="button"
+                  onClick={() => setSqlPanelOpenPersisted(!sqlPanelOpen)}
+                  title={sqlPanelOpen ? 'Hide SQL databases panel' : 'Show SQL databases panel'}
+                  aria-label={sqlPanelOpen ? 'Hide SQL databases panel' : 'Show SQL databases panel'}
+                  aria-pressed={sqlPanelOpen}
+                  class={[
+                    'inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px] font-semibold transition-colors',
+                    sqlPanelOpen
+                      ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                      : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]',
+                  ].join(' ')}
+                >
+                  <DatabaseZap size={13} />
+                  <span>SQL</span>
+                </button>
+              )}
+            </div>
           </div>
           <nav class="flex-1 overflow-y-auto px-3 py-3" aria-label={`${SECTION_LABEL[selectedSection]} navigation`}>
             {secondaryItems.map((r) => (
@@ -187,7 +223,129 @@ export function Sidebar() {
           </nav>
         </aside>
       )}
+
+      {showSqlPanel && (
+        <aside
+          class="flex h-screen w-[280px] min-w-[240px] max-w-[380px] shrink-0 resize-x flex-col overflow-hidden border-r border-[var(--color-border)] transition-[width,opacity] duration-200 md:w-[300px]"
+          style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 82%, var(--color-bg))' }}
+        >
+          <SqlDatabasesPanel activeDbId={activeSqlDbId} onClose={() => setSqlPanelOpenPersisted(false)} />
+        </aside>
+      )}
     </div>
+  );
+}
+
+interface SqlNavDbInfo {
+  id: string;
+  label: string;
+  subtitle?: string;
+  writable?: boolean;
+  live?: boolean;
+  stale?: boolean;
+  size?: string;
+}
+
+interface SqlNavGroup {
+  id: string;
+  label: string;
+  items: SqlNavDbInfo[];
+}
+
+interface SqlNavCatalog {
+  groups: SqlNavGroup[];
+}
+
+function SqlDatabasesPanel({ activeDbId, onClose }: { activeDbId: string | null; onClose: () => void }) {
+  const catalog = useFetch<SqlNavCatalog>('/api/sql', 30_000);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(SQL_DB_GROUPS_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return { apps: true, pipeline: true, state: false, tooling: false, internals: false };
+  });
+
+  function setGroupOpen(groupId: string, next: boolean) {
+    const nextGroups = { ...openGroups, [groupId]: next };
+    setOpenGroups(nextGroups);
+    try { localStorage.setItem(SQL_DB_GROUPS_KEY, JSON.stringify(nextGroups)); } catch {}
+  }
+
+  const groups = catalog.data?.groups.filter((g) => g.items.length > 0) ?? [];
+
+  return (
+    <>
+      <div class="border-b border-[var(--color-border)] px-4 py-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="section-label">Database rail</div>
+            <div class="mt-1 flex items-center gap-2 truncate text-[14px] font-semibold text-[var(--color-text)]">
+              <DatabaseZap size={15} class="shrink-0 text-[var(--color-accent)]" />
+              <span class="truncate">SQL databases</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Hide SQL databases panel"
+            aria-label="Hide SQL databases panel"
+            class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+          >
+            <PanelLeftClose size={15} />
+          </button>
+        </div>
+      </div>
+
+      <nav class="flex-1 overflow-y-auto px-3 py-3" aria-label="SQL database navigation">
+        {catalog.loading && !catalog.data && (
+          <div class="px-3 py-2 text-[12px] text-[var(--color-text-faint)]">Loading databases...</div>
+        )}
+        {catalog.error && (
+          <div class="px-3 py-2 text-[11px] text-[var(--color-status-failed)]">SQL catalog unavailable</div>
+        )}
+        {groups.map((group) => {
+          const groupOpen = openGroups[group.id] ?? (group.id === 'apps' || group.id === 'pipeline');
+          return (
+            <div key={group.id} class="mt-1">
+              <button
+                type="button"
+                onClick={() => setGroupOpen(group.id, !groupOpen)}
+                class="flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-[11px] font-semibold uppercase text-[var(--color-text-faint)] transition-colors hover:bg-[var(--color-elevated)] hover:text-[var(--color-text-muted)]"
+                aria-expanded={groupOpen}
+              >
+                {groupOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                <span class="min-w-0 flex-1 truncate">{group.label}</span>
+                <span class="font-mono font-normal">{group.items.length}</span>
+              </button>
+              {groupOpen && (
+                <div class="mt-0.5">
+                  {group.items.map((db) => (
+                    <Link
+                      key={db.id}
+                      href={`/sql-monitor?db=${encodeURIComponent(db.id)}`}
+                      onClick={closeSidebar}
+                      class={[
+                        'mb-0.5 flex items-center gap-2 rounded-md px-3 py-1.5 text-[12px] transition-colors',
+                        activeDbId === db.id
+                          ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                          : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]',
+                      ].join(' ')}
+                      title={db.subtitle || db.label}
+                    >
+                      <Database size={13} class="shrink-0" />
+                      <span class="min-w-0 flex-1 truncate">{db.label}</span>
+                      {db.writable && <ShieldCheck size={11} class="shrink-0 text-[var(--color-accent)]" />}
+                      {db.live && !db.stale && <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-status-done)]" title="Live" />}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </nav>
+    </>
   );
 }
 
@@ -229,6 +387,10 @@ function SidebarRouteLink({ route, active }: { route: RouteDef; active: boolean 
       {inner}
     </Link>
   );
+}
+
+function getSqlDbIdFromSearch(search: string): string | null {
+  try { return new URLSearchParams(search).get('db'); } catch { return null; }
 }
 
 function findActiveRoute(pathname: string, routes: RouteDef[]): RouteDef | undefined {
