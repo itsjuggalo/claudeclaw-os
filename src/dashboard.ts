@@ -14,6 +14,7 @@ import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderD
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getMassageMonitor, keepAccount, deleteAccount, setReaper } from './massage.js';
+import { getMassageAdminOverview, updateMassageAdminClient } from './massage-admin.js';
 import { getSqlCatalog, getSqlTables, runSqlSelect, getModerationRows, updateRow, deleteRow, insertRow, getAuditLog as getSqlAuditLog, undoMutation } from './sqlmonitor.js';
 import { getEquity } from './equity.js';
 import { getTradeHistory } from './tradehistory.js';
@@ -755,6 +756,25 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // request reaching a legacy handler has already passed it. No-op kept for the
     // legacy call sites (legacy GET / under DASHBOARD_LEGACY, warroom HTML routes).
     return null;
+  }
+
+  async function requireMassageAdmin(c: any): Promise<{ ok: true; adminUser: string } | { ok: false; status: number; error: string }> {
+    const remoteAddr = (c.env as { incoming?: { socket?: { remoteAddress?: string } } })
+      ?.incoming?.socket?.remoteAddress;
+    const socketLocal = isLoopbackAddr(remoteAddr);
+    const xffClient = (c.req.header('x-forwarded-for') || '').split(',')[0].trim();
+    const proxiedRemote = socketLocal && !!xffClient && !isLoopbackAddr(xffClient);
+    const local = socketLocal && !proxiedRemote;
+    if (local) return { ok: true, adminUser: 'local-loopback' };
+
+    if (!MC_ACCESS_SECRET) {
+      return { ok: false, status: 403, error: 'admin auth is not configured for remote writes' };
+    }
+    const mc = await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET);
+    if (!mc) return { ok: false, status: 401, error: 'not authenticated' };
+    if (mc.kind !== 'master') return { ok: false, status: 403, error: 'admin access requires a master session' };
+    const adminUser = mc.user?.email || mc.user?.name || mc.label || 'mc_access_master';
+    return { ok: true, adminUser };
   }
 
   // Mutation kill-switch middleware. When DASHBOARD_MUTATIONS_ENABLED is
@@ -2399,6 +2419,29 @@ init();
       const body = await c.req.json().catch(() => ({}));
       return c.json(await setReaper(body));
     } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+
+  app.get('/api/massage-admin/session', async (c) => {
+    const admin = await requireMassageAdmin(c);
+    return c.json({
+      canEdit: admin.ok,
+      adminUser: admin.ok ? admin.adminUser : null,
+      reason: admin.ok ? null : admin.error,
+      roleTodo: 'Replace master-session/local admin-equivalent checks with real per-user admin roles.',
+    });
+  });
+  app.get('/api/massage-admin/clients', (c) => {
+    try { return c.json(getMassageAdminOverview()); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.patch('/api/massage-admin/clients/:id', async (c) => {
+    const admin = await requireMassageAdmin(c);
+    if (!admin.ok) return c.json({ error: admin.error }, admin.status as 401);
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const result = updateMassageAdminClient(c.req.param('id'), body, admin.adminUser);
+      return 'error' in result ? c.json(result, result.migration ? 409 : 400) : c.json(result);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
 
   // ── SQL Monitor — read-only inventory + browse for every operational SQLite DB
