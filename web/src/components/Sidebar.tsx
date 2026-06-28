@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter-preact';
-import { Search, ChevronDown, ChevronRight, X, Monitor, Smartphone } from 'lucide-preact';
+import { Search, ChevronDown, ChevronRight, X, Monitor, Smartphone, PanelLeftClose, PanelLeftOpen } from 'lucide-preact';
 import { useEffect, useState } from 'preact/hooks';
 import { ROUTES, SECTION_LABEL, type RouteDef, type RouteSection } from '@/lib/routes';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -18,6 +18,7 @@ import {
 
 const SECTIONS: RouteSection[] = ['workspace', 'studio', 'intelligence', 'trade', 'lewis', 'collaborate', 'system', 'mc', 'mcctrl', 'ops', 'wellness'];
 const RUNTIME_PANEL_KEY = 'claudeclaw.sidebar.runtime.expanded';
+const SIDEBAR_COLLAPSED_KEY = 'claudeclaw.sidebar.nav.collapsed';
 
 export function Sidebar() {
   const [pathname] = useLocation();
@@ -29,6 +30,9 @@ export function Sidebar() {
   const liveSections = SECTIONS.filter((s) => sidebarRoutes.some((r) => r.section === s));
   const matchedRoute = findActiveRoute(pathname, sidebarRoutes);
   const [selectedSection, setSelectedSection] = useState<RouteSection>(() => matchedRoute?.section ?? liveSections[0] ?? 'workspace');
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'closed'; } catch { return false; }
+  });
   const activePath = matchedRoute?.path;
 
   useEffect(() => {
@@ -45,11 +49,39 @@ export function Sidebar() {
     'md:static md:translate-x-0 md:max-w-none md:shrink-0',
   ].join(' ');
   const secondaryItems = sidebarRoutes.filter((r) => r.section === selectedSection);
+  const primaryWidthClass = navCollapsed ? 'w-[64px] md:w-[68px]' : 'w-[210px] md:w-[224px]';
+
+  function setNavCollapsedPersisted(next: boolean) {
+    setNavCollapsed(next);
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? 'closed' : 'open'); } catch {}
+  }
+
+  function selectSection(section: RouteSection) {
+    setSelectedSection(section);
+    if (navCollapsed) setNavCollapsedPersisted(false);
+  }
 
   return (
     <div class={shellClass}>
-      <aside class="relative flex h-screen w-[210px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-sidebar)] md:w-[224px]">
-        <WorkspaceSwitcher />
+      <aside class={`relative flex h-screen shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-sidebar)] transition-[width] duration-200 ${primaryWidthClass}`}>
+        <div class={navCollapsed ? 'px-2 pt-3 pb-1' : 'px-3 pt-3 pb-1'}>
+          <button
+            type="button"
+            onClick={() => setNavCollapsedPersisted(!navCollapsed)}
+            title={navCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={navCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!navCollapsed}
+            class={[
+              'flex items-center rounded-md text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]',
+              navCollapsed ? 'h-9 w-full justify-center' : 'h-9 w-full gap-2 px-2 pr-8 md:pr-2',
+            ].join(' ')}
+          >
+            {navCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            {!navCollapsed && <span class="text-[12.5px] font-medium">Collapse nav</span>}
+          </button>
+        </div>
+
+        {!navCollapsed && <WorkspaceSwitcher />}
 
         {/* Mobile-only close button. Inline-flex with absolute position so
          *  it doesn't disturb the existing header layout. */}
@@ -72,33 +104,45 @@ export function Sidebar() {
             closeSidebar();
           }}
           title="Flag a UI issue — draw on the problem + add a note"
-          class="mx-3 mt-1 mb-1 flex items-center gap-2 px-3 py-2 rounded-md text-[13px] font-semibold border border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-soft)] hover:opacity-90 transition-colors"
+          class={[
+            'mt-1 mb-1 flex items-center rounded-md text-[13px] font-semibold border border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-soft)] hover:opacity-90 transition-colors',
+            navCollapsed ? 'mx-2 justify-center px-2 py-2' : 'mx-3 gap-2 px-3 py-2',
+          ].join(' ')}
         >
           <span class="text-[15px] leading-none">🖍</span>
-          <span>Flag Issue</span>
+          {!navCollapsed && <span>Flag Issue</span>}
         </button>
 
-        <div class="mx-3 mt-1 mb-2">
+        <div class={navCollapsed ? 'mx-2 mt-1 mb-2' : 'mx-3 mt-1 mb-2'}>
           <button
             type="button"
             onClick={() => { commandPaletteOpen.value = true; closeSidebar(); }}
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors text-[13px]"
+            title="Search"
+            class={[
+              'w-full flex items-center rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors text-[13px]',
+              navCollapsed ? 'justify-center px-2 py-2' : 'gap-2 px-3 py-2',
+            ].join(' ')}
           >
             <Search size={15} />
-            <span>Search</span>
-            <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">{modLabel}K</span>
+            {!navCollapsed && (
+              <>
+                <span>Search</span>
+                <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">{modLabel}K</span>
+              </>
+            )}
           </button>
         </div>
 
         <nav class="flex-1 overflow-y-auto px-2 pb-3" aria-label="Primary navigation">
-          <div class="section-label px-2.5 py-1.5">Sections</div>
+          {!navCollapsed && <div class="section-label px-2.5 py-1.5">Sections</div>}
           {liveSections.map((section) => {
             const items = sidebarRoutes.filter((r) => r.section === section);
             const current = matchedRoute?.section === section;
             const selected = selectedSection === section;
             const SectionIcon = items[0]?.icon;
             const itemClass = [
-              'mt-1 flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13.5px] transition-colors',
+              'relative mt-1 flex w-full items-center rounded-md text-left text-[13.5px] transition-colors',
+              navCollapsed ? 'justify-center px-2 py-2.5' : 'gap-2.5 px-3 py-2',
               selected
                 ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
                 : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]',
@@ -107,37 +151,42 @@ export function Sidebar() {
               <button
                 key={section}
                 type="button"
-                onClick={() => setSelectedSection(section)}
+                onClick={() => selectSection(section)}
                 class={itemClass}
+                title={SECTION_LABEL[section]}
                 aria-pressed={selected}
                 aria-current={current ? 'true' : undefined}
               >
                 {SectionIcon ? <SectionIcon size={16} /> : null}
-                <span class="min-w-0 flex-1 truncate">{SECTION_LABEL[section]}</span>
-                {current ? <span class="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" /> : null}
-                <ChevronRight size={14} class="shrink-0 text-[var(--color-text-faint)]" />
+                {!navCollapsed && <span class="min-w-0 flex-1 truncate">{SECTION_LABEL[section]}</span>}
+                {current ? (
+                  <span class={navCollapsed ? 'absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]' : 'h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]'} />
+                ) : null}
+                {!navCollapsed && <ChevronRight size={14} class="shrink-0 text-[var(--color-text-faint)]" />}
               </button>
             );
           })}
         </nav>
 
-        <SidebarFooter />
+        {!navCollapsed && <SidebarFooter />}
       </aside>
 
-      <aside
-        class="flex h-screen w-[260px] min-w-[230px] max-w-[360px] shrink-0 resize-x flex-col overflow-hidden border-r border-[var(--color-border)] transition-[width,opacity] duration-200 md:w-[280px]"
-        style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 88%, var(--color-bg))' }}
-      >
-        <div class="border-b border-[var(--color-border)] px-4 py-3">
-          <div class="section-label">Selected</div>
-          <div class="mt-1 truncate text-[14px] font-semibold text-[var(--color-text)]">{SECTION_LABEL[selectedSection]}</div>
-        </div>
-        <nav class="flex-1 overflow-y-auto px-3 py-3" aria-label={`${SECTION_LABEL[selectedSection]} navigation`}>
-          {secondaryItems.map((r) => (
-            <SidebarRouteLink key={r.path} route={r} active={activePath === r.path} />
-          ))}
-        </nav>
-      </aside>
+      {!navCollapsed && (
+        <aside
+          class="flex h-screen w-[260px] min-w-[230px] max-w-[360px] shrink-0 resize-x flex-col overflow-hidden border-r border-[var(--color-border)] transition-[width,opacity] duration-200 md:w-[280px]"
+          style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 88%, var(--color-bg))' }}
+        >
+          <div class="border-b border-[var(--color-border)] px-4 py-3">
+            <div class="section-label">Selected</div>
+            <div class="mt-1 truncate text-[14px] font-semibold text-[var(--color-text)]">{SECTION_LABEL[selectedSection]}</div>
+          </div>
+          <nav class="flex-1 overflow-y-auto px-3 py-3" aria-label={`${SECTION_LABEL[selectedSection]} navigation`}>
+            {secondaryItems.map((r) => (
+              <SidebarRouteLink key={r.path} route={r} active={activePath === r.path} />
+            ))}
+          </nav>
+        </aside>
+      )}
     </div>
   );
 }
