@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'wouter-preact';
-import { Search, ChevronDown, X, Monitor, Smartphone, ChevronsDownUp, ChevronsUpDown } from 'lucide-preact';
-import { useState } from 'preact/hooks';
-import { ROUTES, SECTION_LABEL, type RouteSection } from '@/lib/routes';
+import { Search, ChevronDown, ChevronRight, X, Monitor, Smartphone } from 'lucide-preact';
+import { useEffect, useState } from 'preact/hooks';
+import { ROUTES, SECTION_LABEL, type RouteDef, type RouteSection } from '@/lib/routes';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { Toggle } from './Toggle';
 import { viewMode, setViewMode } from '@/lib/view-mode';
@@ -12,170 +12,183 @@ import { apiPatch } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { sidebarOpen, closeSidebar } from '@/lib/sidebar';
 import {
-  collapsedSections,
-  toggleSectionCollapsed,
-  setCollapsedSections,
   workspaceName,
   modKeyLabel,
 } from '@/lib/personalization';
 
 const SECTIONS: RouteSection[] = ['workspace', 'studio', 'intelligence', 'trade', 'lewis', 'collaborate', 'system', 'mc', 'mcctrl', 'ops', 'wellness'];
+const RUNTIME_PANEL_KEY = 'claudeclaw.sidebar.runtime.expanded';
 
 export function Sidebar() {
   const [pathname] = useLocation();
-  const collapsed = collapsedSections.value;
   const modLabel = modKeyLabel();
   const open = sidebarOpen.value;
 
   // Only show routes where inSidebar is not explicitly false.
   const sidebarRoutes = ROUTES.filter((r) => r.inSidebar !== false);
-  // Sections that actually render (have ≥1 route). Used by collapse-all.
   const liveSections = SECTIONS.filter((s) => sidebarRoutes.some((r) => r.section === s));
-  const allCollapsed = liveSections.length > 0 && liveSections.every((s) => collapsed.has(s));
+  const matchedRoute = findActiveRoute(pathname, sidebarRoutes);
+  const [selectedSection, setSelectedSection] = useState<RouteSection>(() => matchedRoute?.section ?? liveSections[0] ?? 'workspace');
+  const activePath = matchedRoute?.path;
+
+  useEffect(() => {
+    const next = findActiveRoute(pathname, sidebarRoutes)?.section;
+    if (next) setSelectedSection(next);
+  }, [pathname]);
 
   // Mobile: fixed drawer that slides in from the left. Desktop (>=md):
-  // always-visible inline column. Tailwind's `md:` prefix flips between
-  // the two without extra JS.
-  const asideClass = [
-    'flex flex-col h-screen w-[280px] bg-[var(--color-sidebar)] border-r border-[var(--color-border)]',
+  // always-visible inline two-panel navigation.
+  const shellClass = [
+    'flex h-screen max-w-[calc(100vw-20px)] bg-[var(--color-sidebar)]',
     'fixed inset-y-0 left-0 z-50 transform transition-transform duration-200',
     open ? 'translate-x-0' : '-translate-x-full',
-    'md:static md:translate-x-0 md:w-[260px] md:shrink-0',
+    'md:static md:translate-x-0 md:max-w-none md:shrink-0',
   ].join(' ');
+  const secondaryItems = sidebarRoutes.filter((r) => r.section === selectedSection);
 
   return (
-    <aside class={asideClass}>
-      <WorkspaceSwitcher />
+    <div class={shellClass}>
+      <aside class="relative flex h-screen w-[210px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-sidebar)] md:w-[224px]">
+        <WorkspaceSwitcher />
 
-      {/* Mobile-only close button. Inline-flex with absolute position so
-       *  it doesn't disturb the existing header layout. */}
-      <button
-        type="button"
-        onClick={closeSidebar}
-        class="md:hidden absolute top-3 right-3 p-1.5 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
-        aria-label="Close menu"
-      >
-        <X size={16} />
-      </button>
-
-      {/* Flag a UI issue — opens the markup overlay (draw on the problem + note). */}
-      <button
-        type="button"
-        onClick={() => {
-          const w = window as unknown as { __annotateOverlay?: { toggle: () => void } };
-          if (w.__annotateOverlay) w.__annotateOverlay.toggle();
-          else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true }));
-          closeSidebar();
-        }}
-        title="Flag a UI issue — draw on the problem + add a note"
-        class="mx-3 mt-1 mb-1 flex items-center gap-2 px-3 py-2 rounded-md text-[13px] font-semibold border border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-soft)] hover:opacity-90 transition-colors"
-      >
-        <span class="text-[15px] leading-none">🖍</span>
-        <span>Flag Issue</span>
-      </button>
-
-      <div class="mx-3 mt-1 mb-2 flex items-center gap-1.5">
+        {/* Mobile-only close button. Inline-flex with absolute position so
+         *  it doesn't disturb the existing header layout. */}
         <button
           type="button"
-          onClick={() => { commandPaletteOpen.value = true; closeSidebar(); }}
-          class="flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors text-[13px]"
+          onClick={closeSidebar}
+          class="md:hidden absolute top-3 right-3 p-1.5 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+          aria-label="Close menu"
         >
-          <Search size={15} />
-          <span>Search</span>
-          <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">{modLabel}K</span>
+          <X size={16} />
         </button>
+
+        {/* Flag a UI issue — opens the markup overlay (draw on the problem + note). */}
         <button
           type="button"
-          onClick={() => setCollapsedSections(allCollapsed ? [] : [...liveSections])}
-          title={allCollapsed ? 'Expand all sections' : 'Collapse all sections'}
-          aria-label={allCollapsed ? 'Expand all sections' : 'Collapse all sections'}
-          class="shrink-0 p-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+          onClick={() => {
+            const w = window as unknown as { __annotateOverlay?: { toggle: () => void } };
+            if (w.__annotateOverlay) w.__annotateOverlay.toggle();
+            else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true }));
+            closeSidebar();
+          }}
+          title="Flag a UI issue — draw on the problem + add a note"
+          class="mx-3 mt-1 mb-1 flex items-center gap-2 px-3 py-2 rounded-md text-[13px] font-semibold border border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-soft)] hover:opacity-90 transition-colors"
         >
-          {allCollapsed ? <ChevronsUpDown size={15} /> : <ChevronsDownUp size={15} />}
+          <span class="text-[15px] leading-none">🖍</span>
+          <span>Flag Issue</span>
         </button>
-      </div>
 
-      <nav class="flex-1 overflow-y-auto px-2 pb-3">
-        {SECTIONS.map((section) => {
-          const items = sidebarRoutes.filter((r) => r.section === section);
-          if (items.length === 0) return null;
-          const isCollapsed = collapsed.has(section);
-          return (
-            <div key={section} class="mt-3 first:mt-1">
+        <div class="mx-3 mt-1 mb-2">
+          <button
+            type="button"
+            onClick={() => { commandPaletteOpen.value = true; closeSidebar(); }}
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors text-[13px]"
+          >
+            <Search size={15} />
+            <span>Search</span>
+            <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">{modLabel}K</span>
+          </button>
+        </div>
+
+        <nav class="flex-1 overflow-y-auto px-2 pb-3" aria-label="Primary navigation">
+          <div class="section-label px-2.5 py-1.5">Sections</div>
+          {liveSections.map((section) => {
+            const items = sidebarRoutes.filter((r) => r.section === section);
+            const current = matchedRoute?.section === section;
+            const selected = selectedSection === section;
+            const SectionIcon = items[0]?.icon;
+            const itemClass = [
+              'mt-1 flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13.5px] transition-colors',
+              selected
+                ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]',
+            ].join(' ');
+            return (
               <button
+                key={section}
                 type="button"
-                onClick={() => toggleSectionCollapsed(section)}
-                class="w-full flex items-center gap-1.5 px-2.5 py-1.5 section-label hover:text-[var(--color-text-muted)] transition-colors group"
-                aria-expanded={!isCollapsed}
+                onClick={() => setSelectedSection(section)}
+                class={itemClass}
+                aria-pressed={selected}
+                aria-current={current ? 'true' : undefined}
               >
-                <ChevronDown
-                  size={11}
-                  class="text-[var(--color-text-faint)] transition-transform"
-                  style={{ transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
-                />
-                <span>{SECTION_LABEL[section]}</span>
+                {SectionIcon ? <SectionIcon size={16} /> : null}
+                <span class="min-w-0 flex-1 truncate">{SECTION_LABEL[section]}</span>
+                {current ? <span class="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" /> : null}
+                <ChevronRight size={14} class="shrink-0 text-[var(--color-text-faint)]" />
               </button>
-              {!isCollapsed && items.map((r) => {
-                const active = pathname === r.path || (pathname === '/' && r.path === '/mission');
-                const Icon = r.icon;
-                const unread = r.path === '/chat' ? chatUnread.value : 0;
-                const itemClass = [
-                  'flex items-center gap-2.5 px-3 py-2 rounded-md text-[14px] transition-colors',
-                  active
-                    ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
-                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
-                ].join(' ');
-                const inner = (
-                  <>
-                    <Icon size={16} />
-                    <span class="flex-1">{r.label}</span>
-                    {unread > 0 && (
-                      <span class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10.5px] font-semibold tabular-nums bg-[var(--color-accent)] text-white">
-                        {unread > 99 ? '99+' : unread}
-                      </span>
-                    )}
-                    {r.href && (
-                      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" style="opacity:0.4;flex-shrink:0">
-                        <path d="M5 2H2a1 1 0 00-1 1v7a1 1 0 001 1h7a1 1 0 001-1V7M7 1h4m0 0v4m0-4L5 7"/>
-                      </svg>
-                    )}
-                  </>
-                );
-                // 'self:PORT' resolves to whatever host claudeclaw is being
-                // viewed on (localhost on the laptop, the tailscale IP on the
-                // phone) — so the board link works without a hardcoded IP.
-                const resolvedHref = r.href?.startsWith('self:')
-                  ? `${location.protocol}//${location.hostname}:${r.href.slice(5)}`
-                  : r.href;
-                return r.href ? (
-                  <a
-                    key={r.path}
-                    href={resolvedHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class={itemClass}
-                  >
-                    {inner}
-                  </a>
-                ) : (
-                  <Link
-                    key={r.path}
-                    href={r.path}
-                    onClick={closeSidebar}
-                    class={itemClass}
-                  >
-                    {inner}
-                  </Link>
-                );
-              })}
-            </div>
-          );
-        })}
-      </nav>
+            );
+          })}
+        </nav>
 
-      <SidebarFooter />
-    </aside>
+        <SidebarFooter />
+      </aside>
+
+      <aside
+        class="flex h-screen w-[260px] min-w-[230px] max-w-[360px] shrink-0 resize-x flex-col overflow-hidden border-r border-[var(--color-border)] transition-[width,opacity] duration-200 md:w-[280px]"
+        style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 88%, var(--color-bg))' }}
+      >
+        <div class="border-b border-[var(--color-border)] px-4 py-3">
+          <div class="section-label">Selected</div>
+          <div class="mt-1 truncate text-[14px] font-semibold text-[var(--color-text)]">{SECTION_LABEL[selectedSection]}</div>
+        </div>
+        <nav class="flex-1 overflow-y-auto px-3 py-3" aria-label={`${SECTION_LABEL[selectedSection]} navigation`}>
+          {secondaryItems.map((r) => (
+            <SidebarRouteLink key={r.path} route={r} active={activePath === r.path} />
+          ))}
+        </nav>
+      </aside>
+    </div>
   );
+}
+
+function SidebarRouteLink({ route, active }: { route: RouteDef; active: boolean }) {
+  const Icon = route.icon;
+  const unread = route.path === '/chat' ? chatUnread.value : 0;
+  const itemClass = [
+    'mb-1 flex items-center gap-2.5 rounded-md px-3 py-2 text-[14px] transition-colors',
+    active
+      ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+      : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]',
+  ].join(' ');
+  const inner = (
+    <>
+      <Icon size={16} />
+      <span class="min-w-0 flex-1 truncate">{route.label}</span>
+      {unread > 0 && (
+        <span class="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-accent)] px-1 text-[10.5px] font-semibold tabular-nums text-white">
+          {unread > 99 ? '99+' : unread}
+        </span>
+      )}
+      {route.href && (
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" style="opacity:0.4;flex-shrink:0">
+          <path d="M5 2H2a1 1 0 00-1 1v7a1 1 0 001 1h7a1 1 0 001-1V7M7 1h4m0 0v4m0-4L5 7"/>
+        </svg>
+      )}
+    </>
+  );
+  const resolvedHref = route.href?.startsWith('self:')
+    ? `${location.protocol}//${location.hostname}:${route.href.slice(5)}`
+    : route.href;
+
+  return route.href ? (
+    <a href={resolvedHref} target="_blank" rel="noopener noreferrer" class={itemClass}>
+      {inner}
+    </a>
+  ) : (
+    <Link href={route.path} onClick={closeSidebar} class={itemClass}>
+      {inner}
+    </Link>
+  );
+}
+
+function findActiveRoute(pathname: string, routes: RouteDef[]): RouteDef | undefined {
+  const normalized = pathname === '/' ? '/mission' : pathname;
+  const exact = routes.find((r) => r.path === normalized);
+  if (exact) return exact;
+  return routes
+    .filter((r) => normalized.startsWith(r.path + '/'))
+    .sort((a, b) => b.path.length - a.path.length)[0];
 }
 
 interface Health {
@@ -194,6 +207,9 @@ function SidebarFooter() {
   const health = useFetch<Health>('/api/health', 30_000);
   const provider = useFetch<ProviderStatus>('/api/provider/status', 15_000);
   const [switching, setSwitching] = useState(false);
+  const [expanded, setExpanded] = useState(() => {
+    try { return localStorage.getItem(RUNTIME_PANEL_KEY) === 'open'; } catch { return false; }
+  });
   const switches = health.data?.killSwitches || {};
   const off = Object.entries(switches).filter(([, on]) => !on);
   const anyOff = off.length > 0;
@@ -229,78 +245,103 @@ function SidebarFooter() {
     }
   }
 
+  function toggleExpanded() {
+    const next = !expanded;
+    setExpanded(next);
+    try { localStorage.setItem(RUNTIME_PANEL_KEY, next ? 'open' : 'closed'); } catch {}
+  }
+
   return (
     <div class="border-t border-[var(--color-border)]">
-      <div class="px-3 py-2.5 border-b border-[var(--color-border)]">
-        <div class="flex items-center justify-between gap-2">
-          <div class="min-w-0">
-            <div class="text-[11px] uppercase text-[var(--color-text-faint)]">Runtime</div>
-            <div class="text-[12.5px] font-medium text-[var(--color-text)] truncate">{provider.data?.label ?? 'Claude'}</div>
-          </div>
-          {acpEnabled ? (
-            <select
-              value={providerType}
-              disabled={switching}
-              onChange={(event) => switchProvider((event.currentTarget as HTMLSelectElement).value)}
-              class="h-8 max-w-[116px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12px] text-[var(--color-text)] disabled:opacity-60"
-              aria-label="Switch main provider"
-            >
-              <option value="claude">Claude</option>
-              <option value="opencode">OpenCode</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="gemini">Gemini</option>
-              <option value="codex">Codex</option>
-            </select>
-          ) : null}
-        </div>
-        <div class="mt-1.5 text-[11px] leading-snug text-[var(--color-text-muted)]">
-          <span class="text-[var(--color-text-faint)]">Model</span>{' '}
-          <span class="break-all">{provider.data?.model ?? 'claude-opus-4-8'}</span>
-        </div>
-      </div>
-
-      {/* Always rendered — never gate this on a breakpoint: forcing
-          desktop makes `md:` match and a breakpoint-hidden toggle would
-          strand the user in desktop view. No-op on real desktops. */}
-      <div class="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center justify-between gap-2">
-        <div class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
-          {viewMode.value === 'desktop' ? <Monitor size={14} /> : <Smartphone size={14} />}
-          <span>Desktop view</span>
-        </div>
-        <Toggle
-          size="sm"
-          on={viewMode.value === 'desktop'}
-          onChange={() => setViewMode(viewMode.value === 'desktop' ? 'auto' : 'desktop')}
-          ariaLabel="Toggle desktop view"
-        />
-      </div>
-
-      <Link
-        href="/settings"
-        class="block px-3 py-3 text-[12px] text-[var(--color-text-faint)] hover:bg-[var(--color-elevated)] transition-colors"
+      <button
+        type="button"
+        onClick={toggleExpanded}
+        class="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[12px] text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+        aria-expanded={expanded}
       >
-        <div class="flex items-center gap-2.5">
-          <div
-            class="w-7 h-7 rounded-full flex items-center justify-center text-[var(--color-text-muted)]"
-            style={{
-              backgroundColor: anyOff
-                ? 'color-mix(in srgb, var(--color-status-failed) 18%, transparent)'
-                : 'var(--color-elevated)',
-              color: anyOff ? 'var(--color-status-failed)' : 'var(--color-text-muted)',
-            }}
-          >
-            ●
-          </div>
-          <div class="flex-1 min-w-0">
-            <div class="text-[var(--color-text)] text-[12.5px] font-medium truncate">{name}</div>
-            <div class="truncate text-[11px]">
-              {anyOff
-                ? off.length + ' kill switch' + (off.length === 1 ? '' : 'es') + ' off'
-                : 'All systems normal'}
+        <ChevronDown
+          size={14}
+          class="shrink-0 text-[var(--color-text-faint)] transition-transform"
+          style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+        />
+        <span class="section-label flex-1">Runtime</span>
+        <span class="max-w-[86px] truncate text-[11px] text-[var(--color-text-faint)]">{provider.data?.label ?? 'Claude'}</span>
+      </button>
+
+      {expanded && (
+        <div class="overflow-hidden border-t border-[var(--color-border)] transition-all duration-200">
+          <div class="px-3 py-2.5 border-b border-[var(--color-border)]">
+            <div class="flex items-center justify-between gap-2">
+              <div class="min-w-0">
+                <div class="text-[11px] uppercase text-[var(--color-text-faint)]">Runtime</div>
+                <div class="text-[12.5px] font-medium text-[var(--color-text)] truncate">{provider.data?.label ?? 'Claude'}</div>
+              </div>
+              {acpEnabled ? (
+                <select
+                  value={providerType}
+                  disabled={switching}
+                  onChange={(event) => switchProvider((event.currentTarget as HTMLSelectElement).value)}
+                  class="h-8 max-w-[116px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12px] text-[var(--color-text)] disabled:opacity-60"
+                  aria-label="Switch main provider"
+                >
+                  <option value="claude">Claude</option>
+                  <option value="opencode">OpenCode</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="codex">Codex</option>
+                </select>
+              ) : null}
+            </div>
+            <div class="mt-1.5 text-[11px] leading-snug text-[var(--color-text-muted)]">
+              <span class="text-[var(--color-text-faint)]">Model</span>{' '}
+              <span class="break-all">{provider.data?.model ?? 'claude-opus-4-8'}</span>
             </div>
           </div>
+
+          {/* Always rendered — never gate this on a breakpoint: forcing
+              desktop makes `md:` match and a breakpoint-hidden toggle would
+              strand the user in desktop view. No-op on real desktops. */}
+          <div class="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
+              {viewMode.value === 'desktop' ? <Monitor size={14} /> : <Smartphone size={14} />}
+              <span>Desktop view</span>
+            </div>
+            <Toggle
+              size="sm"
+              on={viewMode.value === 'desktop'}
+              onChange={() => setViewMode(viewMode.value === 'desktop' ? 'auto' : 'desktop')}
+              ariaLabel="Toggle desktop view"
+            />
+          </div>
+
+          <Link
+            href="/settings"
+            class="block px-3 py-3 text-[12px] text-[var(--color-text-faint)] hover:bg-[var(--color-elevated)] transition-colors"
+          >
+            <div class="flex items-center gap-2.5">
+              <div
+                class="w-7 h-7 rounded-full flex items-center justify-center text-[var(--color-text-muted)]"
+                style={{
+                  backgroundColor: anyOff
+                    ? 'color-mix(in srgb, var(--color-status-failed) 18%, transparent)'
+                    : 'var(--color-elevated)',
+                  color: anyOff ? 'var(--color-status-failed)' : 'var(--color-text-muted)',
+                }}
+              >
+                ●
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="text-[var(--color-text)] text-[12.5px] font-medium truncate">{name}</div>
+                <div class="truncate text-[11px]">
+                  {anyOff
+                    ? off.length + ' kill switch' + (off.length === 1 ? '' : 'es') + ' off'
+                    : 'All systems normal'}
+                </div>
+              </div>
+            </div>
+          </Link>
         </div>
-      </Link>
+      )}
     </div>
   );
 }
