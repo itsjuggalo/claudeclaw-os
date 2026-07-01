@@ -55,11 +55,21 @@ Count = number of order-placing managers that can close a position in that zone.
 5. **Boba BTC/USD has 3 independent `DELETE /v2/positions` triggers** (regime stop/TP, crypto trail-lock,
    auto-bracket ±8/16) racing on one position — first wins, the rest error on the now-gone position.
 
-## The audit gap: exits are unlogged
-The `alpaca_decision_ledger` (Phase 3 core, built 06-28) captures **entries only**, from 3 systems
-(`decipher_select_and_size`, `spy_scalp_autotrader`, `best3_executor` alert_only). **15 of 15 order-placing
-exit managers write nothing to the ledger** — every exit/protect/cancel above is ledger-blind. There is no
-append-only record of *why* a position was closed or *which* of the 7 claimants closed it.
+## The audit gap: exits are unlogged  → ✅ CLOSED (2026-07-01)
+The `alpaca_decision_ledger` (Phase 3 core, built 06-28) originally captured **entries only**, from 3 systems.
+**Exit-logging is now wired** across every Alpaca exit manager via a crash-proof shim
+(`pipeline/ledger_log.py` — `log_ledger()` NEVER raises into an order path, logs only after the action).
+
+Instrumented (14 processes, all append intent=exit/protect/cancel now):
+`profit-lock-boba/jazzy`, `trail-daemon/jazzy`, `crypto-profit-lock-boba/jazzy`, `auto-bracket`,
+`equity-swing`, `regime-trader`, `grid-daemon`, `alpaca-fill-listener`, `decipher_execute --manage-only`,
+`boba/jazzy_decision_cycle` (Layer-2 TRIM/EXIT). Commits: daemons `a3c1116`, missionctrl `bce9a0877`,
+decision cycles `6061e1257`/`c9a74df63`. Verified: all compile + import clean, order POSTs byte-identical,
+12 PM2 daemons restarted clean (looping, positions read), e2e write path confirmed, HALT/STRESS untouched.
+
+Remaining ledger-blind (**by design** — non-Alpaca, separate ledgers): `aries:bracket-guard`
+(Coinbase/Robinhood) and `jesse_live_trader` (localpaper/Coinbase). The overlap map is now backed by live
+"who actually closed it" evidence as exits fire.
 
 ## Query it
 ```sql
@@ -78,10 +88,10 @@ All SAFE/additive except where noted GATED:
    trade-changing).**
 2. **Add a killswitch + account-number assert to `auto-bracket`**, and consider narrowing it to positions not
    already managed by a scoped owner. **GATED.**
-3. **Ledger the exits.** Wire `trail-daemon*`, `profit-lock-*`, decipher `--manage-only`, `auto-bracket` to
-   append `intent=exit/protect/cancel` rows to `alpaca_decision_ledger` (logging-only → SAFE, Phase 3). Turns
-   the overlap map from static audit into live "who actually closed it" evidence.
-4. **Daily missed-gains / double-hit report** off the ledger once exits are logged (SAFE).
+3. ~~**Ledger the exits.**~~ ✅ DONE (see "audit gap CLOSED" above) — all 14 Alpaca exit managers now log.
+4. **Daily missed-gains / double-hit report** off the ledger now that exits are logged (SAFE, next). With
+   both entries and exits recorded, a report can flag when ≥2 managers closed the same position within N
+   seconds (the overlap risk, now measurable) and which system saw a mover first.
 
 ## Provenance
 Enumerated via 3 read-only source-trace agents (2026-07-01):
