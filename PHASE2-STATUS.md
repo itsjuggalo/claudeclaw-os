@@ -27,15 +27,14 @@ without the explicit danger flag. Closed.
 
 ---
 
-## GATED — awaiting Mike's explicit go (staged, NOT deployed)
+## GATED items
 
-### G1. shock_guard → http_retry  [writes HALT/STRESS → trade-adjacent]
-- **File:** `/home/itsju/scripts/shock_guard.py` (→ `05_AUTOMATION/scripts/`), runs every 2 min via cron.
-- **Today: 38 of 41 total 429s** come from here — its `/news` + `/bars` polls saturate the Alpaca IEX data limit.
-- **Design (NOT blind retry):** blind 3× retry would *add* load. Instead: wire `_get` to `http_retry.get_json`
-  with `retries=1`, and on `CAT_RATELIMIT` **skip that detector this cycle** (it re-runs in 2 min) — log at debug,
-  not error. This kills the 38/day error spam without changing halt logic or cadence.
-- **Why gated:** it writes `decipher_HALT`/`decipher_STRESS`. Editing the file = live on next 2-min tick.
+### G1. shock_guard → http_retry  ✅ SHIPPED (`4298cc9bd`, Mike's go 2026-07-01 14:32 ET)
+- **File:** `/home/itsju/scripts/shock_guard.py` (→ `05_AUTOMATION/scripts/`), every 2 min via cron.
+- Was **38 of 41 today's 429s**. Wired `_get` to the wrapper (`retries=1`) + suppressed the 429 error log
+  (real DNS/5xx/timeout still surface). Contract unchanged — a data miss returns None, never triggers a halt.
+- **Verified live:** state advances every 2 min (main completes), 3 rapid runs added **0** log lines,
+  HALT/STRESS untouched (Jun 26 16:00), DRY fetches real data (VIX 16.41, SPY z, BTC). No cadence change.
 
 ### G2. select_and_size → http_retry  [decision/sizing engine]
 - **File:** `/AIWorkWSL/web/missionctrl/pipeline/decipher/select_and_size.py`, decipher cron `--live`.
