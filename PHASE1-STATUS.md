@@ -1,11 +1,23 @@
-# Phase 1 — Dashboard Truth-in-UI — STATUS (paused 2026-07-01 ~12:30 ET)
+# Phase 1 — Dashboard Truth-in-UI — ✅ DONE (shipped 2026-07-01 ~1:35 PM ET)
 
-## Where we are
+## Where we are — COMPLETE + DEPLOYED
 - Plan LOCKED (Codex 3-round plan review, highs 2→1→0): `/AIWorkWSL/agents/claudeclaw/PLAN.md`
-- All 6 Phase-1 items IMPLEMENTED in `/AIWorkWSL/web/missionctrl/src/`
-- `npm run build` PASSED (exit 0). `tsc --noEmit` clean. My 5 edited files lint-clean (CommandCenterPage's `any` errors are PRE-EXISTING, not mine, and don't gate the build).
-- **NOT DEPLOYED** — no `pm2 restart missionctrl` yet. Live `:3000` still serves the old build. Zero live risk.
-- HALT + STRESS still active (untouched). No trade/cron/PM2 changes made.
+- All 6 Phase-1 items IMPLEMENTED **+ all 6 review nits fixed** in `/AIWorkWSL/web/missionctrl/src/`.
+- Final diff reviewed clean (reviewer subagent on the real missionctrl diff — claudex was repo-bound to claudeclaw so it saw the wrong tree). One intent-gap it raised (BTC-bias STALE keyed off fetch-age not asOf-age) → FIXED: now asOf-vs-4h staleness.
+- `npm run build` PASSED (exit 0, 101/101 pages). `tsc --noEmit` clean on all touched files.
+- **DEPLOYED** — `pm2 restart missionctrl` done. `/api/data-health` verified LIVE: `spy-scalp`=fresh (16s), `btc-bias`=retired (~44d), `execution-log`=ABSENT. ✓
+- Commit: `9c26113e4` (+ 6 files swept into autosnapshot per the cron note; all on `main`, missionctrl's production branch).
+- HALT + STRESS still active (untouched). No trade/cron/PM2-daemon changes made.
+
+## Applied fixes (all 6 review nits from the section below)
+1. btc-bias route — `normalizeEnvelope()` re-stamps proxied bare bodies (freshness.ts).
+2. boba-journal — non-array JSON now reads `status:error`, not fresh-empty.
+3. MarketRibbon — per-quote `◷` + "cached (N)" chip + "cached market" badge on stale fallbacks.
+4. BestOptionsWidget header — STALE/UPLINK marker on retained picks.
+5. CommandCenterPage — provenance tooltip guards each field (buyPct/direction/beat) → no `undefined`.
+6. BTCBiasWidget — converted to `useFreshData` + asOf-age STALE badge (F8 widget half, plan deviation closed).
+
+## Next: Phase 2 (trading pipeline reliability) — master plan `~/.claude/plans/something-happened-over-the-snappy-canyon.md`
 
 ## Files changed (working tree + partially in autocommit 85d7f1755)
 - `src/app/api/btc-bias/route.ts` — proxy-first; read from `process.cwd()/btc-bias/btc-bias.json` (was a nonexistent path → widget was stuck loading); `jsonWithAsOf` on success+fallback.
