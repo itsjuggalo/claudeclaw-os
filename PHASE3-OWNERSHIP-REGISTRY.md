@@ -97,3 +97,18 @@ All SAFE/additive except where noted GATED:
 Enumerated via 3 read-only source-trace agents (2026-07-01):
 `/tmp/.../scratchpad/trace_pm2.md`, `trace_cron.md` (inline), `trace_decipher.md`. Live cross-check:
 `pm2 list` (74 online), `crontab -l`, Alpaca `/v2/account`. HALT/STRESS untouched throughout (06-26 16:00).
+
+## Addendum — 2026-07-01 evening adversarial verify (post-ship)
+An independent read-only verifier audited this registry against live code. Corrections applied:
+- **`cron:exit_monitor` was MISSING** — the ±50% auto-closer for `cron:alpaca_straddle` legs
+  (`/AIWorkWSL/labs/quantum/src/exit_monitor.py`, cron `*/5 9-16 ET`, armed via QUANTUM_EXIT_ARM).
+  Added as row 25; it raises **boba-option-exit to 8 exit claimants** (was 7).
+- **`cron:alpaca_straddle` + `cron:exit_monitor` are now ledger-instrumented** (enter/exit
+  submitted|rejected via ledger_log, same post-order crash-proof pattern) and flagged ledger_aware=1.
+- **`cron:jesse_live_trader` caveat**: has a dormant optional `broker:'alpaca'` long-only leg
+  (armed=[] today). Note added — instrument before ever arming that leg.
+- **Write-path proof**: `pipeline/ledger_smoke.py` writes one environment='dry_run' row per
+  (manager, intent) — 29/29 pairs land. The ledger had ZERO real exit rows at verify time because
+  the global HALT (06-26) means no positions exist; production proof requires HALT clear + positions.
+  Re-check after: `SELECT source_system,intent,COUNT(*) FROM alpaca_decision_ledger WHERE intent IN
+  ('exit','protect','cancel') AND environment='paper' GROUP BY 1,2;`
