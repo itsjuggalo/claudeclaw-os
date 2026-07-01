@@ -56,10 +56,17 @@ without the explicit danger flag. Closed.
 - **ACTIVATE:** `pm2 restart <name>` per daemon (Mike's call — recommended after market close or on next
   natural restart). No behavior change to order submission; only GET/DELETE gain retry.
 
-### DEFERRED — order-submit CRON scripts [market-closed + dry-run, per doctrine]
-`auto_trader`, `position_sell_daemon`, `jazzy_decision_cycle` submit paper orders and run via **cron**
-(edits go live on the next tick, not staged like PM2). Editing live order-submit code mid-market is the
-one tiered-STOP line. Do these market-closed: GET→get_json(retry), POST→post_once(retries=0). ~1 hr of work.
+### G4. Order-submit CRON scripts  ✅ SHIPPED (`dc0d85917`, 05_AUTOMATION/scripts, 2026-07-01 ~15:52 ET)
+`auto_trader.py`, `position_sell_daemon.py`, `jazzy_decision_cycle.py` — all `requests`-based, so wired via
+module-level `SESSION = requests_session()` (POST excluded from `allowed_methods` → order submits are a single
+attempt, never auto-retried — same guarantee as `post_once`). Every `requests.post` order path left byte-identical.
+- **Live-state correction:** only `jazzy_decision_cycle.py` is actually scheduled (cron 5×/day: 9:46/11:01/12:31/
+  14:01/15:31 ET). `auto_trader.py` + `position_sell_daemon.py` are **dormant** (no cron/PM2/.sh launcher) — wired
+  anyway (pure additive hardening for if/when reactivated). jazzy's last cycle ran 15:34; next tick 9:46 tomorrow,
+  so no live order-code touched mid-session.
+- **Verified per file:** py_compile ✓, import ✓ (SESSION object live in all 3), POST counts unchanged (3/2/10),
+  0 stray `requests.get/delete`, SESSION excludes POST (`allowed_methods` has no POST). Working tree clean.
+- Closes G3's remaining cron-script piece. All order-submit HTTP paths across Phase 2 now hardened.
 
 ---
 
@@ -74,7 +81,15 @@ Proposals, in ROI order:
 
 ---
 
-## Next session picks up
-1. Get Mike's go on G1 (+ cadence #1) → G2 → G3 per-daemon. Stage, paper dry-run, review, commit, verify.
-2. Optionally wire the 4 safe reporters.
-3. Verification per item: injected-fault behavior, byte-identical daemon output on clean run, induced-429 backs off, HALT/STRESS still active.
+## Phase 2 — COMPLETE (2026-07-01)
+All items shipped: A–E, G1–G4, reporters, cadence #1/#2. Every order-submit HTTP path (cron + PM2 daemons)
+now routes GET/DELETE through retry, POST single-attempt/never-retried. HALT/STRESS untouched (06-26 16:00).
+
+Remaining activation (not code):
+- **8 staged PM2 daemons** — `pm2 restart profit-lock-boba profit-lock-jazzy trail-daemon trail-daemon-jazzy
+  alpaca-fill-listener crypto-profit-lock-boba crypto-profit-lock-jazzy equity-swing auto-bracket` to load their
+  already-committed retry code (queued for 16:01 ET after close; verify online + HALT/STRESS sha256 unchanged).
+
+## Next: Phase 3
+- Audit-ledger infra per master plan (`~/.claude/plans/something-happened-over-the-snappy-canyon.md`) — SAFE/additive.
+- Deferred to Phase 4: shared 15–30s Alpaca quote cache (many crons hammer the same snapshots → collective 429s).
