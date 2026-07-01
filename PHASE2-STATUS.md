@@ -36,20 +36,30 @@ without the explicit danger flag. Closed.
 - **Verified live:** state advances every 2 min (main completes), 3 rapid runs added **0** log lines,
   HALT/STRESS untouched (Jun 26 16:00), DRY fetches real data (VIX 16.41, SPY z, BTC). No cadence change.
 
-### G2. select_and_size → http_retry  [decision/sizing engine]
-- **File:** `/AIWorkWSL/web/missionctrl/pipeline/decipher/select_and_size.py`, decipher cron `--live`.
-- **Change:** swap `_get` body (line 108) to `http_retry.get_json(url, headers=h, timeout=8, retries=3)`.
-  Zero sizing-logic change — pure reliability on the clock/account/quote reads.
-- **Why gated:** it's the file that writes `decipher_picks` the executor consumes.
+### G2. select_and_size → http_retry  ✅ SHIPPED (`4a0478067`, missionctrl main)
+- `_get` now `http_retry.get_json(..., retries=3)`. Zero sizing-logic change. Verified: offline dry-run
+  respects HALT (0 picks); live reads OK (market_is_open True, account equity read).
 
-### G3. DELETE + order-POST daemons  [tier 2/3, per-daemon go]
-- DELETE/cancel (retry-safe): `profit_lock_daemon` cancels, `alpaca_fill_listener`, `jazzy_decision_cycle` deletes.
-- Order-POST (wrap for error structure, **retries=0, never retry**): `auto_trader`, `position_sell_daemon`,
-  `profit_lock_daemon.place_stop_limit`, `trail_daemon{,_jazzy}`. One daemon at a time, paper dry-run diff first.
+### Reporters → http_retry  ✅ SHIPPED
+- `grader` + `journal_sync` (`ff6e3c402`) — urllib `_get`/`fills` swapped; verified live.
+- `brief_data_fetcher` + `kronos_forecast_v2` (`e5e7f757a`) — requests GETs → `requests_session()`;
+  kronos's non-order POST left untouched.
 
-### Safe follow-on (not gated, just deferred — ~0 logged 429s, low ROI now)
-Read-only reporters `brief_data_fetcher`, `journal_sync`, `grader`, `kronos_forecast_v2` → swap `_get`
-to `http_retry.get_json`. Pure standardization, deployable after dry-run whenever. Say the word.
+### G3. Order daemons  ✅ WIRED + STAGED (not restarted — watch=False, run old code until `pm2 restart`)
+- **`requests_session()` helper** (`fd8f4cd78`): urllib3 Retry, `allowed_methods` excludes POST → order
+  submits never auto-retried.
+- **6 requests daemons** (`f08900b`): profit_lock boba+jazzy, trail boba+jazzy, alpaca_fill_listener,
+  crypto_profit_lock — `requests.get/delete` → `SESSION`; every `requests.post` order submit byte-identical.
+- **2 urllib daemons** (`fd6958a`): equity_swing (_get/_delete retry, _post→post_once), auto_bracket
+  (api() retries GET/DELETE only). Bonus: fixes auto_bracket's SSL-timeout crash-loop once activated.
+- Per file verified: compile, POST count unchanged, 0 stray get/delete, import clean, POST excluded.
+- **ACTIVATE:** `pm2 restart <name>` per daemon (Mike's call — recommended after market close or on next
+  natural restart). No behavior change to order submission; only GET/DELETE gain retry.
+
+### DEFERRED — order-submit CRON scripts [market-closed + dry-run, per doctrine]
+`auto_trader`, `position_sell_daemon`, `jazzy_decision_cycle` submit paper orders and run via **cron**
+(edits go live on the next tick, not staged like PM2). Editing live order-submit code mid-market is the
+one tiered-STOP line. Do these market-closed: GET→get_json(retry), POST→post_once(retries=0). ~1 hr of work.
 
 ---
 
@@ -57,10 +67,10 @@ to `http_retry.get_json`. Pure standardization, deployable after dry-run wheneve
 Data (today): shock_guard **38** 429s, exit_watcher **3**. shock_guard is the entire problem.
 Cron contention on `data.alpaca.markets`: decision cycles (5 each boba/jazzy), 7× skill_to_discord, flow_* posters, etc.
 
-Proposals, in ROI order (each needs Mike's go — all are cadence/behavior changes):
-1. **shock_guard `/news` poll 2 → 5 min** (news is slow-moving; VIX/SPY-z stay at 2 min for shock latency). ~40% fewer shock_guard data calls. *(pairs with G1)*
-2. **G1 backoff-skip on 429** — ships the moment G1 is approved; kills the 38/day log spam immediately, no cadence change.
-3. **Shared 15–30s quote cache** for the many cron scripts hitting the same snapshots within a minute — bigger project, better fit for Phase 4 (API/proxy hardening). Noted, not proposed for now.
+Proposals, in ROI order:
+1. **shock_guard `/news` poll 2 → 5 min** ✅ SHIPPED (`d06322091`, Mike's go 2026-07-01 15:06 ET). NEWS_POLL_SEC=300, caches headlines between polls; VIX/SPY-z stay at 2 min. Verified: run #2 within 300s skips the poll. ~⅓ fewer shock_guard data calls.
+2. **G1 429 log-suppression** ✅ SHIPPED with `4298cc9bd`.
+3. **Shared 15–30s quote cache** for the many cron scripts hitting the same snapshots within a minute — bigger project, better fit for Phase 4 (API/proxy hardening). Noted, not proposed for now. *(still open)*
 
 ---
 
