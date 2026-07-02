@@ -424,6 +424,49 @@ function RailItem({ db, selected, onSelect }: { db: SqlDbInfo; selected: boolean
   );
 }
 
+// ── Table grouping — turn a flat table list into a "dropdown ladder" ──
+// Groups tables by their name prefix (segment before the first underscore).
+// Prefixes with a single table are folded into one "Other" group so the
+// ladder stays scannable instead of exploding into dozens of one-item rows.
+interface TableInfo { name: string; rows: number; }
+interface TableGroup { id: string; label: string; items: TableInfo[]; }
+function groupTables(tables: TableInfo[]): TableGroup[] {
+  const byPrefix = new Map<string, TableInfo[]>();
+  for (const t of tables) {
+    const prefix = (t.name.split('_')[0] || t.name).toLowerCase();
+    if (!byPrefix.has(prefix)) byPrefix.set(prefix, []);
+    byPrefix.get(prefix)!.push(t);
+  }
+  const groups: TableGroup[] = [];
+  const singles: TableInfo[] = [];
+  for (const [prefix, items] of byPrefix) {
+    if (items.length >= 2) {
+      items.sort((a, b) => a.name.localeCompare(b.name));
+      groups.push({ id: prefix, label: prefix, items });
+    } else {
+      singles.push(items[0]);
+    }
+  }
+  groups.sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
+  if (singles.length) {
+    singles.sort((a, b) => a.name.localeCompare(b.name));
+    groups.push({ id: '__other', label: 'Other', items: singles });
+  }
+  return groups;
+}
+
+function TableChip({ t, active, writable, onClick }: { t: TableInfo; active: boolean; writable: boolean; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick}
+      title={writable ? `Moderate ${t.name}` : `Browse ${t.name}`}
+      class={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] transition-colors ${active ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'border-[var(--color-border)] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]'}`}>
+      <Table2 size={11} class="opacity-60" />
+      <span class="font-mono">{t.name}</span>
+      <span class="font-mono text-[var(--color-text-faint)]">{t.rows < 0 ? '?' : formatNumber(t.rows)}</span>
+    </button>
+  );
+}
+
 // ── Detail pane: tables + (read) query + (write) moderation ───────────
 function DetailPane({ db }: { db: SqlDbInfo }) {
   const { data, loading, error } = useFetch<SqlTablesResult | { error: string }>(`/api/sql/${db.id}/meta`, 0);
@@ -433,12 +476,26 @@ function DetailPane({ db }: { db: SqlDbInfo }) {
   const [running, setRunning] = useState(false);
   const [modTable, setModTable] = useState<string | null>(null);
   const [auditKey, setAuditKey] = useState(0);
+  const [openTableGroups, setOpenTableGroups] = useState<Set<string>>(() => new Set());
 
   // Reset table selection / query when the selected DB changes.
-  useEffect(() => { setModTable(null); setResult(null); setSql(''); setQErr(null); }, [db.id]);
+  useEffect(() => { setModTable(null); setResult(null); setSql(''); setQErr(null); setOpenTableGroups(new Set()); }, [db.id]);
 
   const meta = data && !('error' in data) ? data : null;
   const metaErr = data && 'error' in data ? data.error : error;
+  // Ladder grouping kicks in only when there are enough tables to warrant it.
+  const tableGroups = meta && meta.tables.length > 8 ? groupTables(meta.tables) : null;
+
+  function toggleTableGroup(id: string) {
+    setOpenTableGroups((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  function setAllTableGroups(open: boolean) {
+    setOpenTableGroups(open && tableGroups ? new Set(tableGroups.map((g) => g.id)) : new Set());
+  }
 
   async function run(query?: string) {
     const q = (query ?? sql).trim();
@@ -478,25 +535,54 @@ function DetailPane({ db }: { db: SqlDbInfo }) {
 
       {meta && (
         <>
-          {/* Tables — writable: chip opens the editable grid; else it browses (read-only). */}
+          {/* Tables — writable: chip opens the editable grid; else it browses (read-only).
+           *  Many tables (>8) collapse into a prefix-grouped dropdown ladder. */}
           <div>
-            <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1.5 font-semibold">
-              Tables ({meta.tables.length}){db.writable && <span class="ml-1.5 text-[var(--color-accent)] normal-case tracking-normal font-medium">— click to moderate</span>}
+            <div class="flex items-center justify-between mb-1.5">
+              <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] font-semibold">
+                Tables ({meta.tables.length}){db.writable && <span class="ml-1.5 text-[var(--color-accent)] normal-case tracking-normal font-medium">— click to moderate</span>}
+              </div>
+              {tableGroups && (
+                <button type="button"
+                  onClick={() => setAllTableGroups(openTableGroups.size < tableGroups.length)}
+                  class="text-[10px] font-semibold text-[var(--color-text-faint)] hover:text-[var(--color-text)] transition-colors">
+                  {openTableGroups.size < tableGroups.length ? 'Expand all' : 'Collapse all'}
+                </button>
+              )}
             </div>
             {meta.tables.length === 0 ? (
               <div class="text-[12px] text-[var(--color-text-faint)]">No user tables.</div>
-            ) : (
+            ) : !tableGroups ? (
               <div class="flex flex-wrap gap-1.5">
                 {meta.tables.map((t) => (
-                  <button key={t.name} type="button"
-                    onClick={() => (db.writable ? setModTable(modTable === t.name ? null : t.name) : run(`SELECT * FROM "${t.name.replace(/"/g, '""')}" LIMIT 100`))}
-                    title={db.writable ? `Moderate ${t.name}` : `Browse ${t.name}`}
-                    class={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] transition-colors ${modTable === t.name ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'border-[var(--color-border)] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]'}`}>
-                    <Table2 size={11} class="opacity-60" />
-                    <span class="font-mono">{t.name}</span>
-                    <span class="font-mono text-[var(--color-text-faint)]">{t.rows < 0 ? '?' : formatNumber(t.rows)}</span>
-                  </button>
+                  <TableChip key={t.name} t={t} active={modTable === t.name} writable={db.writable}
+                    onClick={() => (db.writable ? setModTable(modTable === t.name ? null : t.name) : run(`SELECT * FROM "${t.name.replace(/"/g, '""')}" LIMIT 100`))} />
                 ))}
+              </div>
+            ) : (
+              <div class="space-y-1">
+                {tableGroups.map((g) => {
+                  const open = openTableGroups.has(g.id) || g.items.some((t) => t.name === modTable);
+                  return (
+                    <div key={g.id} class="rounded-lg border border-[var(--color-border)] overflow-hidden bg-[var(--color-elevated)]">
+                      <button type="button" onClick={() => toggleTableGroup(g.id)} aria-expanded={open}
+                        class="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] transition-colors">
+                        {open ? <ChevronDown size={13} class="shrink-0 opacity-70" /> : <ChevronRight size={13} class="shrink-0 opacity-70" />}
+                        <Table2 size={12} class="opacity-60 shrink-0" />
+                        <span class="font-mono font-medium text-[var(--color-text)]">{g.label}{g.id !== '__other' && <span class="text-[var(--color-text-faint)]">_*</span>}</span>
+                        <span class="ml-auto font-mono text-[10px] text-[var(--color-text-faint)]">{g.items.length}</span>
+                      </button>
+                      {open && (
+                        <div class="flex flex-wrap gap-1.5 border-t border-[var(--color-border)] px-3 pb-2.5 pt-2">
+                          {g.items.map((t) => (
+                            <TableChip key={t.name} t={t} active={modTable === t.name} writable={db.writable}
+                              onClick={() => (db.writable ? setModTable(modTable === t.name ? null : t.name) : run(`SELECT * FROM "${t.name.replace(/"/g, '""')}" LIMIT 100`))} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

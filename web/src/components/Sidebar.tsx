@@ -34,6 +34,9 @@ export function Sidebar() {
   const liveSections = SECTIONS.filter((s) => sidebarRoutes.some((r) => r.section === s));
   const matchedRoute = findActiveRoute(routePathname, sidebarRoutes);
   const [selectedSection, setSelectedSection] = useState<RouteSection>(() => matchedRoute?.section ?? liveSections[0] ?? 'workspace');
+  // Flyout sub-nav: which section's secondary panel is revealed (null = hidden).
+  // Hidden by default; a section click reveals it as an overlay over the board.
+  const [flyoutSection, setFlyoutSection] = useState<RouteSection | null>(null);
   const [navCollapsed, setNavCollapsed] = useState(() => {
     try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'closed'; } catch { return false; }
   });
@@ -46,7 +49,21 @@ export function Sidebar() {
   useEffect(() => {
     const next = findActiveRoute(routePathname, sidebarRoutes)?.section;
     if (next) setSelectedSection(next);
+    // Navigating dismisses the flyout overlay so the board is unobstructed.
+    setFlyoutSection(null);
   }, [routePathname]);
+
+  // Flyout is only visible while the nav is expanded — it collapses and
+  // re-expands together with the rest of the sidebar (flyoutSection is kept
+  // through a collapse, so expanding restores it).
+  const flyoutOpen = !navCollapsed && flyoutSection !== null;
+
+  useEffect(() => {
+    if (!flyoutOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFlyoutSection(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [flyoutOpen]);
 
   // Mobile: fixed drawer that slides in from the left. Desktop (>=md):
   // always-visible inline two-panel navigation.
@@ -54,11 +71,13 @@ export function Sidebar() {
     'flex h-screen max-w-[calc(100vw-20px)] bg-[var(--color-sidebar)]',
     'fixed inset-y-0 left-0 z-50 transform transition-transform duration-200',
     open ? 'translate-x-0' : '-translate-x-full',
-    'md:static md:translate-x-0 md:max-w-none md:shrink-0',
+    // md:relative (not static) so the absolutely-positioned flyout overlay
+    // anchors to the sidebar shell and floats over the board on desktop.
+    'md:relative md:translate-x-0 md:max-w-none md:shrink-0',
   ].join(' ');
   const secondaryItems = sidebarRoutes.filter((r) => r.section === selectedSection);
   const primaryWidthClass = navCollapsed ? 'w-[64px] md:w-[68px]' : 'w-[210px] md:w-[224px]';
-  const showSqlPanel = !navCollapsed && selectedSection === 'intelligence' && sqlPanelOpen;
+  const showSqlPanel = flyoutOpen && selectedSection === 'intelligence' && sqlPanelOpen;
 
   function setNavCollapsedPersisted(next: boolean) {
     setNavCollapsed(next);
@@ -67,7 +86,18 @@ export function Sidebar() {
 
   function selectSection(section: RouteSection) {
     setSelectedSection(section);
-    if (navCollapsed) setNavCollapsedPersisted(false);
+    if (navCollapsed) {
+      // Expand the rail and reveal this section's flyout in one click.
+      setNavCollapsedPersisted(false);
+      setFlyoutSection(section);
+    } else {
+      // Toggle: clicking the open section again hides the flyout.
+      setFlyoutSection((prev) => (prev === section ? null : section));
+    }
+  }
+
+  function closeFlyout() {
+    setFlyoutSection(null);
   }
 
   function setSqlPanelOpenPersisted(next: boolean) {
@@ -153,6 +183,7 @@ export function Sidebar() {
             const items = sidebarRoutes.filter((r) => r.section === section);
             const current = matchedRoute?.section === section;
             const selected = selectedSection === section;
+            const expanded = flyoutOpen && flyoutSection === section;
             const SectionIcon = items[0]?.icon;
             const itemClass = [
               'relative mt-1 flex w-full items-center rounded-md text-left text-[13.5px] transition-colors',
@@ -169,6 +200,7 @@ export function Sidebar() {
                 class={itemClass}
                 title={SECTION_LABEL[section]}
                 aria-pressed={selected}
+                aria-expanded={expanded}
                 aria-current={current ? 'true' : undefined}
               >
                 {SectionIcon ? <SectionIcon size={16} /> : null}
@@ -176,7 +208,13 @@ export function Sidebar() {
                 {current ? (
                   <span class={navCollapsed ? 'absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]' : 'h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]'} />
                 ) : null}
-                {!navCollapsed && <ChevronRight size={14} class="shrink-0 text-[var(--color-text-faint)]" />}
+                {!navCollapsed && (
+                  <ChevronRight
+                    size={14}
+                    class="shrink-0 text-[var(--color-text-faint)] transition-transform duration-200"
+                    style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                  />
+                )}
               </button>
             );
           })}
@@ -185,52 +223,76 @@ export function Sidebar() {
         {!navCollapsed && <SidebarFooter />}
       </aside>
 
-      {!navCollapsed && (
-        <aside
-          class="flex h-screen w-[260px] min-w-[230px] max-w-[360px] shrink-0 resize-x flex-col overflow-hidden border-r border-[var(--color-border)] transition-[width,opacity] duration-200 md:w-[280px]"
-          style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 88%, var(--color-bg))' }}
-        >
-          <div class="border-b border-[var(--color-border)] px-4 py-3">
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="section-label">Selected</div>
-                <div class="mt-1 truncate text-[14px] font-semibold text-[var(--color-text)]">{SECTION_LABEL[selectedSection]}</div>
+      {flyoutOpen && (
+        <>
+          {/* Click-away catcher — covers the board area only (starts at the
+           *  rail's right edge) so section buttons stay clickable to switch. */}
+          <div
+            class="fixed inset-y-0 right-0 left-[210px] z-30 md:left-[224px]"
+            onClick={closeFlyout}
+            aria-hidden="true"
+          />
+          {/* Flyout overlay — floats over the board immediately right of the
+           *  rail (anchored to the md:relative shell). Board does not resize. */}
+          <div class="absolute left-full top-0 z-40 flex h-screen shadow-2xl">
+            <aside
+              class="flex h-screen w-[260px] min-w-[230px] max-w-[360px] shrink-0 resize-x flex-col overflow-hidden border-r border-[var(--color-border)] transition-[width,opacity] duration-200 md:w-[280px]"
+              style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 88%, var(--color-bg))' }}
+            >
+              <div class="border-b border-[var(--color-border)] px-4 py-3">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="section-label">Selected</div>
+                    <div class="mt-1 truncate text-[14px] font-semibold text-[var(--color-text)]">{SECTION_LABEL[selectedSection]}</div>
+                  </div>
+                  <div class="flex shrink-0 items-center gap-1.5">
+                    {selectedSection === 'intelligence' && (
+                      <button
+                        type="button"
+                        onClick={() => setSqlPanelOpenPersisted(!sqlPanelOpen)}
+                        title={sqlPanelOpen ? 'Hide SQL databases panel' : 'Show SQL databases panel'}
+                        aria-label={sqlPanelOpen ? 'Hide SQL databases panel' : 'Show SQL databases panel'}
+                        aria-pressed={sqlPanelOpen}
+                        class={[
+                          'inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px] font-semibold transition-colors',
+                          sqlPanelOpen
+                            ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                            : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]',
+                        ].join(' ')}
+                      >
+                        <DatabaseZap size={13} />
+                        <span>SQL</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={closeFlyout}
+                      title="Close panel (Esc)"
+                      aria-label="Close panel"
+                      class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                </div>
               </div>
-              {selectedSection === 'intelligence' && (
-                <button
-                  type="button"
-                  onClick={() => setSqlPanelOpenPersisted(!sqlPanelOpen)}
-                  title={sqlPanelOpen ? 'Hide SQL databases panel' : 'Show SQL databases panel'}
-                  aria-label={sqlPanelOpen ? 'Hide SQL databases panel' : 'Show SQL databases panel'}
-                  aria-pressed={sqlPanelOpen}
-                  class={[
-                    'inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px] font-semibold transition-colors',
-                    sqlPanelOpen
-                      ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
-                      : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]',
-                  ].join(' ')}
-                >
-                  <DatabaseZap size={13} />
-                  <span>SQL</span>
-                </button>
-              )}
-            </div>
-          </div>
-          <nav class="flex-1 overflow-y-auto px-3 py-3" aria-label={`${SECTION_LABEL[selectedSection]} navigation`}>
-            {secondaryItems.map((r) => (
-              <SidebarRouteLink key={r.path} route={r} active={activePath === r.path} />
-            ))}
-          </nav>
-        </aside>
-      )}
+              <nav class="flex-1 overflow-y-auto px-3 py-3" aria-label={`${SECTION_LABEL[selectedSection]} navigation`}>
+                {secondaryItems.map((r) => (
+                  <SidebarRouteLink key={r.path} route={r} active={activePath === r.path} onNavigate={closeFlyout} />
+                ))}
+              </nav>
+            </aside>
 
-      {showSqlPanel && (
-        <aside
-          class="flex h-screen w-[280px] min-w-[240px] max-w-[380px] shrink-0 resize-x flex-col overflow-hidden border-r border-[var(--color-border)] transition-[width,opacity] duration-200 md:w-[300px]"
-          style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 82%, var(--color-bg))' }}
-        >
-          <SqlDatabasesPanel activeDbId={activeSqlDbId} onClose={() => setSqlPanelOpenPersisted(false)} />
-        </aside>
+            {showSqlPanel && (
+              <aside
+                class="flex h-screen w-[280px] min-w-[240px] max-w-[380px] shrink-0 resize-x flex-col overflow-hidden border-r border-[var(--color-border)] transition-[width,opacity] duration-200 md:w-[300px]"
+                style={{ backgroundColor: 'color-mix(in srgb, var(--color-sidebar) 82%, var(--color-bg))' }}
+              >
+                <SqlDatabasesPanel activeDbId={activeSqlDbId} onClose={() => setSqlPanelOpenPersisted(false)} />
+              </aside>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
@@ -349,7 +411,7 @@ function SqlDatabasesPanel({ activeDbId, onClose }: { activeDbId: string | null;
   );
 }
 
-function SidebarRouteLink({ route, active }: { route: RouteDef; active: boolean }) {
+function SidebarRouteLink({ route, active, onNavigate }: { route: RouteDef; active: boolean; onNavigate?: () => void }) {
   const Icon = route.icon;
   const unread = route.path === '/chat' ? chatUnread.value : 0;
   const itemClass = [
@@ -383,7 +445,7 @@ function SidebarRouteLink({ route, active }: { route: RouteDef; active: boolean 
       {inner}
     </a>
   ) : (
-    <Link href={route.path} onClick={closeSidebar} class={itemClass}>
+    <Link href={route.path} onClick={() => { closeSidebar(); onNavigate?.(); }} class={itemClass}>
       {inner}
     </Link>
   );
