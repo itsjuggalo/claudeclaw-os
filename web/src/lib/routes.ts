@@ -35,7 +35,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/scheduled',  label: 'Scheduled',       section: 'workspace',    icon: ListTodo,      shortcut: 'g s' },
   { path: '/agents',     label: 'Agents',          section: 'workspace',    icon: Users,         shortcut: 'g a' },
   { path: '/chat',       label: 'Chat',            section: 'workspace',    icon: MessageSquare, shortcut: 'g c' },
-  { path: '/bunker',     label: 'Bunker',          section: 'workspace',    icon: StickyNote,    shortcut: 'g b' },
+  { path: '/bunker',     label: 'Bunker',          section: 'workspace',    icon: StickyNote,    shortcut: 'g f' },
   { path: '/massage-admin', label: 'Massage Admin', section: 'workspace',   icon: ClipboardList },
 
   // Studio — creative / media
