@@ -530,6 +530,7 @@ function MessagePanel({ client, canEdit, onDone }: { client: MassageClient; canE
   return (
     <div class="mt-5 border-t border-[var(--color-border)] pt-4">
       <div class="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]"><Send size={12} /> Custom message</div>
+      <div class="mb-2 text-[11px] text-[var(--color-text-faint)]">Sends as <span class="font-semibold text-[var(--color-text-muted)]">Massage By Mike &lt;MassageByMike92@gmail.com&gt;</span> — your login is for attribution only, never the sender.</div>
       <div class="grid gap-2 md:grid-cols-[120px_1fr]">
         <select class={inputClass} value={channel} onChange={(e) => setChannel((e.currentTarget as HTMLSelectElement).value as any)}>
           <option value="email">Email</option><option value="sms">SMS</option><option value="both">Both</option>
