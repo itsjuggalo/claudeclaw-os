@@ -13,8 +13,9 @@ import { MC_COOKIE, MASTER_TTL_SEC, verifyToken, masterToken, signToken, isLoopb
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
-import { getMassageMonitor, keepAccount, deleteAccount, setReaper } from './massage.js';
+import { getMassageMonitor, keepAccount, deleteAccount, setReaper, massageAdmin } from './massage.js';
 import { getMassageAdminOverview, updateMassageAdminClient } from './massage-admin.js';
+import { massageAdminLoginStart, massageAdminOauthCallback, isAllowlistedAdmin } from './massage-oauth.js';
 import { getSqlCatalog, getSqlTables, runSqlSelect, getModerationRows, updateRow, deleteRow, insertRow, getAuditLog as getSqlAuditLog, undoMutation } from './sqlmonitor.js';
 import { getEquity } from './equity.js';
 import { getTradeHistory } from './tradehistory.js';
@@ -661,6 +662,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       path === '/login' ||
       path.startsWith('/api/mc-login') ||
       path.startsWith('/api/mc-logout') ||
+      // Massage Admin Google sign-in: the OAuth start + callback must be reachable
+      // WITHOUT an existing session (that's how a remote admin authenticates). The
+      // callback itself only mints a session for an allow-listed, verified email.
+      path === '/massage-admin/login' ||
+      path.startsWith('/massage-admin/oauth/') ||
       // Bunker artifact files carry their OWN per-slug scoped capability
       // (?t=&exp=, verified in the handler), so they must NOT require the
       // master mc-access session — that's the whole point of not shipping the
@@ -790,6 +796,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const mc = await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET);
     if (!mc) return { ok: false, status: 401, error: 'not authenticated' };
     if (mc.kind !== 'master') return { ok: false, status: 403, error: 'admin access requires a master session' };
+    // Two-admin gate: a remote session must be a Google-verified, allow-listed owner
+    // email (mlenglund92 / itsjuggalo). An anonymous shared-password master session no
+    // longer has Massage-Admin write access from off-box — sign in at /massage-admin/login.
+    if (!isAllowlistedAdmin(mc.user?.email)) {
+      return { ok: false, status: 403, error: 'sign in with an authorized Massage Admin Google account (/massage-admin/login)' };
+    }
     const adminUser = mc.user?.email || mc.user?.name || mc.label || 'mc_access_master';
     return { ok: true, adminUser };
   }
@@ -2522,6 +2534,73 @@ init();
       return 'error' in result ? c.json(result, result.migration ? 409 : 400) : c.json(result);
     } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
+
+  // Two-admin Google sign-in (gives remote sessions a real, allow-listed identity).
+  app.get('/massage-admin/login', (c) => massageAdminLoginStart(c));
+  app.get('/massage-admin/oauth/callback', (c) => massageAdminOauthCallback(c));
+
+  // Full-admin actions — every one gated by requireMassageAdmin and proxied to the
+  // massage server (system of record) with the acting admin's email in x-admin-user.
+  const withAdmin = (fn: (c: any, adminUser: string) => Promise<Response>) => async (c: any) => {
+    const admin = await requireMassageAdmin(c);
+    if (!admin.ok) return c.json({ error: admin.error }, admin.status as 401);
+    try { return await fn(c, admin.adminUser); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  };
+  const body = async (c: any) => c.req.json().catch(() => ({}));
+  const enc = encodeURIComponent;
+
+  // account lifecycle
+  app.post('/api/massage-admin/clients/:id/delete', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/delete`, { method: 'POST', adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/reset-password', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/reset-password`, { method: 'POST', adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/set-password', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/set-password`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/verify', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/verify`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/clients/create', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/new/create`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/enhancement', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/enhancement`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/reward', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/reward`, { method: 'POST', body: await body(c), adminUser: u }))));
+
+  // appointments (read is loopback-safe via global gate; actions require admin)
+  app.get('/api/massage-admin/clients/:id/appointments', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/appointments`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/appointments/:id/:action', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/appointment/${enc(c.req.param('id'))}/${enc(c.req.param('action'))}`, { method: 'POST', adminUser: u }))));
+
+  // messaging
+  app.post('/api/massage-admin/appointments/:id/nudge-intake', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/appointment/${enc(c.req.param('id'))}/nudge-intake`, { method: 'POST', adminUser: u }))));
+  app.post('/api/massage-admin/appointments/:id/remind', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/appointment/${enc(c.req.param('id'))}/remind`, { method: 'POST', adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/message', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/message`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.get('/api/massage-admin/messages', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/messages?limit=${enc(c.req.query('limit') || '50')}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.get('/api/massage-admin/schedule', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/schedule`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+
+  // coupons / promos
+  app.get('/api/massage-admin/codes', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/codes`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/codes', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/codes`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/codes/:code/toggle', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/codes/${enc(c.req.param('code'))}/toggle`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/gift/issue', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/gift/issue`, { method: 'POST', body: await body(c), adminUser: u }))));
 
   // ── SQL Monitor — read-only inventory + browse for every operational SQLite DB
   //    on the box (see src/sqlmonitor.ts). Self-contained; shares no code with the

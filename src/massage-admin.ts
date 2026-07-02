@@ -40,6 +40,8 @@ export interface MassageAdminClient {
   emailVerifiedAt: string | null;
   appointmentCount: number;
   upcomingAppointmentCount: number;
+  rewardBalance: number;
+  lastVisitMs: number | null;
 }
 
 export interface MassageAdminAction {
@@ -120,11 +122,23 @@ function rowToClient(row: Record<string, unknown>): MassageAdminClient {
     emailVerifiedAt: row.email_verified_at == null ? null : String(row.email_verified_at),
     appointmentCount: Number(row.appointment_count ?? 0),
     upcomingAppointmentCount: Number(row.upcoming_appointment_count ?? 0),
+    rewardBalance: Number(row.reward_balance ?? 0),
+    lastVisitMs: row.last_visit_ms == null ? null : Number(row.last_visit_ms),
   };
+}
+
+// reward_ledger / last-visit are optional (tables may pre-date rewards); guard so a
+// fresh DB without reward_ledger never breaks the overview read.
+function hasTable(db: Database.Database, table: string): boolean {
+  return tableExists(db, table);
 }
 
 function listClients(db: Database.Database): MassageAdminClient[] {
   const columns = columnSet(db, 'users');
+  const hasRewards = hasTable(db, 'reward_ledger');
+  const rewardExpr = hasRewards
+    ? '(SELECT COALESCE(SUM(r.delta),0) FROM reward_ledger r WHERE r.user_id = u.id)'
+    : '0';
   const rows = db.prepare(`
     SELECT
       u.id,
@@ -140,10 +154,12 @@ function listClients(db: Database.Database): MassageAdminClient[] {
       ${readExpr(columns, 'sms_opt_in', '0')},
       ${readExpr(columns, 'account_status', "'active'")},
       (SELECT COUNT(*) FROM appointments a WHERE a.user_id = u.id OR lower(a.client_email) = lower(u.email)) AS appointment_count,
-      (SELECT COUNT(*) FROM appointments a WHERE (a.user_id = u.id OR lower(a.client_email) = lower(u.email)) AND a.start_ms > ?) AS upcoming_appointment_count
+      (SELECT COUNT(*) FROM appointments a WHERE (a.user_id = u.id OR lower(a.client_email) = lower(u.email)) AND a.start_ms > ?) AS upcoming_appointment_count,
+      ${rewardExpr} AS reward_balance,
+      (SELECT MAX(a.start_ms) FROM appointments a WHERE (a.user_id = u.id OR lower(a.client_email) = lower(u.email)) AND a.start_ms < ? AND a.status IN ('confirmed','completed')) AS last_visit_ms
     FROM users u
     ORDER BY COALESCE(u.name, u.email) COLLATE NOCASE
-  `).all(Date.now()) as Array<Record<string, unknown>>;
+  `).all(Date.now(), Date.now()) as Array<Record<string, unknown>>;
   return rows.map(rowToClient);
 }
 

@@ -83,3 +83,21 @@ export async function setReaper(cfg: { on?: boolean; live?: boolean; warn_days?:
   const r = await call('/api/admin/reaper', { method: 'POST', body: JSON.stringify(cfg || {}) });
   _cache = null; return r;
 }
+
+// ── Full-admin console proxy ────────────────────────────────────────────────
+// Generic pass-through to the massage server's /api/admin/* actions, stamping
+// the acting admin's identity (their verified Google email, or 'local-loopback')
+// into x-admin-user so every audit row on the massage side is attributable.
+export async function massageAdmin<T = unknown>(
+  pathname: string,
+  opts: { method?: 'GET' | 'POST'; body?: unknown; adminUser: string },
+): Promise<T> {
+  const init: RequestInit = {
+    method: opts.method || 'GET',
+    headers: { 'x-admin-user': opts.adminUser || 'mc_admin' },
+  };
+  if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+  const r = await call<T>(pathname, init);
+  _cache = null; // any mutation may change account/lifecycle state
+  return r;
+}
