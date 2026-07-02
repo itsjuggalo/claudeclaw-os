@@ -796,13 +796,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const mc = await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET);
     if (!mc) return { ok: false, status: 401, error: 'not authenticated' };
     if (mc.kind !== 'master') return { ok: false, status: 403, error: 'admin access requires a master session' };
-    // Two-admin gate: a remote session must be a Google-verified, allow-listed owner
-    // email (mlenglund92 / itsjuggalo). An anonymous shared-password master session no
-    // longer has Massage-Admin write access from off-box — sign in at /massage-admin/login.
-    if (!isAllowlistedAdmin(mc.user?.email)) {
-      return { ok: false, status: 403, error: 'sign in with an authorized Massage Admin Google account (/massage-admin/login)' };
-    }
-    const adminUser = mc.user?.email || mc.user?.name || mc.label || 'mc_access_master';
+    // "Both" mode (Mike's call 2026-07-02): a valid master session — which requires
+    // being ON the tailnet AND holding the fleet password — may edit. Signing in via
+    // Google (/massage-admin/login) is OPTIONAL and only upgrades the audit attribution
+    // from a generic 'mc_master(remote)' to the specific allow-listed admin email.
+    const adminUser = isAllowlistedAdmin(mc.user?.email)
+      ? (mc.user!.email as string)
+      : (mc.user?.name || mc.label || 'mc_master(remote)');
     return { ok: true, adminUser };
   }
 
