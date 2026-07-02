@@ -662,7 +662,17 @@ export function SqlMonitor() {
   const { data, loading, error, refresh } = useFetch<SqlCatalog>('/api/sql', 30000);
   const [selId, setSelId] = useState<string | null>(null);
   const [showInternals, setShowInternals] = useState(false);
+  // Collapsible rail groups (default: all expanded). Tracks which are collapsed.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const requestedDbId = dbIdFromSearch(search);
+
+  function toggleGroup(id: string) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
 
   const groups = data?.groups ?? [];
   const allDbs = groups.flatMap((g) => g.items);
@@ -716,14 +726,20 @@ export function SqlMonitor() {
               <span class="text-[var(--color-accent)] font-semibold">{writableCount}</span> moderatable
             </div>
 
-            {mainGroups.map((g) => (
-              <div key={g.id} class="py-1">
-                <div class="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-faint)]">
-                  {g.label} <span class="font-mono font-normal">({g.items.length})</span>
+            {mainGroups.map((g) => {
+              const collapsed = collapsedGroups.has(g.id);
+              return (
+                <div key={g.id} class="py-1">
+                  <button type="button" onClick={() => toggleGroup(g.id)} aria-expanded={!collapsed}
+                    class="w-full flex items-center gap-1 px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-faint)] hover:text-[var(--color-text)] transition-colors">
+                    {collapsed ? <ChevronRight size={12} class="shrink-0" /> : <ChevronDown size={12} class="shrink-0" />}
+                    <span class="min-w-0 flex-1 truncate text-left">{g.label}</span>
+                    <span class="font-mono font-normal normal-case tracking-normal">({g.items.length})</span>
+                  </button>
+                  {!collapsed && g.items.map((db) => <RailItem key={db.id} db={db} selected={db.id === selId} onSelect={() => selectDb(db.id)} />)}
                 </div>
-                {g.items.map((db) => <RailItem key={db.id} db={db} selected={db.id === selId} onSelect={() => selectDb(db.id)} />)}
-              </div>
-            ))}
+              );
+            })}
 
             {internals && internals.items.length > 0 && (
               <div class="py-1 border-t border-[var(--color-border)] mt-1">
