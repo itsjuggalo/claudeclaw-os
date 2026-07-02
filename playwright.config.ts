@@ -1,7 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
-
 export default defineConfig({
   // Local smoke suite for this personal dashboard. It is intentionally
   // not wired into CI; fake providers cover browser behavior without
@@ -16,15 +14,7 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   projects: [
-    {
-      name: 'chromium',
-      use: {
-        ...devices['Desktop Chrome'],
-        ...(chromiumExecutablePath
-          ? { launchOptions: { executablePath: chromiumExecutablePath } }
-          : {}),
-      },
-    },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
   webServer: {
     command: 'npm run dev:web -- --host 127.0.0.1',

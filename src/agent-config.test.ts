@@ -15,6 +15,7 @@ vi.mock('./config.js', () => {
     get CLAUDECLAW_CONFIG() { return claudeclawConfig; },
     get PROJECT_ROOT() { return projectRoot; },
     get STORE_DIR() { return storeDir; },
+    get WARROOM_TMP_DIR() { return path.join(storeDir, 'tmp'); },
     DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
     CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
     CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
@@ -50,6 +51,40 @@ function writeAgentYaml(agentId: string, content: Record<string, unknown>): stri
   fs.writeFileSync(yamlPath, yaml.dump(content), 'utf-8');
   return yamlPath;
 }
+
+describe('loadAgentConfig interactive flag', () => {
+  it('defaults interactive to true when the field is absent', async () => {
+    writeAgentYaml('raka', {
+      name: 'Raka',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('raka').interactive).toBe(true);
+  });
+
+  it('honours interactive: false (automation-only agent)', async () => {
+    writeAgentYaml('cron', {
+      name: 'Cron',
+      description: 'scheduler',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      interactive: false,
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('cron').interactive).toBe(false);
+  });
+
+  it('treats interactive: true explicitly as true', async () => {
+    writeAgentYaml('raka', {
+      name: 'Raka',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      interactive: true,
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('raka').interactive).toBe(true);
+  });
+});
 
 describe('setAgentDescription', () => {
   it('updates the description field in agent.yaml', async () => {

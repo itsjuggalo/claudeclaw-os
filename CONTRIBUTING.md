@@ -1,5 +1,24 @@
 # Contributing to ClaudeClaw
 
+## Versioning & changelog
+
+ClaudeClaw follows [Semantic Versioning](https://semver.org): **MAJOR** for a breaking
+change, **MINOR** for backward-compatible features, **PATCH** for fixes. A dependency's
+own version bump (e.g. the Agent SDK) only moves our MAJOR if it breaks our public
+config/API — it usually doesn't.
+
+`package.json` is the single source of truth for the version; code reads it via
+`src/version.ts` (`VERSION`). Never hardcode a version string elsewhere.
+
+**Commit messages use [Conventional Commits](https://www.conventionalcommits.org):**
+`feat(scope): ...`, `fix(scope): ...`, `security: ...`, `perf:`, `refactor:`, `docs:`.
+Squash-merge each PR with a single conventional-commit title so one PR becomes one clean
+changelog line that links back to the PR number.
+
+**The CHANGELOG is generated from that commit history — never hand-edit it.** Cutting a
+release (version bump, changelog generation, tagging) is a maintainer-only step;
+contributors just need a clean conventional-commit PR title.
+
 ## Adding a migration
 
 Use the `add-migration` skill from within Claude Code:

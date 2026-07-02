@@ -1046,10 +1046,14 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
   try {
     // Progress callback: surface agent activity to Telegram + SSE.
-    // Tool activity is throttled to one Telegram update per 30s to avoid spam.
+    // Tool activity is throttled to avoid spam. ACP providers
+    // (codex/gemini/opencode) can run long, text-silent tool chains where the
+    // only feedback is the typing indicator, so a multi-minute sequence reads as
+    // a hang (#86). They get a faster heartbeat; Claude streams text and keeps
+    // the slower cadence.
     let lastToolNotifyTime = 0;
     let lastToolDesc = '';
-    const TOOL_NOTIFY_INTERVAL_MS = 30_000;
+    const TOOL_NOTIFY_INTERVAL_MS = provider.type === 'claude' ? 30_000 : 12_000;
 
     const onProgress = (event: AgentProgressEvent) => {
       const progressPayload = {

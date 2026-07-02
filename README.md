@@ -1639,11 +1639,13 @@ npm run typecheck # Type-check without compiling
 
 ## Is the Claude Code provider compliant with Anthropic's Terms of Service?
 
-**For Claude Code, it's a grey area, but signs point to yes for personal use.** Anthropic's Agent SDK (`@anthropic-ai/claude-agent-sdk`) is a published, official package. Boris Cherny (Anthropic) has indicated the Agent SDK can be used for personal usage with a Claude subscription. When the active provider is Claude Code, ClaudeClaw uses this SDK path.
+**Yes.** On February 19, 2026, Anthropic published their [Legal and Compliance page](https://docs.anthropic.com/en/docs/legal-and-compliance) banning OAuth-token extraction by third-party tools. ClaudeClaw is not affected when running the Claude Code provider.
 
-**How the Claude Code provider works:** The Agent SDK's `query()` spawns the `claude` binary as a child process. That subprocess manages its own auth from `~/.claude/`. ClaudeClaw never reads or transmits your token. It runs Claude Code and reads the output, identical to typing `claude -p "message"` in a terminal.
+**What's banned:** Tools that extract your OAuth token and make API calls with it from third-party code, or impersonate Claude Code without actually running it (e.g. the old OpenClaw).
 
-**How ACP providers work:** ClaudeClaw starts an ACP command and talks to it over the Agent Client Protocol. Built-in presets currently include `opencode acp`, `gemini --acp`, and the bundled `codex-acp` adapter. OpenCode, Gemini, Codex CLI, or your custom ACP provider owns auth, API keys, and model availability. Configure auth before selecting the provider in ClaudeClaw; model, thinking, and speed preferences can be saved from the dashboard when the provider supports those ACP settings.
+**Why the Claude Code provider is different:** The Agent SDK (`@anthropic-ai/claude-agent-sdk`) is a published, official package. Its `query()` spawns the `claude` binary as a child process, and that subprocess manages its own OAuth from `~/.claude/`. ClaudeClaw never reads or transmits your token — it runs Claude Code and reads the output, identical to typing `claude -p "message"` in a terminal. Anthropic telemetry stays intact.
+
+**How ACP providers work:** ClaudeClaw can also talk to an ACP command over the Agent Client Protocol. Built-in presets include `opencode acp`, `gemini --acp`, and the bundled `codex-acp` adapter. OpenCode, Gemini, Codex CLI, or your custom ACP provider owns its own auth, API keys, and model availability — configure that provider's auth before selecting it in ClaudeClaw. Model, thinking, and speed preferences can be saved from the dashboard when the provider supports those ACP settings.
 
 | | ClaudeClaw | Token-extraction tools |
 |---|---|---|
@@ -1653,9 +1655,7 @@ npm run typecheck # Type-check without compiling
 | Single-user, personal machine | ✅ | ❌ |
 | Anthropic telemetry intact | ✅ | ❌ |
 
-**What's clearly not OK:** Tools that extract your OAuth token and make API calls with it from third-party code, or impersonate Claude Code without running it.
-
-For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-token billing. This removes any ambiguity since you're paying directly for usage.
+For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-token billing — you're paying Anthropic directly for usage.
 
 ---
 

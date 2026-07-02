@@ -2,7 +2,63 @@
 
 All notable changes to ClaudeClaw will be documented here.
 
-## [unreleased] - 2026-05-01
+From v1.2.0 onward this file is generated from Conventional Commit history with
+[git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
+
+## [1.3.2] - 2026-07-01
+
+### Bug Fixes
+
+- Bump default model to gemini-2.5-flash ([#125](https://github.com/earlyaidopters/claudeclaw-os/pull/125))
+
+## [1.3.1] - 2026-07-01
+
+### Features
+
+- Upgrade claude-agent-sdk ^0.3.159 -> ^0.3.197
+
+### Testing
+
+- Restore WARROOM_TMP_DIR in config mock
+
+## [1.3.0] - 2026-07-01
+
+### Bug Fixes
+
+- Surface point-in-time context usage from usage_update (partial #70) ([#121](https://github.com/earlyaidopters/claudeclaw-os/pull/121))
+- Classify unauthenticated Claude exit as auth, not retryable crash ([#48](https://github.com/earlyaidopters/claudeclaw-os/pull/48)) ([#120](https://github.com/earlyaidopters/claudeclaw-os/pull/120))
+- Faster mid-turn heartbeat for ACP providers ([#86](https://github.com/earlyaidopters/claudeclaw-os/pull/86)) ([#119](https://github.com/earlyaidopters/claudeclaw-os/pull/119))
+- Move IPC scratch from /tmp to store/tmp (cross-platform) ([#82](https://github.com/earlyaidopters/claudeclaw-os/pull/82)) ([#117](https://github.com/earlyaidopters/claudeclaw-os/pull/117))
+- Backfill chat history on SSE reconnect — SPA + legacy ([#50](https://github.com/earlyaidopters/claudeclaw-os/pull/50)) ([#116](https://github.com/earlyaidopters/claudeclaw-os/pull/116))
+- Stabilize Gemini Live model, self-heal on fatal, drop deprecated kwargs ([#39](https://github.com/earlyaidopters/claudeclaw-os/pull/39)) ([#115](https://github.com/earlyaidopters/claudeclaw-os/pull/115))
+- Add 'google' pipecat extra to requirements (Gemini Live) ([#110](https://github.com/earlyaidopters/claudeclaw-os/pull/110))
+
+### Documentation
+
+- Align ToS compliance answer to "Yes" ([#42](https://github.com/earlyaidopters/claudeclaw-os/pull/42)) ([#123](https://github.com/earlyaidopters/claudeclaw-os/pull/123))
+
+### Features
+
+- Add Health Coach agent blueprint with WHOOP integration ([#114](https://github.com/earlyaidopters/claudeclaw-os/pull/114))
+- Ad-hoc HTML report surface + SVG diagram generator ([#103](https://github.com/earlyaidopters/claudeclaw-os/pull/103))
+- Interactive:false for automation-only agents ([#109](https://github.com/earlyaidopters/claudeclaw-os/pull/109))
+- CLAUDECLAW_STORE_DIR env override for STORE_DIR ([#108](https://github.com/earlyaidopters/claudeclaw-os/pull/108))
+- Export migrateDbFile() to upgrade an arbitrary db file to current schema ([#107](https://github.com/earlyaidopters/claudeclaw-os/pull/107))
+
+### Testing
+
+- Require explicit opt-in for real Telegram API tests ([#85](https://github.com/earlyaidopters/claudeclaw-os/pull/85)) ([#118](https://github.com/earlyaidopters/claudeclaw-os/pull/118))
+
+## [1.2.0] - 2026-06-21
+
+Rolls up everything since v1.1.1: **215 commits across 46 PRs** (77 features, 77 fixes,
+plus security hardening). Highlights: native OpenRouter engine and config-driven providers,
+HTTP/SSE MCP support, Mission Control v2 frontend rewrite, 3D Hive Mind visualization,
+display-names architecture, scheduled-task editing, text War Room, kill-switch toggles,
+and Agent SDK 0.2.50 → 0.3.159. No breaking changes. The dated sections below are the
+development log accumulated for this release.
+
+## 1.2.0 — dev log (2026-05-01)
 
 ### Fixed — per-agent provider selection
 - Dashboard-created agents can now choose a full provider config at
@@ -35,7 +91,7 @@ All notable changes to ClaudeClaw will be documented here.
   files. Agents pick up the change on their next turn — no restart
   needed.
 
-## [unreleased] - 2026-04-29
+## 1.2.0 — dev log (2026-04-29)
 
 ### Added — text war room
 - Multi-agent text war room (`/warroom/text`) with real-time SSE streaming, sticky-addressee follow-ups, `/standup`, `/discuss`, ack short-circuit, and per-meeting persistence.

@@ -1,0 +1,88 @@
+# Health Coach agent configuration (TEMPLATE)
+# Copy to ~/.claudeclaw-os/agents/health/agent.yaml and fill in your values.
+#
+# Add your bot token to ~/.env:
+#   HEALTH_BOT_TOKEN=1234567890:AAFxxxxxxx
+# Start with:
+#   npm start -- --agent health
+
+name: Health Coach
+description: A personal health coach grounded in your bloods, genetics, body composition, and wearable. Logs everything to Supabase and runs a daily morning check-in.
+
+# The env var in ~/.env holding this bot's Telegram token (create via @BotFather).
+telegram_bot_token_env: HEALTH_BOT_TOKEN
+
+# A health coach benefits from strong reasoning. For Claude:
+provider:
+  type: claude
+  model: claude-sonnet-4-6
+# Or use OpenCode's configured default:
+# provider:
+#   type: opencode
+
+# Render structured/tabular replies as rich Telegram HTML (aligned tables, bold).
+rich_messages: true
+
+# This coach reaches Supabase through scripts/db.py + scripts/mem.py (service-role
+# REST), so no MCP servers are needed.
+mcp_servers: []
+
+# Per-agent slash commands. Each registers in this bot's Telegram "/" menu and,
+# because it carries a prompt, expands into a canonical instruction when invoked.
+commands:
+  - command: healthdb
+    description: Open the Health OS trends dashboard
+    # (Handled natively if you wire a dashboard; otherwise remove.)
+
+  - command: newday
+    description: Open today, close out yesterday, reset targets
+    prompt: >-
+      It is a new day. Run scripts/state.py. If yesterday's daily_checkins row has
+      no coach_summary, close it out first (summarize yesterday's totals and
+      adherence, and include the recovery story: last night's recovery and the
+      one-line cause tying it to yesterday). Then upsert today's daily_checkins
+      row and reply with a short Day N header that OPENS with last night's recovery
+      line, today's plan gated on that recovery, and the running targets reset for
+      today. Phone-first, no em dashes.
+
+  - command: today
+    description: Today's totals plus last night's recovery
+    prompt: >-
+      Run scripts/state.py --today and relay the current picture, phone-first.
+      OPEN with last night's recovery line (recovery %, sleep, HRV), then the
+      running totals (weight, calories, protein, caffeine, BP). If recovery is red
+      or sleep was short, add one line on what that means for the rest of today.
+
+  - command: sofar
+    description: Today so far, a rich table of calories, protein, and more
+    prompt: >-
+      Run scripts/state.py --sofar and reply with its stdout exactly as your whole
+      message, not wrapped in a code fence. It is a markdown table the gateway
+      renders into a rich Telegram table.
+
+  - command: checkin
+    description: Run the morning check-in now
+    prompt: >-
+      Run the full morning check-in now (same flow as the scheduled job). Read
+      state.py first. OPEN with last night's recovery line, then close the loop:
+      walk through yesterday honestly against the owner's genetics and tie those
+      food/caffeine/training choices to why recovery landed where it did. Note
+      supplement adherence only if there's an exception. Check the trend including
+      the multi-day sleep/recovery pattern and whether BP has been logged. Give
+      today's plan GATED on this morning's recovery. Then ask only what the
+      wearable can't tell you: weight, any BP reading, and how they feel. Do NOT
+      ask how they slept. Phone-first, no em dashes, end with one focus.
+
+  - command: supplements
+    description: Your weekly supplement schedule, daytime and nighttime
+    prompt: >-
+      Run scripts/supplements.py and reply with its stdout exactly, not wrapped in
+      a code fence. It is markdown tables the gateway renders for Telegram.
+
+  - command: advice
+    description: Ask the influencer KB, get cited tips reconciled with your data
+    prompt: >-
+      The owner wants advice from the influencer knowledge base (the influencer_tips
+      RAG). Run scripts/advice.py "<their question>" --k 6 and present 2 to 4 of the
+      most on-point cited tips, then reconcile them against the owner's own data
+      (labs, genetics, goals), which always wins. Do NOT log this as a data point.

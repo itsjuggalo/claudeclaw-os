@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { logger } from '../logger.js';
+import { authError, isAuthErrorText } from '../errors.js';
 import type {
   AgentEngine,
   AgentEngineEvent,
@@ -109,7 +110,7 @@ function buildAskUserQuestionCanUseTool(input: AgentTurnInput) {
   };
 }
 
-async function* singleTurn(text: string): AsyncGenerator<{
+async function* singleTurn(text: string, sessionId?: string): AsyncGenerator<{
   type: 'user';
   message: { role: 'user'; content: string };
   parent_tool_use_id: null;
@@ -119,7 +120,7 @@ async function* singleTurn(text: string): AsyncGenerator<{
     type: 'user',
     message: { role: 'user', content: text },
     parent_tool_use_id: null,
-    session_id: '',
+    session_id: sessionId ?? '',
   };
 }
 
@@ -162,7 +163,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
     while (true) {
     try {
       for await (const event of query({
-        prompt: singleTurn(input.prompt),
+        prompt: singleTurn(input.prompt, resumeSessionId),
         options: {
           cwd: input.cwd,
           resume: resumeSessionId,
@@ -186,6 +187,10 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           ...(input.allowedTools ? { allowedTools: input.allowedTools } : {}),
           ...(input.disallowedTools ? { disallowedTools: input.disallowedTools } : {}),
           ...(input.abortController ? { abortController: input.abortController } : {}),
+          // TODO(#72): the SDK Options type (@anthropic-ai/claude-agent-sdk) lags
+          // some fields we pass conditionally (effort, thinking, model overrides),
+          // so the whole object is cast. Narrow to the SDK Options type and cast
+          // only the lagging fields once they're typed upstream.
         } as any,
       })) {
       const ev = event as Record<string, unknown>;
@@ -292,6 +297,23 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
       }
 
       if (ev.type === 'result') {
+        // Prefer the full assembled turn text over the SDK's `result` field,
+        // which only holds the final assistant text block. Fall back to
+        // `ev.result` when no top-level text was captured.
+        const assembledText = turnTextBlocks.join('\n\n').trim();
+        const sdkResult = (ev.result as string | null | undefined) ?? null;
+        const resultText = assembledText || sdkResult;
+
+        // An unauthenticated Claude CLI does NOT throw — it returns a result
+        // with is_error:true and text like "Not logged in · Please run /login"
+        // (verified locally), then exits 1. Without this, that text either gets
+        // surfaced as a normal assistant reply or (on SDKs that throw a bare
+        // "exited with code 1") loops on subprocess_crash. Raise a proper auth
+        // error (no retry, deploy-aware message) at the source. (#48)
+        if (ev.is_error === true && typeof resultText === 'string' && isAuthErrorText(resultText)) {
+          throw authError();
+        }
+
         const evUsage = ev.usage as Record<string, number> | undefined;
         const usage = evUsage ? {
           inputTokens: evUsage.input_tokens ?? 0,
@@ -305,14 +327,9 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           contextWindow: pickContextWindow(ev.modelUsage, input.model),
         } : null;
         if (usage) yield { type: 'usage', usage, raw: ev };
-        // Prefer the full assembled turn text over the SDK's `result` field,
-        // which only holds the final assistant text block. Fall back to
-        // `ev.result` when no top-level text was captured.
-        const assembledText = turnTextBlocks.join('\n\n').trim();
-        const sdkResult = (ev.result as string | null | undefined) ?? null;
         yield {
           type: 'result',
-          text: assembledText || sdkResult,
+          text: resultText,
           usage,
           stopReason: typeof ev.subtype === 'string' ? ev.subtype : undefined,
           raw: ev,

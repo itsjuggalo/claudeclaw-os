@@ -35,7 +35,7 @@ function isQuotaError(err: unknown): boolean {
  * failure). Caller is responsible for parsing + validation, same as
  * before — keeps the contract identical to generateContent().
  */
-export async function extractViaClaude(prompt: string, timeoutMs = 15_000): Promise<string> {
+export async function extractViaProvider(prompt: string, timeoutMs = 15_000): Promise<string> {
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
   const env = getScrubbedSdkEnv(secrets);
   const provider = getSelectedProviderConfig();
@@ -68,6 +68,14 @@ export async function extractViaClaude(prompt: string, timeoutMs = 15_000): Prom
   }
   return text;
 }
+
+/**
+ * Back-compat alias. Upstream v1.3.2 renamed extractViaClaude ->
+ * extractViaProvider (provider-agnostic). Mike's other modules
+ * (orchestrator.ts, agent-suggestions.ts) still import the old name, so keep
+ * this alias exported to avoid breaking those call sites.
+ */
+export const extractViaClaude = extractViaProvider;
 
 export function getIngestionQuotaStatus(): {
   suspended: boolean;
@@ -167,7 +175,7 @@ export async function ingestConversationTurn(
     // were hitting on every turn and silently killing memory ingestion.
     let raw: string;
     try {
-      raw = await extractViaClaude(prompt);
+      raw = await extractViaProvider(prompt);
     } catch (providerErr) {
       // Fallback: try Gemini if it has a key configured. The 429 backoff
       // path inside the catch below handles quota errors gracefully.

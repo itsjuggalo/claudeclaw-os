@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { Send, Square, Sparkles, ArrowDown, CheckCircle2, AlertCircle, Loader2, ListChecks, Wrench } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
@@ -71,17 +71,45 @@ export function Chat() {
     30_000,
   );
 
-  // Load conversation history when active agent changes.
-  useEffect(() => {
+  // Load conversation history for the active agent. Extracted so the SSE
+  // reconnect handler below can re-fetch it too.
+  const loadHistory = useCallback(() => {
     setLoading(true);
     const path = activeAgent === 'all'
       ? `/api/chat/history?chatId=${encodeURIComponent(chatId)}&limit=50`
       : `/api/agents/${activeAgent}/conversation?chatId=${encodeURIComponent(chatId)}&limit=50`;
-    apiGet<{ turns: Turn[] }>(path)
-      .then((d) => setTurns(d.turns || []))
+    return apiGet<{ turns: Turn[] }>(path)
+      // The history endpoint returns turns newest-first (ORDER BY id DESC).
+      // The panel renders oldest-first (newest at the bottom) and live SSE
+      // events append to the end, so reverse to match. Without this a history
+      // reload (revisiting the page, or the SSE-reconnect backfill above)
+      // renders the conversation upside down.
+      .then((d) => setTurns((d.turns || []).slice().reverse()))
       .catch((e) => setError(e?.message || String(e)))
       .finally(() => setLoading(false));
   }, [activeAgent]);
+
+  // Load history on mount and whenever the active agent changes.
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  // Backfill on SSE reconnect. chat-stream.ts auto-reconnects after a drop
+  // (laptop sleep, network blip, backgrounded tab) and toggles
+  // chatStreamConnected, but messages exchanged during the gap were never
+  // streamed and would otherwise be a silent hole in the panel. On a
+  // reconnect — not the initial connect — re-fetch history. A ref holds the
+  // latest loader so this effect fires only on connectivity changes, never on
+  // agent changes (already handled by the mount effect), avoiding a double load.
+  const loadHistoryRef = useRef(loadHistory);
+  loadHistoryRef.current = loadHistory;
+  const hasConnectedOnce = useRef(false);
+  useEffect(() => {
+    if (!streamConnected) return;
+    if (hasConnectedOnce.current) {
+      loadHistoryRef.current();
+    } else {
+      hasConnectedOnce.current = true;
+    }
+  }, [streamConnected]);
 
   // Auto-scroll only when the user is already near the bottom. New
   // messages arriving while they're reading history shouldn't yank
@@ -181,6 +209,7 @@ export function Chat() {
   function quick(prompt: string, sendNow = true) {
     if (sendNow) {
       void send(prompt);
+      inputRef.current?.focus();
     } else {
       // prefill mode — fill textarea + focus so user can append and send
       setDraft(prompt);

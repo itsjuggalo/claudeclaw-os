@@ -2735,6 +2735,7 @@ refreshAll();
 let chatOpen = false;
 let chatSSE = null;
 let chatHistoryLoaded = false;
+let chatSSEReconnecting = false;
 let unreadCount = 0;
 let chatAgents = [];
 let activeAgentTab = 'all';
@@ -2886,12 +2887,25 @@ function connectChatSSE() {
   chatSSE.addEventListener('ping', function() { /* keepalive */ });
 
   chatSSE.onerror = function() {
-    // Auto-reconnect handled by EventSource
+    // EventSource auto-reconnects. Mark that we dropped so the next onopen
+    // knows it's a reconnect (not the initial connect) and can backfill any
+    // messages exchanged while we were disconnected.
     updateChatStatus(false);
-    setTimeout(() => updateChatStatus(true), 3000);
+    chatSSEReconnecting = true;
   };
 
-  chatSSE.onopen = function() { updateChatStatus(true); };
+  chatSSE.onopen = function() {
+    updateChatStatus(true);
+    if (chatSSEReconnecting) {
+      // We just reconnected after a drop. Messages sent during the gap were
+      // never streamed, so the panel has a silent hole. Force a history
+      // refresh: reload now if the panel is open, otherwise invalidate so the
+      // next openChat() re-fetches.
+      chatSSEReconnecting = false;
+      chatHistoryLoaded = false;
+      if (chatOpen) loadChatHistory();
+    }
+  };
 }
 
 function updateChatStatus(connected) {

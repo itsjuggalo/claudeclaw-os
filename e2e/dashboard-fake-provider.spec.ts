@@ -52,7 +52,6 @@ async function installFakeDashboard(page: Page) {
         model: provider.model || (provider.type === 'claude' ? 'claude-opus-4-6' : provider.type === 'codex' ? 'gpt-5.5' : provider.type),
         provider,
         providerType: provider.type,
-        acpEnabled: true,
         runtime: provider.type === 'acp' ? `${provider.command} ${(provider.args || []).join(' ')}`.trim() : provider.type,
         killSwitches: {
           WARROOM_TEXT_ENABLED: true,
@@ -69,7 +68,6 @@ async function installFakeDashboard(page: Page) {
       return json({
         provider,
         providerType: provider.type,
-        acpEnabled: true,
         label: provider.type === 'claude' ? 'Claude' : provider.type === 'opencode' ? 'OpenCode' : provider.type === 'gemini' ? 'Gemini' : provider.type === 'codex' ? 'Codex' : 'ACP',
         runtime: provider.type === 'acp' ? `${provider.command} ${(provider.args || []).join(' ')}`.trim() : provider.type,
         model: provider.model || (provider.type === 'claude' ? 'claude-opus-4-6' : provider.type === 'codex' ? 'gpt-5.5' : provider.type === 'gemini' ? 'Gemini CLI default' : 'OpenCode default'),

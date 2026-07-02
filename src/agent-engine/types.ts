@@ -114,6 +114,9 @@ export interface AgentTurnInput {
   abortController?: AbortController;
   env?: Record<string, string | undefined>;
   settingSources?: string[];
+  /** Claude SDK only — streams partial assistant text. The ACP adapter ignores
+   *  this (ACP has no equivalent flag; it streams via agent_message_chunk
+   *  regardless). (#72 Finding 13) */
   includePartialMessages?: boolean;
   /**
    * Agent persona (CLAUDE.md) to use as the system prompt. When set, the Claude

@@ -47,6 +47,7 @@ import { FlowWinnersPage } from '@/pages/FlowWinnersPage';
 import { OptionsAcademy } from '@/pages/OptionsAcademy';
 import { Databases } from '@/pages/Databases';
 import { DatabaseDetail } from '@/pages/DatabaseDetail';
+import { Bunker } from '@/pages/Bunker';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
@@ -81,6 +82,7 @@ export function App() {
           <Route path="/agents"><Agents /></Route>
           <Route path="/agents/:id/files"><AgentFiles /></Route>
           <Route path="/chat"><Chat /></Route>
+          <Route path="/bunker"><Bunker /></Route>
           <Route path="/memories"><Memories /></Route>
           <Route path="/hive"><HiveMind /></Route>
           <Route path="/knowledge-graph"><KnowledgeGraph /></Route>

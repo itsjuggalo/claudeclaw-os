@@ -180,11 +180,15 @@ describe('file sending: mocked Grammy context', () => {
 
 // ── Real Telegram API tests ─────────────────────────────────────────
 // These actually send a file to your Telegram chat.
-// Skipped if TELEGRAM_BOT_TOKEN or ALLOWED_CHAT_ID are not in .env.
+// Double-gated: credentials AND an explicit opt-in (RUN_REAL_TELEGRAM_TESTS=1).
+// Token presence alone is NOT enough — in any real install the creds are always
+// set, so guarding on creds only meant a plain `npm test` fired these and spammed
+// the user's live chat with test files (surfaced via PR #73). Skipped unless you
+// opt in: RUN_REAL_TELEGRAM_TESTS=1 npm test
 
 describe('file sending: real Telegram API', () => {
   const { token, chatId } = loadEnv();
-  const canRunRealTests = !!(token && chatId);
+  const canRunRealTests = !!(token && chatId) && process.env.RUN_REAL_TELEGRAM_TESTS === '1';
 
   // Create a real temp file for the test
   let tmpFile: string;

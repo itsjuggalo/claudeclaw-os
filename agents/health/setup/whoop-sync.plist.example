@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd job: runs the WHOOP sync at 07:00, 10:00, 13:00 local.
+     1) edit the two ABSOLUTE paths + HOME below
+     2) cp to ~/Library/LaunchAgents/com.health-coach.whoop-sync.plist
+     3) launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.health-coach.whoop-sync.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.health-coach.whoop-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/ABSOLUTE/PATH/TO/agents/health/scripts/whoop-sync.py</string>
+    <string>--quiet</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>/Users/YOU</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>/tmp/whoop-sync.log</string>
+  <key>StandardErrorPath</key><string>/tmp/whoop-sync.err</string>
+</dict></plist>

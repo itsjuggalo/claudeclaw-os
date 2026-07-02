@@ -45,7 +45,8 @@ export function parseJsonResponse<T>(text: string): T | null {
   //   1. Bare JSON
   //   2. JSON inside ```json ... ``` fences
   //   3. JSON inside generic ``` ... ``` fences
-  //   4. First {...} block in the text
+  //   4. First {...} block in the text (some models add prose AFTER the
+  //      fence, which broke the previous regex anchor).
   const candidates: string[] = [];
   const trimmed = text.trim();
   candidates.push(trimmed);

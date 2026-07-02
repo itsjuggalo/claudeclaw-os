@@ -8,7 +8,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, MC_ACCESS_SECRET, MC_ACCESS_DISABLED, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
+import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, MC_ACCESS_SECRET, MC_ACCESS_DISABLED, PROJECT_ROOT, STORE_DIR, WARROOM_TMP_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
 import { MC_COOKIE, MASTER_TTL_SEC, verifyToken, masterToken, signToken, isLoopbackAddr, nowSec, mcLoginPage } from './mc-access.js';
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
@@ -38,6 +38,7 @@ import { applyGenRules, loraStrength } from './genrules.js';
 import { listLooks, saveUserLook, deleteUserLook } from './looks.js';
 import { readControlPanel, applyControl } from './controls.js';
 import Database from 'better-sqlite3';
+import { listEntries as bunkerList, listArchived as bunkerArchivedList, setPinned as bunkerSetPinned, archiveEntry as bunkerArchive, promoteEntry as bunkerPromote, resolveArtifact as bunkerResolveArtifact, verifyArtifact as bunkerVerifyArtifact } from './bunker.js';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -99,7 +100,19 @@ import {
 import { computeNextRun } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
-import { AGENT_ID_RE, DEFAULT_MAIN_DESCRIPTION, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, resolveAgentDisplayName, setAgentModel, setAgentProvider } from './agent-config.js';
+import {
+  AGENT_ID_RE,
+  DEFAULT_MAIN_DESCRIPTION,
+  agentExists,
+  listAgentIds,
+  loadAgentConfig,
+  resolveAgentDir,
+  resolveAgentDisplayName,
+  setAgentModel,
+  setAgentProvider,
+  getMainDescription,
+  setMainDescription,
+} from './agent-config.js';
 import {
   resolveAgentAvatar,
   avatarEtag,
@@ -139,7 +152,7 @@ import {
 } from './db.js';
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
-import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
+import { getIngestionQuotaStatus, extractViaProvider } from './memory-ingest.js';
 import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU, DEFAULT_OPENROUTER_MODEL } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
@@ -380,15 +393,14 @@ Task: "${prompt.slice(0, 500)}"
 
 Reply with JSON: {"agent": "agent_id"}`;
 
-  // Primary path: Claude Haiku via OAuth — same auth the agents use, no
-  // free-tier quota wall. Gemini classification used to 429 here and
-  // surface a 500 to the dashboard, blocking the auto-assign UI.
+  // Primary path: selected provider via the agent engine. Gemini fallback
+  // can hit 429 and surface a 500, blocking the auto-assign UI.
   try {
-    const raw = await extractViaClaude(classificationPrompt);
+    const raw = await extractViaProvider(classificationPrompt);
     const parsed = parseJsonResponse<{ agent: string }>(raw);
     if (parsed?.agent && validAgents.includes(parsed.agent)) return parsed.agent;
   } catch (err) {
-    logger.warn({ err: err instanceof Error ? err.message : err }, 'Haiku classify failed, falling back to Gemini');
+    logger.warn({ err: err instanceof Error ? err.message : err }, 'selected-provider classify failed, falling back to Gemini');
   }
 
   // Fallback: Gemini. Wrapped so a 429 doesn't bubble up — we'd rather
@@ -649,6 +661,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       path === '/login' ||
       path.startsWith('/api/mc-login') ||
       path.startsWith('/api/mc-logout') ||
+      // Bunker artifact files carry their OWN per-slug scoped capability
+      // (?t=&exp=, verified in the handler), so they must NOT require the
+      // master mc-access session — that's the whole point of not shipping the
+      // master credential inside artifact URLs.
+      path.startsWith('/api/bunker-files/') ||
       path.startsWith('/assets/') ||
       /\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico|css|js|map|woff2?|ttf)$/i.test(path);
     if (isOpen) { await next(); return; }
@@ -1367,6 +1384,68 @@ init();
   // unified resolver in avatars.ts.
 
   // War Room API: meeting state management.
+  // ── Bunker (ad-hoc report surface) ─────────────────────────────
+  // Drop an HTML artifact into ~/.claudeclaw/bunker/<slug>/ (helper:
+  // scripts/bunker-add.mjs) and it appears here, served from the
+  // dashboard origin — no throwaway localhost ports to hunt down. Gated by
+  // the /api token middleware; mutations respect the kill-switch.
+  app.get('/api/bunker', (c) => {
+    // DASHBOARD_TOKEN keys the per-entry scoped artifact capabilities.
+    return c.json({ entries: bunkerList(DASHBOARD_TOKEN), archived: bunkerArchivedList(DASHBOARD_TOKEN) });
+  });
+
+  app.post('/api/bunker/:slug/pin', async (c) => {
+    const body: { pinned?: boolean } = await c.req.json().catch(() => ({}));
+    if (!bunkerSetPinned(c.req.param('slug'), body.pinned !== false)) {
+      return c.json({ error: 'Bunker entry not found' }, 404);
+    }
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/bunker/:slug/archive', (c) => {
+    if (!bunkerArchive(c.req.param('slug'))) {
+      return c.json({ error: 'Bunker entry not found' }, 404);
+    }
+    return c.json({ ok: true });
+  });
+
+  // Promote: copy the artifact into the vault as a searchable markdown note.
+  app.post('/api/bunker/:slug/promote', (c) => {
+    const result = bunkerPromote(c.req.param('slug'));
+    if (!result) return c.json({ error: 'Bunker entry not found' }, 404);
+    return c.json({ ok: true, vaultPath: result.vaultPath });
+  });
+
+  // Serve the artifact files themselves. NOT gated by the master /api token
+  // (exempted above); instead each request must carry a per-slug scoped
+  // capability (?t=&exp=) minted by the list endpoint. Opened in a NEW TAB —
+  // the global X-Frame-Options: DENY header makes inline framing impossible.
+  app.get('/api/bunker-files/*', (c) => {
+    const pathname = new URL(c.req.url).pathname;
+    const sub = pathname.replace(/^\/api\/bunker-files\//, '');
+
+    // Bind the capability to the slug: first path segment after an optional
+    // _archive/ prefix. Mirrors resolveArtifact's prefix handling so a token
+    // signed for slug A cannot read slug B (or _archive/A vs A).
+    let slugPath = sub.replace(/^\/+/, '');
+    if (slugPath === '_archive' || slugPath.startsWith('_archive/')) {
+      slugPath = slugPath.slice('_archive'.length).replace(/^\/+/, '');
+    }
+    const slug = decodeURIComponent(slugPath.split('/')[0] ?? '');
+
+    const t = c.req.query('t') ?? '';
+    const exp = Number(c.req.query('exp'));
+    if (!bunkerVerifyArtifact(slug, exp, t, DASHBOARD_TOKEN)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    const file = bunkerResolveArtifact(sub);
+    if (!file) return c.text('', 404);
+    return new Response(new Uint8Array(file.data), {
+      headers: { 'Content-Type': file.contentType },
+    });
+  });
+
   // We deliberately do NOT return a ws_url here. Older versions of this
   // route sent `ws://localhost:${WARROOM_PORT}`, which broke any
   // Cloudflare-tunneled access since the browser would try to connect to
@@ -1445,11 +1524,11 @@ init();
     const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
     const agents = ids.map((id) => {
       try {
-        if (id === 'main') return { id: 'main', name: resolveAgentDisplayName('main'), description: DEFAULT_MAIN_DESCRIPTION };
+        if (id === 'main') return { id: 'main', name: resolveAgentDisplayName('main'), description: getMainDescription() };
         const cfg = loadAgentConfig(id);
-        return { id, name: cfg.name || id, description: cfg.description || '' };
+        return { id, name: cfg.name || resolveAgentDisplayName(id), description: cfg.description || '' };
       } catch {
-        return { id, name: id, description: '' };
+        return { id, name: resolveAgentDisplayName(id), description: '' };
       }
     });
     return c.json({ agents });
@@ -2939,11 +3018,11 @@ init();
   });
 
   // ── War Room pin: route all voice utterances to a specific agent ──
-  // Lives in /tmp so the Python Pipecat server (a separate process) can
-  // read the state without needing an IPC bus. router.py checks this
-  // file's mtime and reloads only when it changes. Spoken agent prefixes
-  // (e.g. "research, find X") still take precedence over the pin.
-  const WARROOM_PIN_PATH = '/tmp/warroom-pin.json';
+  // Lives in store/tmp (WARROOM_TMP_DIR) so the Python Pipecat server (a
+  // separate process) can read the state without needing an IPC bus. router.py
+  // checks this file's mtime and reloads only when it changes. Spoken agent
+  // prefixes (e.g. "research, find X") still take precedence over the pin.
+  const WARROOM_PIN_PATH = path.join(WARROOM_TMP_DIR, 'warroom-pin.json');
   const VALID_PIN_MODES = new Set(['direct', 'auto']);
   // Recompute on every call so newly-created agents become pinnable
   // without a dashboard restart. listAgentIds() reads the agent-configs
@@ -3007,6 +3086,7 @@ init();
     }
 
     try {
+      fs.mkdirSync(WARROOM_TMP_DIR, { recursive: true });
       fs.writeFileSync(
         WARROOM_PIN_PATH,
         JSON.stringify({ agent: nextAgent, mode: nextMode, pinnedAt: Date.now() }),
@@ -3086,7 +3166,7 @@ init();
     return c.json({ ok: true, meetingId: id, autoEnded: stale });
   });
 
-  // Pre-warm the Claude Agent SDK path so the first user turn feels snappy.
+  // Pre-warm the selected provider path so the first user turn feels snappy.
   // The client calls this on page load in parallel with the intro animation.
   // Idempotent + fast: if warmup already ran, returns immediately.
   app.post('/api/warroom/text/warmup', async (c) => {
@@ -3598,6 +3678,7 @@ init();
       }
       return {
         agent,
+        display_name: resolveAgentDisplayName(agent),
         gemini_voice: geminiVoice,
         voice_id: entry.voice_id || '',
         name: entry.name || '',
@@ -4026,6 +4107,7 @@ init();
       cwd: PROJECT_ROOT,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
     let stdout = '';
@@ -4210,7 +4292,7 @@ init();
       turns,
       compactions,
       sessionAge,
-      model: agentDefaultModel || 'sonnet-4-6',
+      ...getProviderStatus(),
       telegramConnected: getTelegramConnected(),
       waConnected: WHATSAPP_ENABLED,
       slackConnected: !!SLACK_USER_TOKEN,
@@ -4230,6 +4312,10 @@ init();
       // generating long-term memories with no visible signal.
       memoryIngestion: getIngestionQuotaStatus(),
     });
+  });
+
+  app.get('/api/provider/status', (c) => {
+    return c.json(getProviderStatus());
   });
 
   // Token / cost stats
@@ -4258,11 +4344,13 @@ init();
   // List all configured agents with status
   app.get('/api/agents', (c) => {
     const agentIds = listAgentIds();
+    const hasMain = agentIds.includes('main');
     const agents = agentIds.map((id) => {
       try {
         const config = loadAgentConfig(id);
-        // Check if agent process is alive via PID file
-        const pidFile = path.join(STORE_DIR, `agent-${id}.pid`);
+        // Check if agent process is alive via PID file.
+        // Main agent uses 'claudeclaw.pid'; others use 'agent-<id>.pid'.
+        const pidFile = path.join(STORE_DIR, id === 'main' ? 'claudeclaw.pid' : `agent-${id}.pid`);
         let running = false;
         if (fs.existsSync(pidFile)) {
           try {
@@ -4278,8 +4366,8 @@ init();
           : provider.model;
         return {
           id,
-          name: config.name,
-          description: config.description,
+          name: config.name || resolveAgentDisplayName(id),
+          description: id === 'main' ? getMainDescription() : config.description,
           model,
           provider,
           running,
@@ -4291,24 +4379,46 @@ init();
           avatar_etag: avatarEtagForId(id),
         };
       } catch {
-        return { id, name: id, description: '', model: 'unknown', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
+        const fallbackName = resolveAgentDisplayName(id);
+        return { id, name: fallbackName, description: '', model: 'unknown', provider: { type: 'opencode' }, running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
       }
     });
 
-    // Include main bot too
-    const mainPidFile = path.join(STORE_DIR, 'claudeclaw.pid');
-    let mainRunning = false;
-    if (fs.existsSync(mainPidFile)) {
-      try {
-        const pid = parseInt(fs.readFileSync(mainPidFile, 'utf-8').trim(), 10);
-        mainRunning = isProcessAlive(pid);
-      } catch { /* not running */ }
+    // Ensure main is always first and never duplicated.
+    let allAgents;
+    if (hasMain) {
+      // main exists in agentIds — move it to the front
+      allAgents = [
+        ...agents.filter((a) => a.id === 'main'),
+        ...agents.filter((a) => a.id !== 'main'),
+      ];
+    } else {
+      // No agents/main/agent.yaml — build a main entry from env/defaults
+      const mainPidFile = path.join(STORE_DIR, 'claudeclaw.pid');
+      let mainRunning = false;
+      if (fs.existsSync(mainPidFile)) {
+        try {
+          const pid = parseInt(fs.readFileSync(mainPidFile, 'utf-8').trim(), 10);
+          mainRunning = isProcessAlive(pid);
+        } catch { /* not running */ }
+      }
+      const mainStats = getAgentTokenStats('main');
+      const mainProvider = getMainProviderConfig();
+      allAgents = [
+        {
+          id: 'main',
+          name: resolveAgentDisplayName('main'),
+          description: getMainDescription(),
+          model: getProviderStatus().model,
+          provider: mainProvider,
+          running: mainRunning,
+          todayTurns: mainStats.todayTurns,
+          todayCost: mainStats.todayCost,
+          avatar_etag: avatarEtagForId('main'),
+        },
+        ...agents,
+      ];
     }
-    const mainStats = getAgentTokenStats('main');
-    const allAgents = [
-      { id: 'main', name: resolveAgentDisplayName('main'), description: DEFAULT_MAIN_DESCRIPTION, model: getMainModelOverride() ?? 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
-      ...agents,
-    ];
 
     return c.json({ agents: allAgents });
   });
@@ -4354,13 +4464,13 @@ init();
     const restartRequired: string[] = [];
     for (const id of agentIds) {
       try {
-        setAgentModel(id, model);
+        setAgentProvider(id, { type: 'claude', model });
         updated.push(id);
-        // Yaml is now updated, but a sub-agent's already-running process
-        // froze its model at startup. Flag for the UI to offer a restart.
         if (id !== 'main') restartRequired.push(id);
       } catch {}
     }
+    setMainProviderConfig({ type: 'claude', model });
+    updated.unshift('main');
     return c.json({ ok: true, model, updated, restartRequired });
   });
 
@@ -4379,6 +4489,7 @@ init();
         // Main applies in-memory immediately — no restart needed.
         const { setMainModelOverride } = await import('./bot.js');
         setMainModelOverride(model);
+        setMainProviderConfig({ type: 'claude', model });
         return c.json({ ok: true, agent: agentId, model, restartRequired: false });
       }
       // Sub-agents read agentDefaultModel into config.ts module state once
@@ -4386,16 +4497,11 @@ init();
       // process restarts. We don't auto-restart because that would kill any
       // in-flight mission task or Telegram turn — surface the requirement
       // so the UI can prompt deliberately.
-      setAgentModel(agentId, model);
+      setAgentProvider(agentId, { type: 'claude', model });
       return c.json({ ok: true, agent: agentId, model, restartRequired: true });
     } catch (err) {
       return c.json({ error: 'Failed to update model' }, 500);
     }
-  });
-
-  // ── Provider / model config (config-driven providers) ───────────────
-  app.get('/api/provider/status', (c) => {
-    return c.json(getProviderStatus());
   });
 
   app.get('/api/providers/models', async (c) => {
@@ -4893,7 +4999,7 @@ init();
 
   // ── Agent split suggestions ─────────────────────────────────────────
   // Scans hive_mind for the last 200 actions per agent, sends the bag
-  // (agent description + their recent action summaries) to Haiku, and
+  // (agent description + their recent action summaries) to the selected provider, and
   // asks "is any one agent doing several distinct domains that warrant
   // a split?" Suggestions land in agent_suggestions and surface as a
   // lightbulb badge on the AgentCard. The user can dismiss (= "no
@@ -4913,7 +5019,7 @@ init();
       return c.json(result);
     } catch (err) {
       logger.warn({ err: err instanceof Error ? err.message : err }, 'agent suggestion analysis failed');
-      return c.json({ error: 'analysis failed (Haiku unavailable)' }, 503);
+      return c.json({ error: 'analysis failed (selected provider unavailable)' }, 503);
     }
   });
 
