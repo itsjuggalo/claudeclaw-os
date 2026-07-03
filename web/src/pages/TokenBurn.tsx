@@ -1,6 +1,8 @@
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 import { formatCost, formatNumber } from '@/lib/format';
 import { showCosts } from '@/lib/theme';
 
@@ -17,6 +19,7 @@ interface TokenBurnData {
 
 export function TokenBurn() {
   const burn = useFetch<TokenBurnData>('/api/token-burn', 120_000);
+  const { busy: refreshing, spin } = useSpin();
   const d = burn.data;
 
   const todayRow    = d?.summary.find((r) => r.period === 'Today');
@@ -26,10 +29,12 @@ export function TokenBurn() {
   const refreshBtn = (
     <button
       type="button"
-      onClick={burn.refresh}
-      class="px-3 py-1 rounded-md text-[11px] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+      onClick={() => void spin(burn.refresh)}
+      disabled={refreshing}
+      aria-busy={refreshing}
+      class="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[11px] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
     >
-      Refresh
+      {refreshing ? <NestedSquaresSpinner size={12} /> : null} Refresh
     </button>
   );
 

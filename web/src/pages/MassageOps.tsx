@@ -2,7 +2,9 @@ import { useEffect, useState } from 'preact/hooks';
 import { HeartPulse, ShieldAlert, ShieldCheck, Trash2, RotateCcw, RefreshCw } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 import { apiPost } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -48,6 +50,7 @@ function StatePill({ state }: { state: LifecycleRow['state'] }) {
 
 export function MassageOps() {
   const { data, loading, error, refresh } = useFetch<Monitor>('/api/massage/monitor', 30000);
+  const { busy: refreshing, spin } = useSpin();
   const [busy, setBusy] = useState<string | null>(null);
   const [actMsg, setActMsg] = useState<string | null>(null);
   // Local copy of the reaper knobs, seeded from the server each load.
@@ -86,9 +89,9 @@ export function MassageOps() {
       <PageHeader
         title="Massage Ops"
         actions={
-          <button type="button" onClick={() => refresh()} title="Refresh"
+          <button type="button" onClick={() => void spin(refresh)} disabled={refreshing} aria-busy={refreshing} title="Refresh"
             class="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
-            <RefreshCw size={12} /> refresh
+            {refreshing ? <NestedSquaresSpinner size={12} /> : <RefreshCw size={12} />} refresh
           </button>
         }
       />

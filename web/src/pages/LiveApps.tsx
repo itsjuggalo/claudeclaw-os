@@ -1,7 +1,9 @@
 import { Smartphone, RefreshCw, Check, Loader2, Cpu, Container, Box, MonitorPlay } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 
 interface LiveAppsStatus {
   generatedAt: number;
@@ -42,15 +44,16 @@ function StepRow({ icon: Icon, title, done, detail, cmd }: { icon: typeof Cpu; t
 
 export function LiveApps() {
   const { data, loading, error, refresh } = useFetch<LiveAppsStatus>('/api/live-apps/status', 5000);
+  const { busy: refreshing, spin } = useSpin();
 
   return (
     <div class="flex flex-col h-full">
       <PageHeader
         title="Live Apps"
         actions={
-          <button type="button" onClick={() => refresh()} title="Refresh"
+          <button type="button" onClick={() => void spin(refresh)} disabled={refreshing} aria-busy={refreshing} title="Refresh"
             class="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
-            <RefreshCw size={12} /> refresh
+            {refreshing ? <NestedSquaresSpinner size={12} /> : <RefreshCw size={12} />} refresh
           </button>
         }
       />

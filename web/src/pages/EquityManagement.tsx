@@ -3,7 +3,9 @@
 // checks, guardrail flags. Visual language matches Wallets (MONO + dark navy).
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 const GREEN = '#66bb6a';
@@ -46,6 +48,7 @@ interface Overview {
 
 export function EquityManagement() {
   const { data, loading, error, refresh } = useFetch<Overview>('/api/equity', 120_000);
+  const { busy: refreshing, spin } = useSpin();
 
   if (error) {
     return (
@@ -53,7 +56,9 @@ export function EquityManagement() {
         <PageHeader title="Equity Management" />
         <PageState error={error} />
         <div style={{ textAlign: 'center', marginTop: '12px' }}>
-          <button onClick={refresh} style={retryBtn}>Retry</button>
+          <button onClick={() => void spin(refresh)} disabled={refreshing} aria-busy={refreshing} style={retryBtn}>
+            {refreshing ? <NestedSquaresSpinner size={12} /> : null} Retry
+          </button>
         </div>
       </div>
     );
@@ -72,7 +77,9 @@ export function EquityManagement() {
   return (
     <div class="flex flex-col h-full">
       <PageHeader title="Equity Management" actions={
-        <button onClick={refresh} style={retryBtn}>Refresh</button>
+        <button onClick={() => void spin(refresh)} disabled={refreshing} aria-busy={refreshing} style={retryBtn}>
+          {refreshing ? <NestedSquaresSpinner size={12} /> : null} Refresh
+        </button>
       } />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>

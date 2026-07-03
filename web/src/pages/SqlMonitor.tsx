@@ -4,7 +4,9 @@ import { useSearch } from 'wouter-preact';
 import { Database, RefreshCw, ChevronRight, ChevronDown, Play, AlertTriangle, Table2, Pencil, Trash2, Plus, Undo2, Shield, ShieldCheck, X, History, HardDrive, Clock } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 import { apiGet, apiPost } from '@/lib/api';
 import { formatRelativeTime, formatNumber } from '@/lib/format';
 // Page-scoped fonts (self-hosted) — injected under private family names so the
@@ -660,6 +662,7 @@ export function SqlMonitor() {
   injectSqlMonFonts();
   const search = useSearch();
   const { data, loading, error, refresh } = useFetch<SqlCatalog>('/api/sql', 30000);
+  const { busy: refreshing, spin } = useSpin();
   const [selId, setSelId] = useState<string | null>(null);
   const [showInternals, setShowInternals] = useState(false);
   // Collapsible rail groups (default: all expanded). Tracks which are collapsed.
@@ -707,9 +710,9 @@ export function SqlMonitor() {
       <PageHeader
         title="SQL Databases"
         actions={
-          <button type="button" onClick={() => refresh()} title="Refresh"
+          <button type="button" onClick={() => void spin(refresh)} disabled={refreshing} aria-busy={refreshing} title="Refresh"
             class="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
-            <RefreshCw size={12} /> refresh
+            {refreshing ? <NestedSquaresSpinner size={12} /> : <RefreshCw size={12} />} refresh
           </button>
         }
       />

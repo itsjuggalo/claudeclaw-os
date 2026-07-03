@@ -5,6 +5,8 @@ import {
 } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
+import { useSpin } from '@/lib/useSpin';
 import { apiGet } from '@/lib/api';
 
 interface ListResp { days: string[]; }
@@ -232,6 +234,7 @@ export function Journal() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [raw, setRaw] = useState(false);
+  const { busy: refreshing, spin } = useSpin();
 
   async function loadDays() {
     try {
@@ -300,11 +303,13 @@ export function Journal() {
         <DayPicker days={days} selected={selected} onSelect={setSelected} />
         <button
           type="button"
-          onClick={() => { void loadDays(); if (selected) void loadDay(selected); }}
+          onClick={() => void spin(async () => { await loadDays(); if (selected) await loadDay(selected); })}
+          disabled={refreshing}
+          aria-busy={refreshing}
           class="px-2 py-1 text-[11px] rounded-md border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] flex items-center gap-1"
           title="Refresh"
         >
-          <RefreshCw size={12} /> refresh
+          {refreshing ? <NestedSquaresSpinner size={12} /> : <RefreshCw size={12} />} refresh
         </button>
         {parsed?.rollup && (
           <span class="text-[11px] text-[var(--color-text-faint)] tabular-nums ml-1">

@@ -1,7 +1,9 @@
 import { useState } from 'preact/hooks';
 import { RefreshCw, Pin, PinOff, Archive, ExternalLink, ChevronRight, ChevronDown, Save, Check } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 import { apiPost } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 
@@ -42,6 +44,7 @@ export function Bunker() {
   const entries = data?.entries ?? [];
   const archived = data?.archived ?? [];
   const [showArchive, setShowArchive] = useState(false);
+  const { busy: refreshing, spin } = useSpin();
 
   const togglePin = async (e: BunkerEntry) => {
     try {
@@ -80,10 +83,12 @@ export function Bunker() {
         actions={
           <button
             type="button"
-            onClick={refresh}
+            onClick={() => void spin(refresh)}
+            disabled={refreshing}
+            aria-busy={refreshing}
             class="flex items-center gap-1.5 text-[12px] px-2.5 py-1 rounded-md border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
           >
-            <RefreshCw size={13} /> Refresh
+            {refreshing ? <NestedSquaresSpinner size={13} /> : <RefreshCw size={13} />} Refresh
           </button>
         }
       />

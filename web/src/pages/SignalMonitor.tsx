@@ -1,7 +1,9 @@
 import { Radio, RefreshCw, Activity, Send, BellRing, AlertTriangle } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 import { formatRelativeTime } from '@/lib/format';
 
 interface Note {
@@ -104,15 +106,16 @@ function AppCard({ app }: { app: AppCol }) {
 
 export function SignalMonitor() {
   const { data, loading, error, refresh } = useFetch<SignalMonitorData>('/api/signal-monitor', 8000);
+  const { busy: refreshing, spin } = useSpin();
 
   return (
     <div class="flex flex-col h-full">
       <PageHeader
         title="Signal Monitor"
         actions={
-          <button type="button" onClick={() => refresh()} title="Refresh"
+          <button type="button" onClick={() => void spin(refresh)} disabled={refreshing} aria-busy={refreshing} title="Refresh"
             class="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
-            <RefreshCw size={12} /> refresh
+            {refreshing ? <NestedSquaresSpinner size={12} /> : <RefreshCw size={12} />} refresh
           </button>
         }
       />

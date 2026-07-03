@@ -9,7 +9,9 @@ import { useState, useEffect } from 'preact/hooks';
 import { Link } from 'wouter-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 const GREEN = '#66bb6a', RED = '#ef5350', BLUE = '#4fc3f7', PURPLE = '#ce93d8';
@@ -208,6 +210,8 @@ export function Wallets() {
   const real = useFetch<any[]>('/api/wallets', 60_000);
   const paper = useFetch<any>('/api/equity', 120_000);
   const hist = useFetch<any>('/api/trade-history', 600_000);
+  const { busy: retrying, spin: spinRetry } = useSpin();
+  const { busy: refreshing, spin } = useSpin();
   const [target, setTarget] = useState<Record<string, number>>(() => {
     try { const r = localStorage.getItem('ccw:target-alloc'); if (r) return JSON.parse(r); } catch { /* */ }
     return { ...DEFAULT_TARGET };
@@ -222,7 +226,7 @@ export function Wallets() {
       <div class="flex flex-col h-full">
         <PageHeader title="Wallets & Growth Plan" />
         <PageState error={real.error} />
-        <div style={{ textAlign: 'center', marginTop: '12px' }}><button onClick={real.refresh} style={ACTION_BTN}>Retry</button></div>
+        <div style={{ textAlign: 'center', marginTop: '12px' }}><button onClick={() => void spinRetry(real.refresh)} disabled={retrying} aria-busy={retrying} style={ACTION_BTN}>{retrying ? <NestedSquaresSpinner size={12} /> : null} Retry</button></div>
       </div>
     );
   }
@@ -252,7 +256,7 @@ export function Wallets() {
       <PageHeader title="Wallets & Growth Plan" actions={
         <>
           <Link href="/equity" style={ACTION_BTN}>Equity Mgmt →</Link>
-          <button onClick={() => { real.refresh(); paper.refresh(); }} style={ACTION_BTN}>Refresh</button>
+          <button onClick={() => void spin(() => { real.refresh(); paper.refresh(); })} disabled={refreshing} aria-busy={refreshing} style={ACTION_BTN}>{refreshing ? <NestedSquaresSpinner size={12} /> : null} Refresh</button>
         </>
       } />
       <div style={{ flex: 1, overflowY: 'auto' }}>
