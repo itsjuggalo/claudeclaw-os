@@ -119,12 +119,31 @@ function toDraft(client: MassageClient): Draft {
   };
 }
 
-function Field({ label, children }: { label: string; children: preact.ComponentChildren }) {
+// A form field. Optionally shows a compact "↺ reuse…" picker in the label row, populated
+// with values this SAME client had in earlier SOAP notes — pick one to autofill the field
+// (cuts repetitive typing for regulars). The underlying input/textarea is never changed.
+function Field({ label, children, prior, onPick }: {
+  label: string; children: preact.ComponentChildren; prior?: string[]; onPick?: (v: string) => void;
+}) {
+  const hasPrior = !!(prior && prior.length && onPick);
   return (
-    <label class="block">
-      <div class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+    <div class="block">
+      <div class="mb-1 flex items-center justify-between gap-2">
+        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+        {hasPrior && (
+          <select
+            class="max-w-[55%] shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-[10px] text-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
+            title="Reuse a value you wrote before for this client"
+            value=""
+            onChange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) onPick!(v); (e.currentTarget as HTMLSelectElement).value = ''; }}
+          >
+            <option value="">↺ reuse…</option>
+            {prior!.map((p, i) => <option key={i} value={p}>{p.length > 60 ? p.slice(0, 57) + '…' : p}</option>)}
+          </select>
+        )}
+      </div>
       {children}
-    </label>
+    </div>
   );
 }
 
@@ -918,6 +937,7 @@ function SoapClientPanel({ client, canEdit }: { client: MassageClient; canEdit: 
         appointments={appts.data?.appointments ?? []}
         existing={existing}
         seed={seed}
+        history={notes}
         carryForward={existing ? null : (cf ?? null)}
         canEdit={canEdit}
         onCancel={() => setMode('timeline')}
@@ -1025,10 +1045,25 @@ function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
 }
 
 // The structured SOAP form (create or edit). Areas-of-concern body-map + carry-forward.
-function SoapForm({ client, appointments, existing, seed, carryForward, canEdit, onCancel, onSaved }: {
+function SoapForm({ client, appointments, existing, seed, history, carryForward, canEdit, onCancel, onSaved }: {
   client: MassageClient; appointments: Appointment[]; existing: SoapNote | null;
-  seed?: SoapNote | null; carryForward: CarryForward | null; canEdit: boolean; onCancel: () => void; onSaved: () => void;
+  seed?: SoapNote | null; history?: SoapNote[]; carryForward: CarryForward | null; canEdit: boolean; onCancel: () => void; onSaved: () => void;
 }) {
+  // Per-client autofill: distinct non-empty values this client had in earlier notes, most-recent
+  // first. Excludes the note being edited so you never "reuse" its own current value. Powers the
+  // per-field "↺ reuse…" pickers (Field prop) so repeat clients don't mean repeat typing.
+  const priorNotes = (history ?? []).filter((n) => n.id !== existing?.id);
+  const priorVals = (get: (n: SoapNote) => unknown): string[] => {
+    const seen = new Set<string>(); const out: string[] = [];
+    for (const n of priorNotes) {
+      const raw = get(n);
+      const v = raw == null ? '' : String(raw).trim();
+      if (!v || seen.has(v)) continue;
+      seen.add(v); out.push(v);
+      if (out.length >= 8) break;
+    }
+    return out;
+  };
   const today = new Date().toISOString().slice(0, 10);
   // Clinical content is seeded from the note being edited OR the note being duplicated.
   // Session-specific fields (date, appointment) always start fresh for a duplicate.
@@ -1130,15 +1165,15 @@ function SoapForm({ client, appointments, existing, seed, carryForward, canEdit,
           </select>
         </Field>
         <Field label="Session date"><input type="date" class={inputClass} value={sessionDate} onInput={(e) => setSessionDate((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Duration (min)"><input type="number" class={inputClass} value={duration} onInput={(e) => setDuration((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Pain before (0-10)"><input type="number" min="0" max="10" class={inputClass} value={painBefore} onInput={(e) => setPainBefore((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Pain after (0-10)"><input type="number" min="0" max="10" class={inputClass} value={painAfter} onInput={(e) => setPainAfter((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Position">
+        <Field label="Duration (min)" prior={priorVals((n) => n.duration_min)} onPick={setDuration}><input type="number" class={inputClass} value={duration} onInput={(e) => setDuration((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Pain before (0-10)" prior={priorVals((n) => n.pain_before)} onPick={setPainBefore}><input type="number" min="0" max="10" class={inputClass} value={painBefore} onInput={(e) => setPainBefore((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Pain after (0-10)" prior={priorVals((n) => n.pain_after)} onPick={setPainAfter}><input type="number" min="0" max="10" class={inputClass} value={painAfter} onInput={(e) => setPainAfter((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Position" prior={priorVals((n) => n.position)} onPick={setPosition}>
           <select class={inputClass} value={position} onChange={(e) => setPosition((e.currentTarget as HTMLSelectElement).value)}>
             <option value="">—</option>{SOAP_POSITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </Field>
-        <Field label="Pressure">
+        <Field label="Pressure" prior={priorVals((n) => n.pressure)} onPick={setPressure}>
           <select class={inputClass} value={pressure} onChange={(e) => setPressure((e.currentTarget as HTMLSelectElement).value)}>
             <option value="">—</option>{SOAP_PRESSURES.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
@@ -1160,13 +1195,13 @@ function SoapForm({ client, appointments, existing, seed, carryForward, canEdit,
       <BodyMapPicker areas={areas} onChange={setAreas} />
 
       <div class="mt-4 grid gap-3 md:grid-cols-2">
-        <Field label="Subjective (client reports)"><textarea class={`${inputClass} min-h-[70px] resize-y`} value={subjective} onInput={(e) => setSubjective((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Objective (findings)"><textarea class={`${inputClass} min-h-[70px] resize-y`} value={objective} onInput={(e) => setObjective((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Assessment"><textarea class={`${inputClass} min-h-[70px] resize-y`} value={assessment} onInput={(e) => setAssessment((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Plan"><textarea class={`${inputClass} min-h-[70px] resize-y`} value={plan} onInput={(e) => setPlan((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Home care (self-care given)"><textarea class={`${inputClass} min-h-[60px] resize-y`} value={homeCare} onInput={(e) => setHomeCare((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Referrals"><textarea class={`${inputClass} min-h-[60px] resize-y`} value={referrals} onInput={(e) => setReferrals((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Adverse reactions"><textarea class={`${inputClass} min-h-[60px] resize-y md:col-span-2`} value={adverse} onInput={(e) => setAdverse((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Subjective (client reports)" prior={priorVals((n) => n.subjective)} onPick={setSubjective}><textarea class={`${inputClass} min-h-[70px] resize-y`} value={subjective} onInput={(e) => setSubjective((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Objective (findings)" prior={priorVals((n) => n.objective)} onPick={setObjective}><textarea class={`${inputClass} min-h-[70px] resize-y`} value={objective} onInput={(e) => setObjective((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Assessment" prior={priorVals((n) => n.assessment)} onPick={setAssessment}><textarea class={`${inputClass} min-h-[70px] resize-y`} value={assessment} onInput={(e) => setAssessment((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Plan" prior={priorVals((n) => n.plan)} onPick={setPlan}><textarea class={`${inputClass} min-h-[70px] resize-y`} value={plan} onInput={(e) => setPlan((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Home care (self-care given)" prior={priorVals((n) => n.home_care)} onPick={setHomeCare}><textarea class={`${inputClass} min-h-[60px] resize-y`} value={homeCare} onInput={(e) => setHomeCare((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Referrals" prior={priorVals((n) => n.referrals)} onPick={setReferrals}><textarea class={`${inputClass} min-h-[60px] resize-y`} value={referrals} onInput={(e) => setReferrals((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Adverse reactions" prior={priorVals((n) => n.adverse_reactions)} onPick={setAdverse}><textarea class={`${inputClass} min-h-[60px] resize-y md:col-span-2`} value={adverse} onInput={(e) => setAdverse((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
       </div>
 
       {err && <div class="mt-3 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
@@ -1179,22 +1214,70 @@ function SoapForm({ client, appointments, existing, seed, carryForward, canEdit,
 }
 
 // Areas-of-concern body-map: add regions, set 0-10 severity + findings, flag "focus next session".
+// Marker placement (% of the 848×1264 figure art, center-anchored) + short labels. Bilateral
+// regions (arms/legs/shoulders) sit on a representative side so the dots don't pile up center.
+const SOAP_REGION_POS: Record<string, { front?: [number, number]; back?: [number, number] }> = {
+  'Scalp':            { front: [50, 6],  back: [50, 6] },
+  'Face':             { front: [50, 12] },
+  'Neck':             { front: [50, 17], back: [50, 15] },
+  'Shoulders':        { front: [69, 20], back: [69, 21] },
+  'Pectoral Muscles': { front: [50, 27] },
+  'Back':             { back: [50, 33] },
+  'Arms & Hands':     { front: [24, 44], back: [78, 45] },
+  'Abdomen':          { front: [50, 39] },
+  'Gluteal Region':   { back: [50, 47] },
+  'Legs':             { front: [42, 70], back: [58, 66] },
+  'Feet':             { front: [50, 90], back: [50, 91] },
+};
+const SOAP_REGION_ABBR: Record<string, string> = {
+  'Scalp': 'Sc', 'Face': 'Fa', 'Neck': 'Nk', 'Shoulders': 'Sh', 'Pectoral Muscles': 'Pec',
+  'Back': 'Bk', 'Arms & Hands': 'Arm', 'Abdomen': 'Ab', 'Gluteal Region': 'Glt', 'Legs': 'Leg', 'Feet': 'Ft',
+};
+
 function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a: AreaConcern[]) => void }) {
   const used = new Set(areas.map((a) => a.region));
   const addRegion = (region: string) => { if (region && !used.has(region)) onChange([...areas, { region, severity: 0, findings: '', focus: false }]); };
+  const toggleRegion = (region: string) => {
+    if (used.has(region)) onChange(areas.filter((a) => a.region !== region));
+    else onChange([...areas, { region, severity: 0, findings: '', focus: false }]);
+  };
   const update = (i: number, patch: Partial<AreaConcern>) => onChange(areas.map((a, idx) => idx === i ? { ...a, ...patch } : a));
   const remove = (i: number) => onChange(areas.filter((_, idx) => idx !== i));
+
+  const figure = (view: 'front' | 'back', label: string) => (
+    <figure class="relative w-[46%] max-w-[200px]">
+      <img src={`/bodymap-${view}.png`} width={848} height={1264} alt={`${label} of the body`} class="w-full rounded-md border border-[var(--color-border)] bg-white" />
+      {SOAP_REGIONS.filter((r) => SOAP_REGION_POS[r]?.[view]).map((r) => {
+        const pos = SOAP_REGION_POS[r]![view]!;
+        const on = used.has(r);
+        return (
+          <button key={r} type="button" title={`${r}${on ? ' — tap to remove' : ''}`} aria-pressed={on} onClick={() => toggleRegion(r)}
+            class="absolute flex items-center justify-center rounded-full border text-[8px] font-bold leading-none transition"
+            style={`left:${pos[0]}%;top:${pos[1]}%;width:22px;height:22px;transform:translate(-50%,-50%);cursor:pointer;${on
+              ? 'background:var(--color-accent);color:#fff;border-color:var(--color-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-accent) 32%,transparent)'
+              : 'background:color-mix(in srgb,#000 45%,transparent);color:#fff;border-color:rgba(255,255,255,.6)'}`}>
+            {SOAP_REGION_ABBR[r] || r.slice(0, 2)}
+          </button>
+        );
+      })}
+      <figcaption class="mt-1 text-center text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</figcaption>
+    </figure>
+  );
 
   return (
     <div class="mt-4 rounded-lg border border-[var(--color-border)] p-3">
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Areas of concern (body-map)</div>
+        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Areas of concern — tap the body to flag a region</div>
         <select class={`${inputClass} w-auto py-1`} value="" onChange={(e) => { addRegion((e.currentTarget as HTMLSelectElement).value); (e.currentTarget as HTMLSelectElement).value = ''; }}>
           <option value="">+ add region…</option>
           {SOAP_REGIONS.filter((r) => !used.has(r)).map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
       </div>
-      {areas.length === 0 && <div class="py-2 text-center text-[11px] text-[var(--color-text-faint)]">No regions flagged. Add one to record severity + findings.</div>}
+      <div class="mb-3 flex justify-center gap-4">
+        {figure('front', 'Front')}
+        {figure('back', 'Back')}
+      </div>
+      {areas.length === 0 && <div class="py-2 text-center text-[11px] text-[var(--color-text-faint)]">No regions flagged. Tap a spot on the body (or use the dropdown) to record severity + findings.</div>}
       <div class="space-y-2">
         {areas.map((a, i) => (
           <div key={a.region} class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2">
