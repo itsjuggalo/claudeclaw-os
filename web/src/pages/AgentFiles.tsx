@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'preact/hooks';
+import { NestedSquaresSpinner } from '../components/NestedSquaresSpinner';
 import { lazy, Suspense } from 'preact/compat';
 import { useLocation, useRoute } from 'wouter-preact';
-import { Save, RotateCcw, ArrowLeft, AlertTriangle, RefreshCw, Power, History as HistoryIcon, Eye, Undo2 } from 'lucide-preact';
+import { Save, RotateCcw, ArrowLeft, AlertTriangle, Power, History as HistoryIcon, Eye, Undo2 } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Drawer } from '@/components/Modal';
@@ -196,7 +197,7 @@ export function AgentFiles() {
                 class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[12px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
                 title="Restart this agent — required for agent.yaml changes to apply"
               >
-                {restarting ? <RefreshCw size={12} class="animate-spin" /> : <Power size={12} />}
+                {restarting ? <NestedSquaresSpinner size={12} /> : <Power size={12} />}
                 {restarting ? 'Restarting…' : 'Restart agent'}
               </button>
             )}

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
+import { NestedSquaresSpinner } from '../components/NestedSquaresSpinner';
 import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText, Lightbulb, RefreshCw } from 'lucide-preact';
 import { Link } from 'wouter-preact';
 import { PageHeader } from '@/components/PageHeader';
@@ -99,7 +100,7 @@ export function Agents() {
                   title="Re-scan hive_mind for new suggestions (~30–90s)"
                   class="inline-flex items-center justify-center px-2 py-1.5 rounded-r text-[12px] border bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)] hover:bg-[var(--color-accent)] hover:text-white disabled:opacity-40 transition-colors"
                 >
-                  <RefreshCw size={12} class={refreshingSuggestions ? 'animate-spin' : ''} />
+                  {refreshingSuggestions ? <NestedSquaresSpinner size={12} /> : <RefreshCw size={12} />}
                 </button>
               </div>
             ) : (
@@ -289,7 +290,7 @@ function AgentCard({ agent, onChange, onOpen, onConfigureProvider, suggestions, 
           class="inline-flex items-center justify-center px-2 py-1.5 rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           title="Restart"
         >
-          <RotateCcw size={11} class={busy === 'restart' ? 'animate-spin' : ''} />
+          {busy === 'restart' ? <NestedSquaresSpinner size={11} /> : <RotateCcw size={11} />}
         </button>
         <button
           type="button"

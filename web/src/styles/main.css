@@ -365,3 +365,26 @@ input, textarea, select {
   transform-origin: top left;
   will-change: transform, opacity;
 }
+/* ── Unified refresh spinner: "nested squares" (shared across all Mission Control sites) ──
+   Inline, sized by font-size (1em box), colored by currentColor / per-square hsl.
+   Used as the busy-state icon on every refresh button. Keep IDENTICAL across sites. */
+.nsq-spinner { position: relative; display: inline-block; width: 1em; height: 1em; vertical-align: -0.15em; }
+.nsq-spinner i {
+  position: absolute; inset: 0; margin: auto; border: 1px solid; border-radius: 1px;
+  transform-origin: center; box-shadow: 0 0 2px currentColor;
+  animation: nsq-magic calc(1.5s / var(--nsq-speed, 1)) ease-in-out infinite alternate;
+}
+.nsq-spinner i:nth-child(1) { width: 20%;  height: 20%;  border-color: hsl(265 82% 63%); animation-delay: 0s;   }
+.nsq-spinner i:nth-child(2) { width: 40%;  height: 40%;  border-color: hsl(257 82% 63%); animation-delay: .1s;  }
+.nsq-spinner i:nth-child(3) { width: 60%;  height: 60%;  border-color: hsl(249 82% 63%); animation-delay: .2s;  }
+.nsq-spinner i:nth-child(4) { width: 80%;  height: 80%;  border-color: hsl(241 82% 63%); animation-delay: .3s;  }
+.nsq-spinner i:nth-child(5) { width: 100%; height: 100%; border-color: hsl(233 82% 63%); animation-delay: .4s;  }
+@keyframes nsq-magic {
+  0%   { transform: scale(.2) rotate(0deg);   }
+  50%  { transform: scale(1)  rotate(90deg);  }
+  100% { transform: scale(1)  rotate(180deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nsq-spinner i { animation: nsq-fade 1s ease-in-out infinite alternate; }
+  @keyframes nsq-fade { from { opacity: .3; } to { opacity: 1; } }
+}

@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { NestedSquaresSpinner } from '../components/NestedSquaresSpinner';
 import { SlidersHorizontal, RefreshCw, AlertTriangle, Zap, ShieldAlert, Server, RotateCw } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
@@ -164,7 +165,7 @@ export function ControlPanel() {
                         onClick={() => requestAction(row)}
                         class="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-[12px] font-semibold disabled:opacity-50 border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
                       >
-                        <RotateCw size={13} class={rowBusy ? 'animate-spin' : ''} /> {row.actionLabel || 'Run'}
+                        {rowBusy ? <NestedSquaresSpinner size={13} /> : <RotateCw size={13} />} {row.actionLabel || 'Run'}
                       </button>
                     )}
                   </div>

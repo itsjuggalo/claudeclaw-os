@@ -9,6 +9,7 @@ import type { ComponentChildren } from 'preact';
 import { useState, useEffect, useRef, useMemo } from 'preact/hooks';
 import { useRoute, useLocation } from 'wouter-preact';
 import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search, Download, RefreshCw } from 'lucide-preact';
+import { NestedSquaresSpinner } from '../components/NestedSquaresSpinner';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet, apiPost } from '@/lib/api';
@@ -85,7 +86,7 @@ function RefreshButton({ onClick, busy }: { onClick: () => void; busy: boolean }
       title="Refresh"
       class="flex items-center gap-1 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
     >
-      <RefreshCw size={13} class={busy ? 'animate-spin' : undefined} /> Refresh
+      {busy ? <NestedSquaresSpinner size={13} /> : <RefreshCw size={13} />} Refresh
     </button>
   );
 }
