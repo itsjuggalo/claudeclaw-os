@@ -28,7 +28,7 @@ import { getLiveAppsStatus } from './live-apps.js';
 import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
 import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
 import { getSkoolBuilds, readSkoolArtifact } from './skoolbuilds.js';
-import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend } from './hermes.js';
+import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend, hermesOneshot, getHermesStatus, getHermesConfigRedacted, getHermesToolsets } from './hermes.js';
 import { listRapidApis, rapidApiSearch } from './rapidapi.js';
 import { generateImage } from './generate.js';
 import { generateLocalImage, generateLocalVideo, generateKeyframeVideo } from './localgen.js';
@@ -3068,6 +3068,29 @@ init();
 
   app.post('/api/hermes/restart', async (c) => {
     return c.json(hermesRestartGateway());
+  });
+
+  app.get('/api/hermes/status', (c) => {
+    try { return c.json(getHermesStatus()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/hermes/config', (c) => {
+    // Redacted allowlist only — never emits .env/auth/token/key material.
+    try { return c.json(getHermesConfigRedacted()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/hermes/toolsets', (c) => {
+    try { return c.json({ toolsets: getHermesToolsets() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.post('/api/hermes/oneshot', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const prompt = String(body?.prompt ?? '');
+    if (!prompt.trim()) return c.json({ ok: false, output: '', message: 'empty prompt' }, 400);
+    return c.json(hermesOneshot(prompt));
   });
 
   // ── RapidAPI search console ───────────────────────────────────────────────
