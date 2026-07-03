@@ -6,6 +6,7 @@ import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
 import { Modal, Drawer } from '@/components/Modal';
 import { AgentAvatar } from '@/components/AgentAvatar';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost, apiPatch, apiDelete, apiGet } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
@@ -1022,15 +1023,15 @@ function HistoryList() {
     <div class="px-6 py-4">
       <div class="flex items-center gap-3 mb-3">
         <div class="text-[12px] text-[var(--color-text-muted)] tabular-nums">{total} historical tasks</div>
-        {!loading && (
-          <button
-            type="button"
-            onClick={() => load(0, true)}
-            class="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
-          >
-            ↻ Refresh
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => load(0, true)}
+          disabled={loading}
+          aria-busy={loading}
+          class="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
+        >
+          {loading ? <NestedSquaresSpinner size={11} /> : '↻'} Refresh
+        </button>
       </div>
       {error && (
         <div class="bg-[var(--color-card)] border border-[var(--color-status-failed)] rounded p-3 mb-3">
@@ -1039,9 +1040,11 @@ function HistoryList() {
           <button
             type="button"
             onClick={() => load(0, true)}
-            class="mt-2 text-[11.5px] text-[var(--color-accent)] hover:underline"
+            disabled={loading}
+            aria-busy={loading}
+            class="mt-2 inline-flex items-center gap-1 text-[11.5px] text-[var(--color-accent)] hover:underline"
           >
-            Try again
+            {loading ? <NestedSquaresSpinner size={11} /> : null} Try again
           </button>
         </div>
       )}

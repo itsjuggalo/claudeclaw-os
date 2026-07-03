@@ -26,7 +26,9 @@ import {
 } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 import { apiPatch, apiPost, apiGet } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -286,6 +288,7 @@ const btnDanger = 'inline-flex items-center gap-1 rounded-md border border-[var(
 export function MassageAdmin() {
   const overview = useFetch<Overview>('/api/massage-admin/clients', 30000);
   const session = useFetch<AdminSession>('/api/massage-admin/session', 30000);
+  const { busy: refreshing, spin } = useSpin();
   const [tab, setTab] = useState<'accounts' | 'intakes' | 'soap' | 'messaging' | 'promos'>('accounts');
 
   const migration = overview.data?.migration;
@@ -305,8 +308,8 @@ export function MassageAdmin() {
           </>
         }
         actions={
-          <button type="button" onClick={() => { overview.refresh(); session.refresh(); }} class={btnGhost}>
-            <RefreshCw size={12} /> refresh
+          <button type="button" onClick={() => void spin(() => { overview.refresh(); session.refresh(); })} disabled={refreshing} aria-busy={refreshing} class={btnGhost}>
+            {refreshing ? <NestedSquaresSpinner size={12} /> : <RefreshCw size={12} />} refresh
           </button>
         }
       />
@@ -742,6 +745,7 @@ interface MessageRow { id: number; channel: string; template: string; recipient:
 function MessagingTab() {
   const sched = useFetch<Schedule>('/api/massage-admin/schedule', 60000);
   const log = useFetch<{ messages: MessageRow[] }>('/api/massage-admin/messages', 30000);
+  const { busy: logRefreshing, spin: spinLog } = useSpin();
   const s = sched.data;
   const pill = (on: boolean, label: string) => (
     <span class={`rounded px-2 py-0.5 text-[11px] font-semibold ${on ? 'bg-[color-mix(in_srgb,var(--color-status-done)_18%,transparent)] text-[var(--color-status-done)]' : 'bg-[var(--color-elevated)] text-[var(--color-text-faint)]'}`}>{label}</span>
@@ -766,7 +770,7 @@ function MessagingTab() {
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
         <div class="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
           <div class="text-[12px] font-semibold text-[var(--color-text)]">Send log</div>
-          <button type="button" class={btnGhost} onClick={() => log.refresh()}><RefreshCw size={11} /> refresh</button>
+          <button type="button" class={btnGhost} onClick={() => void spinLog(log.refresh)} disabled={logRefreshing} aria-busy={logRefreshing}>{logRefreshing ? <NestedSquaresSpinner size={11} /> : <RefreshCw size={11} />} refresh</button>
         </div>
         {(log.data?.messages ?? []).length === 0 ? (
           <div class="px-3 py-5 text-center text-[12px] text-[var(--color-text-faint)]">No messages sent yet.</div>

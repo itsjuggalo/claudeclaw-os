@@ -2,7 +2,9 @@
 // Polls /api/trade-desk/overview (5 min) and /api/trade-desk/brief (5 min).
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch, invalidateFetchCache } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 
@@ -431,10 +433,11 @@ function LedgerPanel({ ledger }: { ledger: any[] }) {
 
 // ── Panel 6: AI Brief ─────────────────────────────────────────────────────────
 function BriefPanel({ briefData }: { briefData: any }) {
+  const { busy: refreshing, spin } = useSpin();
   const handleRefresh = (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    invalidateFetchCache('/api/trade-desk/brief');
+    void spin(() => { invalidateFetchCache('/api/trade-desk/brief'); });
   };
 
   const notGenerated = !briefData || briefData.status === 'not_generated' || !briefData.brief;
@@ -452,15 +455,18 @@ function BriefPanel({ briefData }: { briefData: any }) {
         )}
         <button
           onClick={handleRefresh}
+          disabled={refreshing}
+          aria-busy={refreshing}
           style={{
             marginLeft: 'auto',
+            display: 'inline-flex', alignItems: 'center', gap: '5px',
             fontSize: '9px', color: C.blue, fontFamily: MONO,
             background: 'transparent', border: `1px solid ${C.blue}44`,
             borderRadius: '3px', padding: '3px 8px',
             cursor: 'pointer', letterSpacing: '1px',
           }}
         >
-          REFRESH
+          {refreshing ? <NestedSquaresSpinner size={10} /> : null} REFRESH
         </button>
       </div>
 

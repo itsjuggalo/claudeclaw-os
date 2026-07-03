@@ -5,7 +5,9 @@ import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { PhotoStudio } from '@/components/PhotoStudio';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 import { dashboardToken, apiPost } from '@/lib/api';
 
 interface GFile { name: string; url: string; type: 'image' | 'video'; }
@@ -33,6 +35,7 @@ function saveSet(key: string, s: Set<string>) {
 
 export function Gallery() {
   const { data, loading, error, refresh } = useFetch<GSection[]>('/api/gallery', 60_000);
+  const { busy: refreshing, spin } = useSpin();
   const sections: GSection[] = Array.isArray(data) ? data : [];
 
   const [lightbox, setLightbox] = useState<GFile | null>(null);
@@ -171,13 +174,17 @@ export function Gallery() {
           </span>
           <button
             type="button"
-            onClick={() => refresh()}
+            onClick={() => void spin(refresh)}
+            disabled={refreshing}
+            aria-busy={refreshing}
+            title="Refresh"
             style={{
               flexShrink: 0, fontSize: '11px', color: '#7fd1ff', background: '#16323f',
               border: '1px solid #244b5c', borderRadius: '999px', padding: '4px 12px',
               cursor: 'pointer', fontFamily: MONO, fontWeight: 700,
+              display: 'inline-flex', alignItems: 'center',
             }}
-          >↻</button>
+          >{refreshing ? <NestedSquaresSpinner size={12} /> : '↻'}</button>
         </div>
 
         {/* ── Section list ───────────────────────────────────────────── */}

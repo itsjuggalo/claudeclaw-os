@@ -98,6 +98,10 @@ export function Hermes() {
   const { gateway, sessions, skills, skills_raw_count, crons, toolsets, recent_logs, model, provider, version, config } = data;
   const gwOnline = gateway.running;
   const gwColor = gwOnline ? GREEN : RED;
+  const telegramState = gateway.platforms.telegram?.state || 'not connected';
+  const discordState = gateway.platforms.discord?.state || 'not configured';
+  const telegramReady = telegramState === 'connected';
+  const discordReady = discordState === 'connected';
 
   const categories = ['all', ...Array.from(new Set(skills.map(s => s.category || 'misc').filter(Boolean))).sort()];
   const filteredSkills = skills.filter(s => {
@@ -208,13 +212,58 @@ export function Hermes() {
                     <span style={{ fontSize: '10px', color: MUTED, fontFamily: MONO }}>({p.state})</span>
                   </div>
                 ))}
-                {Object.keys(gateway.platforms).length === 0 && <div style={{ fontSize: '11px', color: MUTED, fontFamily: MONO }}>No platforms</div>}
+                {!gateway.platforms.discord && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: MUTED }} />
+                    <span style={{ fontSize: '11px', color: '#e0e0e0', fontFamily: MONO }}>Discord</span>
+                    <span style={{ fontSize: '10px', color: MUTED, fontFamily: MONO }}>(not configured)</span>
+                  </div>
+                )}
+                {Object.keys(gateway.platforms).length === 0 && <div style={{ fontSize: '11px', color: MUTED, fontFamily: MONO }}>No connected platforms</div>}
               </div>
             </div>
           </div>
 
+          {/* ── HERMES SECONDARY RAIL — page-local, no global sidebar edits ── */}
+          <div class="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-3" style={{ alignItems: 'stretch' }}>
+            <div style={{ background: '#07111a', border: '1px solid ' + CARD_BORDER, borderRadius: '10px', padding: '12px', fontFamily: MONO }}>
+              <div style={{ fontSize: '10px', color: BLUE, letterSpacing: '2px', fontWeight: 800, marginBottom: '10px' }}>HERMES RAIL</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '6px' }}>
+                {TABS.map(t => (
+                  <button key={'rail-' + t.id} onClick={() => setTab(t.id)} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+                    padding: '8px 10px', borderRadius: '6px', border: '1px solid ' + (tab === t.id ? BLUE + '66' : '#102332'),
+                    background: tab === t.id ? '#0f2436' : '#091722', color: tab === t.id ? BLUE : '#90a4ae',
+                    fontFamily: MONO, fontSize: '11px', fontWeight: 800, cursor: 'pointer', textAlign: 'left',
+                  }}>
+                    <span>{t.label}</span><span style={{ opacity: 0.6 }}>›</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ background: '#07111a', border: '1px solid ' + CARD_BORDER, borderRadius: '10px', padding: '12px 14px', fontFamily: MONO, display: 'grid', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: '10px', color: GREEN, letterSpacing: '2px', fontWeight: 800, marginBottom: '4px' }}>LIVE WORKSPACE</div>
+                  <div style={{ fontSize: '12px', color: '#c5e1e8' }}>{config.home}</div>
+                  <div style={{ fontSize: '10px', color: MUTED, marginTop: '3px' }}>Page-local Hermes nav. I did not touch the global ClaudeClaw sidebar.</div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <ChannelPill label="Telegram" state={telegramState} ready={telegramReady} />
+                  <ChannelPill label="Discord" state={discordState} ready={discordReady} />
+                  <Badge label="one-shot dashboard chat" color={AMBER} />
+                </div>
+              </div>
+              {!discordReady && (
+                <div style={{ fontSize: '10px', color: AMBER, borderTop: '1px solid #102332', paddingTop: '8px' }}>
+                  Discord is not connected in the live Hermes gateway payload. I can help wire it up, but that changes gateway config/credentials and needs your approval.
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* ── TAB BAR (horizontal scroll on mobile) ───────────── */}
-          <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', borderBottom: '1px solid ' + CARD_BORDER }}>
+          <div class="flex lg:hidden" style={{ gap: '6px', overflowX: 'auto', paddingBottom: '2px', borderBottom: '1px solid ' + CARD_BORDER }}>
             {TABS.map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
                 padding: '8px 16px', borderRadius: '6px 6px 0 0', fontFamily: MONO, fontSize: '12px',
@@ -386,29 +435,55 @@ export function Hermes() {
             </Section>
           )}
 
-          {/* ── CHAT (one-shot) ──────────────────────────────────── */}
+          {/* ── CHAT (dashboard one-shot + gateway handoff) ─────────── */}
           {tab === 'chat' && (
-            <Section title="ONE-SHOT PROMPT" accent={GREEN}>
-              <div style={{ fontSize: '10px', color: MUTED, fontFamily: MONO, marginBottom: '10px' }}>
-                Runs <span style={{ color: BLUE }}>hermes -z</span> once ({model}) and prints the reply. 60s cap · no streaming.
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <textarea value={chatPrompt}
-                  onInput={(e) => setChatPrompt((e.target as HTMLTextAreaElement).value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleChat(); }}
-                  placeholder="Ask Hermes something… (Ctrl+Enter to run)" style={{ ...inputStyle, minHeight: '90px', resize: 'vertical' }} />
-                <div><ActionBtn label={chatBusy ? 'Running…' : 'Run'} color={GREEN} disabled={chatBusy || !chatPrompt.trim()} onClick={handleChat} /></div>
-                {chatOut && (
-                  <div style={{ background: '#060d14', borderRadius: '6px', border: '1px solid ' + (chatOut.ok ? CARD_BORDER : RED + '55'), padding: '12px' }}>
-                    {chatOut.ok ? (
-                      <pre style={{ margin: 0, fontSize: '12px', color: '#c5e1e8', fontFamily: MONO, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{chatOut.output || '(empty response)'}</pre>
-                    ) : (
-                      <div style={{ fontSize: '12px', color: RED, fontFamily: MONO }}>✗ {chatOut.message}{chatOut.output ? '\n\n' + chatOut.output : ''}</div>
-                    )}
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <Section title="DASHBOARD CHAT · ONE-SHOT" accent={GREEN}>
+                <div style={{ fontSize: '10px', color: MUTED, fontFamily: MONO, marginBottom: '10px' }}>
+                  Runs <span style={{ color: BLUE }}>hermes -z</span> once ({model}) and prints the reply. This is not a persistent streaming thread yet.
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <textarea value={chatPrompt}
+                    onInput={(e) => setChatPrompt((e.target as HTMLTextAreaElement).value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleChat(); }}
+                    placeholder="Ask Hermes something… (Ctrl+Enter to run)" style={{ ...inputStyle, minHeight: '120px', resize: 'vertical' }} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <ActionBtn label={chatBusy ? 'Running…' : 'Run one-shot'} color={GREEN} disabled={chatBusy || !chatPrompt.trim()} onClick={handleChat} />
+                    <span style={{ fontSize: '10px', color: MUTED, fontFamily: MONO }}>60s cap · no streaming · no dashboard session memory</span>
                   </div>
-                )}
-              </div>
-            </Section>
+                  {chatOut && (
+                    <div style={{ background: '#060d14', borderRadius: '6px', border: '1px solid ' + (chatOut.ok ? CARD_BORDER : RED + '55'), padding: '12px' }}>
+                      {chatOut.ok ? (
+                        <pre style={{ margin: 0, fontSize: '12px', color: '#c5e1e8', fontFamily: MONO, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{chatOut.output || '(empty response)'}</pre>
+                      ) : (
+                        <div style={{ fontSize: '12px', color: RED, fontFamily: MONO }}>✗ {chatOut.message}{chatOut.output ? '\n\n' + chatOut.output : ''}</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </Section>
+
+              <Section title="MOBILE / GATEWAY CHAT" accent={BLUE}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <ChannelPill label="Telegram" state={telegramState} ready={telegramReady} />
+                    <ChannelPill label="Discord" state={discordState} ready={discordReady} />
+                  </div>
+                  <div style={{ fontSize: '10px', color: MUTED, fontFamily: MONO }}>
+                    Telegram is the only connected Hermes messaging platform right now. Discord is visible here so it is obvious it still needs setup before you can chat with Hermes there.
+                  </div>
+                  <textarea ref={sendRef} value={sendMsg}
+                    onInput={(e) => setSendMsg((e.target as HTMLTextAreaElement).value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSend(); }}
+                    placeholder="Send a Telegram message through Hermes… (Ctrl+Enter)" style={{ ...inputStyle, minHeight: '90px', resize: 'vertical' }} />
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <ActionBtn label={sending ? 'Sending…' : 'Send to Telegram'} color={BLUE} disabled={sending || !sendMsg.trim() || !telegramReady} onClick={handleSend} />
+                    {!discordReady && <Badge label="Discord setup required" color={AMBER} />}
+                    {sendStatus && <span style={{ fontSize: '11px', color: sendStatus.ok ? GREEN : RED, fontFamily: MONO }}>{sendStatus.ok ? '✓ ' : '✗ '}{sendStatus.msg}</span>}
+                  </div>
+                </div>
+              </Section>
+            </div>
           )}
 
         </div>
@@ -456,6 +531,16 @@ function Badge({ label, color }: { label: string; color: string }) {
 function EmptyState({ label }: { label: string }) {
   return (
     <div style={{ padding: '16px', textAlign: 'center', border: '1px dashed #1a2332', borderRadius: '6px', fontSize: '11px', color: MUTED, fontFamily: MONO }}>{label}</div>
+  );
+}
+
+function ChannelPill({ label, state, ready }: { label: string; state: string; ready: boolean }) {
+  const color = ready ? GREEN : MUTED;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '10px', fontWeight: 800, padding: '5px 8px', borderRadius: '999px', fontFamily: MONO, background: color + '18', color, border: '1px solid ' + color + '44' }}>
+      <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: color }} />
+      {label}: {state}
+    </span>
   );
 }
 

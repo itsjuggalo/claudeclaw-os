@@ -4,7 +4,9 @@
 import { useState, useCallback } from 'preact/hooks';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace";
 
@@ -388,11 +390,14 @@ export function PortfolioAIPage() {
   const flowMap = new Map<string, FlowPick>(flowPicks.filter(p => p.ticker).map(p => [p.ticker.toUpperCase(), p]));
   const momMap = new Map<string, MomentumEntry>(momentum.filter(m => m.ticker).map(m => [m.ticker.toUpperCase(), m]));
 
+  const { busy: refreshing, spin } = useSpin();
   const handleRefresh = useCallback(() => {
-    refreshWallets();
-    refreshFlow();
-    refreshMom();
-    setLastRefreshLabel(nowMin());
+    void spin(() => {
+      refreshWallets();
+      refreshFlow();
+      refreshMom();
+      setLastRefreshLabel(nowMin());
+    });
   }, [refreshWallets, refreshFlow, refreshMom]);
 
   // Wallet helpers
@@ -555,12 +560,14 @@ export function PortfolioAIPage() {
                 {f === 'all' ? 'All' : f === 'buy' ? 'Buy Signals' : f === 'sell' ? 'Sell/Reduce' : 'Watch List'}
               </button>
             ))}
-            <button onClick={handleRefresh} style={{
+            <button onClick={handleRefresh} disabled={refreshing} aria-busy={refreshing} style={{
               marginLeft: 'auto', fontSize: '10px', padding: '5px 14px', borderRadius: '4px',
               cursor: 'pointer', fontFamily: MONO, fontWeight: 700,
+              display: 'inline-flex', alignItems: 'center', gap: '6px',
               background: '#4fc3f711', border: '1px solid #4fc3f733', color: '#4fc3f7',
             }}>
-              {(wLoading || fLoading || mLoading) ? 'Refreshing…' : 'Refresh Data'}
+              {(refreshing || wLoading || fLoading || mLoading) ? <NestedSquaresSpinner size={11} /> : null}
+              {(refreshing || wLoading || fLoading || mLoading) ? 'Refreshing…' : 'Refresh Data'}
             </button>
           </div>
 
