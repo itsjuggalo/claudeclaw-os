@@ -16,7 +16,7 @@ import {
   modKeyLabel,
 } from '@/lib/personalization';
 
-const SECTIONS: RouteSection[] = ['workspace', 'studio', 'intelligence', 'trade', 'lewis', 'collaborate', 'system', 'mc', 'mcctrl', 'ops', 'wellness'];
+const SECTIONS: RouteSection[] = ['workspace', 'trade', 'studio', 'intelligence', 'collaborate', 'massage', 'mc', 'mcctrl', 'system'];
 const RUNTIME_PANEL_KEY = 'claudeclaw.sidebar.runtime.expanded';
 const SIDEBAR_COLLAPSED_KEY = 'claudeclaw.sidebar.nav.collapsed';
 

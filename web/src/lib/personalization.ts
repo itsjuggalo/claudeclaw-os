@@ -24,7 +24,7 @@ const DEFAULT_WORKSPACE_NAME = 'ClaudeClaw';
 // All sections COLLAPSED by default (Mike's call 06-23) — nav opens compact
 // (headers only); the user's own toggles still override + persist server-side.
 // Keep in sync with SECTIONS in components/Sidebar.tsx.
-const DEFAULT_COLLAPSED: string[] = ['workspace', 'studio', 'intelligence', 'trade', 'collaborate', 'system', 'mc', 'mcctrl', 'ops', 'wellness'];
+const DEFAULT_COLLAPSED: string[] = ['workspace', 'trade', 'studio', 'intelligence', 'collaborate', 'massage', 'mc', 'mcctrl', 'system'];
 
 // hotkey mod is 'auto' by default; resolveModKey() consults navigator.platform
 // when this is 'auto' so Mac users get ⌘ and everyone else gets Ctrl.

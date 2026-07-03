@@ -11,7 +11,7 @@ import {
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
-export type RouteSection = 'workspace' | 'studio' | 'intelligence' | 'collaborate' | 'configure' | 'system' | 'mc' | 'trade' | 'lewis' | 'ops' | 'wellness' | 'mcctrl';
+export type RouteSection = 'workspace' | 'trade' | 'studio' | 'intelligence' | 'collaborate' | 'massage' | 'mc' | 'mcctrl' | 'system';
 
 export interface RouteDef {
   path: string;
@@ -30,13 +30,11 @@ export interface RouteDef {
 // "Voice config" sub-tab and is reachable via /warroom?mode=voices.
 export const ROUTES: RouteDef[] = [
   { path: '/mission',    label: 'Mission Control', section: 'workspace',    icon: LayoutGrid,    shortcut: 'g m' },
-  { path: '/quick-trade', label: 'Quick Trade',    section: 'workspace',    icon: Coins,         href: 'self:3000/phone.html' },
   { path: '/control',    label: 'Control Panel',   section: 'workspace',    icon: SlidersHorizontal, shortcut: 'g .' },
   { path: '/scheduled',  label: 'Scheduled',       section: 'workspace',    icon: ListTodo,      shortcut: 'g s' },
   { path: '/agents',     label: 'Agents',          section: 'workspace',    icon: Users,         shortcut: 'g a' },
   { path: '/chat',       label: 'Chat',            section: 'workspace',    icon: MessageSquare, shortcut: 'g c' },
   { path: '/bunker',     label: 'Bunker',          section: 'workspace',    icon: StickyNote,    shortcut: 'g f' },
-  { path: '/massage-admin', label: 'Massage Admin', section: 'workspace',   icon: ClipboardList },
 
   // Studio — creative / media
   { path: '/create',     label: 'Create',          section: 'studio',       icon: Wand2,         shortcut: 'g n' },
@@ -56,6 +54,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/hermes',     label: 'Hermes',          section: 'intelligence', icon: Bot,           shortcut: 'g r' },
 
   // Trade Desk — live trading / finance
+  { path: '/quick-trade',         label: 'Quick Trade',   section: 'trade', icon: Coins,       href: 'self:3000/phone.html' },
   { path: '/trade-desk',          label: 'Trade Desk',    section: 'trade', icon: TrendingUp,  shortcut: 'g t' },
   { path: '/equity',              label: 'Equity Mgmt',   section: 'trade', icon: Gauge,       shortcut: 'g q' },
   { path: '/trade-desk/signals',  label: 'Signal Feed',   section: 'trade', icon: Activity               },
@@ -112,34 +111,32 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-mc-usage',     label: 'Usage',         section: 'mcctrl', icon: Activity,     href: 'http://100.91.39.122:3000/?page=usage' },
   { path: '/ext-mc-office',    label: 'Office',        section: 'mcctrl', icon: Building2,    href: 'http://100.91.39.122:3000/?page=office' },
   { path: '/ext-mc-projects',  label: 'Projects',      section: 'mcctrl', icon: FolderKanban, href: 'http://100.91.39.122:3000/?page=projects' },
+  // Lewis Program is an MC :3000 page (Lewis Live + Strategy Compare stayed on MC) — grouped
+  // here with the rest of Mission Control instead of a one-item "Lewis Lab" section.
+  { path: '/ext-lewis-program', label: 'Lewis Program', section: 'mcctrl', icon: GraduationCap, href: 'http://100.91.39.122:3000/?page=lewis-program' },
 
-  // Lewis Lab — only Lewis PROGRAM was moved off the MC trader sidebar (2026-06-24,
-  // Mike's call); Lewis Live + Strategy Compare stayed on MC. Deep-link into MC :3000.
-  { path: '/ext-lewis-program', label: 'Lewis Program', section: 'lewis', icon: GraduationCap, href: 'http://100.91.39.122:3000/?page=lewis-program' },
+  // Massage & bodywork — Mike's non-trading business: admin console, ops, and the
+  // Erik Dalton learning KB (folded in from the old one-item "Wellness" section).
+  { path: '/massage-admin', label: 'Massage Admin',       section: 'massage', icon: ClipboardList },
+  { path: '/massage-ops',   label: 'Massage Ops',         section: 'massage', icon: HeartPulse },
+  { path: '/databases/erikdalton', label: 'Erik Dalton — Learn', section: 'massage', icon: HeartPulse, shortcut: 'g d' },
 
-  // Ops & Admin — ARIES + massage (non-MC) external links.
-  { path: '/massage-ops',        label: 'Massage Ops',      section: 'ops', icon: HeartPulse },
-  { path: '/ext-aries-log',      label: 'Mission Log',      section: 'ops', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
-  { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'ops', icon: Settings,       href: 'http://100.91.39.122:1337/settings' },
-  { path: '/ext-aries-system',   label: 'System Analytics', section: 'ops', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
-
-  // Wellness — bodywork / MAT self-care (NOT trading)
-  { path: '/databases/erikdalton', label: 'Erik Dalton — Learn', section: 'wellness', icon: HeartPulse, shortcut: 'g d' },
+  // ARIES admin — external ARIES pages, grouped with the ARIES launcher under MC Apps.
+  { path: '/ext-aries-log',      label: 'Mission Log',      section: 'mc', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
+  { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'mc', icon: Settings,       href: 'http://100.91.39.122:1337/settings' },
+  { path: '/ext-aries-system',   label: 'System Analytics', section: 'mc', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
 ];
 
 export const SECTION_LABEL: Record<RouteSection, string> = {
   workspace:    'Workspace',
+  trade:        'Trade Desk',
   studio:       'Studio',
   intelligence: 'Intelligence',
-  trade:        'Trade Desk',
   collaborate:  'Collaborate',
-  configure:    'Configure',
-  system:       'System',
+  massage:      'Massage',
   mc:           'MC Apps',
   mcctrl:       'Mission Control',
-  lewis:        'Lewis Lab',
-  ops:          'Ops & Admin',
-  wellness:     'Wellness',
+  system:       'System',
 };
 
 export const DEFAULT_ROUTE = '/mission';
