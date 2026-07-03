@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   Activity,
   CalendarClock,
@@ -7,9 +7,11 @@ import {
   Copy,
   Gift,
   History,
+  Keyboard,
   LockKeyhole,
   Mail,
   MessageSquareText,
+  Mic,
   Plus,
   RefreshCw,
   Save,
@@ -150,6 +152,117 @@ function Field({ label, children, prior, onPick }: {
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] disabled:opacity-60';
 const btnGhost = 'inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40';
 const btnAccent = 'inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-40';
+
+// ── SOAP fast-entry toolkit (tap-first, <5-minute notes) ──────────────────────
+// Web Speech API dictation. onText appends each final transcript. Chrome-only; the
+// mic button hides itself where speech recognition is unavailable.
+function useDictation(onText: (t: string) => void) {
+  const recRef = useRef<any>(null);
+  const [listening, setListening] = useState(false);
+  const SR = typeof window !== 'undefined' ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+  const supported = !!SR;
+  const toggle = () => {
+    if (!supported) return;
+    if (listening) { try { recRef.current?.stop(); } catch { /* noop */ } setListening(false); return; }
+    const rec = new SR();
+    rec.lang = 'en-US'; rec.interimResults = false; rec.continuous = true;
+    rec.onresult = (e: any) => {
+      let t = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript;
+      if (t.trim()) onText(t.trim());
+    };
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    recRef.current = rec;
+    try { rec.start(); setListening(true); } catch { setListening(false); }
+  };
+  useEffect(() => () => { try { recRef.current?.stop(); } catch { /* noop */ } }, []);
+  return { listening, toggle, supported };
+}
+
+// Append a phrase/transcript to a field, tidying separators.
+const appendText = (cur: string, add: string) => {
+  const c = (cur || '').trimEnd();
+  if (!c) return add;
+  return /[.,;:]$/.test(c) ? `${c} ${add}` : `${c}, ${add}`;
+};
+
+// Tap-to-insert canned phrases per SOAP field, and quick finding chips per body region.
+const SOAP_PHRASES: Record<string, string[]> = {
+  subjective: ['Client reports', 'Pain worse with', 'Pain better with', 'No new concerns', 'Sleeping poorly', 'Stress / tension'],
+  objective: ['Palpable hypertonicity', 'Restricted ROM', 'Trigger points noted', 'Adhesions present', 'Tender on palpation', 'Postural imbalance'],
+  assessment: ['Myofascial restriction', 'Muscle tension / spasm', 'Postural strain', 'Responding well', 'Chronic holding pattern'],
+  plan: ['Continue current plan', 'Increase frequency', 'Focus next session', '4–6 week plan', 'Reassess next visit'],
+  home_care: ['Hydrate', 'Daily stretching', 'Heat before / ice after', 'Rest the area', 'Self-massage'],
+  referrals: ['None', 'Physician follow-up', 'Chiropractic'],
+  adverse_reactions: ['None', 'Mild soreness expected', 'Tolerated well'],
+};
+const FINDING_CHIPS = ['Tight', 'Knotted', 'Spasm', 'Tender', 'Trigger pt', 'Adhesions', 'ROM↓', 'Inflamed', 'Hypertonic'];
+
+function Chip({ label, onClick, on }: { label: string; onClick: () => void; on?: boolean }) {
+  return (
+    <button type="button" onClick={onClick}
+      class={`rounded-full border px-2 py-0.5 text-[10px] leading-none transition ${on
+        ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-[var(--color-text)]'
+        : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
+      {label}
+    </button>
+  );
+}
+
+function MicButton({ onText }: { onText: (t: string) => void }) {
+  const { listening, toggle, supported } = useDictation(onText);
+  if (!supported) return null;
+  return (
+    <button type="button" title={listening ? 'Stop dictation' : 'Dictate (voice to text)'} onClick={toggle}
+      class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] ${listening
+        ? 'border-[var(--color-status-failed)] text-[var(--color-status-failed)] animate-pulse'
+        : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
+      <Mic size={12} /> {listening ? 'listening…' : 'voice'}
+    </button>
+  );
+}
+
+// Narrative SOAP field: tap-first (canned-phrase chips + reuse-from-history) with a mic
+// (voice→text) and a keyboard button that reveals the textarea for manual typing.
+function NoteField({ label, value, onChange, phraseKey, prior }: {
+  label: string; value: string; onChange: (v: string) => void; phraseKey?: string; prior?: string[];
+}) {
+  const [typing, setTyping] = useState<boolean>(!!value);
+  const phrases = (phraseKey && SOAP_PHRASES[phraseKey]) || [];
+  return (
+    <div class="block">
+      <div class="mb-1 flex flex-wrap items-center justify-between gap-1">
+        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+        <div class="flex items-center gap-1">
+          <MicButton onText={(t) => onChange(appendText(value, t))} />
+          <button type="button" title="Type manually" onClick={() => setTyping((v) => !v)}
+            class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] ${typing
+              ? 'border-[var(--color-accent)] text-[var(--color-text)]'
+              : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
+            <Keyboard size={12} /> type
+          </button>
+          {prior && prior.length > 0 && (
+            <select class="max-w-[130px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-[10px] text-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
+              title="Reuse a value you wrote before for this client" value=""
+              onChange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { onChange(v); setTyping(true); } (e.currentTarget as HTMLSelectElement).value = ''; }}>
+              <option value="">↺ reuse…</option>
+              {prior.map((p, i) => <option key={i} value={p}>{p.length > 50 ? p.slice(0, 47) + '…' : p}</option>)}
+            </select>
+          )}
+        </div>
+      </div>
+      {phrases.length > 0 && (
+        <div class="mb-1 flex flex-wrap gap-1">
+          {phrases.map((p) => <Chip key={p} label={`+ ${p}`} onClick={() => { onChange(appendText(value, p)); setTyping(true); }} />)}
+        </div>
+      )}
+      {(typing || !!value) && (
+        <textarea class={`${inputClass} min-h-[52px] resize-y`} value={value} onInput={(e) => onChange((e.currentTarget as HTMLTextAreaElement).value)} />
+      )}
+    </div>
+  );
+}
 const btnDanger = 'inline-flex items-center gap-1 rounded-md border border-[var(--color-status-failed)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--color-status-failed)] hover:bg-[color-mix(in_srgb,var(--color-status-failed)_12%,transparent)] disabled:opacity-40';
 
 export function MassageAdmin() {
@@ -1195,13 +1308,13 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
       <BodyMapPicker areas={areas} onChange={setAreas} />
 
       <div class="mt-4 grid gap-3 md:grid-cols-2">
-        <Field label="Subjective (client reports)" prior={priorVals((n) => n.subjective)} onPick={setSubjective}><textarea class={`${inputClass} min-h-[70px] resize-y`} value={subjective} onInput={(e) => setSubjective((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Objective (findings)" prior={priorVals((n) => n.objective)} onPick={setObjective}><textarea class={`${inputClass} min-h-[70px] resize-y`} value={objective} onInput={(e) => setObjective((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Assessment" prior={priorVals((n) => n.assessment)} onPick={setAssessment}><textarea class={`${inputClass} min-h-[70px] resize-y`} value={assessment} onInput={(e) => setAssessment((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Plan" prior={priorVals((n) => n.plan)} onPick={setPlan}><textarea class={`${inputClass} min-h-[70px] resize-y`} value={plan} onInput={(e) => setPlan((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Home care (self-care given)" prior={priorVals((n) => n.home_care)} onPick={setHomeCare}><textarea class={`${inputClass} min-h-[60px] resize-y`} value={homeCare} onInput={(e) => setHomeCare((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Referrals" prior={priorVals((n) => n.referrals)} onPick={setReferrals}><textarea class={`${inputClass} min-h-[60px] resize-y`} value={referrals} onInput={(e) => setReferrals((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
-        <Field label="Adverse reactions" prior={priorVals((n) => n.adverse_reactions)} onPick={setAdverse}><textarea class={`${inputClass} min-h-[60px] resize-y md:col-span-2`} value={adverse} onInput={(e) => setAdverse((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <NoteField label="Subjective (client reports)" phraseKey="subjective" value={subjective} onChange={setSubjective} prior={priorVals((n) => n.subjective)} />
+        <NoteField label="Objective (findings)" phraseKey="objective" value={objective} onChange={setObjective} prior={priorVals((n) => n.objective)} />
+        <NoteField label="Assessment" phraseKey="assessment" value={assessment} onChange={setAssessment} prior={priorVals((n) => n.assessment)} />
+        <NoteField label="Plan" phraseKey="plan" value={plan} onChange={setPlan} prior={priorVals((n) => n.plan)} />
+        <NoteField label="Home care (self-care given)" phraseKey="home_care" value={homeCare} onChange={setHomeCare} prior={priorVals((n) => n.home_care)} />
+        <NoteField label="Referrals" phraseKey="referrals" value={referrals} onChange={setReferrals} prior={priorVals((n) => n.referrals)} />
+        <div class="md:col-span-2"><NoteField label="Adverse reactions" phraseKey="adverse_reactions" value={adverse} onChange={setAdverse} prior={priorVals((n) => n.adverse_reactions)} /></div>
       </div>
 
       {err && <div class="mt-3 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
@@ -1281,17 +1394,30 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
       <div class="space-y-2">
         {areas.map((a, i) => (
           <div key={a.region} class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-[12px] font-semibold text-[var(--color-text)]">{a.region}</span>
-              <span class="text-[10px] text-[var(--color-text-faint)]">severity</span>
-              <input type="range" min="0" max="10" value={a.severity} onInput={(e) => update(i, { severity: Number((e.currentTarget as HTMLInputElement).value) })} class="flex-1 accent-[var(--color-accent)]" style="min-width:120px" />
-              <span class="w-6 text-center text-[12px] font-semibold text-[var(--color-warn)]">{a.severity}</span>
-              <label class="inline-flex items-center gap-1 text-[10px] text-[var(--color-accent)]">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span class="min-w-[68px] text-[12px] font-semibold text-[var(--color-text)]">{a.region}</span>
+              <span class="text-[9px] uppercase tracking-wider text-[var(--color-text-faint)]">sev</span>
+              <div class="flex flex-wrap gap-0.5">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                  <button key={n} type="button" title={`severity ${n}`} onClick={() => update(i, { severity: n })}
+                    class={`h-5 w-5 rounded text-[9px] font-bold leading-none transition ${a.severity === n ? 'text-white' : 'border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}
+                    style={a.severity === n ? `background:hsl(${Math.round(120 - (n - 1) * 12)} 68% 42%)` : ''}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <label class="ml-auto inline-flex items-center gap-1 text-[10px] text-[var(--color-accent)]">
                 <input type="checkbox" checked={!!a.focus} onChange={(e) => update(i, { focus: (e.currentTarget as HTMLInputElement).checked })} /> focus next
               </label>
-              <button type="button" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]" onClick={() => remove(i)}><X size={13} /></button>
+              <button type="button" title="Remove region" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]" onClick={() => remove(i)}><X size={13} /></button>
             </div>
-            <input class={`${inputClass} mt-2 py-1`} placeholder="findings / notes for this region" value={a.findings || ''} onInput={(e) => update(i, { findings: (e.currentTarget as HTMLInputElement).value })} />
+            <div class="mt-1.5 flex flex-wrap items-center gap-1">
+              {FINDING_CHIPS.map((f) => (
+                <Chip key={f} label={`+ ${f}`} onClick={() => update(i, { findings: appendText(a.findings || '', f) })} />
+              ))}
+              <MicButton onText={(t) => update(i, { findings: appendText(a.findings || '', t) })} />
+            </div>
+            <input class={`${inputClass} mt-1.5 py-1`} placeholder="findings — tap chips above, dictate, or type" value={a.findings || ''} onInput={(e) => update(i, { findings: (e.currentTarget as HTMLInputElement).value })} />
           </div>
         ))}
       </div>
