@@ -703,3 +703,515 @@ function PromosTab({ canEdit }: { canEdit: boolean }) {
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────── Intake + SOAP data ──
+// Region vocabulary reused from the public intake body-map (config/intake.json):
+// general always-worked regions first, then the consent-gated ones.
+const SOAP_REGIONS = ['Neck', 'Shoulders', 'Back', 'Arms & Hands', 'Legs', 'Scalp', 'Face', 'Pectoral Muscles', 'Abdomen', 'Gluteal Region', 'Feet'];
+const SOAP_TECHNIQUES = ['Swedish', 'Deep tissue', 'Trigger point', 'Myofascial release', 'Cupping', 'Hot stone', 'Stretching', 'Sports', 'Prenatal', 'Lymphatic'];
+const SOAP_POSITIONS = ['supine', 'prone', 'side-lying', 'seated'];
+const SOAP_PRESSURES = ['light', 'medium', 'deep'];
+
+interface IntakeRow {
+  id: string; appointment_id: string | null; submitted_at: string;
+  reviewed_at: string | null; reviewed_by: string | null; has_signature: number;
+  client_name: string | null; client_email: string | null; user_id: string | null;
+  service_name: string | null; appt_date: string | null; appt_time: string | null;
+}
+interface IntakeFlag { label: string; value: string }
+interface IntakeDetail {
+  ok: boolean; error?: string;
+  intake: IntakeRow; html: string; flags: Record<string, IntakeFlag>;
+}
+interface AreaConcern { region: string; severity: number; findings?: string; focus?: boolean }
+interface NextFocus { region: string; note?: string }
+interface SoapNote {
+  id: string; appointment_id: string | null; user_id: string | null; client_email: string | null;
+  session_date: string | null; created_at: string; updated_at: string | null; author: string | null;
+  pain_before: number | null; pain_after: number | null; position: string | null; pressure: string | null;
+  duration_min: number | null; techniques: string[]; areas_concern: AreaConcern[];
+  subjective: string | null; objective: string | null; assessment: string | null; plan: string | null;
+  home_care: string | null; next_focus: NextFocus[]; referrals: string | null;
+  adverse_reactions: string | null; flags: Record<string, IntakeFlag> | unknown;
+}
+interface CarryForward { next_focus: NextFocus[]; last_note_id: string | null; flags: Record<string, IntakeFlag> }
+interface SoapClientResp {
+  ok: boolean; notes: SoapNote[];
+  trend: { regions: Record<string, { date: string; severity: number; note_id: string }[]>; pain: { date: string; before: number | null; after: number | null; note_id: string }[] };
+  carry_forward: CarryForward;
+}
+
+// ─────────────────────────────────────────────────────────── Intake Forms ──
+function IntakesTab({ canEdit }: { canEdit: boolean }) {
+  const list = useFetch<{ intakes: IntakeRow[] }>('/api/massage-admin/intakes', 30000);
+  const [query, setQuery] = useState('');
+  const [onlyUnreviewed, setOnlyUnreviewed] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const intakes = list.data?.intakes ?? [];
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let rows = intakes;
+    if (q) rows = rows.filter((i) => `${i.client_name ?? ''} ${i.client_email ?? ''} ${i.service_name ?? ''}`.toLowerCase().includes(q));
+    if (onlyUnreviewed) rows = rows.filter((i) => !i.reviewed_at);
+    return rows;
+  }, [intakes, query, onlyUnreviewed]);
+
+  useEffect(() => { if (!selectedId && filtered[0]) setSelectedId(filtered[0].id); }, [filtered, selectedId]);
+
+  return (
+    <div class="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+      <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
+          <input class={`${inputClass} py-1.5`} placeholder="Search client / email / service" value={query} onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
+        </div>
+        <div class="flex items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-1.5">
+          <label class="inline-flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
+            <input type="checkbox" checked={onlyUnreviewed} onChange={(e) => setOnlyUnreviewed((e.currentTarget as HTMLInputElement).checked)} /> Unreviewed only
+          </label>
+          <span class="text-[10px] text-[var(--color-text-faint)]">{filtered.length} of {intakes.length}</span>
+        </div>
+        {list.loading && !list.data && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">Loading…</div>}
+        <div class="max-h-[620px] overflow-y-auto">
+          {filtered.map((i) => (
+            <button key={i.id} type="button" onClick={() => setSelectedId(i.id)}
+              class={`w-full border-b border-[var(--color-border)] px-3 py-2 text-left last:border-b-0 ${selectedId === i.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
+              <div class="flex items-center gap-2">
+                <ClipboardList size={13} class="text-[var(--color-accent)]" />
+                <span class="truncate text-[12px] font-semibold text-[var(--color-text)]">{i.client_name || i.client_email || '(guest)'}</span>
+                {i.reviewed_at
+                  ? <span class="ml-auto rounded bg-[color-mix(in_srgb,var(--color-status-done)_18%,transparent)] px-1 text-[9px] uppercase text-[var(--color-status-done)]">reviewed</span>
+                  : <span class="ml-auto rounded bg-[var(--color-elevated)] px-1 text-[9px] uppercase text-[var(--color-warn)]">new</span>}
+              </div>
+              <div class="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">{i.client_email || '—'}</div>
+              <div class="mt-0.5 text-[10px] text-[var(--color-text-faint)]">
+                {i.service_name || 'intake'}{i.appt_date ? ` · ${i.appt_date} ${i.appt_time ?? ''}` : ''} · submitted {agoFromIso(i.submitted_at)}
+              </div>
+            </button>
+          ))}
+          {!list.loading && filtered.length === 0 && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">No intake forms.</div>}
+        </div>
+      </aside>
+      <main>{selectedId ? <IntakeViewer id={selectedId} canEdit={canEdit} onReviewed={() => list.refresh()} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[12px] text-[var(--color-text-faint)]">Select an intake to review.</div>}</main>
+    </div>
+  );
+}
+
+function IntakeViewer({ id, canEdit, onReviewed }: { id: string; canEdit: boolean; onReviewed: () => void }) {
+  const [detail, setDetail] = useState<IntakeDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setErr(null); setDetail(null);
+    apiGet<IntakeDetail>(`/api/massage-admin/intakes/${encodeURIComponent(id)}`)
+      .then((d) => { if (!cancelled) setDetail(d); })
+      .catch((e) => { if (!cancelled) setErr(e?.message || String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [id]);
+
+  async function markReviewed() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string; reviewed_at?: string; reviewed_by?: string }>(`/api/massage-admin/intakes/${encodeURIComponent(id)}/reviewed`);
+      if (r.error || r.ok === false) { setErr(r.error || 'failed'); return; }
+      setDetail((d) => d ? { ...d, intake: { ...d.intake, reviewed_at: r.reviewed_at ?? new Date().toISOString(), reviewed_by: r.reviewed_by ?? null } } : d);
+      onReviewed();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  if (loading) return <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[12px] text-[var(--color-text-faint)]">Loading intake…</div>;
+  if (err && !detail) return <div class="rounded-lg border border-[var(--color-status-failed)] px-4 py-4 text-[12px] text-[var(--color-status-failed)]">{err}</div>;
+  if (!detail) return null;
+  const flags = Object.values(detail.flags || {});
+  const i = detail.intake;
+
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-[15px] font-semibold text-[var(--color-text)]">{i.client_name || i.client_email || '(guest intake)'}</h2>
+          <div class="mt-1 flex flex-wrap gap-x-3 text-[11px] text-[var(--color-text-faint)]">
+            <span>{i.service_name || 'intake'}{i.appt_date ? ` · ${i.appt_date} ${i.appt_time ?? ''}` : ''}</span>
+            <span>· submitted {agoFromIso(i.submitted_at)}</span>
+            {i.reviewed_at
+              ? <span class="text-[var(--color-status-done)]">· reviewed {agoFromIso(i.reviewed_at)}{i.reviewed_by ? ` by ${i.reviewed_by}` : ''}</span>
+              : <span class="text-[var(--color-warn)]">· not reviewed</span>}
+          </div>
+        </div>
+        <button type="button" class={i.reviewed_at ? btnGhost : btnAccent} style={i.reviewed_at ? '' : 'background:var(--color-accent)'} disabled={busy || !canEdit || !!i.reviewed_at} onClick={markReviewed}>
+          <Check size={13} /> {i.reviewed_at ? 'Reviewed' : busy ? 'Marking…' : 'Mark reviewed'}
+        </button>
+      </div>
+      {flags.length > 0 && (
+        <div class="mb-3 rounded-md border border-[var(--color-warn)] px-3 py-2 text-[11px] text-[var(--color-warn)]">
+          <span class="font-semibold">⚠ Safety flags:</span> {flags.map((f) => `${f.label}: ${f.value}`).join(' · ')}
+        </div>
+      )}
+      {err && <div class="mb-3 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+      {/* Rendered intake (reuses the massage server's reviewHtml). */}
+      <div class="intake-review overflow-x-auto text-[12px] text-[var(--color-text)]" dangerouslySetInnerHTML={{ __html: detail.html }} />
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────── SOAP tab ──
+function SoapTab({ overview, canEdit }: { overview: ReturnType<typeof useFetch<Overview>>; canEdit: boolean }) {
+  const clients = overview.data?.clients ?? [];
+  const [query, setQuery] = useState('');
+  const [clientId, setClientId] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const rows = q ? clients.filter((c) => `${c.name} ${c.email}`.toLowerCase().includes(q)) : clients;
+    return [...rows].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+  }, [clients, query]);
+
+  const selected = clients.find((c) => c.id === clientId) ?? null;
+
+  return (
+    <div class="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+      <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
+          <input class={`${inputClass} py-1.5`} placeholder="Find client for notes" value={query} onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
+        </div>
+        <div class="max-h-[640px] overflow-y-auto">
+          {filtered.map((c) => (
+            <button key={c.id} type="button" onClick={() => setClientId(c.id)}
+              class={`w-full border-b border-[var(--color-border)] px-3 py-2 text-left last:border-b-0 ${clientId === c.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
+              <div class="flex items-center gap-2">
+                <Stethoscope size={13} class="text-[var(--color-accent)]" />
+                <span class="truncate text-[12px] font-semibold text-[var(--color-text)]">{c.name || c.email}</span>
+              </div>
+              <div class="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">{c.email}</div>
+            </button>
+          ))}
+          {filtered.length === 0 && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">No matching clients.</div>}
+        </div>
+      </aside>
+      <main>{selected ? <SoapClientPanel key={selected.id} client={selected} canEdit={canEdit} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[12px] text-[var(--color-text-faint)]">Select a client to view their SOAP notes over time.</div>}</main>
+    </div>
+  );
+}
+
+function SoapClientPanel({ client, canEdit }: { client: MassageClient; canEdit: boolean }) {
+  const soap = useFetch<SoapClientResp>(`/api/massage-admin/soap?client=${encodeURIComponent(client.id)}`, 0);
+  const appts = useFetch<{ appointments: Appointment[] }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/appointments`, 0);
+  const [mode, setMode] = useState<'timeline' | 'new' | { edit: SoapNote } | { dup: SoapNote }>('timeline');
+
+  const notes = soap.data?.notes ?? [];
+  const trend = soap.data?.trend;
+  const cf = soap.data?.carry_forward;
+
+  const refreshAll = () => { soap.refresh(); setMode('timeline'); };
+
+  if (mode !== 'timeline') {
+    const existing = typeof mode === 'object' && 'edit' in mode ? mode.edit : null;
+    const seed = typeof mode === 'object' && 'dup' in mode ? mode.dup : null;
+    return (
+      <SoapForm
+        client={client}
+        appointments={appts.data?.appointments ?? []}
+        existing={existing}
+        seed={seed}
+        carryForward={existing ? null : (cf ?? null)}
+        canEdit={canEdit}
+        onCancel={() => setMode('timeline')}
+        onSaved={refreshAll}
+      />
+    );
+  }
+
+  return (
+    <section class="space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-[15px] font-semibold text-[var(--color-text)]">{client.name || client.email} · SOAP timeline</h2>
+        <div class="flex items-center gap-2">
+          {notes.length > 0 && <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => setMode({ dup: notes[0] })}><Copy size={13} /> Duplicate last</button>}
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit} onClick={() => setMode('new')}><Plus size={13} /> New note</button>
+        </div>
+      </div>
+
+      {cf && (Object.keys(cf.flags || {}).length > 0 || (cf.next_focus?.length ?? 0) > 0) && (
+        <div class="rounded-lg border border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] px-4 py-3 text-[11px]">
+          {Object.keys(cf.flags || {}).length > 0 && (
+            <div class="text-[var(--color-warn)]"><span class="font-semibold">⚠ Intake safety flags:</span> {Object.values(cf.flags).map((f) => `${f.label}: ${f.value}`).join(' · ')}</div>
+          )}
+          {(cf.next_focus?.length ?? 0) > 0 && (
+            <div class="mt-1 text-[var(--color-text-muted)]"><span class="font-semibold text-[var(--color-accent)]">Focus next session:</span> {cf.next_focus.map((n) => n.region + (n.note ? ` (${n.note})` : '')).join(' · ')}</div>
+          )}
+        </div>
+      )}
+
+      {trend && (notes.length > 0) && <TissueTrend trend={trend} />}
+
+      <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[12px] font-semibold text-[var(--color-text)]">{notes.length} note{notes.length === 1 ? '' : 's'}</div>
+        {soap.loading && !soap.data && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">Loading…</div>}
+        {!soap.loading && notes.length === 0 && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">No SOAP notes yet. Create the first one.</div>}
+        <div class="max-h-[560px] overflow-y-auto">
+          {notes.map((n) => (
+            <button key={n.id} type="button" onClick={() => canEdit && setMode({ edit: n })}
+              class="block w-full border-b border-[var(--color-border)] px-3 py-3 text-left last:border-b-0 hover:bg-[var(--color-elevated)]">
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                <span class="text-[12px] font-semibold text-[var(--color-text)]">{n.session_date || (n.created_at || '').slice(0, 10)}</span>
+                {(n.pain_before != null || n.pain_after != null) && (
+                  <span class="text-[11px] text-[var(--color-text-muted)]">pain {n.pain_before ?? '—'} → <span class="text-[var(--color-status-done)]">{n.pain_after ?? '—'}</span></span>
+                )}
+                {n.pressure && <span class="text-[11px] text-[var(--color-text-faint)]">· {n.pressure}</span>}
+                {n.duration_min ? <span class="text-[11px] text-[var(--color-text-faint)]">· {n.duration_min}m</span> : null}
+                {n.author && <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">{n.author}</span>}
+              </div>
+              {n.techniques?.length > 0 && <div class="mt-1 text-[11px] text-[var(--color-text-muted)]">{n.techniques.join(', ')}</div>}
+              {n.areas_concern?.length > 0 && (
+                <div class="mt-1 flex flex-wrap gap-1">
+                  {n.areas_concern.map((a, idx) => (
+                    <span key={idx} class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)]">{a.region} <span class="text-[var(--color-warn)]">{a.severity}</span>{a.focus ? ' ★' : ''}</span>
+                  ))}
+                </div>
+              )}
+              {n.assessment && <div class="mt-1 truncate text-[11px] text-[var(--color-text-faint)]">A: {n.assessment}</div>}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Per-region severity + pain before/after over time, drawn as compact inline bars.
+function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
+  const regions = Object.entries(trend.regions || {}).filter(([, pts]) => pts.length > 0);
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]"><Activity size={12} /> Tissue trend over time</div>
+      {trend.pain.length > 0 && (
+        <div class="mb-3">
+          <div class="mb-1 text-[11px] font-semibold text-[var(--color-text-muted)]">Pain before → after</div>
+          <div class="flex flex-wrap gap-2">
+            {trend.pain.map((p, i) => (
+              <div key={i} class="rounded border border-[var(--color-border)] px-2 py-1 text-[10px] text-[var(--color-text-muted)]">
+                <span class="text-[var(--color-text-faint)]">{p.date}</span>{' '}
+                <span>{p.before ?? '—'}</span> → <span class="text-[var(--color-status-done)]">{p.after ?? '—'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {regions.length > 0 && (
+        <div class="space-y-1.5">
+          {regions.map(([region, pts]) => (
+            <div key={region} class="flex items-center gap-2">
+              <div class="w-28 shrink-0 truncate text-[11px] text-[var(--color-text-muted)]">{region}</div>
+              <div class="flex flex-1 items-end gap-1" style="height:28px">
+                {pts.map((pt, i) => (
+                  <div key={i} class="flex flex-col items-center justify-end" title={`${pt.date}: ${pt.severity}/10`}>
+                    <div class="w-3 rounded-t bg-[var(--color-accent)]" style={`height:${Math.max(2, (Number(pt.severity) || 0) * 2.4)}px`} />
+                  </div>
+                ))}
+              </div>
+              <div class="w-8 shrink-0 text-right text-[10px] text-[var(--color-text-faint)]">{pts[pts.length - 1]?.severity ?? '—'}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {regions.length === 0 && trend.pain.length === 0 && <div class="text-[11px] text-[var(--color-text-faint)]">Trend appears once notes carry per-region severity.</div>}
+    </section>
+  );
+}
+
+// The structured SOAP form (create or edit). Areas-of-concern body-map + carry-forward.
+function SoapForm({ client, appointments, existing, seed, carryForward, canEdit, onCancel, onSaved }: {
+  client: MassageClient; appointments: Appointment[]; existing: SoapNote | null;
+  seed?: SoapNote | null; carryForward: CarryForward | null; canEdit: boolean; onCancel: () => void; onSaved: () => void;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  // Clinical content is seeded from the note being edited OR the note being duplicated.
+  // Session-specific fields (date, appointment) always start fresh for a duplicate.
+  const src = existing ?? seed ?? null;
+  const [apptId, setApptId] = useState<string>(existing?.appointment_id || '');
+  const [sessionDate, setSessionDate] = useState<string>(existing?.session_date || today);
+  const [painBefore, setPainBefore] = useState<string>(src?.pain_before != null ? String(src.pain_before) : '');
+  const [painAfter, setPainAfter] = useState<string>(src?.pain_after != null ? String(src.pain_after) : '');
+  const [position, setPosition] = useState<string>(src?.position || '');
+  const [pressure, setPressure] = useState<string>(src?.pressure || '');
+  const [duration, setDuration] = useState<string>(src?.duration_min != null ? String(src.duration_min) : '');
+  const [techniques, setTechniques] = useState<string[]>(src?.techniques || []);
+  // Seed the body-map from the source note, else from the carry-forward focus regions.
+  const [areas, setAreas] = useState<AreaConcern[]>(() => {
+    if (src?.areas_concern?.length) return src.areas_concern.map((a) => ({ ...a }));
+    if (carryForward?.next_focus?.length) return carryForward.next_focus.map((n) => ({ region: n.region, severity: 0, findings: n.note || '', focus: false }));
+    return [];
+  });
+  const [subjective, setSubjective] = useState(src?.subjective || '');
+  const [objective, setObjective] = useState(src?.objective || '');
+  const [assessment, setAssessment] = useState(src?.assessment || '');
+  const [plan, setPlan] = useState(src?.plan || '');
+  const [homeCare, setHomeCare] = useState(src?.home_care || '');
+  const [referrals, setReferrals] = useState(src?.referrals || '');
+  const [adverse, setAdverse] = useState(src?.adverse_reactions || '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  function toggleTechnique(t: string) {
+    setTechniques((cur) => cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]);
+  }
+  const flags = (existing ? existing.flags : (seed?.flags ?? carryForward?.flags)) as Record<string, IntakeFlag> || {};
+
+  // When an appointment is chosen, default the session date to its date.
+  function pickAppt(id: string) {
+    setApptId(id);
+    const a = appointments.find((x) => x.id === id);
+    if (a && !existing) setSessionDate(a.appt_date || today);
+  }
+
+  async function save() {
+    setBusy(true); setErr(null);
+    const nextFocus = areas.filter((a) => a.focus).map((a) => ({ region: a.region, note: a.findings || '' }));
+    const payload: Record<string, unknown> = {
+      appointment_id: apptId || null,
+      session_date: sessionDate || today,
+      pain_before: painBefore === '' ? null : Number(painBefore),
+      pain_after: painAfter === '' ? null : Number(painAfter),
+      position: position || null,
+      pressure: pressure || null,
+      duration_min: duration === '' ? null : Number(duration),
+      techniques,
+      areas_concern: areas,
+      subjective, objective, assessment, plan,
+      home_care: homeCare, next_focus: nextFocus,
+      referrals, adverse_reactions: adverse,
+      flags,
+    };
+    if (!existing) { payload.user_id = client.id; payload.client_email = client.email; }
+    try {
+      const r = existing
+        ? await apiPatch<{ ok?: boolean; error?: string }>(`/api/massage-admin/soap/${encodeURIComponent(existing.id)}`, payload)
+        : await apiPost<{ ok?: boolean; error?: string }>('/api/massage-admin/soap', payload);
+      if (r.error || r.ok === false) { setErr(r.error || 'save failed'); return; }
+      onSaved();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <section class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex items-center justify-between">
+        <h3 class="text-[14px] font-semibold text-[var(--color-text)]">{existing ? 'Edit SOAP note' : seed ? 'Duplicate note' : 'New SOAP note'} · {client.name || client.email}</h3>
+        <button type="button" class={btnGhost} onClick={onCancel}><X size={13} /> Close</button>
+      </div>
+      <div class="mb-3 text-[11px] text-[var(--color-text-faint)]">Private clinical note — the client never sees this.</div>
+
+      {Object.keys(flags || {}).length > 0 && (
+        <div class="mb-3 rounded-md border border-[var(--color-warn)] px-3 py-2 text-[11px] text-[var(--color-warn)]">
+          <span class="font-semibold">⚠ Intake safety flags:</span> {Object.values(flags).map((f) => `${f.label}: ${f.value}`).join(' · ')}
+        </div>
+      )}
+      {seed && (
+        <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
+          <span class="font-semibold text-[var(--color-accent)]">Duplicated from</span> the {seed.session_date || (seed.created_at || '').slice(0, 10)} note — clinical fields pre-filled; date reset to today. Adjust what changed and save as a new note.
+        </div>
+      )}
+      {!existing && !seed && (carryForward?.next_focus?.length ?? 0) > 0 && (
+        <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
+          <span class="font-semibold text-[var(--color-accent)]">Carried forward:</span> {carryForward!.next_focus.map((n) => n.region + (n.note ? ` (${n.note})` : '')).join(' · ')} — pre-loaded into the body-map below.
+        </div>
+      )}
+
+      <div class="grid gap-3 md:grid-cols-3">
+        <Field label="Appointment (optional)">
+          <select class={inputClass} value={apptId} onChange={(e) => pickAppt((e.currentTarget as HTMLSelectElement).value)}>
+            <option value="">— none —</option>
+            {appointments.map((a) => <option key={a.id} value={a.id}>{a.appt_date} {a.appt_time} · {a.service_name}</option>)}
+          </select>
+        </Field>
+        <Field label="Session date"><input type="date" class={inputClass} value={sessionDate} onInput={(e) => setSessionDate((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Duration (min)"><input type="number" class={inputClass} value={duration} onInput={(e) => setDuration((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Pain before (0-10)"><input type="number" min="0" max="10" class={inputClass} value={painBefore} onInput={(e) => setPainBefore((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Pain after (0-10)"><input type="number" min="0" max="10" class={inputClass} value={painAfter} onInput={(e) => setPainAfter((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Position">
+          <select class={inputClass} value={position} onChange={(e) => setPosition((e.currentTarget as HTMLSelectElement).value)}>
+            <option value="">—</option>{SOAP_POSITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </Field>
+        <Field label="Pressure">
+          <select class={inputClass} value={pressure} onChange={(e) => setPressure((e.currentTarget as HTMLSelectElement).value)}>
+            <option value="">—</option>{SOAP_PRESSURES.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <div class="mt-4">
+        <div class="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Techniques</div>
+        <div class="flex flex-wrap gap-1.5">
+          {SOAP_TECHNIQUES.map((t) => (
+            <button key={t} type="button" onClick={() => toggleTechnique(t)}
+              class={`rounded-md border px-2 py-1 text-[11px] ${techniques.includes(t) ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <BodyMapPicker areas={areas} onChange={setAreas} />
+
+      <div class="mt-4 grid gap-3 md:grid-cols-2">
+        <Field label="Subjective (client reports)"><textarea class={`${inputClass} min-h-[70px] resize-y`} value={subjective} onInput={(e) => setSubjective((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Objective (findings)"><textarea class={`${inputClass} min-h-[70px] resize-y`} value={objective} onInput={(e) => setObjective((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Assessment"><textarea class={`${inputClass} min-h-[70px] resize-y`} value={assessment} onInput={(e) => setAssessment((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Plan"><textarea class={`${inputClass} min-h-[70px] resize-y`} value={plan} onInput={(e) => setPlan((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Home care (self-care given)"><textarea class={`${inputClass} min-h-[60px] resize-y`} value={homeCare} onInput={(e) => setHomeCare((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Referrals"><textarea class={`${inputClass} min-h-[60px] resize-y`} value={referrals} onInput={(e) => setReferrals((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+        <Field label="Adverse reactions"><textarea class={`${inputClass} min-h-[60px] resize-y md:col-span-2`} value={adverse} onInput={(e) => setAdverse((e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+      </div>
+
+      {err && <div class="mt-3 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+      <div class="mt-4 flex items-center justify-end gap-2">
+        <button type="button" class={btnGhost} onClick={onCancel}>Cancel</button>
+        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !canEdit} onClick={save}><Save size={13} /> {busy ? 'Saving…' : existing ? 'Save changes' : 'Save note'}</button>
+      </div>
+    </section>
+  );
+}
+
+// Areas-of-concern body-map: add regions, set 0-10 severity + findings, flag "focus next session".
+function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a: AreaConcern[]) => void }) {
+  const used = new Set(areas.map((a) => a.region));
+  const addRegion = (region: string) => { if (region && !used.has(region)) onChange([...areas, { region, severity: 0, findings: '', focus: false }]); };
+  const update = (i: number, patch: Partial<AreaConcern>) => onChange(areas.map((a, idx) => idx === i ? { ...a, ...patch } : a));
+  const remove = (i: number) => onChange(areas.filter((_, idx) => idx !== i));
+
+  return (
+    <div class="mt-4 rounded-lg border border-[var(--color-border)] p-3">
+      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Areas of concern (body-map)</div>
+        <select class={`${inputClass} w-auto py-1`} value="" onChange={(e) => { addRegion((e.currentTarget as HTMLSelectElement).value); (e.currentTarget as HTMLSelectElement).value = ''; }}>
+          <option value="">+ add region…</option>
+          {SOAP_REGIONS.filter((r) => !used.has(r)).map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+      </div>
+      {areas.length === 0 && <div class="py-2 text-center text-[11px] text-[var(--color-text-faint)]">No regions flagged. Add one to record severity + findings.</div>}
+      <div class="space-y-2">
+        {areas.map((a, i) => (
+          <div key={a.region} class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[12px] font-semibold text-[var(--color-text)]">{a.region}</span>
+              <span class="text-[10px] text-[var(--color-text-faint)]">severity</span>
+              <input type="range" min="0" max="10" value={a.severity} onInput={(e) => update(i, { severity: Number((e.currentTarget as HTMLInputElement).value) })} class="flex-1 accent-[var(--color-accent)]" style="min-width:120px" />
+              <span class="w-6 text-center text-[12px] font-semibold text-[var(--color-warn)]">{a.severity}</span>
+              <label class="inline-flex items-center gap-1 text-[10px] text-[var(--color-accent)]">
+                <input type="checkbox" checked={!!a.focus} onChange={(e) => update(i, { focus: (e.currentTarget as HTMLInputElement).checked })} /> focus next
+              </label>
+              <button type="button" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]" onClick={() => remove(i)}><X size={13} /></button>
+            </div>
+            <input class={`${inputClass} mt-2 py-1`} placeholder="findings / notes for this region" value={a.findings || ''} onInput={(e) => update(i, { findings: (e.currentTarget as HTMLInputElement).value })} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
