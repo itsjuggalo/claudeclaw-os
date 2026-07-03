@@ -198,6 +198,24 @@ const SOAP_PHRASES: Record<string, string[]> = {
   adverse_reactions: ['None', 'Mild soreness expected', 'Tolerated well'],
 };
 const FINDING_CHIPS = ['Tight', 'Knotted', 'Spasm', 'Tender', 'Trigger pt', 'Adhesions', 'ROM↓', 'Inflamed', 'Hypertonic'];
+// Region-specific quick findings shown FIRST (before the common chips) so a tapped
+// region offers its most-likely findings in one tap. Additive — common chips still follow.
+const REGION_FINDING_CHIPS: Record<string, string[]> = {
+  'Neck': ['Stiff', 'Reduced rotation'],
+  'Shoulders': ['Impinged', 'Elevated'],
+  'Back': ['Erector tension', 'SI tightness'],
+  'Arms & Hands': ['Forearm tight', 'Grip fatigue'],
+  'Legs': ['Hamstring tight', 'Calf knots'],
+  'Scalp': ['Tension band'],
+  'Face': ['Jaw / TMJ'],
+  'Pectoral Muscles': ['Rounded posture'],
+  'Abdomen': ['Guarding'],
+  'Gluteal Region': ['Piriformis', 'Glute med'],
+  'Feet': ['Plantar tension', 'Arch strain'],
+};
+// Default severity for a freshly-tapped region: a real, mild baseline (not 0) so the
+// flag immediately shows a color AND lands on the trend charts; therapist adjusts up/down.
+const DEFAULT_SEVERITY = 3;
 
 function Chip({ label, onClick, on }: { label: string; onClick: () => void; on?: boolean }) {
   return (
@@ -1349,10 +1367,10 @@ const SOAP_REGION_ABBR: Record<string, string> = {
 
 function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a: AreaConcern[]) => void }) {
   const used = new Set(areas.map((a) => a.region));
-  const addRegion = (region: string) => { if (region && !used.has(region)) onChange([...areas, { region, severity: 0, findings: '', focus: false }]); };
+  const addRegion = (region: string) => { if (region && !used.has(region)) onChange([...areas, { region, severity: DEFAULT_SEVERITY, findings: '', focus: false }]); };
   const toggleRegion = (region: string) => {
     if (used.has(region)) onChange(areas.filter((a) => a.region !== region));
-    else onChange([...areas, { region, severity: 0, findings: '', focus: false }]);
+    else onChange([...areas, { region, severity: DEFAULT_SEVERITY, findings: '', focus: false }]);
   };
   const update = (i: number, patch: Partial<AreaConcern>) => onChange(areas.map((a, idx) => idx === i ? { ...a, ...patch } : a));
   const remove = (i: number) => onChange(areas.filter((_, idx) => idx !== i));
@@ -1412,7 +1430,7 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
               <button type="button" title="Remove region" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]" onClick={() => remove(i)}><X size={13} /></button>
             </div>
             <div class="mt-1.5 flex flex-wrap items-center gap-1">
-              {FINDING_CHIPS.map((f) => (
+              {[...(REGION_FINDING_CHIPS[a.region] || []), ...FINDING_CHIPS].map((f) => (
                 <Chip key={f} label={`+ ${f}`} onClick={() => update(i, { findings: appendText(a.findings || '', f) })} />
               ))}
               <MicButton onText={(t) => update(i, { findings: appendText(a.findings || '', t) })} />
