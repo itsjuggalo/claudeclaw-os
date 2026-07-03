@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import {
+  Activity,
   CalendarClock,
+  Check,
+  ClipboardList,
+  Copy,
   Gift,
   History,
   LockKeyhole,
   Mail,
   MessageSquareText,
+  Plus,
   RefreshCw,
   Save,
   Send,
   ShieldAlert,
+  Stethoscope,
   Ticket,
   Trash2,
   UserPlus,
@@ -130,7 +136,7 @@ const btnDanger = 'inline-flex items-center gap-1 rounded-md border border-[var(
 export function MassageAdmin() {
   const overview = useFetch<Overview>('/api/massage-admin/clients', 30000);
   const session = useFetch<AdminSession>('/api/massage-admin/session', 30000);
-  const [tab, setTab] = useState<'accounts' | 'messaging' | 'promos'>('accounts');
+  const [tab, setTab] = useState<'accounts' | 'intakes' | 'soap' | 'messaging' | 'promos'>('accounts');
 
   const migration = overview.data?.migration;
   const canEdit = Boolean(session.data?.canEdit && !migration?.required);
@@ -142,6 +148,8 @@ export function MassageAdmin() {
         tabs={
           <>
             <Tab label="Accounts" active={tab === 'accounts'} count={overview.data?.clients.length} onClick={() => setTab('accounts')} />
+            <Tab label="Intake Forms" active={tab === 'intakes'} onClick={() => setTab('intakes')} />
+            <Tab label="SOAP Notes" active={tab === 'soap'} onClick={() => setTab('soap')} />
             <Tab label="Messaging" active={tab === 'messaging'} onClick={() => setTab('messaging')} />
             <Tab label="Promos & Codes" active={tab === 'promos'} onClick={() => setTab('promos')} />
           </>
@@ -176,6 +184,8 @@ export function MassageAdmin() {
           )}
 
           {tab === 'accounts' && <AccountsTab overview={overview} canEdit={canEdit} />}
+          {tab === 'intakes' && <IntakesTab canEdit={canEdit} />}
+          {tab === 'soap' && <SoapTab overview={overview} canEdit={canEdit} />}
           {tab === 'messaging' && <MessagingTab />}
           {tab === 'promos' && <PromosTab canEdit={canEdit} />}
         </div>

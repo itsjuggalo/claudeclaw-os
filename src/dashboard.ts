@@ -2602,6 +2602,30 @@ init();
   app.post('/api/massage-admin/gift/issue', withAdmin(async (c, u) =>
     c.json(await massageAdmin(`/api/admin/gift/issue`, { method: 'POST', body: await body(c), adminUser: u }))));
 
+  // intake review + clinical SOAP notes (reads loopback-safe; writes require admin)
+  app.get('/api/massage-admin/intakes', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/intakes?limit=${enc(c.req.query('limit') || '200')}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.get('/api/massage-admin/intakes/:id', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/intakes/${enc(c.req.param('id'))}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/intakes/:id/reviewed', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/intakes/${enc(c.req.param('id'))}/reviewed`, { method: 'POST', adminUser: u }))));
+  app.get('/api/massage-admin/soap', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/soap?client=${enc(c.req.query('client') || '')}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.get('/api/massage-admin/soap/appt/:apptId', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/soap/appt/${enc(c.req.param('apptId'))}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/soap', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/soap`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.patch('/api/massage-admin/soap/:id', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/soap/${enc(c.req.param('id'))}`, { method: 'PATCH', body: await body(c), adminUser: u }))));
+
   // ── SQL Monitor — read-only inventory + browse for every operational SQLite DB
   //    on the box (see src/sqlmonitor.ts). Self-contained; shares no code with the
   //    /databases catalog. SELECT-only queries; no write/action routes. Localhost is
