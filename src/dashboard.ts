@@ -2689,6 +2689,16 @@ init();
     c.json(await massageAdmin(`/api/admin/availability/window`, { method: 'PUT', body: await body(c), adminUser: u }))));
   app.put('/api/massage-admin/availability/hours', withAdmin(async (c, u) =>
     c.json(await massageAdmin(`/api/admin/availability/hours`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.get('/api/massage-admin/availability/schedule', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/availability/schedule?month=${enc(c.req.query('month') || '')}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.put('/api/massage-admin/availability/pause', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/pause`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/availability/timeblock', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/timeblock`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.delete('/api/massage-admin/availability/timeblock/:id', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/timeblock/${enc(c.req.param('id'))}`, { method: 'DELETE', adminUser: u }))));
   app.post('/api/massage-admin/availability/pending/:id/:action', withAdmin(async (c, u) =>
     c.json(await massageAdmin(`/api/admin/availability/pending/${enc(c.req.param('id'))}/${enc(c.req.param('action'))}`, { method: 'POST', adminUser: u }))));
 

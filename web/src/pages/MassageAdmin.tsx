@@ -872,8 +872,15 @@ interface AvailabilityResp {
   bufferMin?: number;
   leadTimeHours?: number;
   blackouts: string[];
+  timeBlocks?: TimeBlock[];
+  bookingsPaused?: boolean;
 }
+interface TimeBlock { id: string; day: string; start_hm: string; end_hm: string }
+interface ScheduleAppt { id: string; appt_date: string; appt_time: string; client_name: string; service_name: string; status: string; beyond_window: number; duration_min: number }
+interface ScheduleResp { ok: boolean; month: string; appts: ScheduleAppt[]; blackouts: string[]; timeBlocks: TimeBlock[] }
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// Local YYYY-MM-DD (no UTC drift).
+function isoLocalDate(d: Date): string { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 type Week = Record<string, [string, string][]>;
 // Ensure every weekday key (0..6) exists as an array of [open,close] pairs.
 function normalizeWeek(h?: Record<string, [string, string][]>): Week {
