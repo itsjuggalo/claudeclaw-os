@@ -978,11 +978,117 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
     finally { setBusy(false); }
   }
 
+  // Month/schedule view (navigable) — shows real bookings + off days + partial blocks.
+  const [ym, setYm] = useState(() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() }; });
+  const monthStr = `${ym.y}-${String(ym.m + 1).padStart(2, '0')}`;
+  const sched = useFetch<ScheduleResp>(`/api/massage-admin/availability/schedule?month=${monthStr}`, 30000);
+  function shiftMonth(delta: number) { setYm(({ y, m }) => { const t = m + delta; return { y: y + Math.floor(t / 12), m: ((t % 12) + 12) % 12 }; }); }
+
+  // Partial-day block inputs.
+  const [tbDay, setTbDay] = useState('');
+  const [tbStart, setTbStart] = useState('12:00');
+  const [tbEnd, setTbEnd] = useState('13:00');
+
+  const paused = !!cfg?.bookingsPaused;
+  async function togglePause() {
+    setBusy(true); setErr(null);
+    try { await apiPut('/api/massage-admin/availability/pause', { paused: !paused }); avail.refresh(); }
+    catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function quickBlock(range: 'today' | 'week') {
+    setBusy(true); setErr(null);
+    try {
+      const today = new Date();
+      const start = isoLocalDate(today);
+      let end: string | undefined;
+      if (range === 'week') { const s = new Date(today); s.setDate(s.getDate() + ((7 - s.getDay()) % 7)); end = isoLocalDate(s); } // through the coming Sunday
+      await apiPost('/api/massage-admin/availability/blackout', { start, end });
+      avail.refresh(); sched.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function addTimeBlock() {
+    if (!tbDay) return;
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string }>('/api/massage-admin/availability/timeblock', { day: tbDay, start: tbStart, end: tbEnd });
+      if (r.ok === false) { setErr(r.error || 'failed'); return; }
+      setTbDay(''); avail.refresh(); sched.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function removeTimeBlock(id: string) {
+    setBusy(true); setErr(null);
+    try { await apiDelete(`/api/massage-admin/availability/timeblock/${id}`); avail.refresh(); sched.refresh(); }
+    catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
   const blackouts = cfg?.blackouts ?? [];
+  const timeBlocks = cfg?.timeBlocks ?? [];
   const reqs = pending.data?.pending ?? [];
+
+  // Index this month's schedule by day for the calendar cells.
+  const apptsByDay: Record<string, ScheduleAppt[]> = {};
+  (sched.data?.appts ?? []).forEach((a) => { (apptsByDay[a.appt_date] ??= []).push(a); });
+  const offDays = new Set(sched.data?.blackouts ?? []);
+  const partialDays = new Set((sched.data?.timeBlocks ?? []).map((t) => t.day));
+  const firstDow = new Date(ym.y, ym.m, 1).getDay();
+  const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
+  const monthLabel = new Date(ym.y, ym.m, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
   return (
     <div class="space-y-4">
+      {/* Quick actions */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Quick actions</h3>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => quickBlock('today')}><Plus size={12} /> Out today</button>
+          <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => quickBlock('week')}><Plus size={12} /> Block rest of this week</button>
+          <button type="button" class={paused ? btnAccent : btnGhost} style={paused ? 'background:var(--color-accent)' : ''} disabled={!canEdit || busy} onClick={togglePause}>{paused ? '▶ Resume online bookings' : '⏸ Pause all new bookings'}</button>
+        </div>
+        {paused && <div class="mt-2 text-[11px] font-semibold text-[var(--color-status-failed)]">Online booking is PAUSED — clients can’t submit new requests until you resume.</div>}
+      </section>
+
+      {/* Month schedule view */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <div class="mb-2 flex items-center justify-between">
+          <h3 class="flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> My schedule</h3>
+          <div class="flex items-center gap-2 text-[12px]">
+            <button type="button" class={btnGhost} onClick={() => shiftMonth(-1)}>‹</button>
+            <span class="min-w-[110px] text-center font-semibold text-[var(--color-text)]">{monthLabel}</span>
+            <button type="button" class={btnGhost} onClick={() => shiftMonth(1)}>›</button>
+          </div>
+        </div>
+        <div class="grid grid-cols-7 gap-1 text-center">
+          {DAY_NAMES.map((d) => <div key={d} class="text-[10px] font-semibold text-[var(--color-text-faint)]">{d}</div>)}
+          {Array.from({ length: firstDow }).map((_, i) => <div key={`e${i}`} />)}
+          {Array.from({ length: daysInMonth }).map((_, i) => {
+            const day = i + 1;
+            const iso = `${monthStr}-${String(day).padStart(2, '0')}`;
+            const appts = apptsByDay[iso] || [];
+            const off = offDays.has(iso);
+            const partial = partialDays.has(iso);
+            const cls = 'flex h-12 flex-col items-center justify-start rounded-md border border-[var(--color-border)] p-1 text-[11px] transition-colors '
+              + (off ? 'bg-[color-mix(in_srgb,var(--color-status-failed)_18%,transparent)] '
+                : appts.length ? 'bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] '
+                : 'hover:bg-[var(--color-elevated)] ')
+              + (tbDay === iso ? 'ring-1 ring-[var(--color-accent)] ' : '');
+            const title = off ? 'Day off' : appts.length ? appts.map((a) => `${a.appt_time} ${a.client_name} (${a.status})`).join('\n') : partial ? 'Partial block' : '';
+            return (
+              <button key={iso} type="button" class={cls} title={title} onClick={() => setTbDay(iso)}>
+                <span class="text-[var(--color-text)]">{day}</span>
+                {off ? <span class="text-[9px] font-semibold text-[var(--color-status-failed)]">OFF</span>
+                  : appts.length ? <span class="mt-0.5 text-[10px] font-semibold text-[var(--color-accent)]">●{appts.length}</span>
+                  : partial ? <span class="mt-0.5 text-[10px] text-[var(--color-text-muted)]">◐</span> : null}
+              </button>
+            );
+          })}
+        </div>
+        <div class="mt-2 text-[10px] text-[var(--color-text-faint)]">● booked · <span class="text-[var(--color-status-failed)]">OFF</span> day off · ◐ partial block · tap a day to target the partial-block form below</div>
+      </section>
+
       {/* Booking window */}
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
         <h3 class="mb-2 flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Booking window</h3>
@@ -1046,6 +1152,28 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
                 <span key={d} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11px] text-[var(--color-text)]">
                   {fmtDay(d)}
                   <button type="button" title="Remove" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeDay(d)}><X size={12} /></button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Partial-day blocks — block a time range within a day (day stays otherwise bookable). */}
+        <div class="mt-3 border-t border-[var(--color-border)] pt-3">
+          <div class="mb-2 text-[12px] font-semibold text-[var(--color-text)]">Partial-day blocks</div>
+          <p class="mb-2 text-[11px] text-[var(--color-text-muted)]">Block just part of a day (e.g. an errand 2–5pm) — the rest of the day stays bookable.</p>
+          <div class="flex flex-wrap items-end gap-2">
+            <label class="text-[11px] text-[var(--color-text-muted)]">Day<br /><input class={inputClass} type="date" value={tbDay} onInput={(e) => setTbDay((e.currentTarget as HTMLInputElement).value)} /></label>
+            <label class="text-[11px] text-[var(--color-text-muted)]">From<br /><input class={`${inputClass} w-24`} type="time" value={tbStart} onInput={(e) => setTbStart((e.currentTarget as HTMLInputElement).value)} /></label>
+            <label class="text-[11px] text-[var(--color-text-muted)]">To<br /><input class={`${inputClass} w-24`} type="time" value={tbEnd} onInput={(e) => setTbEnd((e.currentTarget as HTMLInputElement).value)} /></label>
+            <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !tbDay} onClick={addTimeBlock}><Plus size={12} /> Block time</button>
+          </div>
+          {timeBlocks.length > 0 && (
+            <div class="mt-2 flex flex-wrap gap-2">
+              {timeBlocks.map((t) => (
+                <span key={t.id} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11px] text-[var(--color-text)]">
+                  {fmtDay(t.day)} {t.start_hm}–{t.end_hm}
+                  <button type="button" title="Remove" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeTimeBlock(t.id)}><X size={12} /></button>
                 </span>
               ))}
             </div>
