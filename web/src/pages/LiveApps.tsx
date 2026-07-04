@@ -69,7 +69,7 @@ export function LiveApps() {
                 <MonitorPlay size={12} /> Live app (redroid via ws-scrcpy) — tap and scroll the real app below.
               </p>
               <iframe
-                src={data.wsScrcpy.url}
+                src={`${location.protocol}//${location.hostname}:${data.wsScrcpy.port}`}
                 class="flex-1 w-full rounded-xl border border-[var(--color-border)] bg-black min-h-[640px]"
                 title="Live App"
                 allow="clipboard-read; clipboard-write" />

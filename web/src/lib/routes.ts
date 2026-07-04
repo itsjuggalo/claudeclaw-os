@@ -84,8 +84,9 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-mcv2',     label: 'MissionCtrl V2',  section: 'mc', icon: LayoutGrid,  href: 'self:3000' },
   { path: '/ext-kronos',   label: 'Kronos',          section: 'mc', icon: TrendingUp,  href: 'self:7070' },
   { path: '/ext-vibe',     label: 'Vibe Trading',    section: 'mc', icon: Workflow,    href: 'self:8899' },
-  // Mobile Hub binds ONLY the tailscale IP (:8443) — tailnet/phone-only by design; keep the raw IP.
-  { path: '/ext-hub',      label: 'Mobile Hub',      section: 'mc', icon: Radio,       href: 'https://100.91.39.122:8443' },
+  // Mobile Hub launchpad. self:8443 → http://localhost:8443 on desktop (plain-http
+  // nginx block) / https://<tailnet-host>:8443 on phone (tailscale-cert ssl block).
+  { path: '/ext-hub',      label: 'Mobile Hub',      section: 'mc', icon: Radio,       href: 'self:8443' },
   { path: '/ext-n8n',      label: 'n8n',             section: 'mc', icon: Workflow,    href: 'self:5678' },
 
   // Mission Control — ALL operator/personal pages moved off the PUBLIC missionctrl site

@@ -1,8 +1,13 @@
-// TokenUsage — embeds the token-dashboard Claude Code token/cost analytics (Tailscale IP :8080).
-// Backend must be running: PM2 process "token-dashboard" serves the stdlib HTTP server.
-// Bound to the Tailscale IP (HOST=100.91.39.122, NOT 0.0.0.0/loopback) so the iframe loads from
-// both laptop and phone over the tailnet, while staying off the LAN/internet (privacy).
+// TokenUsage — embeds the token-dashboard Claude Code token/cost analytics (:8080).
+// Backend must be running: PM2 process "token-dashboard" serves the stdlib HTTP server on 0.0.0.0:8080.
+// The iframe src is host-relative so it works on BOTH access paths without mixed-content blocks:
+//   desktop  → http://localhost:8080         (WSL loopback forwarding)
+//   phone    → https://<tailnet-host>:8080   (tailscale-serve TLS → http://127.0.0.1:8080)
+// A hardcoded http://<tailscale-IP>:8080 broke on both: unreachable from the Windows desktop
+// (WSL is NAT-mode, no Windows tailnet node) and blocked as mixed content under the HTTPS phone path.
 import { PageHeader } from '@/components/PageHeader';
+
+const TOKEN_DASHBOARD_SRC = `${location.protocol}//${location.hostname}:8080`;
 
 export function TokenUsage() {
   return (
@@ -10,7 +15,7 @@ export function TokenUsage() {
       <PageHeader title="Token Usage" />
       <div style={{ flex: 1, position: 'relative', padding: '0 16px 16px' }}>
         <iframe
-          src="http://100.91.39.122:8080"
+          src={TOKEN_DASHBOARD_SRC}
           title="Token Dashboard"
           style={{
             width: '100%',
