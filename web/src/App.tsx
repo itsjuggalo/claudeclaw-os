@@ -1,54 +1,30 @@
 import { Route, Switch, Redirect } from 'wouter-preact';
+import { Suspense } from 'preact/compat';
 import { Menu } from 'lucide-preact';
 import { Sidebar } from '@/components/Sidebar';
 import { CommandPalette } from '@/components/CommandPalette';
 import { ToastStack } from '@/components/ToastStack';
 import { sidebarOpen, closeSidebar } from '@/lib/sidebar';
 import { Placeholder } from '@/pages/Placeholder';
-import { MissionControl } from '@/pages/MissionControl';
-import { ControlPanel } from '@/pages/ControlPanel';
-import { Memories } from '@/pages/Memories';
-import { HiveMind } from '@/pages/HiveMind';
-import { KnowledgeGraph } from '@/pages/KnowledgeGraph';
-import { McKb } from '@/pages/McKb';
-import { Journal } from '@/pages/Journal';
-import { Agents } from '@/pages/Agents';
-import { Scheduled } from '@/pages/Scheduled';
-import { Audit } from '@/pages/Audit';
-import { Usage } from '@/pages/Usage';
-import { Settings } from '@/pages/Settings';
-import { Voices } from '@/pages/Voices';
-import { Chat } from '@/pages/Chat';
-import { WarRoom } from '@/pages/WarRoom';
-import { AgentFiles } from '@/pages/AgentFiles';
-import { Peon } from '@/pages/Peon';
-import { Wallets } from '@/pages/Wallets';
-import { MassageOps } from '@/pages/MassageOps';
-import { MassageAdmin } from '@/pages/MassageAdmin';
-import { SqlMonitor } from '@/pages/SqlMonitor';
-import { SignalMonitor } from '@/pages/SignalMonitor';
-import { LiveApps } from '@/pages/LiveApps';
-import { Gallery } from '@/pages/Gallery';
-import { SkoolBuilds } from '@/pages/SkoolBuilds';
-import { LewisTrading } from '@/pages/LewisTrading';
-import { Create } from '@/pages/Create';
-import { CharacterStudio } from '@/pages/CharacterStudio';
-import { Hermes } from '@/pages/Hermes';
-import { RapidApi } from '@/pages/RapidApi';
-import { ClaudeOffice } from '@/pages/ClaudeOffice';
-import { TokenUsage } from '@/pages/TokenUsage';
-import { TokenBurn } from '@/pages/TokenBurn';
-import { TradeDeskPage } from '@/pages/TradeDeskPage';
-import { EquityManagement } from '@/pages/EquityManagement';
-import { SignalFeedPage } from '@/pages/SignalFeedPage';
-import { FlowRankPage } from '@/pages/FlowRankPage';
-import { PortfolioAIPage } from '@/pages/PortfolioAIPage';
-import { FlowWinnersPage } from '@/pages/FlowWinnersPage';
-import { OptionsAcademy } from '@/pages/OptionsAcademy';
-import { Databases } from '@/pages/Databases';
-import { DatabaseDetail } from '@/pages/DatabaseDetail';
-import { Bunker } from '@/pages/Bunker';
+import { LazyPages } from '@/lib/page-loaders';
 import { DEFAULT_ROUTE } from '@/lib/routes';
+
+// Each page is code-split (see lib/page-loaders). <Page path> resolves the
+// lazy component for a route path; Suspense below shows a light fallback while
+// its chunk loads. Placeholder (404) stays statically imported — it's tiny and
+// is the fallback itself.
+function Page({ path }: { path: string }) {
+  const C = LazyPages[path];
+  return C ? <C /> : null;
+}
+
+function PageFallback() {
+  return (
+    <div class="flex h-full w-full items-center justify-center text-[13px] text-[var(--color-text-faint)]">
+      Loading…
+    </div>
+  );
+}
 
 export function App() {
   const open = sidebarOpen.value;
@@ -75,67 +51,69 @@ export function App() {
 
       <Sidebar />
       <main class="flex-1 min-w-0 overflow-hidden pl-12 md:pl-0">
-        <Switch>
-          <Route path="/mission"><MissionControl /></Route>
-          <Route path="/control"><ControlPanel /></Route>
-          <Route path="/scheduled"><Scheduled /></Route>
-          <Route path="/agents"><Agents /></Route>
-          <Route path="/agents/:id/files"><AgentFiles /></Route>
-          <Route path="/chat"><Chat /></Route>
-          <Route path="/bunker"><Bunker /></Route>
-          <Route path="/memories"><Memories /></Route>
-          <Route path="/hive"><HiveMind /></Route>
-          <Route path="/knowledge-graph"><KnowledgeGraph /></Route>
-          <Route path="/mckb"><McKb /></Route>
-          <Route path="/databases"><Databases /></Route>
-          <Route path="/databases/:id"><DatabaseDetail /></Route>
-          <Route path="/journal"><Journal /></Route>
-          <Route path="/usage"><Usage /></Route>
-          <Route path="/audit"><Audit /></Route>
-          <Route path="/wallets"><Wallets /></Route>
-          <Route path="/massage-ops"><MassageOps /></Route>
-          <Route path="/massage-admin"><MassageAdmin /></Route>
-          <Route path="/sql-monitor"><SqlMonitor /></Route>
-          <Route path="/signal-monitor"><SignalMonitor /></Route>
-          <Route path="/live-apps"><LiveApps /></Route>
-          <Route path="/gallery"><Gallery /></Route>
-          <Route path="/skool-builds"><SkoolBuilds /></Route>
-          <Route path="/lewis-trading"><LewisTrading /></Route>
-          <Route path="/create"><Create /></Route>
-          <Route path="/characters"><CharacterStudio /></Route>
-          <Route path="/hermes"><Hermes /></Route>
-          <Route path="/rapidapi"><RapidApi /></Route>
-          <Route path="/warroom"><WarRoom /></Route>
-          <Route path="/office"><ClaudeOffice /></Route>
-          <Route path="/token-usage"><TokenUsage /></Route>
-          <Route path="/token-burn"><TokenBurn /></Route>
-          <Route path="/voices"><Voices /></Route>
-          <Route path="/peon"><Peon /></Route>
-          <Route path="/settings"><Settings /></Route>
+        <Suspense fallback={<PageFallback />}>
+          <Switch>
+            <Route path="/mission"><Page path="/mission" /></Route>
+            <Route path="/control"><Page path="/control" /></Route>
+            <Route path="/scheduled"><Page path="/scheduled" /></Route>
+            <Route path="/agents"><Page path="/agents" /></Route>
+            <Route path="/agents/:id/files"><Page path="/agents/:id/files" /></Route>
+            <Route path="/chat"><Page path="/chat" /></Route>
+            <Route path="/bunker"><Page path="/bunker" /></Route>
+            <Route path="/memories"><Page path="/memories" /></Route>
+            <Route path="/hive"><Page path="/hive" /></Route>
+            <Route path="/knowledge-graph"><Page path="/knowledge-graph" /></Route>
+            <Route path="/mckb"><Page path="/mckb" /></Route>
+            <Route path="/databases"><Page path="/databases" /></Route>
+            <Route path="/databases/:id"><Page path="/databases/:id" /></Route>
+            <Route path="/journal"><Page path="/journal" /></Route>
+            <Route path="/usage"><Page path="/usage" /></Route>
+            <Route path="/audit"><Page path="/audit" /></Route>
+            <Route path="/wallets"><Page path="/wallets" /></Route>
+            <Route path="/massage-ops"><Page path="/massage-ops" /></Route>
+            <Route path="/massage-admin"><Page path="/massage-admin" /></Route>
+            <Route path="/sql-monitor"><Page path="/sql-monitor" /></Route>
+            <Route path="/signal-monitor"><Page path="/signal-monitor" /></Route>
+            <Route path="/live-apps"><Page path="/live-apps" /></Route>
+            <Route path="/gallery"><Page path="/gallery" /></Route>
+            <Route path="/skool-builds"><Page path="/skool-builds" /></Route>
+            <Route path="/lewis-trading"><Page path="/lewis-trading" /></Route>
+            <Route path="/create"><Page path="/create" /></Route>
+            <Route path="/characters"><Page path="/characters" /></Route>
+            <Route path="/hermes"><Page path="/hermes" /></Route>
+            <Route path="/rapidapi"><Page path="/rapidapi" /></Route>
+            <Route path="/warroom"><Page path="/warroom" /></Route>
+            <Route path="/office"><Page path="/office" /></Route>
+            <Route path="/token-usage"><Page path="/token-usage" /></Route>
+            <Route path="/token-burn"><Page path="/token-burn" /></Route>
+            <Route path="/voices"><Page path="/voices" /></Route>
+            <Route path="/peon"><Page path="/peon" /></Route>
+            <Route path="/settings"><Page path="/settings" /></Route>
 
-          {/* Trade Desk — live trading intelligence */}
-          <Route path="/trade-desk"><TradeDeskPage /></Route>
-          <Route path="/equity"><EquityManagement /></Route>
-          <Route path="/trade-desk/signals"><SignalFeedPage /></Route>
-          <Route path="/trade-desk/flow-rank"><FlowRankPage /></Route>
-          <Route path="/trade-desk/portfolio"><PortfolioAIPage /></Route>
-          <Route path="/trade-desk/flow-winners"><FlowWinnersPage /></Route>
-          <Route path="/options-academy"><OptionsAcademy /></Route>
+            {/* Trade Desk — live trading intelligence */}
+            <Route path="/trade-desk"><Page path="/trade-desk" /></Route>
+            <Route path="/equity"><Page path="/equity" /></Route>
+            <Route path="/trade-desk/signals"><Page path="/trade-desk/signals" /></Route>
+            <Route path="/trade-desk/flow-rank"><Page path="/trade-desk/flow-rank" /></Route>
+            <Route path="/trade-desk/portfolio"><Page path="/trade-desk/portfolio" /></Route>
+            <Route path="/trade-desk/flow-winners"><Page path="/trade-desk/flow-winners" /></Route>
+            <Route path="/options-academy"><Page path="/options-academy" /></Route>
 
-          {/* Common alt slugs that used to point at placeholder pages */}
-          <Route path="/hive-mind"><Redirect to="/hive" /></Route>
-          <Route path="/hivemind"><Redirect to="/hive" /></Route>
-          <Route path="/memory"><Redirect to="/memories" /></Route>
+            {/* Common alt slugs that used to point at placeholder pages */}
+            <Route path="/hive-mind"><Redirect to="/hive" /></Route>
+            <Route path="/hivemind"><Redirect to="/hive" /></Route>
+            <Route path="/memory"><Redirect to="/memories" /></Route>
 
-          <Route path="/"><Redirect to={DEFAULT_ROUTE} /></Route>
-          <Route>
-            <Placeholder
-              title="Not found"
-              description="This page does not exist. Use ⌘K to jump somewhere."
-              hideRoadmapNote
-            />
-          </Route>
-        </Switch>
+            <Route path="/"><Redirect to={DEFAULT_ROUTE} /></Route>
+            <Route>
+              <Placeholder
+                title="Not found"
+                description="This page does not exist. Use ⌘K to jump somewhere."
+                hideRoadmapNote
+              />
+            </Route>
+          </Switch>
+        </Suspense>
       </main>
       <CommandPalette />
       <ToastStack />

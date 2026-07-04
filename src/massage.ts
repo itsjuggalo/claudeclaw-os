@@ -90,7 +90,7 @@ export async function setReaper(cfg: { on?: boolean; live?: boolean; warn_days?:
 // into x-admin-user so every audit row on the massage side is attributable.
 export async function massageAdmin<T = unknown>(
   pathname: string,
-  opts: { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; adminUser: string },
+  opts: { method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; body?: unknown; adminUser: string },
 ): Promise<T> {
   const init: RequestInit = {
     method: opts.method || 'GET',

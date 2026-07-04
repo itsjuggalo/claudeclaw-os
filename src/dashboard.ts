@@ -7,6 +7,7 @@ import { serve } from '@hono/node-server';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import zlib from 'zlib';
 import { spawnSync } from 'child_process';
 import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, MC_ACCESS_SECRET, MC_ACCESS_DISABLED, PROJECT_ROOT, STORE_DIR, WARROOM_TMP_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
 import { MC_COOKIE, MASTER_TTL_SEC, verifyToken, masterToken, signToken, isLoopbackAddr, nowSec, mcLoginPage } from './mc-access.js';
@@ -161,6 +162,28 @@ import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.
 import { inspectAcpProviderRuntimeOptions, type AcpProviderRuntimeOptions } from './agent-engine/acp-adapter.js';
 import { listCharacters, getCharacter, configureCharacter, publishCharacter, trainCommandFor } from './character.js';
 import { reviewGen, qaSummary } from './qa.js';
+
+// Static-asset compression cache. Keyed by `${filePath}|${encoding}`; the
+// compressed buffer for an immutable content-hashed asset never changes, so
+// we compress once and reuse. Bounded naturally by the number of hashed
+// assets in dist/web (a new build = new filenames = new keys; stale keys just
+// go cold and cost a little memory until process restart).
+const _assetCompressCache = new Map<string, Buffer>();
+function getCompressedAsset(filePath: string, data: Buffer, enc: 'br' | 'gzip'): Buffer {
+  const key = `${filePath}|${enc}`;
+  const hit = _assetCompressCache.get(key);
+  if (hit) return hit;
+  const out = enc === 'br'
+    ? zlib.brotliCompressSync(data, {
+        params: {
+          [zlib.constants.BROTLI_PARAM_QUALITY]: 6,
+          [zlib.constants.BROTLI_PARAM_SIZE_HINT]: data.length,
+        },
+      })
+    : zlib.gzipSync(data, { level: 6 });
+  _assetCompressCache.set(key, out);
+  return out;
+}
 
 // Selectable/valid Claude models for the dashboard pickers and the model-set
 // endpoints. The current lineup is derived from the CLAUDE_MODEL_* config
@@ -1220,6 +1243,13 @@ init();
 
   // Static asset serving for the Vite-built frontend.
   // Vite emits hashed files under dist/web/assets/.
+  //
+  // Compression: text assets (js/css/map/svg) are brotli/gzip-compressed on the
+  // fly and cached in memory keyed by filePath+encoding. Filenames are content-
+  // hashed and immutable, so a compressed buffer never goes stale — compress
+  // once, serve forever. This cuts the JS/CSS transfer ~4× (the main bundle
+  // ~1.3MB → ~0.3MB), a big win on the phone/cellular path. Already-compressed
+  // types (woff2) are passed through untouched.
   app.get('/assets/*', (c) => {
     const url = new URL(c.req.url);
     const rel = url.pathname.replace(/^\//, '');
@@ -1236,9 +1266,25 @@ init();
       : ext === '.svg' ? 'image/svg+xml'
       : ext === '.woff2' ? 'font/woff2'
       : 'application/octet-stream';
-    return new Response(new Uint8Array(data), {
-      headers: { 'Content-Type': ctype, 'Cache-Control': 'public, max-age=31536000, immutable' },
-    });
+
+    const compressible = ext === '.js' || ext === '.css' || ext === '.map' || ext === '.svg';
+    const accept = c.req.header('accept-encoding') || '';
+    const enc = compressible && /\bbr\b/.test(accept) ? 'br'
+      : compressible && /\bgzip\b/.test(accept) ? 'gzip'
+      : null;
+
+    const headers: Record<string, string> = {
+      'Content-Type': ctype,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      Vary: 'Accept-Encoding',
+    };
+
+    if (enc) {
+      const body = getCompressedAsset(filePath, data, enc);
+      headers['Content-Encoding'] = enc;
+      return new Response(new Uint8Array(body), { headers });
+    }
+    return new Response(new Uint8Array(data), { headers });
   });
 
   // Top-level static files copied from web/public/ at build time
@@ -2625,6 +2671,24 @@ init();
     c.json(await massageAdmin(`/api/admin/soap`, { method: 'POST', body: await body(c), adminUser: u }))));
   app.patch('/api/massage-admin/soap/:id', withAdmin(async (c, u) =>
     c.json(await massageAdmin(`/api/admin/soap/${enc(c.req.param('id'))}`, { method: 'PATCH', body: await body(c), adminUser: u }))));
+
+  // availability — days off, booking window, beyond-window approval queue (reads loopback-safe; writes require admin)
+  app.get('/api/massage-admin/availability', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/availability`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.get('/api/massage-admin/availability/pending', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/availability/pending`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/availability/blackout', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/blackout`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.delete('/api/massage-admin/availability/blackout/:day', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/blackout/${enc(c.req.param('day'))}`, { method: 'DELETE', adminUser: u }))));
+  app.put('/api/massage-admin/availability/window', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/window`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/availability/pending/:id/:action', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/pending/${enc(c.req.param('id'))}/${enc(c.req.param('action'))}`, { method: 'POST', adminUser: u }))));
 
   // ── SQL Monitor — read-only inventory + browse for every operational SQLite DB
   //    on the box (see src/sqlmonitor.ts). Self-contained; shares no code with the

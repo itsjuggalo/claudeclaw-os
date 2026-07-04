@@ -29,7 +29,7 @@ import { PageState } from '@/components/PageState';
 import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
 import { useSpin } from '@/lib/useSpin';
-import { apiPatch, apiPost, apiGet } from '@/lib/api';
+import { apiPatch, apiPost, apiGet, apiPut, apiDelete } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
 interface MigrationState {
@@ -289,7 +289,9 @@ export function MassageAdmin() {
   const overview = useFetch<Overview>('/api/massage-admin/clients', 30000);
   const session = useFetch<AdminSession>('/api/massage-admin/session', 30000);
   const { busy: refreshing, spin } = useSpin();
-  const [tab, setTab] = useState<'accounts' | 'intakes' | 'soap' | 'messaging' | 'promos'>('accounts');
+  const [tab, setTab] = useState<'accounts' | 'intakes' | 'soap' | 'messaging' | 'promos' | 'availability'>('accounts');
+  // Fetched here (not just in the tab) so the tab label can show a pending-request count badge.
+  const pendingReqs = useFetch<PendingResp>('/api/massage-admin/availability/pending', 30000);
 
   const migration = overview.data?.migration;
   const canEdit = Boolean(session.data?.canEdit && !migration?.required);
@@ -305,6 +307,7 @@ export function MassageAdmin() {
             <Tab label="SOAP Notes" active={tab === 'soap'} onClick={() => setTab('soap')} />
             <Tab label="Messaging" active={tab === 'messaging'} onClick={() => setTab('messaging')} />
             <Tab label="Promos & Codes" active={tab === 'promos'} onClick={() => setTab('promos')} />
+            <Tab label="Availability" active={tab === 'availability'} count={pendingReqs.data?.pending?.length || undefined} onClick={() => setTab('availability')} />
           </>
         }
         actions={
@@ -341,6 +344,7 @@ export function MassageAdmin() {
           {tab === 'soap' && <SoapTab overview={overview} canEdit={canEdit} />}
           {tab === 'messaging' && <MessagingTab />}
           {tab === 'promos' && <PromosTab canEdit={canEdit} />}
+          {tab === 'availability' && <AvailabilityTab canEdit={canEdit} pending={pendingReqs} />}
         </div>
       )}
     </div>
@@ -849,6 +853,140 @@ function PromosTab({ canEdit }: { canEdit: boolean }) {
                 <div class="truncate text-[var(--color-text-faint)]">{c.label || '—'} · {c.uses} used{c.max_uses ? `/${c.max_uses}` : ''}{c.expires_at ? ` · exp ${c.expires_at.slice(0, 10)}` : ''}</div>
                 <div>{c.active ? <span class="text-[var(--color-status-done)]">active</span> : <span class="text-[var(--color-text-faint)]">disabled</span>}</div>
                 <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => toggle(c)}>{c.active ? 'Disable' : 'Enable'}</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────── Availability ──
+interface AvailabilityResp {
+  ok: boolean;
+  hours: Record<string, [string, string][]>;
+  bookingWindowDays: number;
+  maxAdvanceDays: number;
+  blackouts: string[];
+}
+interface PendingAppt {
+  id: string; client_name: string; client_email: string;
+  service_name: string; appt_date: string; appt_time: string; created_at: string;
+}
+interface PendingResp { ok: boolean; pending: PendingAppt[] }
+
+// Friendly "Mon, Jul 20" from a YYYY-MM-DD string (local, no TZ drift).
+function fmtDay(d: string): string {
+  try { return new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }
+  catch { return d; }
+}
+
+// Owner availability: block days off, set the self-serve booking window, and approve/decline
+// the beyond-window request queue. Reads/writes the massage backend via the ClaudeClaw proxy.
+function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { data: PendingResp | null; refresh: () => void } }) {
+  const avail = useFetch<AvailabilityResp>('/api/massage-admin/availability', 30000);
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [windowDays, setWindowDays] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const cfg = avail.data;
+  // Seed the window input from the loaded value once (leave user edits alone).
+  useEffect(() => { if (cfg && windowDays === '') setWindowDays(String(cfg.bookingWindowDays)); }, [cfg?.bookingWindowDays]);
+
+  async function addBlackout() {
+    if (!start) return;
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string; count?: number }>('/api/massage-admin/availability/blackout', { start, end: end || undefined });
+      if (r.ok === false) { setErr(r.error || 'failed'); return; }
+      setStart(''); setEnd(''); avail.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function removeDay(day: string) {
+    setBusy(true); setErr(null);
+    try { await apiDelete(`/api/massage-admin/availability/blackout/${day}`); avail.refresh(); }
+    catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function saveWindow() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPut<{ ok?: boolean; error?: string }>('/api/massage-admin/availability/window', { bookingWindowDays: Number(windowDays) });
+      if (r.ok === false) { setErr(r.error || 'failed'); return; }
+      avail.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function decide(id: string, action: 'approve' | 'decline') {
+    setBusy(true); setErr(null);
+    try { await apiPost(`/api/massage-admin/availability/pending/${id}/${action}`, {}); pending.refresh(); avail.refresh(); }
+    catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  const blackouts = cfg?.blackouts ?? [];
+  const reqs = pending.data?.pending ?? [];
+
+  return (
+    <div class="space-y-4">
+      {/* Booking window */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Booking window</h3>
+        <p class="mb-3 text-[12px] leading-relaxed text-[var(--color-text-muted)]">
+          Clients can book any open day within this many days. Beyond it (up to {cfg?.maxAdvanceDays ?? 365} days) they can only
+          <span class="font-semibold text-[var(--color-text)]"> request</span> a date — it lands in the queue below for you to approve.
+        </p>
+        <div class="flex items-center gap-2">
+          <input class={`${inputClass} w-24`} type="number" min={1} max={365} value={windowDays} onInput={(e) => setWindowDays((e.currentTarget as HTMLInputElement).value)} />
+          <span class="text-[12px] text-[var(--color-text-muted)]">days self-serve</span>
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !windowDays} onClick={saveWindow}><Save size={12} /> Save window</button>
+        </div>
+      </section>
+
+      {/* Days off */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Days off</h3>
+        <p class="mb-3 text-[12px] leading-relaxed text-[var(--color-text-muted)]">Blocked days show no open times to clients. Leave the end date empty for a single day, or set it for a range (vacation).</p>
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="text-[11px] text-[var(--color-text-muted)]">From <input class={inputClass} type="date" value={start} onInput={(e) => setStart((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[11px] text-[var(--color-text-muted)]">To (optional) <input class={inputClass} type="date" value={end} onInput={(e) => setEnd((e.currentTarget as HTMLInputElement).value)} /></label>
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !start} onClick={addBlackout}><Plus size={12} /> Block</button>
+        </div>
+        {err && <div class="mt-2 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+        <div class="mt-3 border-t border-[var(--color-border)] pt-3">
+          {blackouts.length === 0 ? <div class="text-[12px] text-[var(--color-text-faint)]">No days off scheduled.</div> : (
+            <div class="flex flex-wrap gap-2">
+              {blackouts.map((d) => (
+                <span key={d} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11px] text-[var(--color-text)]">
+                  {fmtDay(d)}
+                  <button type="button" title="Remove" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeDay(d)}><X size={12} /></button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Beyond-window request queue */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[12px] font-semibold text-[var(--color-text)]">Requests awaiting approval ({reqs.length})</div>
+        {reqs.length === 0 ? <div class="px-3 py-5 text-center text-[12px] text-[var(--color-text-faint)]">No beyond-window requests right now.</div> : (
+          <div class="max-h-[420px] overflow-y-auto">
+            {reqs.map((r) => (
+              <div key={r.id} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[11px] last:border-b-0 md:grid-cols-[1fr_150px_auto]">
+                <div>
+                  <div class="font-semibold text-[var(--color-text)]">{r.client_name} <span class="font-normal text-[var(--color-text-faint)]">· {r.client_email}</span></div>
+                  <div class="text-[var(--color-text-muted)]">{r.service_name}</div>
+                </div>
+                <div class="text-[var(--color-text-muted)]">{fmtDay(r.appt_date)} at {r.appt_time}</div>
+                <div class="flex items-center gap-2">
+                  <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy} onClick={() => decide(r.id, 'approve')}><Check size={12} /> Approve</button>
+                  <button type="button" class={btnDanger} disabled={!canEdit || busy} onClick={() => decide(r.id, 'decline')}><X size={12} /> Decline</button>
+                </div>
               </div>
             ))}
           </div>
