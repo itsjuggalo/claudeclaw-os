@@ -80,40 +80,41 @@ export const ROUTES: RouteDef[] = [
 
   // Mission Control quick-launch (external links, open in new tab)
   { path: '/ext-board',    label: 'Session Board',   section: 'mc', icon: FolderKanban, href: 'self:3222' },
-  { path: '/ext-aries',    label: 'ARIES',           section: 'mc', icon: Rocket,      href: 'http://100.91.39.122:1337' },
-  { path: '/ext-mcv2',     label: 'MissionCtrl V2',  section: 'mc', icon: LayoutGrid,  href: 'http://100.91.39.122:3000' },
-  { path: '/ext-kronos',   label: 'Kronos',          section: 'mc', icon: TrendingUp,  href: 'http://100.91.39.122:7070' },
-  { path: '/ext-vibe',     label: 'Vibe Trading',    section: 'mc', icon: Workflow,    href: 'http://100.91.39.122:8899' },
+  { path: '/ext-aries',    label: 'ARIES',           section: 'mc', icon: Rocket,      href: 'self:1337' },
+  { path: '/ext-mcv2',     label: 'MissionCtrl V2',  section: 'mc', icon: LayoutGrid,  href: 'self:3000' },
+  { path: '/ext-kronos',   label: 'Kronos',          section: 'mc', icon: TrendingUp,  href: 'self:7070' },
+  { path: '/ext-vibe',     label: 'Vibe Trading',    section: 'mc', icon: Workflow,    href: 'self:8899' },
+  // Mobile Hub binds ONLY the tailscale IP (:8443) — tailnet/phone-only by design; keep the raw IP.
   { path: '/ext-hub',      label: 'Mobile Hub',      section: 'mc', icon: Radio,       href: 'https://100.91.39.122:8443' },
-  { path: '/ext-n8n',      label: 'n8n',             section: 'mc', icon: Workflow,    href: 'http://100.91.39.122:5678' },
+  { path: '/ext-n8n',      label: 'n8n',             section: 'mc', icon: Workflow,    href: 'self:5678' },
 
   // Mission Control — ALL operator/personal pages moved off the PUBLIC missionctrl site
   // (2026-06-20, Mike's call). missionctrl :3000 is now a clean public product (signal8-style);
   // anything Mike-specific (money/positions), internal admin, or infra lives HERE. Deep-links
   // into MC :3000 (pages still resolve via ?page=<slug>); open in a new tab.
-  { path: '/ext-mc-wallets',   label: 'Wallets',       section: 'mcctrl', icon: Wallet,       href: 'http://100.91.39.122:3000/?page=wallets' },
-  { path: '/ext-mc-trades',    label: 'Trades',        section: 'mcctrl', icon: Briefcase,    href: 'http://100.91.39.122:3000/?page=trades' },
-  { path: '/ext-mc-llmport',   label: 'LLM Portfolio', section: 'mcctrl', icon: BarChart2,    href: 'http://100.91.39.122:3000/?page=llm-portfolio' },
-  { path: '/ext-mc-risk',      label: 'Risk',          section: 'mcctrl', icon: ShieldCheck,  href: 'http://100.91.39.122:3000/?page=risk' },
-  { path: '/ext-mc-perf',      label: 'Performance',   section: 'mcctrl', icon: Gauge,        href: 'http://100.91.39.122:3000/?page=performance' },
-  { path: '/ext-mc-journal',   label: 'MC Journal',    section: 'mcctrl', icon: BookOpen,     href: 'http://100.91.39.122:3000/?page=journal' },
-  { path: '/ext-mc-telegram',  label: 'Telegram',      section: 'mcctrl', icon: MessageSquare, href: 'http://100.91.39.122:3000/?page=telegram' },
-  { path: '/ext-mc-approvals', label: 'Approvals',     section: 'mcctrl', icon: ListTodo,     href: 'http://100.91.39.122:3000/?page=approvals' },
-  { path: '/ext-mc-activity',  label: 'Activity',      section: 'mcctrl', icon: Activity,     href: 'http://100.91.39.122:3000/?page=activity' },
-  { path: '/ext-mc-agents',    label: 'Agents',        section: 'mcctrl', icon: Bot,          href: 'http://100.91.39.122:3000/?page=agents' },
-  { path: '/ext-mc-pm2',       label: 'PM2 Control',   section: 'mcctrl', icon: Server,       href: 'http://100.91.39.122:3000/?page=pm2-control' },
-  { path: '/ext-mc-sessions',  label: 'Sessions',      section: 'mcctrl', icon: MessageSquare, href: 'http://100.91.39.122:3000/?page=sessions' },
-  { path: '/ext-mc-memory',    label: 'Memory',        section: 'mcctrl', icon: Brain,        href: 'http://100.91.39.122:3000/?page=memory' },
-  { path: '/ext-mc-memgraph',  label: 'Memory Graph',  section: 'mcctrl', icon: Network,      href: 'http://100.91.39.122:3000/?page=memory-graph' },
-  { path: '/ext-mc-tasks',     label: 'Tasks',         section: 'mcctrl', icon: ListTodo,     href: 'http://100.91.39.122:3000/?page=tasks' },
-  { path: '/ext-mc-skills',    label: 'Skills',        section: 'mcctrl', icon: Database,     href: 'http://100.91.39.122:3000/?page=skills' },
-  { path: '/ext-mc-docs',      label: 'Docs',          section: 'mcctrl', icon: BookOpen,     href: 'http://100.91.39.122:3000/?page=docs' },
-  { path: '/ext-mc-usage',     label: 'Usage',         section: 'mcctrl', icon: Activity,     href: 'http://100.91.39.122:3000/?page=usage' },
-  { path: '/ext-mc-office',    label: 'Office',        section: 'mcctrl', icon: Building2,    href: 'http://100.91.39.122:3000/?page=office' },
-  { path: '/ext-mc-projects',  label: 'Projects',      section: 'mcctrl', icon: FolderKanban, href: 'http://100.91.39.122:3000/?page=projects' },
+  { path: '/ext-mc-wallets',   label: 'Wallets',       section: 'mcctrl', icon: Wallet,       href: 'self:3000/?page=wallets' },
+  { path: '/ext-mc-trades',    label: 'Trades',        section: 'mcctrl', icon: Briefcase,    href: 'self:3000/?page=trades' },
+  { path: '/ext-mc-llmport',   label: 'LLM Portfolio', section: 'mcctrl', icon: BarChart2,    href: 'self:3000/?page=llm-portfolio' },
+  { path: '/ext-mc-risk',      label: 'Risk',          section: 'mcctrl', icon: ShieldCheck,  href: 'self:3000/?page=risk' },
+  { path: '/ext-mc-perf',      label: 'Performance',   section: 'mcctrl', icon: Gauge,        href: 'self:3000/?page=performance' },
+  { path: '/ext-mc-journal',   label: 'MC Journal',    section: 'mcctrl', icon: BookOpen,     href: 'self:3000/?page=journal' },
+  { path: '/ext-mc-telegram',  label: 'Telegram',      section: 'mcctrl', icon: MessageSquare, href: 'self:3000/?page=telegram' },
+  { path: '/ext-mc-approvals', label: 'Approvals',     section: 'mcctrl', icon: ListTodo,     href: 'self:3000/?page=approvals' },
+  { path: '/ext-mc-activity',  label: 'Activity',      section: 'mcctrl', icon: Activity,     href: 'self:3000/?page=activity' },
+  { path: '/ext-mc-agents',    label: 'Agents',        section: 'mcctrl', icon: Bot,          href: 'self:3000/?page=agents' },
+  { path: '/ext-mc-pm2',       label: 'PM2 Control',   section: 'mcctrl', icon: Server,       href: 'self:3000/?page=pm2-control' },
+  { path: '/ext-mc-sessions',  label: 'Sessions',      section: 'mcctrl', icon: MessageSquare, href: 'self:3000/?page=sessions' },
+  { path: '/ext-mc-memory',    label: 'Memory',        section: 'mcctrl', icon: Brain,        href: 'self:3000/?page=memory' },
+  { path: '/ext-mc-memgraph',  label: 'Memory Graph',  section: 'mcctrl', icon: Network,      href: 'self:3000/?page=memory-graph' },
+  { path: '/ext-mc-tasks',     label: 'Tasks',         section: 'mcctrl', icon: ListTodo,     href: 'self:3000/?page=tasks' },
+  { path: '/ext-mc-skills',    label: 'Skills',        section: 'mcctrl', icon: Database,     href: 'self:3000/?page=skills' },
+  { path: '/ext-mc-docs',      label: 'Docs',          section: 'mcctrl', icon: BookOpen,     href: 'self:3000/?page=docs' },
+  { path: '/ext-mc-usage',     label: 'Usage',         section: 'mcctrl', icon: Activity,     href: 'self:3000/?page=usage' },
+  { path: '/ext-mc-office',    label: 'Office',        section: 'mcctrl', icon: Building2,    href: 'self:3000/?page=office' },
+  { path: '/ext-mc-projects',  label: 'Projects',      section: 'mcctrl', icon: FolderKanban, href: 'self:3000/?page=projects' },
   // Lewis Program is an MC :3000 page (Lewis Live + Strategy Compare stayed on MC) — grouped
   // here with the rest of Mission Control instead of a one-item "Lewis Lab" section.
-  { path: '/ext-lewis-program', label: 'Lewis Program', section: 'mcctrl', icon: GraduationCap, href: 'http://100.91.39.122:3000/?page=lewis-program' },
+  { path: '/ext-lewis-program', label: 'Lewis Program', section: 'mcctrl', icon: GraduationCap, href: 'self:3000/?page=lewis-program' },
 
   // Massage & bodywork — Mike's non-trading business: admin console, ops, and the
   // Erik Dalton learning KB (folded in from the old one-item "Wellness" section).
@@ -122,9 +123,9 @@ export const ROUTES: RouteDef[] = [
   { path: '/databases/erikdalton', label: 'Erik Dalton — Learn', section: 'massage', icon: HeartPulse, shortcut: 'g d' },
 
   // ARIES admin — external ARIES pages, grouped with the ARIES launcher under MC Apps.
-  { path: '/ext-aries-log',      label: 'Mission Log',      section: 'mc', icon: ScrollText,     href: 'http://100.91.39.122:1337/log' },
-  { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'mc', icon: Settings,       href: 'http://100.91.39.122:1337/settings' },
-  { path: '/ext-aries-system',   label: 'System Analytics', section: 'mc', icon: MonitorDot,     href: 'http://100.91.39.122:1337/system' },
+  { path: '/ext-aries-log',      label: 'Mission Log',      section: 'mc', icon: ScrollText,     href: 'self:1337/log' },
+  { path: '/ext-aries-settings', label: 'ARIES Settings',   section: 'mc', icon: Settings,       href: 'self:1337/settings' },
+  { path: '/ext-aries-system',   label: 'System Analytics', section: 'mc', icon: MonitorDot,     href: 'self:1337/system' },
 ];
 
 export const SECTION_LABEL: Record<RouteSection, string> = {
