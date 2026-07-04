@@ -868,7 +868,21 @@ interface AvailabilityResp {
   hours: Record<string, [string, string][]>;
   bookingWindowDays: number;
   maxAdvanceDays: number;
+  slotIncrementMin?: number;
+  bufferMin?: number;
+  leadTimeHours?: number;
   blackouts: string[];
+}
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+type Week = Record<string, [string, string][]>;
+// Ensure every weekday key (0..6) exists as an array of [open,close] pairs.
+function normalizeWeek(h?: Record<string, [string, string][]>): Week {
+  const w: Week = {};
+  for (let d = 0; d <= 6; d++) {
+    const r = h?.[String(d)];
+    w[String(d)] = Array.isArray(r) ? r.map((x) => [String(x[0]), String(x[1])] as [string, string]) : [];
+  }
+  return w;
 }
 interface PendingAppt {
   id: string; client_name: string; client_email: string;
@@ -892,9 +906,38 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const [week, setWeek] = useState<Week | null>(null);
+  const [slotInc, setSlotInc] = useState('');
+  const [buffer, setBuffer] = useState('');
+  const [lead, setLead] = useState('');
+
   const cfg = avail.data;
   // Seed the window input from the loaded value once (leave user edits alone).
   useEffect(() => { if (cfg && windowDays === '') setWindowDays(String(cfg.bookingWindowDays)); }, [cfg?.bookingWindowDays]);
+  // Seed the weekly-hours editor from the loaded config once.
+  useEffect(() => {
+    if (cfg && week === null) {
+      setWeek(normalizeWeek(cfg.hours));
+      setSlotInc(String(cfg.slotIncrementMin ?? 30));
+      setBuffer(String(cfg.bufferMin ?? 15));
+      setLead(String(cfg.leadTimeHours ?? 12));
+    }
+  }, [cfg]);
+
+  function mutRange(d: number, i: number, idx: 0 | 1, val: string) {
+    setWeek((w) => { if (!w) return w; const nw: Week = { ...w }; const rows = nw[String(d)].map((r) => [...r] as [string, string]); rows[i][idx] = val; nw[String(d)] = rows; return nw; });
+  }
+  function addRange(d: number) { setWeek((w) => { if (!w) return w; const nw: Week = { ...w }; nw[String(d)] = [...nw[String(d)], ['10:00', '17:00']]; return nw; }); }
+  function removeRange(d: number, i: number) { setWeek((w) => { if (!w) return w; const nw: Week = { ...w }; nw[String(d)] = nw[String(d)].filter((_, j) => j !== i); return nw; }); }
+  async function saveHours() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPut<{ ok?: boolean; error?: string }>('/api/massage-admin/availability/hours', { week, slotIncrementMin: Number(slotInc), bufferMin: Number(buffer), leadTimeHours: Number(lead) });
+      if (r.ok === false) { setErr(r.error || 'failed'); return; }
+      avail.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
 
   async function addBlackout() {
     if (!start) return;
@@ -944,6 +987,38 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
           <input class={`${inputClass} w-24`} type="number" min={1} max={365} value={windowDays} onInput={(e) => setWindowDays((e.currentTarget as HTMLInputElement).value)} />
           <span class="text-[12px] text-[var(--color-text-muted)]">days self-serve</span>
           <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !windowDays} onClick={saveWindow}><Save size={12} /> Save window</button>
+        </div>
+      </section>
+
+      {/* Weekly working hours */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Weekly hours</h3>
+        <p class="mb-3 text-[12px] leading-relaxed text-[var(--color-text-muted)]">Your normal working days &amp; hours. A day with no time ranges is closed. Add a range to open a day (e.g. a Saturday); add two ranges for a lunch break. Changes apply immediately.</p>
+        <div class="space-y-1.5">
+          {week && DAY_NAMES.map((name, d) => {
+            const ranges = week[String(d)] || [];
+            return (
+              <div key={d} class="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 last:border-b-0">
+                <span class="w-9 text-[12px] font-semibold text-[var(--color-text)]">{name}</span>
+                {ranges.length === 0 && <span class="text-[11px] text-[var(--color-text-faint)]">Closed</span>}
+                {ranges.map((r, i) => (
+                  <span key={i} class="inline-flex items-center gap-1">
+                    <input class={`${inputClass} w-24`} type="time" value={r[0]} onInput={(e) => mutRange(d, i, 0, (e.currentTarget as HTMLInputElement).value)} />
+                    <span class="text-[11px] text-[var(--color-text-faint)]">–</span>
+                    <input class={`${inputClass} w-24`} type="time" value={r[1]} onInput={(e) => mutRange(d, i, 1, (e.currentTarget as HTMLInputElement).value)} />
+                    <button type="button" title="Remove range" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeRange(d, i)}><X size={12} /></button>
+                  </span>
+                ))}
+                <button type="button" class="inline-flex items-center gap-0.5 text-[11px] text-[var(--color-accent)] hover:underline disabled:opacity-40" disabled={!canEdit || busy} onClick={() => addRange(d)}><Plus size={11} /> hours</button>
+              </div>
+            );
+          })}
+        </div>
+        <div class="mt-3 flex flex-wrap items-end gap-3 border-t border-[var(--color-border)] pt-3">
+          <label class="text-[11px] text-[var(--color-text-muted)]">Slot step (min)<br /><input class={`${inputClass} w-20`} type="number" min={5} max={240} value={slotInc} onInput={(e) => setSlotInc((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[11px] text-[var(--color-text-muted)]">Buffer (min)<br /><input class={`${inputClass} w-20`} type="number" min={0} max={120} value={buffer} onInput={(e) => setBuffer((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[11px] text-[var(--color-text-muted)]">Lead time (hrs)<br /><input class={`${inputClass} w-20`} type="number" min={0} max={168} value={lead} onInput={(e) => setLead((e.currentTarget as HTMLInputElement).value)} /></label>
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !week} onClick={saveHours}><Save size={12} /> Save hours</button>
         </div>
       </section>
 

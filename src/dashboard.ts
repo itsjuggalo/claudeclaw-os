@@ -2687,6 +2687,8 @@ init();
     c.json(await massageAdmin(`/api/admin/availability/blackout/${enc(c.req.param('day'))}`, { method: 'DELETE', adminUser: u }))));
   app.put('/api/massage-admin/availability/window', withAdmin(async (c, u) =>
     c.json(await massageAdmin(`/api/admin/availability/window`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.put('/api/massage-admin/availability/hours', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/hours`, { method: 'PUT', body: await body(c), adminUser: u }))));
   app.post('/api/massage-admin/availability/pending/:id/:action', withAdmin(async (c, u) =>
     c.json(await massageAdmin(`/api/admin/availability/pending/${enc(c.req.param('id'))}/${enc(c.req.param('action'))}`, { method: 'POST', adminUser: u }))));
 
