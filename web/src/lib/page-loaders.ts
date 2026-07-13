@@ -57,6 +57,7 @@ export const PAGES: Record<string, PageDef> = {
   '/trade-desk/flow-winners': { load: () => import('@/pages/FlowWinnersPage'), name: 'FlowWinnersPage' },
   '/options-academy':       { load: () => import('@/pages/OptionsAcademy'), name: 'OptionsAcademy' },
   '/astrology':             { load: () => import('@/pages/Astrology'), name: 'Astrology' },
+  '/coach':                 { load: () => import('@/pages/DailyCoach'), name: 'DailyCoach' },
 };
 
 export const LazyPages: Record<string, FunctionComponent> = Object.fromEntries(

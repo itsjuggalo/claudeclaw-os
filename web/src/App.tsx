@@ -99,6 +99,7 @@ export function App() {
             <Route path="/trade-desk/flow-winners"><Page path="/trade-desk/flow-winners" /></Route>
             <Route path="/options-academy"><Page path="/options-academy" /></Route>
             <Route path="/astrology"><Page path="/astrology" /></Route>
+            <Route path="/coach"><Page path="/coach" /></Route>
 
             {/* Common alt slugs that used to point at placeholder pages */}
             <Route path="/hive-mind"><Redirect to="/hive" /></Route>

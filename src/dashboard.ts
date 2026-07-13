@@ -19,7 +19,8 @@ import { getMassageAdminOverview, updateMassageAdminClient } from './massage-adm
 import { massageAdminLoginStart, massageAdminOauthCallback, isAllowlistedAdmin } from './massage-oauth.js';
 import { getSqlCatalog, getSqlTables, runSqlSelect, getModerationRows, updateRow, deleteRow, insertRow, getAuditLog as getSqlAuditLog, undoMutation } from './sqlmonitor.js';
 import { getEquity } from './equity.js';
-import { listReadings, readReadingHtml, getTodayTransits, getDailyPsychCard, getWeeklyReviews, getWeeklyReview, getDailyDrill, answerDailyDrill } from './astrology.js';
+import { listReadings, readReadingHtml, getTodayTransits } from './astrology.js';
+import { getDailyPsychCard, getWeeklyReviews, getWeeklyReview, getDailyDrill, answerDailyDrill } from './coach.js';
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
@@ -2553,7 +2554,7 @@ init();
     try { return c.json(await getTodayTransits()); }
     catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
-  app.get('/api/astrology/weekly-review', (c) => {
+  app.get('/api/coach/weekly-review', (c) => {
     try {
       const week = c.req.query('week');
       if (week) {
@@ -2564,14 +2565,19 @@ init();
       return c.json(getWeeklyReviews());
     } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
-  app.get('/api/astrology/drill', (c) => {
+  // ── Daily Coach — trading-discipline dailies (psych card, blind replay drill,
+  //    weekly graded review) for the /coach page. Deliberately separate from the
+  //    astrology routes — different subject, different sidebar section. The drill
+  //    answer is the only write (~/portfolio/replay_results.json, shared with the
+  //    missionctrl Replay page). See src/coach.ts.
+  app.get('/api/coach/drill', (c) => {
     try {
       const drill = getDailyDrill();
       if (!drill) return c.json({ error: 'drill bank not found' }, 404);
       return c.json(drill);
     } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
-  app.post('/api/astrology/drill/answer', async (c) => {
+  app.post('/api/coach/drill/answer', async (c) => {
     try {
       const body = await c.req.json().catch(() => ({}));
       if (typeof body.choice !== 'string') return c.json({ error: 'choice required' }, 400);
@@ -2580,7 +2586,7 @@ init();
       return c.json(drill);
     } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 400); }
   });
-  app.get('/api/astrology/psych-card', (c) => {
+  app.get('/api/coach/psych-card', (c) => {
     try {
       const card = getDailyPsychCard();
       if (!card) return c.json({ error: 'psych deck not found' }, 404);

@@ -7,7 +7,7 @@ import {
   BarChart2, Briefcase, Trophy, GraduationCap,
   Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot, Flame,
   HeartPulse, DatabaseZap, Drama, SlidersHorizontal, Film, ClipboardList,
-  StickyNote, Sparkles,
+  StickyNote, Sparkles, Target,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -56,6 +56,7 @@ export const ROUTES: RouteDef[] = [
 
   // Trade Desk — live trading / finance
   { path: '/quick-trade',         label: 'Quick Trade',   section: 'trade', icon: Coins,       href: 'self:3000/phone.html' },
+  { path: '/coach',               label: 'Daily Coach',   section: 'trade', icon: Target                 },
   { path: '/trade-desk',          label: 'Trade Desk',    section: 'trade', icon: TrendingUp,  shortcut: 'g t' },
   { path: '/equity',              label: 'Equity Mgmt',   section: 'trade', icon: Gauge,       shortcut: 'g q' },
   { path: '/trade-desk/signals',  label: 'Signal Feed',   section: 'trade', icon: Activity               },
