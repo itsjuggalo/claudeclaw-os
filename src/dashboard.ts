@@ -19,6 +19,7 @@ import { getMassageAdminOverview, updateMassageAdminClient } from './massage-adm
 import { massageAdminLoginStart, massageAdminOauthCallback, isAllowlistedAdmin } from './massage-oauth.js';
 import { getSqlCatalog, getSqlTables, runSqlSelect, getModerationRows, updateRow, deleteRow, insertRow, getAuditLog as getSqlAuditLog, undoMutation } from './sqlmonitor.js';
 import { getEquity } from './equity.js';
+import { listReadings, readReadingHtml, getTodayTransits } from './astrology.js';
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
@@ -2534,6 +2535,23 @@ init();
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
+  });
+
+  // ── Astrology readings — Mike's delivered HTML readings library for the
+  //    /astrology page. List metadata + serve the raw HTML (opens in new tab).
+  //    Read-only, files in data/astrology/. See src/astrology.ts.
+  app.get('/api/astrology/readings', (c) => {
+    try { return c.json({ readings: listReadings() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+  app.get('/astrology/readings/:file', (c) => {
+    const html = readReadingHtml(c.req.param('file'));
+    if (html === null) return c.text('Reading not found', 404);
+    return c.html(html);
+  });
+  app.get('/api/astrology/today', async (c) => {
+    try { return c.json(await getTodayTransits()); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
 
   // ── Massage By Mike — ops cockpit. Proxies the massage server's token-guarded admin API
