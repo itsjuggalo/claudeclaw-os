@@ -19,7 +19,7 @@ import { getMassageAdminOverview, updateMassageAdminClient } from './massage-adm
 import { massageAdminLoginStart, massageAdminOauthCallback, isAllowlistedAdmin } from './massage-oauth.js';
 import { getSqlCatalog, getSqlTables, runSqlSelect, getModerationRows, updateRow, deleteRow, insertRow, getAuditLog as getSqlAuditLog, undoMutation } from './sqlmonitor.js';
 import { getEquity } from './equity.js';
-import { listReadings, readReadingHtml, getTodayTransits } from './astrology.js';
+import { listReadings, readReadingHtml, getTodayTransits, getDailyPsychCard, getWeeklyReviews, getWeeklyReview, getDailyDrill, answerDailyDrill } from './astrology.js';
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
@@ -2552,6 +2552,40 @@ init();
   app.get('/api/astrology/today', async (c) => {
     try { return c.json(await getTodayTransits()); }
     catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.get('/api/astrology/weekly-review', (c) => {
+    try {
+      const week = c.req.query('week');
+      if (week) {
+        const text = getWeeklyReview(week);
+        if (text === null) return c.json({ error: 'review not found' }, 404);
+        return c.json({ week, text });
+      }
+      return c.json(getWeeklyReviews());
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.get('/api/astrology/drill', (c) => {
+    try {
+      const drill = getDailyDrill();
+      if (!drill) return c.json({ error: 'drill bank not found' }, 404);
+      return c.json(drill);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/astrology/drill/answer', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      if (typeof body.choice !== 'string') return c.json({ error: 'choice required' }, 400);
+      const drill = answerDailyDrill(body.choice);
+      if (!drill) return c.json({ error: 'drill bank not found' }, 404);
+      return c.json(drill);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 400); }
+  });
+  app.get('/api/astrology/psych-card', (c) => {
+    try {
+      const card = getDailyPsychCard();
+      if (!card) return c.json({ error: 'psych deck not found' }, 404);
+      return c.json(card);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
   });
 
   // ── Massage By Mike — ops cockpit. Proxies the massage server's token-guarded admin API
