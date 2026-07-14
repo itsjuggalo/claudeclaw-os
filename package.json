@@ -26,7 +26,8 @@
     "uninstall": "bash scripts/uninstall.sh",
     "build:warroom-client": "esbuild warroom/client.js --bundle --outfile=warroom/client.bundle.js --format=iife --global-name=PipecatWarRoom",
     "prebuild": "bash /home/itsju/.mc-coord/build-precheck.sh claudeclaw",
-    "prebuild:web": "bash /home/itsju/.mc-coord/build-precheck.sh claudeclaw"
+    "prebuild:web": "bash /home/itsju/.mc-coord/build-precheck.sh claudeclaw",
+    "postbuild:web": "bash scripts/mirror-deploy.sh"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.0",
