@@ -31,6 +31,8 @@ const META: Record<string, { title: string; group: ReadingMeta['group']; blurb: 
   'mike-2026-transits': { title: '2026 Transits (short)', group: 'short', blurb: 'Original condensed 2026 transit overview (Jul 10).' },
   'mike-career-reading': { title: 'Career Reading (short)', group: 'short', blurb: 'Original condensed career reading (Jul 10).' },
   'mike-future-reading': { title: 'Future Outlook (short)', group: 'short', blurb: 'Original condensed future outlook (Jul 10).' },
+  'mike-feb-2026-reading': { title: 'The February 2026 Reading — Progressions & Transits', group: 'full', blurb: "Mike's astrologer's own Feb 1 2026 reading, archived verbatim: the 2026 proving-ground year, the Aug–Oct money deadline, go-mobile self-employment, and the 2027–2028 Jupiter harvest in the money house." },
+  'mike-feb-2026-playbook': { title: 'Feb 2026 → The Playbook', group: 'full', blurb: 'The Feb reading turned into a dated action plan, cross-checked against the real broker & debt picture — career, money, trading, family, plus a this-week checklist.' },
 };
 
 function deriveTitle(stem: string): string {
