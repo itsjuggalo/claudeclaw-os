@@ -78,6 +78,7 @@ export function App() {
             <Route path="/gallery"><Page path="/gallery" /></Route>
             <Route path="/skool-builds"><Page path="/skool-builds" /></Route>
             <Route path="/lewis-trading"><Page path="/lewis-trading" /></Route>
+            <Route path="/video-game"><Page path="/video-game" /></Route>
             <Route path="/create"><Page path="/create" /></Route>
             <Route path="/characters"><Page path="/characters" /></Route>
             <Route path="/hermes"><Page path="/hermes" /></Route>

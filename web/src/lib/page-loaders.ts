@@ -38,6 +38,7 @@ export const PAGES: Record<string, PageDef> = {
   '/gallery':               { load: () => import('@/pages/Gallery'), name: 'Gallery' },
   '/skool-builds':          { load: () => import('@/pages/SkoolBuilds'), name: 'SkoolBuilds' },
   '/lewis-trading':         { load: () => import('@/pages/LewisTrading'), name: 'LewisTrading' },
+  '/video-game':            { load: () => import('@/pages/VideoGame'), name: 'VideoGame' },
   '/create':                { load: () => import('@/pages/Create'), name: 'Create' },
   '/characters':            { load: () => import('@/pages/CharacterStudio'), name: 'CharacterStudio' },
   '/hermes':                { load: () => import('@/pages/Hermes'), name: 'Hermes' },

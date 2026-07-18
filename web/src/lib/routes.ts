@@ -8,6 +8,7 @@ import {
   Coins, Gauge, FolderKanban, Server, ScrollText, MonitorDot, Flame,
   HeartPulse, DatabaseZap, Drama, SlidersHorizontal, Film, ClipboardList,
   StickyNote, Sparkles, Target,
+  Gamepad2,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -68,6 +69,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/options-academy',         label: 'Options Academy', section: 'trade', icon: GraduationCap, shortcut: 'g x' },
   { path: '/databases/claytrader',    label: 'ClayTrader KB', section: 'trade', icon: GraduationCap,   shortcut: 'g y' },
   { path: '/lewis-trading',       label: 'Lewis Trading', section: 'trade', icon: GraduationCap, inSidebar: false },
+  { path: '/video-game',          label: 'Video Game',    section: 'trade', icon: Gamepad2 },
   { path: '/wallets',    label: 'Wallets',         section: 'trade',        icon: Wallet,        shortcut: 'g $' },
 
   { path: '/warroom',    label: 'War Room',        section: 'collaborate',  icon: Swords,        shortcut: 'g w' },
