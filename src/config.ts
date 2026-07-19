@@ -237,11 +237,6 @@ export const DASHBOARD_TOKEN =
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
 
-// Bind interface. Default '127.0.0.1' = loopback-only (safest).
-// Override to '0.0.0.0' if you intentionally want LAN-reachable.
-export const DASHBOARD_BIND =
-  process.env.DASHBOARD_BIND || envConfig.DASHBOARD_BIND || '127.0.0.1';
-
 // Disable Bearer-token auth on the dashboard. ONLY safe when DASHBOARD_BIND is loopback.
 export const DASHBOARD_AUTH_DISABLED =
   ['1', 'true', 'yes'].includes(
