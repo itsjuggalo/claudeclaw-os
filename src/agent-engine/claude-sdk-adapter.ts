@@ -1,13 +1,92 @@
+import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { logger } from '../logger.js';
 import { authError, isAuthErrorText } from '../errors.js';
+
 import type {
   AgentEngine,
   AgentEngineEvent,
   AgentTurnInput,
   AskUserQuestionRequest,
 } from './types.js';
+
+// Locate a system-installed `claude` on PATH, or undefined if none is found.
+function findSystemClaude(): string | undefined {
+  try {
+    const found = execSync('command -v claude', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return found || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Detect older Intel Macs whose CPU lacks AVX. The SDK's bundled Bun binary
+// hangs silently (rather than crashing) on these, stalling every agent query
+// until the turn timeout fires. macOS reports AVX as "AVX1.0" in
+// machdep.cpu.features — the base CPU-features key, present on every x86 Mac.
+// We deliberately do NOT query machdep.cpu.leaf7_features (AVX2): it is absent
+// on exactly the pre-AVX CPUs we target, so bundling it would make sysctl exit
+// nonzero and skip the fallback for the machines that need it. Only meaningful
+// on darwin/x64 — Apple Silicon and non-Mac platforms return false.
+function isIntelMacWithoutAvx(): boolean {
+  if (process.platform !== 'darwin' || process.arch !== 'x64') return false;
+  try {
+    const features = execSync('sysctl -n machdep.cpu.features', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return !/\bAVX/i.test(features);
+  } catch {
+    // sysctl unavailable — can't confirm, so don't force an override.
+    return false;
+  }
+}
+
+// Pick the `claude` binary to run only when we must override the SDK default.
+// The SDK's bundled binary can't run in two known cases, and returns undefined
+// everywhere else (leaving the SDK's own resolution untouched):
+//   - NixOS: the bundled Linux binary can't exec (no ld-linux) and crashes.
+//   - Older Intel Macs without AVX: the bundled Bun hangs silently, stalling
+//     every query to the timeout instead of crashing.
+// In both cases we point the SDK at the system `claude` instead.
+function resolveClaudeExecutableOverride(): string | undefined {
+  const override = process.env.CLAUDECLAW_CLAUDE_EXECUTABLE_PATH?.trim();
+  if (override) {
+    logger.info({ path: override }, 'Using CLAUDECLAW_CLAUDE_EXECUTABLE_PATH override for claude CLI');
+    return override;
+  }
+  if (process.platform === 'linux' && existsSync('/etc/NIXOS')) {
+    const found = findSystemClaude();
+    if (found) {
+      logger.info({ path: found }, 'NixOS detected — using the system claude CLI (bundled binary cannot run on Nix)');
+      return found;
+    }
+    logger.warn('NixOS detected but no `claude` on PATH. Install claude-code or set CLAUDECLAW_CLAUDE_EXECUTABLE_PATH.');
+  }
+  if (isIntelMacWithoutAvx()) {
+    const found = findSystemClaude();
+    if (found) {
+      logger.info(
+        { path: found },
+        'Intel Mac without AVX detected — using the system claude CLI (bundled Bun binary hangs silently on non-AVX CPUs)',
+      );
+      return found;
+    }
+    logger.warn(
+      'Intel Mac without AVX detected and no `claude` on PATH. The SDK\'s bundled binary will hang silently until the ' +
+        'turn timeout. Install claude-code or set CLAUDECLAW_CLAUDE_EXECUTABLE_PATH to your system claude (e.g. /usr/local/bin/claude).',
+    );
+  }
+  return undefined;
+}
+
+const CLAUDE_EXECUTABLE_OVERRIDE = resolveClaudeExecutableOverride();
 
 const TOOL_LABELS: Record<string, string> = {
   Read: 'Reading file',
@@ -52,6 +131,25 @@ function pickContextWindow(modelUsage: unknown, model: string | undefined): numb
     }
   }
   return max;
+}
+
+/**
+ * Pick the model that did the bulk of the work this turn from `modelUsage`
+ * (`Record<modelId, { inputTokens, outputTokens }>`) — the key with the most
+ * input+output tokens. A single-model turn has one key; multi-model turns
+ * (e.g. a sub-agent on a cheaper model) resolve to the dominant one. Null when
+ * no usable entry exists. Used only for telemetry attribution.
+ */
+function pickModel(modelUsage: unknown): string | null {
+  if (!modelUsage || typeof modelUsage !== 'object') return null;
+  const entries = Object.entries(modelUsage as Record<string, { inputTokens?: number; outputTokens?: number }>);
+  let best: string | null = null;
+  let bestTokens = -1;
+  for (const [id, v] of entries) {
+    const t = (v?.inputTokens ?? 0) + (v?.outputTokens ?? 0);
+    if (t > bestTokens) { bestTokens = t; best = id; }
+  }
+  return best;
 }
 
 /**
@@ -129,6 +227,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
     let didCompact = false;
     let preCompactTokens: number | null = null;
     let lastCallCacheRead = 0;
+    let lastCallCacheCreation = 0;
     let lastCallInputTokens = 0;
     let streamedText = '';
     let emittedResult = false;
@@ -187,6 +286,8 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           ...(input.allowedTools ? { allowedTools: input.allowedTools } : {}),
           ...(input.disallowedTools ? { disallowedTools: input.disallowedTools } : {}),
           ...(input.abortController ? { abortController: input.abortController } : {}),
+          ...(CLAUDE_EXECUTABLE_OVERRIDE ? { pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE_OVERRIDE } : {}),
+          stderr: (data: string) => logger.error({ stderr: data }, 'claude subprocess stderr'),
           // TODO(#72): the SDK Options type (@anthropic-ai/claude-agent-sdk) lags
           // some fields we pass conditionally (effort, thinking, model overrides),
           // so the whole object is cast. Narrow to the SDK Options type and cast
@@ -210,8 +311,10 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         const msg = ev.message as Record<string, unknown> | undefined;
         const msgUsage = msg?.usage as Record<string, number> | undefined;
         const callCacheRead = msgUsage?.cache_read_input_tokens ?? 0;
+        const callCacheCreation = msgUsage?.cache_creation_input_tokens ?? 0;
         const callInputTokens = msgUsage?.input_tokens ?? 0;
         if (callCacheRead > 0) lastCallCacheRead = callCacheRead;
+        if (callCacheCreation > 0) lastCallCacheCreation = callCacheCreation;
         if (callInputTokens > 0) lastCallInputTokens = callInputTokens;
 
         const content = msg?.content as Array<{ type: string; id?: string; name?: string; text?: string }> | undefined;
@@ -319,12 +422,20 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           inputTokens: evUsage.input_tokens ?? 0,
           outputTokens: evUsage.output_tokens ?? 0,
           cacheReadInputTokens: evUsage.cache_read_input_tokens ?? 0,
+          cacheCreationInputTokens: evUsage.cache_creation_input_tokens ?? 0,
           totalCostUsd: (ev.total_cost_usd as number) ?? 0,
           didCompact,
           preCompactTokens,
           lastCallCacheRead,
+          lastCallCacheCreation,
           lastCallInputTokens,
           contextWindow: pickContextWindow(ev.modelUsage, input.model),
+          model: pickModel(ev.modelUsage) ?? input.model ?? null,
+          durationMs: (ev.duration_ms as number) ?? 0,
+          durationApiMs: (ev.duration_api_ms as number) ?? 0,
+          numTurns: (ev.num_turns as number) ?? 0,
+          stopReasonDetail: (typeof ev.stop_reason === 'string' ? ev.stop_reason : null),
+          isError: ev.is_error === true,
         } : null;
         if (usage) yield { type: 'usage', usage, raw: ev };
         yield {

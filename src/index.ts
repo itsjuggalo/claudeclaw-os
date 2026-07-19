@@ -1,3 +1,7 @@
+// Imported first so the process-level uncaughtException guard is installed
+// before anything transitively pulls in @anthropic-ai/claude-agent-sdk.
+import './crash-guard.js';
+
 import fs from 'fs';
 import path from 'path';
 
@@ -16,7 +20,7 @@ import { runWarroomAvatarMigration } from './avatars.js';
 import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
-import { getMainProviderConfig } from './provider.js';
+import { getMainProviderConfig, ensureMainAgentConfig } from './provider.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 import { getVenvPython, IS_WINDOWS, killProcess, tmpDir } from './platform.js';
 
@@ -132,6 +136,11 @@ async function main(): Promise<void> {
 
   if (AGENT_ID === 'main') {
     showBanner();
+    // Bootstrap main's external config on boot, independent of the setup
+    // wizard. Headless/VPS installs never run the wizard's step 6b, so
+    // without this the file wouldn't exist and reads/writes fell through to
+    // PROJECT_ROOT — the virgin state behind #146/#148. Idempotent.
+    ensureMainAgentConfig();
   }
 
   if (!activeBotToken) {
@@ -316,7 +325,7 @@ async function main(): Promise<void> {
           if (shuttingDown) return;
           const proc = spawn(venvPython, [serverScript], {
             cwd: PROJECT_ROOT,
-            env: { ...process.env, WARROOM_PORT: String(WARROOM_PORT) },
+            env: { ...process.env, WARROOM_PORT: String(WARROOM_PORT), GOOGLE_API_KEY },
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
           });

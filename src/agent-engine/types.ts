@@ -19,10 +19,12 @@ export interface AgentEngineUsage {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
   totalCostUsd: number;
   didCompact: boolean;
   preCompactTokens: number | null;
   lastCallCacheRead: number;
+  lastCallCacheCreation: number;
   lastCallInputTokens: number;
   /**
    * The active model's real context window (tokens), as reported by the SDK in
@@ -30,6 +32,13 @@ export interface AgentEngineUsage {
    * report one (e.g. ACP providers) — consumers fall back to CONTEXT_LIMIT.
    */
   contextWindow: number | null;
+  /** Per-turn telemetry (from the SDK result object; free to capture). */
+  model: string | null;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  stopReasonDetail: string | null;
+  isError: boolean;
 }
 
 export interface AgentEngineProgressEvent {
@@ -157,11 +166,19 @@ export function emptyUsage(): AgentEngineUsage {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
     totalCostUsd: 0,
     didCompact: false,
     preCompactTokens: null,
     lastCallCacheRead: 0,
+    lastCallCacheCreation: 0,
     lastCallInputTokens: 0,
     contextWindow: null,
+    model: null,
+    durationMs: 0,
+    durationApiMs: 0,
+    numTurns: 0,
+    stopReasonDetail: null,
+    isError: false,
   };
 }

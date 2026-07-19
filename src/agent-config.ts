@@ -120,10 +120,21 @@ export function ensureAgentsMdSymlink(dir: string): boolean {
   if (!fs.existsSync(claudePath) || fs.existsSync(agentsPath)) return false;
 
   try {
+    // Primary: a relative symlink so AGENTS.md always tracks CLAUDE.md and can
+    // never drift out of sync.
     fs.symlinkSync('CLAUDE.md', agentsPath);
     return true;
   } catch {
-    return false;
+    // Fallback: on platforms/accounts that can't create symlinks (notably
+    // stock Windows without Developer Mode, where symlinkSync throws EPERM),
+    // write a real copy so Codex/ACP loaders that read AGENTS.md by name still
+    // get the instructions instead of nothing.
+    try {
+      fs.copyFileSync(claudePath, agentsPath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

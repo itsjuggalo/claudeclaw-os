@@ -1,0 +1,70 @@
+# ClaudeClaw OS — VPS deploy config
+#
+# Copy this file to `claudeclaw-deploy.conf`, fill it in, then run:
+#   sudo bash install-vps.sh
+#
+# This file holds live secrets — it is git-ignored. Keep mode 600.
+# Every value here can also be passed as an environment variable instead.
+
+# ── Required ──────────────────────────────────────────────────────────────────
+
+# Telegram bot token from @BotFather.
+TELEGRAM_BOT_TOKEN=
+
+# Your Telegram chat ID (numeric). Get it by messaging the bot /chatid once running,
+# or via @userinfobot.
+ALLOWED_CHAT_ID=
+
+# Claude Code auth for the headless VPS — set EXACTLY ONE of the two below.
+#   - Max plan (uses your subscription, no per-token billing):
+#       run `claude setup-token` on your local machine, paste the token here.
+#   - Pay-per-token (bills per request, from console.anthropic.com):
+#       set ANTHROPIC_API_KEY instead.
+CLAUDE_CODE_OAUTH_TOKEN=
+ANTHROPIC_API_KEY=
+
+# ── Tailscale ─────────────────────────────────────────────────────────────────
+
+# Pre-auth key for unattended join (Tailscale admin console → Settings → Keys).
+# Recommended: make it reusable=false, and DISABLE KEY EXPIRY on the resulting
+# node so the VPS never silently drops off the tailnet.
+# Leave blank to log in interactively (the script prints a URL to approve).
+TS_AUTHKEY=
+
+# Hostname this VPS shows up as in your tailnet (becomes <name>.<tailnet>.ts.net).
+TS_HOSTNAME=claudeclaw
+
+# ── Optional (sensible defaults) ──────────────────────────────────────────────
+
+# Dashboard port (loopback only; never exposed publicly).
+# DASHBOARD_PORT=3141
+
+# Where everything is installed and which user runs the service.
+# INSTALL_DIR=/opt/claudeclaw
+# RUN_USER=claudeclaw
+
+# SSH policy:
+#   public        - (default) keep public SSH, key-only auth + fail2ban
+#   tailscale-only - block public port 22; SSH over the tailnet only (strongest)
+#   off           - make no SSH changes
+# Before choosing tailscale-only: confirm Hostinger's browser/VNC console works
+# (your lockout recovery), and disable this node's key expiry in Tailscale.
+# SSH_HARDENING=public
+
+# Beta multi-provider (ACP) switcher in the dashboard (Claude/OpenCode/Gemini/
+# Codex/OpenRouter). Default false = Claude only, picker hidden. Set true to
+# unlock it — but each non-Claude provider still needs its CLI installed AND
+# authenticated on this VPS (e.g. `opencode auth login`), or its runs will fail.
+# ENABLE_ACP=false
+
+# Source repo + branch to deploy.
+# REPO_URL=https://github.com/earlyaidopters/claudeclaw-os.git
+# REPO_BRANCH=main
+
+# Private-repo clone token (the upstream earlyaidopters repo is private).
+# The members token site shows a clone command like:
+#   git clone https://x-access-token:ghs_XXXX@github.com/earlyaidopters/claudeclaw-os.git
+# Copy just the ghs_... token and paste it here. It's used only for the clone,
+# then scrubbed from .git/config. Tokens expire in ~1h — regenerate + re-run if
+# the clone step fails. Leave blank for public repos.
+# REPO_CLONE_TOKEN=

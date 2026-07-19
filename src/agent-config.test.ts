@@ -359,3 +359,54 @@ describe('provider config', () => {
     expect(decodeProviderSession({ type: 'gemini' }, geminiSession)).toBe('abc');
   });
 });
+
+describe('ensureAgentsMdSymlink', () => {
+  function makeAgentDir(withClaudeMd: boolean): string {
+    const dir = path.join(projectRoot, 'agents', 'sym');
+    fs.mkdirSync(dir, { recursive: true });
+    if (withClaudeMd) fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'INSTRUCTIONS', 'utf-8');
+    return dir;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('creates AGENTS.md resolving to CLAUDE.md content', async () => {
+    const dir = makeAgentDir(true);
+    const { ensureAgentsMdSymlink } = await import('./agent-config.js');
+    expect(ensureAgentsMdSymlink(dir)).toBe(true);
+    const agentsPath = path.join(dir, 'AGENTS.md');
+    expect(fs.existsSync(agentsPath)).toBe(true);
+    // Reading through the link/copy yields the canonical instructions either way.
+    expect(fs.readFileSync(agentsPath, 'utf-8')).toBe('INSTRUCTIONS');
+  });
+
+  it('returns false when CLAUDE.md is absent', async () => {
+    const dir = makeAgentDir(false);
+    const { ensureAgentsMdSymlink } = await import('./agent-config.js');
+    expect(ensureAgentsMdSymlink(dir)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'AGENTS.md'))).toBe(false);
+  });
+
+  it('is a no-op when AGENTS.md already exists', async () => {
+    const dir = makeAgentDir(true);
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'PREEXISTING', 'utf-8');
+    const { ensureAgentsMdSymlink } = await import('./agent-config.js');
+    expect(ensureAgentsMdSymlink(dir)).toBe(false);
+    expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf-8')).toBe('PREEXISTING');
+  });
+
+  it('falls back to a real copy when symlink creation fails (e.g. stock Windows EPERM)', async () => {
+    const dir = makeAgentDir(true);
+    vi.spyOn(fs, 'symlinkSync').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    });
+    const { ensureAgentsMdSymlink } = await import('./agent-config.js');
+    expect(ensureAgentsMdSymlink(dir)).toBe(true);
+    const agentsPath = path.join(dir, 'AGENTS.md');
+    // A real file (not a symlink) containing the instructions.
+    expect(fs.lstatSync(agentsPath).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(agentsPath, 'utf-8')).toBe('INSTRUCTIONS');
+  });
+});

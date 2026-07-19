@@ -11,6 +11,7 @@
 
 import crypto from 'crypto';
 import { execSync } from 'child_process';
+import fs from 'fs';
 import os from 'os';
 
 import { logger } from './logger.js';
@@ -131,6 +132,38 @@ export function checkKillPhrase(message: string): boolean {
 }
 
 /**
+ * Resolve the systemd unit that owns the current process by reading
+ * /proc/self/cgroup. Returns null when not running under systemd
+ * (Docker, pm2, nodemon, non-Linux). Ignores the manager unit
+ * (user@<uid>.service) and only reports the owning app unit.
+ */
+export function getOwnSystemdUnit(): { unit: string; userScope: boolean } | null {
+  try {
+    const raw = fs.readFileSync('/proc/self/cgroup', 'utf-8');
+    // cgroup v2: single "0::/path" line; v1: multiple "n:ctrl:/path" lines.
+    let userScope = false;
+    let owning: string | null = null;
+    for (const line of raw.split('\n')) {
+      const path = line.split(':').pop() || '';
+      const segments = path.split('/').filter(Boolean);
+      for (const seg of segments) {
+        if (/^user@\d+\.service$/.test(seg)) {
+          userScope = true; // manager unit — marks user scope, not the owner
+          continue;
+        }
+        if (seg.endsWith('.service') || seg.endsWith('.scope')) {
+          owning = seg; // last matching segment wins (deepest = closest owner)
+        }
+      }
+    }
+    if (!owning) return null;
+    return { unit: owning, userScope };
+  } catch {
+    return null; // no /proc, unreadable, or not systemd
+  }
+}
+
+/**
  * Execute the emergency shutdown.
  * Stops all ClaudeClaw services and force-exits after a brief timeout.
  */
@@ -154,9 +187,26 @@ export function executeEmergencyKill(): void {
         }
       } catch { /* launchctl failed, still exit */ }
     } else if (os.platform() === 'linux') {
+      // Stop sibling agent units via the glob (best-effort).
       try {
         execSync('systemctl --user stop "com.claudeclaw.*" 2>/dev/null', { stdio: 'ignore', timeout: 3000 });
       } catch { /* ok */ }
+      // Stop our OWN unit by exact name so systemd treats the exit as clean
+      // and does not restart it despite Restart=always. Guards:
+      //  - only a .service — never a .scope (an interactive shell's
+      //    session-*.scope, stopping which would kill the operator's SSH
+      //    session).
+      //  - only a unit whose name contains "claudeclaw" — otherwise a shared
+      //    supervisor (e.g. pm2-root.service) would own our cgroup and we'd
+      //    take down every unrelated app it manages. If the name doesn't
+      //    match, skip and fall back to process.exit (same as non-systemd).
+      const own = getOwnSystemdUnit();
+      if (own && own.unit.endsWith('.service') && /claudeclaw/i.test(own.unit)) {
+        const scope = own.userScope ? '--user' : '--system';
+        try {
+          execSync(`systemctl ${scope} stop --no-block ${own.unit} 2>/dev/null`, { stdio: 'ignore', timeout: 3000 });
+        } catch { /* best-effort; exit anyway */ }
+      }
     } else if (os.platform() === 'win32') {
       // Enumerate scheduled tasks matching com.claudeclaw.* and end each one.
       // schtasks doesn't accept wildcards in /End, so we parse /Query output.
@@ -319,6 +369,14 @@ export function getScrubbedSdkEnv(
   }
   if (!env.ANTHROPIC_API_KEY && processAnthropicApiKey && wantsAnthropicApiKeyAuth()) {
     env.ANTHROPIC_API_KEY = processAnthropicApiKey;
+  }
+
+  // Claude Code refuses --dangerously-skip-permissions under root/sudo
+  // unless IS_SANDBOX=1 is present. Required for containerized/systemd
+  // root deployments. No-op on Windows/macOS (getuid undefined) and
+  // for non-root users. Respects an explicit operator override.
+  if (typeof process.getuid === 'function' && process.getuid() === 0 && !env.IS_SANDBOX) {
+    env.IS_SANDBOX = '1';
   }
 
   return env;

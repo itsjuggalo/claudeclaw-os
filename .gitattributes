@@ -1,0 +1,5 @@
+# Shell scripts and deploy configs must use LF so they run on Linux/VPS
+# even when checked out or edited on Windows.
+*.sh text eol=lf
+deploy/install-vps.sh text eol=lf
+deploy/claudeclaw-deploy.conf* text eol=lf

@@ -211,6 +211,8 @@ const WARROOM_ENABLED = warroomEnabled;
       <div class="model-picker" onclick="toggleModelPicker(this)" style="display:inline-block">
         <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
         <div class="model-menu" style="display:none;right:0;left:auto">
+          <div class="model-opt" data-model="claude-fable-5" onclick="pickGlobalModel(this)">All Fable 5</div>
+          <div class="model-opt" data-model="claude-sonnet-5" onclick="pickGlobalModel(this)">All Sonnet 5</div>
           <div class="model-opt" data-model="claude-opus-4-8" onclick="pickGlobalModel(this)">All Opus 4.8</div>
           <div class="model-opt" data-model="claude-opus-4-6" onclick="pickGlobalModel(this)">All Opus 4.6</div>
           <div class="model-opt" data-model="claude-sonnet-4-6" onclick="pickGlobalModel(this)">All Sonnet 4.6</div>
@@ -1601,8 +1603,8 @@ async function loadAgents() {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
       const statusText = a.running ? 'live' : 'off';
-      const modelOpts = ['claude-opus-4-8', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
-      const modelShort = function(m) { return {'claude-opus-4-8':'Opus 4.8','claude-opus-4-6':'Opus 4.6','claude-sonnet-4-6':'Sonnet 4.6','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
+      const modelOpts = ['claude-fable-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+      const modelShort = function(m) { return {'claude-fable-5':'Fable 5','claude-sonnet-5':'Sonnet 5','claude-opus-4-8':'Opus 4.8','claude-opus-4-6':'Opus 4.6','claude-sonnet-4-6':'Sonnet 4.6','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
       const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-8' : 'claude-sonnet-4-6');
       const modelLabel = modelShort(currentModel);
       const providerType = (a.provider && a.provider.type) || 'opencode';
@@ -1613,6 +1615,7 @@ async function loadAgents() {
           '<div class="model-opt' + (providerType === 'opencode' ? ' model-active' : '') + '" data-provider="opencode" onclick="pickProvider(this)">OpenCode default</div>' +
           '<div class="model-opt' + (providerType === 'acp' ? ' model-active' : '') + '" data-provider="acp" onclick="pickProvider(this)">ACP default</div>' +
           modelOpts.map(m => '<div class="model-opt' + (currentModel === m ? ' model-active' : '') + '" data-model="' + m + '" onclick="pickModel(this)">' + modelShort(m) + '</div>').join('') +
+          '<div class="model-opt' + (modelOpts.indexOf(currentModel) === -1 && providerType === 'claude' ? ' model-active' : '') + '" onclick="pickCustomModel(this)">Custom…</div>' +
         '</div>' +
       '</div>';
       // Unified avatar endpoint: serves user uploads, Telegram-cached
@@ -1652,14 +1655,39 @@ async function pickModel(optEl) {
   var picker = optEl.closest('.model-picker');
   var agentId = picker.dataset.agent;
   picker.querySelector('.model-menu').style.display = 'none';
+  await setAgentModelReq(agentId, model);
+}
+
+async function pickCustomModel(optEl) {
+  var picker = optEl.closest('.model-picker');
+  var agentId = picker.dataset.agent;
+  picker.querySelector('.model-menu').style.display = 'none';
+  var model = window.prompt('Model id (e.g. claude-fable-5):');
+  if (!model || !model.trim()) return;
+  await setAgentModelReq(agentId, model.trim());
+}
+
+// Shared PATCH helper — surfaces server rejections (e.g. bad model id
+// format) instead of silently swallowing the 400.
+async function setAgentModelReq(agentId, model) {
   try {
-    await fetch(BASE + '/api/agents/' + agentId + '/model?token=' + TOKEN, {
+    var res = await fetch(BASE + '/api/agents/' + agentId + '/model?token=' + TOKEN, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model }),
     });
+    if (!res.ok) {
+      var err = {};
+      try { err = await res.json(); } catch(_) {}
+      alert('Model update failed: ' + (err.error || ('HTTP ' + res.status)));
+      return;
+    }
+    var data = await res.json();
+    if (data.restartRequired) {
+      alert('Model set to ' + model + '. Restart agent "' + agentId + '" for it to take effect.');
+    }
     await loadAgents();
-  } catch(e) { console.error('Model update failed:', e); }
+  } catch(e) { console.error('Model update failed:', e); alert('Model update failed: ' + e); }
 }
 
 async function pickProvider(optEl) {
@@ -1682,13 +1710,23 @@ async function pickGlobalModel(optEl) {
   var model = optEl.dataset.model;
   optEl.closest('.model-menu').style.display = 'none';
   try {
-    await fetch(BASE + '/api/agents/model?token=' + TOKEN, {
+    var res = await fetch(BASE + '/api/agents/model?token=' + TOKEN, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model }),
     });
+    if (!res.ok) {
+      var err = {};
+      try { err = await res.json(); } catch(_) {}
+      alert('Global model update failed: ' + (err.error || ('HTTP ' + res.status)));
+      return;
+    }
+    var data = await res.json();
+    if (data.restartRequired && data.restartRequired.length) {
+      alert('Model set to ' + model + '. Restart required for: ' + data.restartRequired.join(', '));
+    }
     await loadAgents();
-  } catch(e) { console.error('Global model update failed:', e); }
+  } catch(e) { console.error('Global model update failed:', e); alert('Global model update failed: ' + e); }
 }
 
 // Close model menus when clicking outside
@@ -1860,6 +1898,8 @@ let cawTokenDebounce = null;
 let cawNameManuallyEdited = false;
 const CAW_FALLBACK_MODELS = {
   claude: [
+    { id: 'claude-fable-5', label: 'Fable 5' },
+    { id: 'claude-sonnet-5', label: 'Sonnet 5' },
     { id: 'claude-opus-4-8', label: 'Opus 4.8' },
     { id: 'claude-opus-4-6', label: 'Opus 4.6' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },

@@ -1,7 +1,85 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
-import { buildPhotoMessage, buildDocumentMessage, cleanupOldUploads, UPLOADS_DIR } from './media.js';
+import { buildPhotoMessage, buildDocumentMessage, buildMediaGroupMessage, createMediaGroupBuffer, cleanupOldUploads, UPLOADS_DIR } from './media.js';
+
+describe('createMediaGroupBuffer', () => {
+  // Controllable fake timer so debounce behaviour is deterministic.
+  function fakeClock() {
+    let seq = 0;
+    const timers = new Map<number, () => void>();
+    const setTimer = (fn: () => void) => { const id = ++seq; timers.set(id, fn); return id as unknown as ReturnType<typeof setTimeout>; };
+    const clearTimer = (t: ReturnType<typeof setTimeout>) => { timers.delete(t as unknown as number); };
+    const fireAll = () => { const fns = [...timers.values()]; timers.clear(); fns.forEach((fn) => fn()); };
+    return { setTimer, clearTimer, fireAll, pending: () => timers.size };
+  }
+
+  it('flushes items sharing a key as one set with the caption', async () => {
+    const clock = fakeClock();
+    const flushes: Array<{ key: string; items: unknown[]; caption?: string }> = [];
+    const buf = createMediaGroupBuffer({
+      setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+      onFlush: (key, items, caption) => flushes.push({ key, items, caption }),
+    });
+    buf.add('c:1', Promise.resolve({ path: '/tmp/a.jpg' }), 'compare');
+    buf.add('c:1', Promise.resolve({ path: '/tmp/b.jpg' }));
+    expect(clock.pending()).toBe(1); // second add reset, not stacked
+    clock.fireAll();
+    await new Promise((r) => setImmediate(r));
+    expect(flushes).toHaveLength(1);
+    expect(flushes[0].items).toHaveLength(2);
+    expect(flushes[0].caption).toBe('compare');
+  });
+
+  it('keeps distinct group keys separate', async () => {
+    const clock = fakeClock();
+    const flushes: Array<{ key: string }> = [];
+    const buf = createMediaGroupBuffer({
+      setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+      onFlush: (key) => flushes.push({ key }),
+    });
+    buf.add('c:1', Promise.resolve({ path: '/a' }));
+    buf.add('c:2', Promise.resolve({ path: '/b' }));
+    clock.fireAll();
+    await new Promise((r) => setImmediate(r));
+    expect(flushes.map((f) => f.key).sort()).toEqual(['c:1', 'c:2']);
+  });
+
+  it('drops items whose download rejects and skips an all-failed group', async () => {
+    const clock = fakeClock();
+    const flushes: Array<{ items: unknown[] }> = [];
+    const buf = createMediaGroupBuffer({
+      setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+      onFlush: (_key, items) => flushes.push({ items }),
+    });
+    buf.add('c:1', Promise.resolve({ path: '/ok' }));
+    buf.add('c:1', Promise.reject(new Error('download failed')));
+    buf.add('c:2', Promise.reject(new Error('download failed')));
+    clock.fireAll();
+    await new Promise((r) => setImmediate(r));
+    expect(flushes).toHaveLength(1); // c:2 all-failed → skipped
+    expect(flushes[0].items).toHaveLength(1);
+  });
+});
+
+describe('buildMediaGroupMessage', () => {
+  it('lists every file path and the count', () => {
+    const msg = buildMediaGroupMessage([{ path: '/tmp/a.jpg' }, { path: '/tmp/b.jpg' }]);
+    expect(msg).toContain('/tmp/a.jpg');
+    expect(msg).toContain('/tmp/b.jpg');
+    expect(msg).toContain('2 files');
+    expect(msg.toLowerCase()).toContain('all 2');
+  });
+  it('includes the single caption once', () => {
+    const msg = buildMediaGroupMessage([{ path: '/tmp/a.jpg' }, { path: '/tmp/b.jpg' }], 'compare these');
+    expect(msg).toContain('compare these');
+    expect((msg.match(/Caption/g) || []).length).toBe(1);
+  });
+  it('includes labels for documents', () => {
+    const msg = buildMediaGroupMessage([{ path: '/tmp/x.pdf', label: 'report.pdf' }]);
+    expect(msg).toContain('report.pdf');
+  });
+});
 
 describe('buildPhotoMessage', () => {
   it('returns string containing the file path', () => {

@@ -1688,6 +1688,16 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
                 ev.usage.totalCostUsd,
                 ev.usage.didCompact,
                 agentId,
+                ev.usage.contextWindow,
+                ev.usage.cacheCreationInputTokens,
+                {
+                  model: ev.usage.model,
+                  durationMs: ev.usage.durationMs,
+                  durationApiMs: ev.usage.durationApiMs,
+                  numTurns: ev.usage.numTurns,
+                  stopReason: ev.usage.stopReasonDetail,
+                  isError: ev.usage.isError,
+                },
               );
             }
           } catch (err) {
@@ -1821,6 +1831,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
             const inputTokens = evUsage['input_tokens'] ?? 0;
             const outputTokens = evUsage['output_tokens'] ?? 0;
             const cacheRead = evUsage['cache_read_input_tokens'] ?? 0;
+            const cacheCreation = evUsage['cache_creation_input_tokens'] ?? 0;
             saveTokenUsage(
               sessionChatId,
               undefined,
@@ -1831,6 +1842,8 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
               totalCost ?? 0,
               false,
               agentId,
+              null,
+              cacheCreation,
             );
           }
         } catch (err) {

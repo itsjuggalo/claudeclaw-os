@@ -32,6 +32,10 @@ import {
   getDashboardTopAccessedMemories,
   getDashboardMemoriesList,
   getDashboardMemoryTimeline,
+  createMissionTask,
+  claimNextMissionTask,
+  completeMissionTask,
+  getMissionTask,
 } from './db.js';
 
 describe('database', () => {
@@ -523,6 +527,79 @@ describe('database', () => {
       expect(timeline[0]).toHaveProperty('date');
       expect(timeline[0]).toHaveProperty('count');
     });
+  });
+});
+
+// ── Mission task claim/complete under lock contention (issue #155) ──
+describe('mission task claim/complete', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+  });
+
+  it('claims the next queued task for an agent and marks it running', () => {
+    createMissionTask('m1', 'T1', 'do a thing', 'amos');
+    const claimed = claimNextMissionTask('amos');
+    expect(claimed?.id).toBe('m1');
+    expect(claimed?.status).toBe('running');
+    expect(claimed?.started_at).toBeGreaterThan(0);
+    expect(getMissionTask('m1')?.status).toBe('running');
+  });
+
+  it('returns null when the agent has no queued tasks', () => {
+    expect(claimNextMissionTask('amos')).toBeNull();
+  });
+
+  it('does not claim another agent\'s task', () => {
+    createMissionTask('m2', 'T2', 'naomi work', 'naomi');
+    expect(claimNextMissionTask('amos')).toBeNull();
+    expect(getMissionTask('m2')?.status).toBe('queued');
+  });
+
+  it('respects priority then FIFO order', () => {
+    createMissionTask('lo', 'lo', 'low', 'amos', 'dashboard', 1);
+    createMissionTask('hi', 'hi', 'high', 'amos', 'dashboard', 9);
+    expect(claimNextMissionTask('amos')?.id).toBe('hi');
+    expect(claimNextMissionTask('amos')?.id).toBe('lo');
+  });
+
+  it('completeMissionTask sets status and completed_at (no stuck running)', () => {
+    createMissionTask('m3', 'T3', 'finish me', 'amos');
+    claimNextMissionTask('amos');
+    completeMissionTask('m3', 'all done', 'completed');
+    const t = getMissionTask('m3');
+    expect(t?.status).toBe('completed');
+    expect(t?.result).toBe('all done');
+    expect(t?.completed_at).toBeGreaterThan(0);
+  });
+
+  it('does not claim a second task while the agent already has one running (one-running guard)', () => {
+    createMissionTask('r1', 'R1', 'first', 'amos');
+    createMissionTask('r2', 'R2', 'second', 'amos');
+    const first = claimNextMissionTask('amos');
+    expect(first?.id).toBe('r1');
+    // r1 is now 'running' — the guard must block claiming r2.
+    expect(claimNextMissionTask('amos')).toBeNull();
+    expect(getMissionTask('r2')?.status).toBe('queued');
+    // After r1 completes, r2 becomes claimable.
+    completeMissionTask('r1', 'ok', 'completed');
+    expect(claimNextMissionTask('amos')?.id).toBe('r2');
+  });
+
+  it('the running guard is per-agent (one agent running does not block another)', () => {
+    createMissionTask('a1', 'A1', 'amos work', 'amos');
+    createMissionTask('n1', 'N1', 'naomi work', 'naomi');
+    claimNextMissionTask('amos'); // amos now running
+    expect(claimNextMissionTask('naomi')?.id).toBe('n1');
+  });
+
+  it('completeMissionTask records failures with error text', () => {
+    createMissionTask('m4', 'T4', 'will fail', 'amos');
+    claimNextMissionTask('amos');
+    completeMissionTask('m4', null, 'failed', 'boom');
+    const t = getMissionTask('m4');
+    expect(t?.status).toBe('failed');
+    expect(t?.error).toBe('boom');
+    expect(t?.completed_at).toBeGreaterThan(0);
   });
 });
 

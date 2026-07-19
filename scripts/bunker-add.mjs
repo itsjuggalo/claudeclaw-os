@@ -20,9 +20,32 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 
-const BUNKER_DIR =
-  process.env.BUNKER_DIR ?? path.join(os.homedir(), '.claudeclaw', 'bunker');
+function expandHome(p) {
+  return p && (p.startsWith('~/') || p === '~') ? path.join(os.homedir(), p.slice(1)) : p;
+}
+
+// Resolve CLAUDECLAW_CONFIG the same way src/config.ts does — process.env, then
+// the repo .env, then the ~/.claudeclaw default — so this standalone CLI's
+// bunker dir stays in lockstep with the server (src/bunker.ts). Avoids a rogue
+// hardcoded path divorced from the configured root.
+function resolveConfigDir() {
+  if (process.env.CLAUDECLAW_CONFIG) return expandHome(process.env.CLAUDECLAW_CONFIG);
+  try {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const env = fs.readFileSync(path.join(root, '.env'), 'utf8');
+    const m = env.match(/^\s*CLAUDECLAW_CONFIG\s*=\s*(.+?)\s*$/m);
+    if (m) return expandHome(m[1].replace(/^["']|["']$/g, ''));
+  } catch {
+    /* no .env readable; fall through to default */
+  }
+  return expandHome('~/.claudeclaw');
+}
+
+const BUNKER_DIR = process.env.BUNKER_DIR
+  ? expandHome(process.env.BUNKER_DIR)
+  : path.join(resolveConfigDir(), 'bunker');
 
 function parseArgs(argv) {
   const out = { title: null, task: null, tags: [], file: null, slug: null, replace: false };

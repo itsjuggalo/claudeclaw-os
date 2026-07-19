@@ -15,6 +15,12 @@ import {
   resetStuckMissionTasks,
   getMissionTask,
   insertAuditLog,
+  areAllGroupChildrenTerminal,
+  getGroupChildren,
+  getJoinMission,
+  releaseJoinMission,
+  updateMissionPrompt,
+  type MissionTask,
 } from './db.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
@@ -29,6 +35,38 @@ type Sender = (text: string) => Promise<void>;
 const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 let sender: Sender;
+
+/**
+ * Tier 3 gather/join: when a group-tagged 'task' mission reaches a terminal
+ * status, check whether every sibling in its group is now terminal too. If
+ * so, assemble the children's results into the parked 'waiting' join
+ * mission's prompt and atomically release it (waiting -> queued). Defensive:
+ * a non-grouped mission, or a group with no join mission, is a no-op.
+ */
+function maybeReleaseJoinForMission(mission: MissionTask): void {
+  if (!mission.group_id || mission.role !== 'task') return;
+  if (!areAllGroupChildrenTerminal(mission.group_id)) return;
+
+  const join = getJoinMission(mission.group_id);
+  if (!join) {
+    logger.warn({ groupId: mission.group_id }, 'Gather group has no join mission to release');
+    return;
+  }
+
+  const children = getGroupChildren(mission.group_id);
+  const assembled = children
+    .map((c) => `=== ${c.title} (@${c.assigned_agent ?? 'unassigned'}) ===\n${c.result ?? c.error ?? '(no output)'}`)
+    .join('\n\n');
+  updateMissionPrompt(join.id, `${join.prompt}\n\n--- Collected results ---\n${assembled}`);
+
+  const released = releaseJoinMission(mission.group_id);
+  if (released) {
+    logger.info({ groupId: mission.group_id, joinId: join.id }, 'Released join mission for gather group');
+  }
+  // If released === false, another completing sibling already won the race;
+  // this caller does nothing further (the prompt write above is idempotent-safe
+  // since it re-derives from current child state each time it runs).
+}
 
 /**
  * In-memory set of task IDs currently being executed.
@@ -246,6 +284,7 @@ async function runDueMissionTasks(): Promise<void> {
         } else {
           completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
           insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: timeout (10m)`, true);
+          maybeReleaseJoinForMission({ ...mission, status: 'failed' });
           logger.warn({ missionId: mission.id }, 'Mission task timed out');
           try {
             await sender('Mission task timed out: "' + mission.title + '"');
@@ -256,18 +295,32 @@ async function runDueMissionTasks(): Promise<void> {
           }
         }
       } else {
-        const text = result.text?.trim() || 'Task completed with no output.';
+        // A mission can finish with nothing to say — most often an FYI handback
+        // that landed on this agent's board (e.g. a report routed back to the
+        // originator). We still want a closure signal (silence reads as an
+        // unresponsive bot), but not the noisy "Task completed with no output."
+        // wall. So: real output goes through as-is; an empty turn gets a compact
+        // completion marker, and doesn't pollute conversation context/memory.
+        const rawText = result.text?.trim() ?? '';
+        const hasOutput = rawText.length > 0;
+        const text = hasOutput ? rawText : 'Task completed with no output.';
         completeMissionTask(mission.id, text, 'completed');
         insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: completed (${text.length} chars)`, false);
-        logger.info({ missionId: mission.id }, 'Mission task completed');
+        maybeReleaseJoinForMission({ ...mission, status: 'completed' });
+        logger.info({ missionId: mission.id, hasOutput }, 'Mission task completed');
 
-        // Send result to Telegram
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
+        // Always give a closure signal: full output when there is any,
+        // otherwise a compact one-line marker instead of the noisy placeholder.
+        if (hasOutput) {
+          for (const chunk of splitMessage(formatForTelegram(text))) {
+            await sender(chunk);
+          }
+        } else {
+          await sender(`✓ ${mission.title} — done`);
         }
 
-        // Inject into conversation context so agent can reference it
-        if (ALLOWED_CHAT_ID) {
+        // Inject into conversation context so agent can reference it (skip empty turns).
+        if (ALLOWED_CHAT_ID && hasOutput) {
           const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
           logConversationTurn(ALLOWED_CHAT_ID, 'user', '[Mission task: ' + mission.title + ']: ' + mission.prompt, activeSession ?? undefined, schedulerAgentId);
           logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
@@ -276,10 +329,13 @@ async function runDueMissionTasks(): Promise<void> {
         // Fire-and-forget memory extraction. Synthetic chat_id when this agent has no
         // user-facing Telegram chat (specialists usually don't). Mission tasks produce
         // content worth remembering, grouped under a per-agent synthetic thread.
-        const ingestChatId = ALLOWED_CHAT_ID || `mission-${schedulerAgentId}`;
-        void ingestConversationTurn(ingestChatId, '[Mission task: ' + mission.title + ']: ' + mission.prompt, text, schedulerAgentId).catch((err) => {
-          logger.error({ err, missionId: mission.id }, 'Memory ingestion fire-and-forget failed (mission task)');
-        });
+        // Skip when there was no output — nothing worth remembering.
+        if (hasOutput) {
+          const ingestChatId = ALLOWED_CHAT_ID || `mission-${schedulerAgentId}`;
+          void ingestConversationTurn(ingestChatId, '[Mission task: ' + mission.title + ']: ' + mission.prompt, text, schedulerAgentId).catch((err) => {
+            logger.error({ err, missionId: mission.id }, 'Memory ingestion fire-and-forget failed (mission task)');
+          });
+        }
       }
     } catch (err) {
       clearTimeout(timeout);
@@ -291,6 +347,7 @@ async function runDueMissionTasks(): Promise<void> {
       } else {
         completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
         insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: failed — ${errMsg.slice(0, 200)}`, true);
+        maybeReleaseJoinForMission({ ...mission, status: 'failed' });
         logger.error({ err, missionId: mission.id }, 'Mission task failed');
       }
     } finally {

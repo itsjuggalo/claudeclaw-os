@@ -1,8 +1,12 @@
-# RFC: Agent Provider Engine
+---
+Author: promptadvisers
+Contributors: JJ Eaton (PR #58 - provider engine + ACP)
+Title: Agent Provider Engine
+Status: Implemented for current provider paths; direct Anthropic SDK backend remains a follow-up
+Component: provider engine / agent invocation seam
+---
 
-## Status
-
-Implemented for current provider paths. Future direct Anthropic SDK backend remains a follow-up.
+# Agent Provider Engine
 
 ## Summary
 

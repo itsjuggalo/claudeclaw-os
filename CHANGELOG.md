@@ -5,6 +5,68 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.5.1] - 2026-07-18
+
+### Bug Fixes
+
+- End SQLITE_BUSY starvation + normalize CLI invocation (Closes #155) ([#156](https://github.com/earlyaidopters/claudeclaw-os/pull/156))
+
+### Features
+
+- CLI-awareness descriptor registry + generated reference + prompt-injected index ([#153](https://github.com/earlyaidopters/claudeclaw-os/pull/153))
+
+## [1.5.0] - 2026-07-17
+
+### Bug Fixes
+
+- Always sandbox CLAUDECLAW_CONFIG so the suite can't poison a real config ([#149](https://github.com/earlyaidopters/claudeclaw-os/pull/149))
+- Always write main's agent.yaml to CLAUDECLAW_CONFIG ([#147](https://github.com/earlyaidopters/claudeclaw-os/pull/147))
+
+### Documentation
+
+- Drop redundant "RFC:" heading prefix; correct rfc-sdk-engine authorship
+- Add Agent Awareness & Deterministic Comms RFC + normalize RFC frontmatter
+
+### Features
+
+- Token/cost observability — Foundation (cache hit-rate, /savings, dashboard, telemetry) ([#143](https://github.com/earlyaidopters/claudeclaw-os/pull/143))
+- Deterministic comms + gather orchestration (Refs #141, Tiers 2-3) ([#144](https://github.com/earlyaidopters/claudeclaw-os/pull/144))
+- Agent self-location + Telegram command-scope self-heal (Tier 1) ([#142](https://github.com/earlyaidopters/claudeclaw-os/pull/142))
+- Bootstrap main's external agent.yaml on boot ([#148](https://github.com/earlyaidopters/claudeclaw-os/pull/148)) ([#150](https://github.com/earlyaidopters/claudeclaw-os/pull/150))
+- Handle media groups (multiple photos/files in one turn) ([#124](https://github.com/earlyaidopters/claudeclaw-os/pull/124))
+
+## [1.4.1] - 2026-07-11
+
+### Bug Fixes
+
+- Auto-fall-back to system claude on non-AVX Intel Macs ([#132](https://github.com/earlyaidopters/claudeclaw-os/pull/132))
+- Capture AskUserQuestion Other reply outside the message queue ([#131](https://github.com/earlyaidopters/claudeclaw-os/pull/131))
+- Copy-fallback for AGENTS.md on symlink-restricted platforms ([#140](https://github.com/earlyaidopters/claudeclaw-os/pull/140))
+- Refresh lockfile and add security overrides ([#139](https://github.com/earlyaidopters/claudeclaw-os/pull/139))
+- Remove root AGENTS.md symlink orphaned by #64 ([#138](https://github.com/earlyaidopters/claudeclaw-os/pull/138))
+- Route claude CLI off the unrunnable SDK binary on NixOS
+- Write vite manualChunks in function form for rolldown compatibility ([#137](https://github.com/earlyaidopters/claudeclaw-os/pull/137))
+
+### Documentation
+
+- Add respin-session, token-cost observability, and agent-identity RFCs ([#133](https://github.com/earlyaidopters/claudeclaw-os/pull/133))
+
+## [1.4.0] - 2026-07-03
+
+### Bug Fixes
+
+- Five Linux/systemd/VPS setup bugs (dashboard bind, warroom key, root sandbox, kill loop) ([#129](https://github.com/earlyaidopters/claudeclaw-os/pull/129))
+- Accept custom Claude model ids, show persisted model, extend /model ([#127](https://github.com/earlyaidopters/claudeclaw-os/pull/127))
+- Root storage at CLAUDECLAW_CONFIG, not a hardcoded ~/.claudeclaw ([#126](https://github.com/earlyaidopters/claudeclaw-os/pull/126))
+
+### Documentation
+
+- Focus CONTRIBUTING on PR-title convention, drop destructive git-cliff -o
+
+### Features
+
+- One-command VPS installer with Tailscale-private dashboard ([#128](https://github.com/earlyaidopters/claudeclaw-os/pull/128))
+
 ## [1.3.2] - 2026-07-01
 
 ### Bug Fixes

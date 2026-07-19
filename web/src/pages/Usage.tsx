@@ -1,3 +1,4 @@
+import { useState } from 'preact/hooks';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
@@ -17,6 +18,23 @@ interface TokenStats {
 }
 
 interface CostTimelineEntry { date: string; cost: number; turns: number; }
+
+interface CacheTokensEntry {
+  agentId: string;
+  displayName?: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+  costUsd: number;
+}
+
+// Cache hit rate = share of prompt-input tokens served from cache.
+function hitRate(read: number, write: number, input: number): string {
+  const total = read + write + input;
+  return total > 0 ? `${((read / total) * 100).toFixed(1)}%` : 'n/a';
+}
 
 interface Health extends ContextHealth {
   turns: number;
@@ -82,6 +100,8 @@ export function Usage() {
             );
           })()}
 
+          <CacheTokensPanel />
+
           {health.data && (
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4">
@@ -119,6 +139,88 @@ export function Usage() {
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const CACHE_WINDOWS: { label: string; days: number }[] = [
+  { label: '24h', days: 1 },
+  { label: '7d', days: 7 },
+  { label: '30d', days: 30 },
+];
+
+function CacheTokensPanel() {
+  const [days, setDays] = useState(30);
+  const q = useFetch<{ days: number; cacheTokens: CacheTokensEntry[] }>(
+    `/api/cache-tokens?chatId=${encodeURIComponent(chatId)}&days=${days}`, 60_000,
+  );
+  const rows = q.data?.cacheTokens ?? [];
+  const totalRead = rows.reduce((a, b) => a + b.cacheRead, 0);
+  const totalCreation = rows.reduce((a, b) => a + b.cacheCreation, 0);
+  const totalInput = rows.reduce((a, b) => a + b.inputTokens, 0);
+  const hasData = rows.length > 0 && (totalRead > 0 || totalCreation > 0);
+  const windowLabel = days === 1 ? '24h' : `${days}d`;
+  return (
+    <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Cache usage</div>
+          <div class="flex rounded-md border border-[var(--color-border)] overflow-hidden">
+            {CACHE_WINDOWS.map((w) => (
+              <button
+                key={w.days}
+                onClick={() => setDays(w.days)}
+                class={'px-2 py-0.5 text-[10px] tabular-nums ' + (days === w.days
+                  ? 'bg-[var(--color-accent)] text-white'
+                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div class="text-[10px] text-[var(--color-text-muted)] tabular-nums">
+          {hasData
+            ? `hit ${hitRate(totalRead, totalCreation, totalInput)} · read ${formatNumber(totalRead)} / write ${formatNumber(totalCreation)} tok`
+            : (q.loading ? 'loading…' : 'no cache activity yet')}
+        </div>
+      </div>
+      {hasData ? (
+        <div class="overflow-x-auto">
+          <table class="w-full text-[11.5px] tabular-nums">
+            <thead>
+              <tr class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] text-left">
+                <th class="font-normal pb-2 pr-3">Agent</th>
+                <th class="font-normal pb-2 pr-3 text-right">Turns</th>
+                <th class="font-normal pb-2 pr-3 text-right">Hit rate</th>
+                <th class="font-normal pb-2 pr-3 text-right">Cache read</th>
+                <th class="font-normal pb-2 text-right">Cache write</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.agentId} class="border-t border-[var(--color-border)] text-[var(--color-text)]">
+                  <td class="py-1.5 pr-3 text-[var(--color-text-muted)]">{r.displayName ?? r.agentId}</td>
+                  <td class="py-1.5 pr-3 text-right">{formatNumber(r.turns)}</td>
+                  <td class="py-1.5 pr-3 text-right">{hitRate(r.cacheRead, r.cacheCreation, r.inputTokens)}</td>
+                  <td class="py-1.5 pr-3 text-right">{formatNumber(r.cacheRead)}</td>
+                  <td class="py-1.5 text-right">{formatNumber(r.cacheCreation)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div class="text-[10px] text-[var(--color-text-faint)] mt-2">
+            Hit rate = cached-read share of prompt input (measured token counts, not dollars).
+          </div>
+        </div>
+      ) : (
+        <div class="py-10 text-center">
+          <div class="text-[12px] text-[var(--color-text-muted)] mb-1">No cache activity in the last {windowLabel}</div>
+          <div class="text-[11px] text-[var(--color-text-faint)]">
+            Populates as agents run turns and the prompt cache is reused.
+          </div>
         </div>
       )}
     </div>

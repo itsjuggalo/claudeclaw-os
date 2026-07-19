@@ -167,10 +167,17 @@ function createSchema(database: Database.Database): void {
       input_tokens    INTEGER NOT NULL DEFAULT 0,
       output_tokens   INTEGER NOT NULL DEFAULT 0,
       cache_read      INTEGER NOT NULL DEFAULT 0,
+      cache_creation  INTEGER NOT NULL DEFAULT 0,
       context_tokens  INTEGER NOT NULL DEFAULT 0,
       context_window  INTEGER,
       cost_usd        REAL NOT NULL DEFAULT 0,
       did_compact     INTEGER NOT NULL DEFAULT 0,
+      model           TEXT,
+      duration_ms     INTEGER NOT NULL DEFAULT 0,
+      duration_api_ms INTEGER NOT NULL DEFAULT 0,
+      num_turns       INTEGER NOT NULL DEFAULT 0,
+      stop_reason     TEXT,
+      is_error        INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL
     );
 
@@ -229,7 +236,10 @@ function createSchema(database: Database.Database): void {
       priority        INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL,
       started_at      INTEGER,
-      completed_at    INTEGER
+      completed_at    INTEGER,
+      parent_task_id  TEXT,
+      group_id        TEXT,
+      role            TEXT NOT NULL DEFAULT 'task'
     );
 
     CREATE INDEX IF NOT EXISTS idx_mission_status
@@ -507,6 +517,28 @@ function runMigrations(database: Database.Database): void {
   if (!usageCols.some((c) => c.name === 'agent_id')) {
     database.exec(`ALTER TABLE token_usage ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
   }
+  if (!usageCols.some((c) => c.name === 'cache_creation')) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN cache_creation INTEGER NOT NULL DEFAULT 0`);
+  }
+  // Per-turn telemetry columns (free from the SDK result object).
+  if (!usageCols.some((c) => c.name === 'model')) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN model TEXT`);
+  }
+  if (!usageCols.some((c) => c.name === 'duration_ms')) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!usageCols.some((c) => c.name === 'duration_api_ms')) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN duration_api_ms INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!usageCols.some((c) => c.name === 'num_turns')) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN num_turns INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!usageCols.some((c) => c.name === 'stop_reason')) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN stop_reason TEXT`);
+  }
+  if (!usageCols.some((c) => c.name === 'is_error')) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0`);
+  }
 
   const convoCols = database.prepare(`PRAGMA table_info(conversation_log)`).all() as Array<{ name: string }>;
   if (!convoCols.some((c) => c.name === 'agent_id')) {
@@ -711,6 +743,25 @@ function runMigrations(database: Database.Database): void {
         ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
     `);
     logger.info('Migration: made mission_tasks.assigned_agent nullable');
+  }
+
+  // Tier 2 deterministic comms: add parent_task_id to chain handbacks to their originating task
+  const missionColsChain = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
+  if (!missionColsChain.some((c) => c.name === 'parent_task_id')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN parent_task_id TEXT`);
+    logger.info('Migration: added mission_tasks.parent_task_id');
+  }
+
+  // Tier 3 gather/join primitive: group tag + role, so a scheduler-released
+  // join mission can aggregate a fan-out's children once all are terminal.
+  const missionColsGather = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
+  if (!missionColsGather.some((c) => c.name === 'group_id')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN group_id TEXT`);
+    logger.info('Migration: added mission_tasks.group_id');
+  }
+  if (!missionColsGather.some((c) => c.name === 'role')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN role TEXT NOT NULL DEFAULT 'task'`);
+    logger.info('Migration: added mission_tasks.role');
   }
 
   // Live Meetings: add provider column so we can track which platform
@@ -1780,12 +1831,29 @@ export function saveTokenUsage(
   didCompact: boolean,
   agentId = 'main',
   contextWindow: number | null = null,
+  cacheCreation = 0,
+  telemetry: {
+    model?: string | null;
+    durationMs?: number;
+    durationApiMs?: number;
+    numTurns?: number;
+    stopReason?: string | null;
+    isError?: boolean;
+  } = {},
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO token_usage (chat_id, session_id, input_tokens, output_tokens, cache_read, context_tokens, cost_usd, did_compact, created_at, agent_id, context_window)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(chatId, sessionId ?? null, inputTokens, outputTokens, cacheRead, contextTokens, costUsd, didCompact ? 1 : 0, now, agentId, contextWindow);
+    `INSERT INTO token_usage (chat_id, session_id, input_tokens, output_tokens, cache_read, context_tokens, cost_usd, did_compact, created_at, agent_id, context_window, cache_creation, model, duration_ms, duration_api_ms, num_turns, stop_reason, is_error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    chatId, sessionId ?? null, inputTokens, outputTokens, cacheRead, contextTokens, costUsd, didCompact ? 1 : 0, now, agentId, contextWindow, cacheCreation,
+    telemetry.model ?? null,
+    telemetry.durationMs ?? 0,
+    telemetry.durationApiMs ?? 0,
+    telemetry.numTurns ?? 0,
+    telemetry.stopReason ?? null,
+    telemetry.isError ? 1 : 0,
+  );
 }
 
 export interface SessionTokenSummary {
@@ -1951,6 +2019,40 @@ export function getDashboardCostTimeline(chatId: string, days = 30): { date: str
        ORDER BY date`,
     )
     .all(chatId, `-${days} days`) as { date: string; cost: number; turns: number }[];
+}
+
+export interface CacheTokensRow {
+  agentId: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+  costUsd: number;
+}
+
+/**
+ * Per-agent prompt-cache token usage over the last `days`, scoped to a chat.
+ * Reports measured token counts only (cache read/write, input/output) plus
+ * metered cost_usd — no derived "savings" figure (honest metrics only).
+ */
+export function getCacheTokens(chatId: string, days = 30): CacheTokensRow[] {
+  return db
+    .prepare(
+      `SELECT
+         agent_id                       as agentId,
+         COUNT(*)                       as turns,
+         COALESCE(SUM(input_tokens), 0) as inputTokens,
+         COALESCE(SUM(output_tokens), 0) as outputTokens,
+         COALESCE(SUM(cache_read), 0)   as cacheRead,
+         COALESCE(SUM(cache_creation), 0) as cacheCreation,
+         COALESCE(SUM(cost_usd), 0)     as costUsd
+       FROM token_usage
+       WHERE chat_id = ? AND created_at >= unixepoch('now', ?)
+       GROUP BY agent_id
+       ORDER BY cacheRead DESC`,
+    )
+    .all(chatId, `-${days} days`) as CacheTokensRow[];
 }
 
 export interface RecentTokenUsageRow {
@@ -2222,6 +2324,9 @@ export interface MissionTask {
   created_at: number;
   started_at: number | null;
   completed_at: number | null;
+  parent_task_id: string | null;
+  group_id: string | null;
+  role: string;
 }
 
 export function createMissionTask(
@@ -2231,12 +2336,16 @@ export function createMissionTask(
   assignedAgent: string | null = null,
   createdBy = 'dashboard',
   priority = 0,
+  parentTaskId: string | null = null,
+  groupId: string | null = null,
+  role = 'task',
+  status: 'queued' | 'waiting' = 'queued',
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`,
-  ).run(id, title, prompt, assignedAgent, createdBy, priority, now);
+    `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at, parent_task_id, group_id, role)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, title, prompt, assignedAgent, status, createdBy, priority, now, parentTaskId, groupId, role);
 }
 
 export function getUnassignedMissionTasks(): MissionTask[] {
@@ -2276,8 +2385,50 @@ export function getMissionTask(id: string): MissionTask | null {
   return (db.prepare('SELECT * FROM mission_tasks WHERE id = ?').get(id) as MissionTask) ?? null;
 }
 
+// Synchronous sleep (better-sqlite3 is synchronous). Uses Atomics.wait so we
+// block the thread without a busy spin.
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Bounded retry around a synchronous DB write for SQLITE_BUSY. WAL + busy_timeout
+// (db.ts init) cover most contention, but a lock UPGRADE inside a transaction can
+// still return SQLITE_BUSY immediately without honoring busy_timeout — hence both
+// the IMMEDIATE transactions below AND this retry as a backstop for pathological
+// multi-writer bursts (see issue #155).
+function withBusyRetry<T>(fn: () => T, attempts = 4): T {
+  let delay = 40;
+  for (let i = 0; ; i++) {
+    try {
+      return fn();
+    } catch (err) {
+      const code = (err as { code?: string })?.code ?? '';
+      const busy = code === 'SQLITE_BUSY' || /database is locked/i.test((err as Error)?.message ?? '');
+      if (!busy || i >= attempts - 1) throw err;
+      sleepSync(delay);
+      delay *= 2;
+    }
+  }
+}
+
 export function claimNextMissionTask(agentId: string): MissionTask | null {
+  // IMMEDIATE so the write lock is taken up front — a DEFERRED transaction takes a
+  // read lock on the SELECT then upgrades on the UPDATE, and SQLite returns
+  // SQLITE_BUSY on the upgrade WITHOUT honoring busy_timeout (issue #155).
   const txn = db.transaction(() => {
+    // One-running-per-agent guard: don't claim while this agent already has a task
+    // executing. Tasks are marked 'running' at claim/enqueue time and execution is
+    // serialized per chat by the message queue, so without this guard a later tick
+    // claims a second task and the DB briefly shows 2 'running' (1 executing + 1
+    // enqueued) — inflated concurrency (issue #155). Race-safe under the IMMEDIATE
+    // transaction below; a stuck 'running' can't wedge the agent because
+    // TASK_TIMEOUT_MS aborts+completes and resetStuckMissionTasks clears on boot.
+    const running = db
+      .prepare(
+        `SELECT 1 FROM mission_tasks WHERE assigned_agent = ? AND status = 'running' LIMIT 1`,
+      )
+      .get(agentId);
+    if (running) return null;
     const task = db
       .prepare(
         `SELECT * FROM mission_tasks
@@ -2287,12 +2438,13 @@ export function claimNextMissionTask(agentId: string): MissionTask | null {
       )
       .get(agentId) as MissionTask | undefined;
     if (!task) return null;
+    const startedAt = Math.floor(Date.now() / 1000);
     db.prepare(
       `UPDATE mission_tasks SET status = 'running', started_at = ? WHERE id = ?`,
-    ).run(Math.floor(Date.now() / 1000), task.id);
-    return { ...task, status: 'running' as const, started_at: Math.floor(Date.now() / 1000) };
+    ).run(startedAt, task.id);
+    return { ...task, status: 'running' as const, started_at: startedAt };
   });
-  return txn();
+  return withBusyRetry(() => txn.immediate());
 }
 
 export function completeMissionTask(
@@ -2302,9 +2454,15 @@ export function completeMissionTask(
   error?: string,
 ): void {
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
-    `UPDATE mission_tasks SET status = ?, result = ?, error = ?, completed_at = ? WHERE id = ?`,
-  ).run(status, result, error ?? null, now, id);
+  // Retry so a completion write never loses the lock race and leaves the task
+  // stuck in 'running' with no completed_at (issue #155).
+  withBusyRetry(() =>
+    db
+      .prepare(
+        `UPDATE mission_tasks SET status = ?, result = ?, error = ?, completed_at = ? WHERE id = ?`,
+      )
+      .run(status, result, error ?? null, now, id),
+  );
 }
 
 export function cancelMissionTask(id: string): boolean {
@@ -2359,6 +2517,48 @@ export function resetStuckMissionTasks(agentId: string): number {
     `UPDATE mission_tasks SET status = 'queued', started_at = NULL WHERE status = 'running' AND assigned_agent = ?`,
   ).run(agentId);
   return result.changes;
+}
+
+// ── Gather / join primitive (Tier 3) ────────────────────────────────
+
+/** All 'task'-role children of a fan-out group. */
+export function getGroupChildren(groupId: string): MissionTask[] {
+  return db
+    .prepare(`SELECT * FROM mission_tasks WHERE group_id = ? AND role = 'task'`)
+    .all(groupId) as MissionTask[];
+}
+
+/** True if every 'task'-role child of the group has reached a terminal status. */
+export function areAllGroupChildrenTerminal(groupId: string): boolean {
+  const children = getGroupChildren(groupId);
+  if (children.length === 0) return false;
+  return children.every((c) => c.status === 'completed' || c.status === 'failed' || c.status === 'cancelled');
+}
+
+/**
+ * Atomically release a group's parked join mission ('waiting' -> 'queued').
+ * Only the caller that observes changes()===1 owns the release; a second
+ * concurrent call (e.g. two children finishing near-simultaneously) sees
+ * changes()===0 and must not act again. This is the race guard.
+ */
+export function releaseJoinMission(groupId: string): boolean {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET status = 'queued' WHERE group_id = ? AND role = 'join' AND status = 'waiting'`,
+  ).run(groupId);
+  return result.changes === 1;
+}
+
+/** The 'join'-role mission for a group, if any. */
+export function getJoinMission(groupId: string): MissionTask | null {
+  return (
+    (db.prepare(`SELECT * FROM mission_tasks WHERE group_id = ? AND role = 'join'`).get(groupId) as MissionTask) ??
+    null
+  );
+}
+
+/** Overwrite a mission's prompt (used to inject assembled child results before releasing a join). */
+export function updateMissionPrompt(id: string, prompt: string): void {
+  db.prepare(`UPDATE mission_tasks SET prompt = ? WHERE id = ?`).run(prompt, id);
 }
 
 // ── Meet Sessions (Pika video meeting skill) ────────────────────────

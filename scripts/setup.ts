@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { setMainProviderConfig, type ProviderConfig, type ProviderType } from '../src/provider.js';
 
 import { getVenvPython, getVenvPip } from '../src/platform.js';
+import { ensureAgentsMdSymlink } from '../src/agent-config.js';
 
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 const c = {
@@ -245,19 +246,6 @@ function updateOpenCodeDefaultModel(model: string): void {
   }
   raw['model'] = model;
   fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
-}
-
-function ensureAgentsMdSymlink(dir: string): boolean {
-  const claudeMd = path.join(dir, 'CLAUDE.md');
-  const agentsMd = path.join(dir, 'AGENTS.md');
-  if (!fs.existsSync(claudeMd) || fs.existsSync(agentsMd)) return false;
-
-  try {
-    fs.symlinkSync('CLAUDE.md', agentsMd);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 type SetupProviderType = Extract<ProviderType, 'claude' | 'opencode' | 'gemini' | 'codex' | 'acp'>;
@@ -944,22 +932,58 @@ async function main() {
   } catch { /* use default */ }
 
   const ownerName = await ask('Your name (so the bot knows who it\'s talking to)') || '';
+  const ownerWork = await ask('One line: what you do / your main work (Enter to skip)') || '';
 
-  // Replace placeholders in CLAUDE.md if we have values
+  // Resolve the config + store paths the same way the runtime (config.ts) does,
+  // so we can stamp them into CLAUDE.md as an INFORMATIONAL hint. The canonical
+  // answer at runtime is always `hive-cli path` — the stamp is a snapshot that
+  // goes stale if the store is relocated, so the text points back at the CLI.
+  const rawStorePath =
+    process.env.CLAUDECLAW_STORE_DIR || envForConfig.CLAUDECLAW_STORE_DIR || path.join(PROJECT_ROOT, 'store');
+  const storeDbPath = path.join(expandHome(rawStorePath), 'claudeclaw.db');
+
+  // Replace placeholders in CLAUDE.md and ENFORCE that none survive. A generated
+  // runtime config with leftover bracket tokens (e.g. "[YOUR NAME]", "Michael
+  // [does what you do]") is active misdirection — the agent reads it as fact.
   if (fs.existsSync(claudeMdDest)) {
     let claudeContent = fs.readFileSync(claudeMdDest, 'utf-8');
-    let replaced = false;
-    if (assistantName && assistantName !== 'Main' && claudeContent.includes('[YOUR ASSISTANT NAME]')) {
-      claudeContent = claudeContent.replace(/\[YOUR ASSISTANT NAME\]/g, assistantName);
-      replaced = true;
+
+    // Ordered so descriptive placeholders resolve before the name tokens they
+    // may contain. Empty answers get a neutral default rather than a bracket.
+    const replacements: Array<[string, string]> = [
+      ['[does what you do]', ownerWork || 'uses this assistant to get work done'],
+      // Collapse the trailing free-form sentence rather than leaving ". .".
+      [' [Brief description of your main projects/work].', ''],
+      ['[Brief description of your main projects/work]', ''],
+      ['[YOUR ASSISTANT NAME]', assistantName || 'Assistant'],
+      ['[YOUR NAME]', ownerName || 'the owner'],
+      ['[CONFIG_DIR]', claudeclawConfigDir],
+      ['[STORE_PATH]', storeDbPath],
+    ];
+    for (const [token, value] of replacements) {
+      claudeContent = claudeContent.split(token).join(value);
     }
-    if (ownerName && claudeContent.includes('[YOUR NAME]')) {
-      claudeContent = claudeContent.replace(/\[YOUR NAME\]/g, ownerName);
-      replaced = true;
-    }
-    if (replaced) {
-      fs.writeFileSync(claudeMdDest, claudeContent, 'utf-8');
-      ok('Updated CLAUDE.md with your names');
+    // Tidy the "[BRACKETED]" mention in the guidance comment.
+    claudeContent = claudeContent.split('[BRACKETED]').join('bracketed');
+
+    fs.writeFileSync(claudeMdDest, claudeContent, 'utf-8');
+    ok('Personalized CLAUDE.md (names + self-location stamp)');
+    info(`Stamped store DB (informational): ${storeDbPath}`);
+    info('Agents get the live value from `hive-cli path`, not this stamp.');
+
+    // Enforcement: fail loudly on any surviving placeholder token.
+    const leftover = [
+      '[YOUR NAME]', '[YOUR ASSISTANT NAME]', '[does what you do]',
+      '[Brief description of your main projects/work]', '[CONFIG_DIR]', '[STORE_PATH]',
+    ].filter((t) => claudeContent.includes(t));
+    // Catch any other ALL-CAPS "[PLACEHOLDER TOKEN]" we didn't enumerate,
+    // without flagging legitimate mixed-case content like "[Voice transcribed]".
+    const generic = claudeContent.match(/\[[A-Z][A-Z ]{2,}\]/g) || [];
+    const unresolved = Array.from(new Set([...leftover, ...generic]));
+    if (unresolved.length > 0) {
+      warn('CLAUDE.md still contains unreplaced placeholder tokens:');
+      for (const t of unresolved) bullet(t);
+      warn(`Edit ${claudeMdDest} and replace them — the agent reads them as fact.`);
     }
   }
 

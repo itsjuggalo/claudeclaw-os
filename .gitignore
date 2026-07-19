@@ -6,6 +6,12 @@ dist/
 
 # Environment — never commit API keys
 .env
+# VPS deploy config — copy of deploy/*.example filled with live secrets.
+# Bare pattern matches in any directory (incl. repo root) to prevent accidental
+# commits of a file that contains live tokens.
+claudeclaw-deploy.conf
+# VPS deployment guide — shared with the community, not shipped in the repo (README is enough)
+deploy/docs/
 # Env backups (e.g. rotate-oauth-token.py) — full copies of .env, contain live secrets
 .env.*.bak-rotate
 .env.bak-rotate
@@ -126,3 +132,6 @@ agents/*/agent.yaml.backup
 .claude/claudex/
 agents/*/.claude/claudex/
 .env.bak*
+
+# Generated at setup/agent-create by ensureAgentsMdSymlink (symlink or copy of CLAUDE.md); not tracked so a committed symlink can't check out broken on Windows
+agents/*/AGENTS.md

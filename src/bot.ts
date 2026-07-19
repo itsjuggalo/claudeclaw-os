@@ -21,6 +21,7 @@ import {
   activeBotToken,
   agentDefaultModel,
   agentProvider,
+  updateAgentProvider,
   agentMcpAllowlist,
   agentSystemPrompt,
   TYPING_REFRESH_MS,
@@ -40,19 +41,20 @@ import {
   CLAUDE_MODEL_SONNET,
   CLAUDE_MODEL_HAIKU,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, getSessionTokenUsage, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount, getMemoryMigrationNotice, setMemoryMigrationNotice } from './db.js';
-import { resolvePrimaryAgentId } from './agent-config.js';
+import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount, getMemoryMigrationNotice, setMemoryMigrationNotice, getCacheTokens, getSessionTokenUsage } from './db.js';
+import { resolvePrimaryAgentId, setAgentProvider, resolveAgentDisplayName } from './agent-config.js';
 import { logger } from './logger.js';
-import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
+import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage, buildMediaGroupMessage, createMediaGroupBuffer } from './media.js';
 import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn, shouldNudgeMemory, MEMORY_NUDGE_TEXT } from './memory.js';
 import { classifyMessageComplexity } from './message-classifier.js';
 import { scanForSecrets, redactSecrets } from './exfiltration-guard.js';
 import { trackUsage, getRateStatus } from './rate-tracker.js';
 import { buildCostFooter } from './cost-footer.js';
-import { DEFAULT_CLAUDE_MODEL, getMainProviderConfig, getProviderDisplay, ProviderConfig } from './provider.js';
+import { DEFAULT_CLAUDE_MODEL, getMainProviderConfig, getProviderDisplay, ProviderConfig, setMainProviderConfig } from './provider.js';
 import { engineSupportsSystemPrompt } from './agent-engine/index.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
+import { applyOtherSelection, stepHint } from './auq-selection.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents, classifyAndAssignAgent } from './orchestrator.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import {
@@ -222,7 +224,6 @@ const AVAILABLE_MODELS: Record<string, string> = {
   sonnet: CLAUDE_MODEL_SONNET,
   haiku: CLAUDE_MODEL_HAIKU,
 };
-const DEFAULT_MODEL_LABEL = 'opus';
 
 export function setMainModelOverride(model: string): void {
   if (ALLOWED_CHAT_ID) chatModelOverride.set(ALLOWED_CHAT_ID, model);
@@ -539,12 +540,17 @@ function makeToken(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
-/** Text for the current step: "(2/3) <question>" when there are several. */
+/**
+ * Text for the current step: "(2/3) <question>" when there are several, plus a
+ * hint telling the user whether to pick one or check several. Multi-select is
+ * easy to miss on Telegram (a tap doesn't auto-advance like single-select), so
+ * the cue points them at Done.
+ */
 function buildStepText(q: PendingQuestion): string {
   const n = q.request.questions.length;
   const cur = q.request.questions[q.current];
   const prefix = n > 1 ? `(${q.current + 1}/${n}) ` : '';
-  return `${prefix}${cur.question}`;
+  return `${prefix}${cur.question}\n_${stepHint(!!cur.multiSelect)}_`;
 }
 
 /**
@@ -759,7 +765,12 @@ async function maybeCaptureOtherReply(ctx: Context, chatIdStr: string, message: 
   const q = pendingQuestions.get(token);
   if (!q || !q.awaitingOther) return false;
 
-  q.selections[q.current] = [message.trim()];
+  const cur = q.request.questions[q.current];
+  q.selections[q.current] = applyOtherSelection(
+    q.selections[q.current] ?? [],
+    message,
+    !!cur.multiSelect,
+  );
   q.awaitingOther = false;
   // Record only — re-render the step so the user can Next/Done from here.
   if (q.messageId) {
@@ -867,6 +878,28 @@ function registerAuqCallbackHandler(bot: Bot): void {
   });
 }
 
+// Set in createBot() so the module-level emergency-kill path can drain the
+// killing update before exit without threading the Bot through every caller.
+let botRef: Bot | undefined;
+
+// Advance Telegram's offset past the kill message so a supervisor restart
+// (systemd Restart=always) does not redeliver it and re-trigger the kill.
+// Stops the long-poller first — a concurrent getUpdates would 409-conflict.
+//
+// Both steps are time-boxed: grammY's bot.stop() waits for in-flight update
+// processing to settle, and this runs *inside* the killing handler, so an
+// unbounded await could deadlock and starve the caller's process.exit
+// watchdog. A hard cap guarantees we always fall through to the kill.
+async function drainKillUpdate(ctx: Context): Promise<void> {
+  const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | void> =>
+    Promise.race([p.catch(() => {}), new Promise<void>((r) => setTimeout(r, ms).unref?.())]);
+  if (botRef) await withTimeout(botRef.stop(), 2000);
+  await withTimeout(
+    ctx.api.getUpdates({ offset: ctx.update.update_id + 1, limit: 1, timeout: 0 }),
+    2000,
+  );
+}
+
 async function handleMessage(ctx: Context, message: string, forceVoiceReply = false, skipLog = false): Promise<void> {
   const chatId = ctx.chat!.id;
   const chatIdStr = chatId.toString();
@@ -909,6 +942,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   if (checkKillPhrase(message)) {
     audit({ agentId: AGENT_ID, chatId: chatIdStr, action: 'kill', detail: 'Emergency kill triggered', blocked: false });
     await ctx.reply('EMERGENCY KILL activated. All agents stopping.');
+    await drainKillUpdate(ctx);
     executeEmergencyKill();
     return;
   }
@@ -1275,12 +1309,21 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
           activeSessionId,
           result.usage.inputTokens,
           result.usage.outputTokens,
-          result.usage.lastCallCacheRead,
+          result.usage.cacheReadInputTokens,
           result.usage.lastCallCacheRead + result.usage.lastCallInputTokens,
           result.usage.totalCostUsd,
           result.usage.didCompact,
           AGENT_ID,
           result.usage.contextWindow,
+          result.usage.cacheCreationInputTokens,
+          {
+            model: result.usage.model,
+            durationMs: result.usage.durationMs,
+            durationApiMs: result.usage.durationApiMs,
+            numTurns: result.usage.numTurns,
+            stopReason: result.usage.stopReasonDetail,
+            isError: result.usage.isError,
+          },
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');
@@ -1365,16 +1408,18 @@ function discoverSkillCommands(): Array<{ command: string; description: string }
       // Check user_invocable: true
       if (!/user_invocable:\s*true/i.test(fm)) continue;
 
-      // Extract name
+      // Extract name (Telegram command names: 1-32 chars, [a-z0-9_]).
+      // Clamp to 32 — an over-long name 400s the whole setMyCommands call.
       const nameMatch = fm.match(/^name:\s*(.+)$/m);
       if (!nameMatch) continue;
-      const name = nameMatch[1].trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+      const name = nameMatch[1].trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 32);
       if (!name) continue;
 
-      // Extract description (truncate to 256 chars for Telegram limit)
+      // Extract description (clamp to 250; Telegram hard limit is 256, keep
+      // headroom so a single long description can't 400 the whole call).
       const descMatch = fm.match(/^description:\s*(.+)$/m);
       const desc = descMatch
-        ? descMatch[1].trim().slice(0, 256)
+        ? descMatch[1].trim().slice(0, 250)
         : `Run the ${name} skill`;
 
       commands.push({ command: name, description: desc });
@@ -1393,6 +1438,7 @@ export function createBot(): Bot {
   }
 
   const bot = new Bot(token);
+  botRef = bot; // expose for the module-level emergency-kill drain
 
   // Reject group chats. ClaudeClaw only works in private (1-on-1) chats.
   // This prevents message leakage if the bot is added to a group.
@@ -1450,19 +1496,31 @@ export function createBot(): Bot {
     { command: 'model', description: 'Switch model (opus/sonnet/haiku)' },
     { command: 'provider', description: 'Show active provider' },
     { command: 'memory', description: 'View recent memories' },
+    { command: 'cache', description: 'Per-agent prompt-cache usage' },
     { command: 'forget', description: 'Clear session' },
     { command: 'wa', description: 'Recent WhatsApp messages' },
     { command: 'slack', description: 'Recent Slack messages' },
     { command: 'dashboard', description: 'Open web dashboard' },
     { command: 'stop', description: 'Stop current processing' },
     { command: 'agents', description: 'List available agents' },
-    { command: 'delegate', description: 'Delegate task to agent' },
+    { command: 'delegate', description: 'Hand a task to one agent (async)' },
+    { command: 'await', description: 'Fan out to agents, wait for one summary' },
+    { command: 'gather', description: 'Fan out to agents, notify when all done' },
     { command: 'lock', description: 'Lock session (requires PIN to unlock)' },
     { command: 'status', description: 'Show security status' },
   ];
   const skillCommands = discoverSkillCommands();
   const allCommands = [...builtInCommands, ...skillCommands].slice(0, 100); // Telegram limit: 100 commands
-  bot.api.setMyCommands(allCommands)
+  // Assert a clean slate: clear any non-default command scopes first. Telegram
+  // serves the MOST-SPECIFIC scope, and we only ever write the default scope.
+  // A reused token can carry a stale all_private_chats/all_group_chats scope
+  // from a prior bot (e.g. 52 foreign commands) that silently shadows ours on
+  // every client. We can't override a scope we don't set, so delete them.
+  Promise.all([
+    bot.api.deleteMyCommands({ scope: { type: 'all_private_chats' } }).catch(() => {}),
+    bot.api.deleteMyCommands({ scope: { type: 'all_group_chats' } }).catch(() => {}),
+  ])
+    .then(() => bot.api.setMyCommands(allCommands))
     .then(() => logger.info({ count: skillCommands.length }, 'Registered %d skill commands with Telegram', skillCommands.length))
     .catch((err) => logger.warn({ err }, 'Failed to register bot commands with Telegram'));
 
@@ -1477,18 +1535,25 @@ export function createBot(): Bot {
       '/model — Switch model (opus/sonnet/haiku)\n' +
       '/provider — Show active provider/model source\n' +
       '/memory — View recent memories\n' +
+      '/cache — Per-agent prompt-cache usage ([days], default 30)\n' +
       '/forget — Clear session\n' +
       '/wa — WhatsApp messages\n' +
       '/slack — Slack messages\n' +
       '/dashboard — Web dashboard\n' +
       '/stop — Stop current processing\n' +
       '/agents — List available agents\n' +
-      '/delegate — Delegate task to agent\n' +
+      '/delegate — Hand a task to one agent, async (delegate)\n' +
+      '/await — Fan out to agents, wait for one combined summary\n' +
+      '/gather — Fan out to agents, get notified when all finish\n' +
       '/lock — Lock session (PIN required to unlock)\n' +
       '/status — Security status\n' +
       '/packs — List installed sound packs\n' +
       '/setpack <name> — Switch active sound pack\n\n' +
-      'Delegation: @agentId: prompt or /delegate agentId prompt\n\n' +
+      'Orchestration: use the commands above, or just ask in plain English —\n' +
+      '  "have amos pull the SCCHA cards and report back" (delegate)\n' +
+      '  "ask naomi and amos each for today\'s highlights, wait for both" (await)\n' +
+      '  "kick off research across three agents and ping me when all are done" (gather)\n' +
+      'Shorthand: @agentId: prompt or /delegate agentId prompt\n\n' +
       'You can also send voice notes, photos, files, and videos.'
     );
   });
@@ -1616,10 +1681,17 @@ export function createBot(): Bot {
     }
   });
 
-  // /model — switch Claude model (opus, sonnet, haiku)
+  // /model — switch Claude model (opus, sonnet, haiku shortcuts, or any
+  // full claude-* id, e.g. /model claude-sonnet-4-5). Changes PERSIST to
+  // agent.yaml — the same provider block the dashboard writes — and take
+  // effect immediately in-process. Telegram, dashboard, and agent.yaml
+  // are one synced store; there is no temporary per-chat override.
   bot.command('model', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
     const chatIdStr = ctx.chat!.id.toString();
+    // Clear any pre-persistence chat override so the persisted value is
+    // what actually runs (the override map outranks it in the query path).
+    chatModelOverride.delete(chatIdStr);
     const provider = activeProvider();
     if (provider.type !== 'claude') {
       await ctx.reply(`Active provider: ${getProviderDisplay(provider)}\n/model only applies to Claude. Use npm run provider:setup or the dashboard to change provider/model settings.`);
@@ -1627,30 +1699,52 @@ export function createBot(): Bot {
     }
     const arg = ctx.match?.trim().toLowerCase();
 
+    const persist = (next: ProviderConfig): void => {
+      if (AGENT_ID === 'main') setMainProviderConfig(next);
+      else setAgentProvider(AGENT_ID, next);
+      updateAgentProvider(next); // in-memory, effective this turn
+    };
+
     if (!arg) {
-      const current = chatModelOverride.get(chatIdStr);
-      const currentLabel = current
-        ? Object.entries(AVAILABLE_MODELS).find(([, v]) => v === current)?.[0] ?? current
-        : DEFAULT_MODEL_LABEL + ' (default)';
+      const effective = agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL;
+      const label = Object.entries(AVAILABLE_MODELS).find(([, v]) => v === effective)?.[0] ?? effective;
+      const source = agentDefaultModel || provider.model ? 'agent.yaml' : 'default';
       const models = Object.keys(AVAILABLE_MODELS).join(', ');
-      await ctx.reply(`Current model: ${currentLabel}\nAvailable: ${models}\n\nUsage: /model haiku`);
+      await ctx.reply(`Current model: ${label} (${source})\nShortcuts: ${models}\nOr a full id: /model claude-sonnet-4-5\n\nChanges persist (agent.yaml), same as the dashboard picker.`);
       return;
     }
 
-    if (arg === 'reset' || arg === 'default' || arg === 'opus') {
-      chatModelOverride.delete(chatIdStr);
-      await ctx.reply('Model reset to default (opus)');
+    if (arg === 'reset' || arg === 'default') {
+      // Drop the persisted model so the provider default applies.
+      const next: ProviderConfig = { ...provider };
+      delete next.model;
+      try {
+        persist(next);
+      } catch (err) {
+        await ctx.reply(`Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      await ctx.reply(`Model reset to default: ${DEFAULT_CLAUDE_MODEL} (persisted)`);
       return;
     }
 
-    const modelId = AVAILABLE_MODELS[arg];
+    // Shortcut label, or any full claude-* model id. Same format gate as
+    // the dashboard set-model endpoints — the SDK 404s clearly on first
+    // use if the id doesn't exist, which is the real validator.
+    const modelId = AVAILABLE_MODELS[arg]
+      ?? (/^claude-[a-z0-9][a-z0-9.-]*$/.test(arg) ? arg : undefined);
     if (!modelId) {
-      await ctx.reply(`Unknown model: ${arg}\nAvailable: ${Object.keys(AVAILABLE_MODELS).join(', ')}`);
+      await ctx.reply(`Unknown model: ${arg}\nShortcuts: ${Object.keys(AVAILABLE_MODELS).join(', ')}\nOr a full id, e.g. /model claude-sonnet-4-5`);
       return;
     }
 
-    chatModelOverride.set(chatIdStr, modelId);
-    await ctx.reply(`Model changed: ${arg} (${modelId})`);
+    try {
+      persist({ ...provider, model: modelId });
+    } catch (err) {
+      await ctx.reply(`Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    await ctx.reply(`Model changed: ${arg === modelId ? modelId : `${arg} (${modelId})`}\nPersisted to agent.yaml — applies everywhere until changed again.`);
   });
 
   // /provider — display active provider/model source only.
@@ -1685,6 +1779,41 @@ export function createBot(): Bot {
     // Splitting on newline boundaries keeps each memory line's HTML balanced.
     const memoryReply = `<b>Recent memories</b>\n\n${lines}\n\n<i>/pin &lt;id&gt; to make permanent, /unpin &lt;id&gt; to remove</i>`;
     for (const part of splitMessage(memoryReply)) {
+      await ctx.reply(part, { parse_mode: 'HTML' });
+    }
+  });
+
+  // /cache [days] — per-agent prompt-cache token usage over a window (default 30d)
+  bot.command('cache', async (ctx) => {
+    if (await replyIfLocked(ctx)) return;
+    const chatId = ctx.chat!.id.toString();
+    const days = Math.min(365, Math.max(1, Number.parseInt(ctx.match?.trim() || '', 10) || 30));
+    const rows = getCacheTokens(chatId, days);
+    if (rows.length === 0) {
+      await ctx.reply(`No cache activity in the last ${days}d yet.`);
+      return;
+    }
+    const fmt = (n: number) => Math.round(n).toLocaleString('en-US');
+    // Cache hit rate = share of prompt-input tokens served from cache.
+    const hitRate = (read: number, write: number, input: number): string => {
+      const total = read + write + input;
+      return total > 0 ? `${((read / total) * 100).toFixed(1)}%` : 'n/a';
+    };
+    let totalRead = 0;
+    let totalCreate = 0;
+    let totalInput = 0;
+    const lines = rows.map((r) => {
+      totalRead += r.cacheRead;
+      totalCreate += r.cacheCreation;
+      totalInput += r.inputTokens;
+      return `<b>${escapeHtml(resolveAgentDisplayName(r.agentId))}</b> · ${fmt(r.turns)} turns · hit <b>${hitRate(r.cacheRead, r.cacheCreation, r.inputTokens)}</b>\n` +
+        `  read ${fmt(r.cacheRead)} · write ${fmt(r.cacheCreation)} tok`;
+    });
+    const header = `<b>Cache usage — last ${days}d</b>\n` +
+      `Hit rate <b>${hitRate(totalRead, totalCreate, totalInput)}</b> · read ${fmt(totalRead)} / write ${fmt(totalCreate)} tok`;
+    const footer = `<i>hit rate = cached-read share of prompt input (measured token counts, not dollars)</i>`;
+    const reply = `${header}\n\n${lines.join('\n')}\n\n${footer}`;
+    for (const part of splitMessage(reply)) {
       await ctx.reply(part, { parse_mode: 'HTML' });
     }
   });
@@ -1916,8 +2045,36 @@ export function createBot(): Bot {
     } catch { await ctx.reply('Could not reach peon API.'); }
   });
 
+  // /await <agentId,agentId,...> <prompt> — fan out to agents and wait for one combined summary (blocking)
+  bot.command('await', async (ctx) => {
+    if (await replyIfLocked(ctx)) return;
+    const args = ctx.match?.trim();
+    if (!args) {
+      const agents = getAvailableAgents();
+      const agentList = agents.length > 0 ? agents.map((a) => a.id).join(', ') : '(none configured)';
+      await ctx.reply(`Usage: /await <agentId,agentId,...> <prompt>\n\nSends the prompt to each agent and waits for one combined answer in this turn.\n\nAvailable agents: ${agentList}`);
+      return;
+    }
+    const chatIdStr = ctx.chat!.id.toString();
+    messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `/await ${args}`));
+  });
+
+  // /gather <agentId,agentId,...> <prompt> — fan out to agents, get notified when all finish (non-blocking join)
+  bot.command('gather', async (ctx) => {
+    if (await replyIfLocked(ctx)) return;
+    const args = ctx.match?.trim();
+    if (!args) {
+      const agents = getAvailableAgents();
+      const agentList = agents.length > 0 ? agents.map((a) => a.id).join(', ') : '(none configured)';
+      await ctx.reply(`Usage: /gather <agentId,agentId,...> <prompt>\n\nSends the prompt to each agent and pings you with one consolidated summary once the last one finishes.\n\nAvailable agents: ${agentList}`);
+      return;
+    }
+    const chatIdStr = ctx.chat!.id.toString();
+    messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `/gather ${args}`));
+  });
+
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/provider', '/memory', '/forget', '/pin', '/unpin', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/lock', '/status', '/packs', '/setpack']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/provider', '/memory', '/cache', '/forget', '/pin', '/unpin', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/await', '/gather', '/lock', '/status', '/packs', '/setpack']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
@@ -1931,6 +2088,7 @@ export function createBot(): Bot {
     if (checkKillPhrase(text)) {
       audit({ agentId: AGENT_ID, chatId: chatIdStr, action: 'kill', detail: 'Emergency kill via text handler', blocked: false });
       await ctx.reply('EMERGENCY KILL activated. All agents stopping.');
+      await drainKillUpdate(ctx);
       executeEmergencyKill();
       return;
     }
@@ -1945,6 +2103,16 @@ export function createBot(): Bot {
       return;
     }
     touchActivity();
+
+    // ── AskUserQuestion "Other" free-text reply ─────────────────────
+    // Must be captured OUTSIDE the serial message queue. The turn that opened
+    // the question is still in-flight awaiting the resolver, so an enqueued
+    // reply would sit behind it forever — the user then taps Done (a callback,
+    // which bypasses the queue), the question finalizes with this slot empty
+    // (reported as skipped), and the queued text later fires as a stray new
+    // turn. Handling it inline here (like a callback tap) resolves the pending
+    // question immediately.
+    if (await maybeCaptureOtherReply(ctx, chatIdStr, text)) return;
 
     // ── WhatsApp state machine ──────────────────────────────────────
     const state = waState.get(chatIdStr);
@@ -2131,6 +2299,33 @@ export function createBot(): Bot {
   });
 
   // Photos — download and pass to Claude
+  // --- Telegram albums (media groups) ---
+  // Multiple files sent together arrive as separate updates sharing a
+  // media_group_id, with the caption on only one. Buffer them (debounced) and
+  // submit ONE turn with all files + the caption, instead of one file per turn.
+  // Latest ctx per group key, used to reply to the chat when the group flushes.
+  const mediaGroupCtx = new Map<string, Context>();
+  const mediaBuffer = createMediaGroupBuffer({
+    onFlush: (key, items, caption) => {
+      const ctx = mediaGroupCtx.get(key);
+      mediaGroupCtx.delete(key);
+      if (!ctx) return;
+      const chatId = key.split(':')[0];
+      const msg = buildMediaGroupMessage(items, caption);
+      messageQueue.enqueue(chatId, () => handleMessage(ctx, msg));
+    },
+  });
+  // Register album membership at message ARRIVAL (before awaiting the download),
+  // passing the download as a promise, so slow downloads can't split the group.
+  function bufferMediaGroup(
+    ctx: Context, chatId: number, groupId: string,
+    item: Promise<{ path: string; label?: string }>, caption?: string,
+  ): void {
+    const key = `${chatId}:${groupId}`;
+    mediaGroupCtx.set(key, ctx); // latest ctx is fine for replying to the chat
+    mediaBuffer.add(key, item, caption);
+  }
+
   bot.on('message:photo', async (ctx) => {
     const chatId = ctx.chat!.id;
     if (!isAuthorised(chatId)) return;
@@ -2143,6 +2338,12 @@ export function createBot(): Bot {
 
     try {
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      const gid = ctx.message.media_group_id;
+      if (gid) {
+        const dl = downloadMedia(activeBotToken, photo.file_id, 'photo.jpg').then((path) => ({ path }));
+        bufferMediaGroup(ctx, chatId, gid, dl, ctx.message.caption ?? undefined);
+        return;
+      }
       const localPath = await downloadMedia(activeBotToken, photo.file_id, 'photo.jpg');
       const msg = buildPhotoMessage(localPath, ctx.message.caption ?? undefined);
       const chatIdStr = chatId.toString();
@@ -2167,6 +2368,12 @@ export function createBot(): Bot {
     try {
       const doc = ctx.message.document;
       const filename = doc.file_name ?? 'file';
+      const gid = ctx.message.media_group_id;
+      if (gid) {
+        const dl = downloadMedia(activeBotToken, doc.file_id, filename).then((path) => ({ path, label: filename }));
+        bufferMediaGroup(ctx, chatId, gid, dl, ctx.message.caption ?? undefined);
+        return;
+      }
       const localPath = await downloadMedia(activeBotToken, doc.file_id, filename);
       const msg = buildDocumentMessage(localPath, filename, ctx.message.caption ?? undefined);
       const chatIdStr = chatId.toString();
@@ -2403,12 +2610,21 @@ async function processDashboardMessage(
           activeSessionId,
           result.usage.inputTokens,
           result.usage.outputTokens,
-          result.usage.lastCallCacheRead,
+          result.usage.cacheReadInputTokens,
           result.usage.lastCallCacheRead + result.usage.lastCallInputTokens,
           result.usage.totalCostUsd,
           result.usage.didCompact,
           AGENT_ID,
           result.usage.contextWindow,
+          result.usage.cacheCreationInputTokens,
+          {
+            model: result.usage.model,
+            durationMs: result.usage.durationMs,
+            durationApiMs: result.usage.durationApiMs,
+            numTurns: result.usage.numTurns,
+            stopReason: result.usage.stopReasonDetail,
+            isError: result.usage.isError,
+          },
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');

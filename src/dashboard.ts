@@ -59,6 +59,7 @@ import {
   getDashboardMemoriesList,
   getDashboardTokenStats,
   getDashboardCostTimeline,
+  getCacheTokens,
   getDashboardRecentTokenUsage,
   getSession,
   getSessionTokenUsage,
@@ -196,13 +197,24 @@ const VALID_CLAUDE_MODELS = Array.from(new Set([
   CLAUDE_MODEL_OPUS,
   CLAUDE_MODEL_SONNET,
   CLAUDE_MODEL_HAIKU,
+  'claude-fable-5',
+  'claude-sonnet-5',
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5',
   'claude-haiku-4-5',
 ]));
 
+// Format gate for model ids on the set-model endpoints. The curated list
+// above feeds the dashboard pickers; anything matching this shape is
+// accepted as a custom id — the SDK 404s clearly on first use if the id
+// doesn't exist, which is the real (and always-current) validator. A
+// hard allowlist here went stale on every Anthropic model launch.
+const CLAUDE_MODEL_ID_RE = /^claude-[a-z0-9][a-z0-9.-]*$/;
+
 const CLAUDE_MODEL_LABELS: Record<string, string> = {
+  'claude-fable-5': 'Fable 5',
+  'claude-sonnet-5': 'Sonnet 5',
   'claude-opus-4-8': 'Opus 4.8',
   'claude-opus-4-6': 'Opus 4.6',
   'claude-sonnet-4-6': 'Sonnet 4.6',
@@ -355,6 +367,17 @@ function getOpenCodeDefaultModel(): string | undefined {
   }
 }
 
+// Model persisted for main by PATCH /api/agents/main/model (main-config.json).
+// The bot's chat path reads this via agentProvider at startup, but
+// getSelectedProviderConfig() hides it behind the ENABLE_ACP=false gate
+// (returns DEFAULT_PROVIDER with the default model baked in). Read it
+// explicitly so the dashboard shows the model actually in use instead of
+// silently reverting to the default after a restart.
+function persistedMainClaudeModel(): string | undefined {
+  const persisted = getMainProviderConfig();
+  return persisted.type === 'claude' ? persisted.model : undefined;
+}
+
 function getProviderStatus() {
   // Use getSelectedProviderConfig so the dashboard reflects the EFFECTIVE
   // runtime engine, not the stored config. When ENABLE_ACP=false, the gate
@@ -362,7 +385,7 @@ function getProviderStatus() {
   // should show that truth instead of a stale Gemini/OpenCode label.
   const provider = getSelectedProviderConfig();
   const model = provider.type === 'claude'
-    ? (getMainModelOverride() ?? provider.model ?? agentDefaultModel ?? DEFAULT_CLAUDE_MODEL)
+    ? (getMainModelOverride() ?? persistedMainClaudeModel() ?? provider.model ?? agentDefaultModel ?? DEFAULT_CLAUDE_MODEL)
     : provider.type === 'opencode'
       ? (provider.model ?? getOpenCodeDefaultModel() ?? 'OpenCode default')
       : provider.type === 'gemini'
@@ -4587,6 +4610,19 @@ init();
     return c.json({ stats, costTimeline, recentUsage });
   });
 
+  // Per-agent cache token usage over a selectable window (own endpoint so the
+  // dashboard panel's timeframe toggle re-fetches independently of the rest
+  // of the Usage page). days clamped to 1..365, default 30.
+  app.get('/api/cache-tokens', (c) => {
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
+    const days = Math.min(365, Math.max(1, Number.parseInt(c.req.query('days') || '', 10) || 30));
+    const cacheTokens = getCacheTokens(chatId, days).map((r) => ({
+      ...r,
+      displayName: resolveAgentDisplayName(r.agentId),
+    }));
+    return c.json({ days, cacheTokens });
+  });
+
   // Bot info (name, PID, chatId) — reads dynamically from state
   app.get('/api/info', (c) => {
     const chatId = c.req.query('chatId') || '';
@@ -4620,16 +4656,24 @@ init();
         }
         const stats = getAgentTokenStats(id);
         const mainOverride = id === 'main' ? getMainModelOverride() : undefined;
+        // For main, prefer the model persisted in main-config.json over the
+        // ENABLE_ACP-gated default from getSelectedProviderConfig() — the
+        // persisted value is what the bot actually runs after a restart, and
+        // the gated default silently shadowed dashboard model changes.
+        const mainPersistedModel = id === 'main' ? persistedMainClaudeModel() : undefined;
         const provider = id === 'main' ? getSelectedProviderConfig() : config.provider;
         const model = provider.type === 'claude'
-          ? (mainOverride ?? provider.model ?? config.model ?? DEFAULT_CLAUDE_MODEL)
+          ? (mainOverride ?? mainPersistedModel ?? provider.model ?? config.model ?? DEFAULT_CLAUDE_MODEL)
           : provider.model;
+        // Report the effective model inside provider too so the dashboard
+        // picker highlights the right entry.
+        const reportedProvider = provider.type === 'claude' && model ? { ...provider, model } : provider;
         return {
           id,
           name: config.name || resolveAgentDisplayName(id),
           description: id === 'main' ? getMainDescription() : config.description,
           model,
-          provider,
+          provider: reportedProvider,
           running,
           todayTurns: stats.todayTurns,
           todayCost: stats.todayCost,
@@ -4716,8 +4760,9 @@ init();
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    const validModels = VALID_CLAUDE_MODELS;
-    if (!validModels.includes(model)) return c.json({ error: `Invalid model` }, 400);
+    if (!CLAUDE_MODEL_ID_RE.test(model)) {
+      return c.json({ error: `Invalid model id format. Expected e.g. claude-opus-4-8 (known: ${VALID_CLAUDE_MODELS.join(', ')})` }, 400);
+    }
 
     const agentIds = listAgentIds();
     const updated: string[] = [];
@@ -4741,8 +4786,9 @@ init();
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    const validModels = VALID_CLAUDE_MODELS;
-    if (!validModels.includes(model)) return c.json({ error: `Invalid model. Valid: ${validModels.join(', ')}` }, 400);
+    if (!CLAUDE_MODEL_ID_RE.test(model)) {
+      return c.json({ error: `Invalid model id format. Expected e.g. claude-opus-4-8 (known: ${VALID_CLAUDE_MODELS.join(', ')})` }, 400);
+    }
 
     try {
       if (agentId === 'main') {

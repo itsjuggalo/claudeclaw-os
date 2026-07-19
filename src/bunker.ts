@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import crypto from 'crypto';
+import { CLAUDECLAW_CONFIG, expandHome, agentObsidianConfig } from './config.js';
 
 // The Bunker is the ad-hoc report surface for Mission Control: instead of
 // spinning a throwaway server on a random port for each artifact, work drops an
@@ -11,13 +11,26 @@ import crypto from 'crypto';
 // Storage lives OUTSIDE the repo work-tree on purpose: these are disposable
 // artifacts and claudeclaw-os is under the WIP-snapshot cron + gitleaks, so they
 // must never be sweepable into git. Override the locations with env if needed.
-export const BUNKER_DIR =
-  process.env.BUNKER_DIR ?? path.join(os.homedir(), '.claudeclaw', 'bunker');
-export const ARCHIVE_DIR =
-  process.env.BUNKER_ARCHIVE_DIR ?? path.join(os.homedir(), '.claudeclaw', 'bunker-archive');
-// Promote target: the vault, where it becomes grep/context-search/Perceptor visible.
-export const VAULT_BUNKER_DIR =
-  process.env.BUNKER_VAULT_DIR ?? path.join(os.homedir(), 'vault', 'bunker');
+// Rooted at the canonical external config dir (CLAUDECLAW_CONFIG, resolved in
+// config.ts) rather than a separate hardcoded ~/.claudeclaw. Explicit env
+// overrides still win and are ~-expanded.
+export const BUNKER_DIR = process.env.BUNKER_DIR
+  ? expandHome(process.env.BUNKER_DIR)
+  : path.join(CLAUDECLAW_CONFIG, 'bunker');
+export const ARCHIVE_DIR = process.env.BUNKER_ARCHIVE_DIR
+  ? expandHome(process.env.BUNKER_ARCHIVE_DIR)
+  : path.join(CLAUDECLAW_CONFIG, 'bunker-archive');
+
+// Promote target: the Obsidian vault, where a promoted artifact becomes
+// grep/context-search/Perceptor visible. Resolved LAZILY because the agent's
+// vault (agentObsidianConfig) is set at runtime via setAgentOverrides, after
+// this module loads. Precedence: explicit BUNKER_VAULT_DIR env > the agent's
+// configured vault + /bunker > a config-rooted fallback. No hardcoded ~/vault.
+export function vaultBunkerDir(): string {
+  if (process.env.BUNKER_VAULT_DIR) return expandHome(process.env.BUNKER_VAULT_DIR);
+  if (agentObsidianConfig?.vault) return path.join(expandHome(agentObsidianConfig.vault), 'bunker');
+  return path.join(CLAUDECLAW_CONFIG, 'vault-bunker');
+}
 
 const EXPIRE_DAYS = parseInt(process.env.BUNKER_EXPIRE_DAYS ?? '7', 10);
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -255,7 +268,7 @@ export function promoteEntry(slug: string): { vaultPath: string } | null {
   const html = fs.readFileSync(htmlPath, 'utf8');
   const text = stripHtml(html).slice(0, 20000);
 
-  const destDir = path.join(VAULT_BUNKER_DIR, `${created.slice(0, 10)}-${s}`);
+  const destDir = path.join(vaultBunkerDir(), `${created.slice(0, 10)}-${s}`);
   fs.mkdirSync(destDir, { recursive: true });
   fs.writeFileSync(path.join(destDir, file), html);
 

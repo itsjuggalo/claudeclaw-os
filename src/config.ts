@@ -2,8 +2,23 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import { renderCliIndex } from './cli-reference.js';
+import { allDescriptors } from './cli-descriptors.js';
 import { readEnvFile } from './env.js';
 import type { ProviderConfig } from './provider.js';
+
+/**
+ * Append the compact CLI index to an agent's persona so every engine
+ * (Claude-SDK via `systemPrompt`, ACP/openrouter via in-band prepend in
+ * bot.ts) sees the same one source. Only when a persona is present — we do
+ * not fabricate a systemPrompt for no-persona agents. `cli-reference.js` and
+ * `cli-descriptors.js` are both leaf modules (type + pure data only), so this
+ * import does not create a cycle back through db.ts.
+ */
+function withCliIndex(persona: string | undefined): string | undefined {
+  if (!persona) return persona;
+  return persona + '\n\n' + renderCliIndex(allDescriptors);
+}
 
 const envConfig = readEnvFile([
   'TELEGRAM_BOT_TOKEN',
@@ -15,6 +30,7 @@ const envConfig = readEnvFile([
   'SLACK_USER_TOKEN',
   'CONTEXT_LIMIT',
   'DASHBOARD_PORT',
+  'DASHBOARD_BIND',
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
   'DASHBOARD_BIND',
@@ -83,7 +99,7 @@ export function setAgentOverrides(opts: {
   agentDefaultModel = opts.model;
   agentProvider = opts.provider;
   agentObsidianConfig = opts.obsidian;
-  agentSystemPrompt = opts.systemPrompt;
+  agentSystemPrompt = withCliIndex(opts.systemPrompt);
   agentMcpAllowlist = opts.mcpServers;
 }
 
@@ -93,7 +109,7 @@ export function setAgentOverrides(opts: {
  *  requiring a process restart. Sub-agents don't need this — the SDK
  *  re-reads CLAUDE.md from cwd via settingSources on every turn. */
 export function updateAgentSystemPrompt(next: string | undefined): void {
-  agentSystemPrompt = next;
+  agentSystemPrompt = withCliIndex(next);
 }
 
 /** Update just the active provider for the running process. Dashboard
@@ -101,6 +117,10 @@ export function updateAgentSystemPrompt(next: string | undefined): void {
  * honest without rebuilding the full agent override object. */
 export function updateAgentProvider(next: ProviderConfig | undefined): void {
   agentProvider = next;
+  // A provider block supersedes any legacy top-level `model:` loaded at
+  // boot — persisting removes it from agent.yaml, so drop the stale
+  // in-memory copy too (it outranks provider.model in the query path).
+  agentDefaultModel = undefined;
 }
 
 export const TELEGRAM_BOT_TOKEN =
@@ -210,6 +230,8 @@ export const DASHBOARD_PORT = parseInt(
   process.env.DASHBOARD_PORT || envConfig.DASHBOARD_PORT || '3141',
   10,
 );
+export const DASHBOARD_BIND =
+  process.env.DASHBOARD_BIND || envConfig.DASHBOARD_BIND || '127.0.0.1';
 export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =

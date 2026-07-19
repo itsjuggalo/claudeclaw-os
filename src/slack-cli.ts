@@ -11,14 +11,16 @@
  *   node dist/slack-cli.js search <query>
  */
 
+import { pathToFileURL } from 'url';
+
 import { initDatabase } from './db.js';
 import {
   getSlackConversations,
   getSlackMessages,
   sendSlackMessage,
 } from './slack.js';
-
-initDatabase();
+import { renderHelp } from './cli-reference.js';
+import { slackDescriptor as descriptor } from './cli-descriptors.js';
 
 const [, , command, ...rest] = process.argv;
 
@@ -29,6 +31,7 @@ function parseFlag(args: string[], flag: string): string | undefined {
 }
 
 async function main() {
+  initDatabase();
   switch (command) {
     case 'list': {
       const limit = parseInt(parseFlag(rest, '--limit') || '20', 10);
@@ -81,7 +84,17 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err.message || err);
-  process.exit(1);
-});
+// Only run the CLI when invoked directly, so importing `descriptor` (for docs
+// generation and the drift-guard test) does not trigger DB init or Slack calls.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMain) {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    console.log(renderHelp(descriptor));
+    process.exit(0);
+  }
+  main().catch((err) => {
+    console.error(err.message || err);
+    process.exit(1);
+  });
+}

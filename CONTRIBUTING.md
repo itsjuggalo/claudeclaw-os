@@ -35,6 +35,16 @@ sync `package.json`, and add an entry to `CHANGELOG.md`.
 
 After the skill finishes, open the generated file and implement the `run()` function.
 
+## Adding a CLI
+
+Every shipped agent CLI (`src/*-cli.ts`) MUST have a descriptor, or the build fails.
+
+1. Define a `descriptor: CliDescriptor` for it in `src/cli-descriptors.ts` (mirror an existing one) and add it to `allDescriptors`.
+2. Import that descriptor in the CLI file and wire `--help` to `renderHelp(descriptor)`.
+3. Run `npm run gen:cli-docs` and commit the regenerated `docs/agent-cli-reference.md`.
+
+A coverage-guard test fails if any `*-cli.ts` lacks a registered descriptor, and a drift-guard test fails if `docs/agent-cli-reference.md` is out of date. Command *syntax* lives only in the descriptor (surfaced via the injected CLI index, `--help`, and the generated doc) — do NOT duplicate it into persona/CLAUDE.md files, which carry doctrine only.
+
 ## Running tests
 
 Tests use [Vitest](https://vitest.dev). Make sure dependencies are installed first:

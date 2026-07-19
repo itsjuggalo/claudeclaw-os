@@ -106,6 +106,8 @@ export interface UsageInfo {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
+  /** Cumulative cache_creation_input_tokens (cache writes) across the turn. */
+  cacheCreationInputTokens: number;
   totalCostUsd: number;
   /** True if the SDK auto-compacted context during this turn */
   didCompact: boolean;
@@ -117,6 +119,11 @@ export interface UsageInfo {
    * context window size (cumulative overcounts on multi-step tool-use turns).
    */
   lastCallCacheRead: number;
+  /**
+   * The cache_creation_input_tokens from the LAST API call in the turn —
+   * the cache-write count that pairs with lastCallCacheRead for savings math.
+   */
+  lastCallCacheCreation: number;
   /**
    * The input_tokens from the LAST API call in the turn.
    * This is the actual context window size: system prompt + conversation
@@ -131,6 +138,13 @@ export interface UsageInfo {
    * Sonnet 4.6 = 200k).
    */
   contextWindow: number | null;
+  /** Per-turn telemetry from the SDK result object. */
+  model: string | null;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  stopReasonDetail: string | null;
+  isError: boolean;
 }
 
 /** Progress event emitted during agent execution for Telegram feedback. */
