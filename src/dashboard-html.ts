@@ -170,11 +170,17 @@ const WARROOM_ENABLED = warroomEnabled;
   </div>
 </div>
 
-<!-- Quick Links — ARIES + Mobile Hub + Portal -->
+<!-- Quick Links — ARIES + Mobile Hub + Portal.
+     Both targets are stated as explicit tailnet host:port. The bare tailnet
+     host used to stand in for ARIES, but :443 is served to localhost:3003 —
+     the Massage By Mike site — so that link opened the wrong product entirely.
+     ARIES is :1337. Mobile Hub is plain HTTP (nginx, no cert on :8443) and is
+     addressed by tailnet name rather than a pinned 100.x IP, which silently
+     rots if the tailnet address ever changes. -->
 <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
-  <a href="https://g59-wsl.taile1328b.ts.net" target="_blank" rel="noopener"
+  <a href="http://g59-wsl.taile1328b.ts.net:1337" target="_blank" rel="noopener"
      style="font-size:11px;font-weight:600;color:#7fd1ff;background:#0c2244;border:1px solid #1e3a5f;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">🚀 ARIES</a>
-  <a href="https://100.91.39.122:8443" target="_blank" rel="noopener"
+  <a href="http://g59-wsl.taile1328b.ts.net:8443" target="_blank" rel="noopener"
      style="font-size:11px;font-weight:600;color:#86efac;background:#071f12;border:1px solid #14532d;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">📡 Mobile Hub</a>
   <a href="/portal" target="_blank" rel="noopener"
      style="font-size:11px;font-weight:600;color:#c4b5fd;background:#1a1730;border:1px solid #3730a3;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">⚡ All Services</a>
