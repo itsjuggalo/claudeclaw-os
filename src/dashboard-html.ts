@@ -2680,7 +2680,13 @@ async function loadComfyUI() {
     const modelsEl = document.getElementById('comfyui-models');
     if (d.running) {
       dot.style.background = '#22c55e';
-      txt.textContent = 'Running — localhost:8188';
+      // Host-derived, not the literal 'localhost': in a phone browser that names
+      // the handset, so both the label and the href sent Mike to a dead port on
+      // his own device. NOTE: :8188 has no tailscale-serve entry, so this only
+      // resolves on the LAN — the link is honest about the host now, but ComfyUI
+      // still needs a serve entry to be reachable over the tailnet.
+      txt.textContent = 'Running — ' + location.hostname + ':8188';
+      link.href = 'http://' + location.hostname + ':8188';
       txt.style.color = '#22c55e';
       link.style.display = '';
       document.getElementById('comfy-start-btn').style.display = 'none';
