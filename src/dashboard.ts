@@ -947,9 +947,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       { name: 'ARIES',          port: 1337, path: '/',          desc: 'Trading PWA — broker + strategy engine' },
       { name: 'MissionCtrl V2', port: 3000, path: '/',          desc: 'Main MC trading dashboard' },
       { name: 'Vibe Trading',   port: 8899, path: '/',          desc: 'AI trading research & backtesting' },
-      { name: 'Kronos',         port: 7070, path: '/',          desc: 'ML model training & forecast WebUI' },
       { name: 'n8n',            port: 5678, path: '/',          desc: 'Workflow automation' },
-      { name: 'Mobile Hub',     port: 8443, path: '/',          desc: 'Mobile launchpad (HTTPS)', https: true },
+      // Plain HTTP despite the port number: :8443 is an nginx vhost that never
+      // got a TLS cert, so the old `https: true` produced a link that could only
+      // ever fail. It also binds 127.0.0.1 only — reachable from the phone solely
+      // because `tailscale serve --http=8443` proxies the tailnet side to it.
+      { name: 'Mobile Hub',     port: 8443, path: '/',          desc: 'Mobile launchpad' },
       { name: 'Uptime Kuma',    port: 3001, path: '/',          desc: 'Service health monitor' },
       { name: 'Gallery',        port: 3141, path: '/#/gallery',      desc: 'Nano Banana generations' },
       { name: 'Token Dashboard', port: 3141, path: '/token-dashboard', desc: 'Per-prompt cost analytics & cache stats' },

@@ -199,7 +199,10 @@ const CONTROLS: ControlDef[] = [
     group: 'Media & GPU',
     kind: 'media',
     type: 'toggle',
-    description: 'Pauses ~11 non-critical services (kronos, n8n, kb-server, uptime-kuma…) to free VRAM/RAM for a heavy generation. Trading + dashboards stay alive. Off restores them.',
+    // Named services here must actually exist: kronos-sidecar/-webui were cited
+    // until the 2026-07-18 Kronos retirement deleted them, so this advertised work
+    // it could no longer do (~/bin/gen-mode still lists them, but as `|| true` no-ops).
+    description: 'Pauses ~11 non-critical services (n8n, kb-server, uptime-kuma, searxng…) to free VRAM/RAM for a heavy generation. Trading + dashboards stay alive. Off restores them.',
     status: () => {
       const on = fileExists(GEN_MODE_STATE);
       return { id: 'gen-mode', on, detail: on ? 'paused for gens' : 'normal — all services up' };

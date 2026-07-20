@@ -86,10 +86,10 @@ export const ROUTES: RouteDef[] = [
   { path: '/ext-board',    label: 'Session Board',   section: 'mc', icon: FolderKanban, href: 'self:3222' },
   { path: '/ext-aries',    label: 'ARIES',           section: 'mc', icon: Rocket,      href: 'self:1337' },
   { path: '/ext-mcv2',     label: 'MissionCtrl V2',  section: 'mc', icon: LayoutGrid,  href: 'self:3000' },
-  { path: '/ext-kronos',   label: 'Kronos',          section: 'mc', icon: TrendingUp,  href: 'self:7070' },
   { path: '/ext-vibe',     label: 'Vibe Trading',    section: 'mc', icon: Workflow,    href: 'self:8899' },
-  // Mobile Hub launchpad. self:8443 → http://localhost:8443 on desktop (plain-http
-  // nginx block) / https://<tailnet-host>:8443 on phone (tailscale-cert ssl block).
+  // Mobile Hub launchpad. nginx serves :8443 as PLAIN HTTP on 127.0.0.1 only — the
+  // tailscale-cert ssl block this comment used to describe does not exist, so the
+  // phone reaches it via `tailscale serve --http=8443` and self: resolves to http.
   { path: '/ext-hub',      label: 'Mobile Hub',      section: 'mc', icon: Radio,       href: 'self:8443' },
   { path: '/ext-n8n',      label: 'n8n',             section: 'mc', icon: Workflow,    href: 'self:5678' },
 
