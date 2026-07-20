@@ -1214,8 +1214,15 @@ init();
   });
 
   // Token Dashboard — embeds nateherkai/token-dashboard (:8080) in a full-page iframe.
-  // No auth required: the embedded service is localhost-only.
+  // No auth required: the embedded service is reachable only on the tailnet/LAN.
+  //
+  // The iframe host is derived from the REQUEST host, never hardcoded. It used to
+  // be `http://localhost:8080`, which resolves to the *viewing device* — so on the
+  // phone it pointed the handset at itself and could never load, no matter what was
+  // running on the laptop. Same hostname the dashboard was reached on = same box.
   app.get('/token-dashboard', (c) => {
+    const host = new URL(c.req.url).hostname;
+    const target = `http://${host}:8080`;
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1231,6 +1238,10 @@ init();
   .title { font-size: 13px; font-weight: 600; color: #e0e0e0; }
   .badge { font-size: 11px; color: #6b7280; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 7px; }
   iframe { flex: 1; border: none; width: 100%; }
+  .down { flex: 1; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; }
+  .down .msg { font-size: 13px; color: #e0e0e0; }
+  .down .hint { font-size: 12px; color: #6b7280; }
+  .down code { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 6px; font-size: 12px; color: #a5b4fc; }
 </style>
 </head>
 <body>
@@ -1239,7 +1250,26 @@ init();
   <span class="title">Token Dashboard</span>
   <span class="badge">:8080</span>
 </div>
-<iframe src="http://localhost:8080" title="Token Dashboard"></iframe>
+<iframe id="td" src="${target}" title="Token Dashboard"></iframe>
+<!-- An unreachable :8080 renders as a silent black rectangle that reads as
+     "loaded, but empty". Say the service is down instead of implying no data. -->
+<div class="down" id="down">
+  <div class="msg">Token Dashboard isn't running.</div>
+  <div class="hint">The <code>token-dashboard</code> service on :8080 is stopped. Start it with <code>pm2 start token-dashboard</code>.</div>
+</div>
+<script>
+  (function () {
+    var f = document.getElementById('td'), d = document.getElementById('down'), ok = false;
+    f.addEventListener('load', function () { ok = true; });
+    // Cross-origin iframes don't fire 'error' on connection refused, so fall
+    // back to a deadline: no load event by then means nothing answered.
+    setTimeout(function () {
+      if (ok) return;
+      f.style.display = 'none';
+      d.style.display = 'flex';
+    }, 4000);
+  })();
+</script>
 </body>
 </html>`;
     return c.html(html);
