@@ -98,4 +98,28 @@ describe('readEnvFile', () => {
     const result = readEnvFile(['KEY', 'NOEQUALS']);
     expect(result).toEqual({ KEY: 'value' });
   });
+
+  // Quote-safe Windows paths: single-quoting a value must strip exactly one quote
+  // layer and leave backslashes literal, so the same .env line works for the Node
+  // parser, for shell grep|cut readers, and for a raw `source .env`.
+  it('preserves backslashes in a single-quoted Windows path (strips quotes only)', () => {
+    writeEnv("CLAUDECLAW_CONFIG='C:\\Users\\mikek\\.claudeclaw-os'\n");
+    mockCwd();
+    const result = readEnvFile(['CLAUDECLAW_CONFIG']);
+    expect(result).toEqual({ CLAUDECLAW_CONFIG: 'C:\\Users\\mikek\\.claudeclaw-os' });
+  });
+
+  it('preserves backslashes in a double-quoted Windows path (strips quotes only)', () => {
+    writeEnv('CLAUDECLAW_CONFIG="C:\\Users\\mikek\\.claudeclaw-os"\n');
+    mockCwd();
+    const result = readEnvFile(['CLAUDECLAW_CONFIG']);
+    expect(result).toEqual({ CLAUDECLAW_CONFIG: 'C:\\Users\\mikek\\.claudeclaw-os' });
+  });
+
+  it('handles an unquoted Windows path (backslashes intact)', () => {
+    writeEnv('CLAUDECLAW_CONFIG=C:\\Users\\mikek\\.claudeclaw-os\n');
+    mockCwd();
+    const result = readEnvFile(['CLAUDECLAW_CONFIG']);
+    expect(result).toEqual({ CLAUDECLAW_CONFIG: 'C:\\Users\\mikek\\.claudeclaw-os' });
+  });
 });

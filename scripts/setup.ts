@@ -1286,7 +1286,9 @@ async function main() {
     `ALLOWED_CHAT_ID=${env.ALLOWED_CHAT_ID || ''}`,
     '',
     '# ── Config directory (personal config, never committed) ───────',
-    `CLAUDECLAW_CONFIG=${env.CLAUDECLAW_CONFIG || ''}`,
+    // Single-quote the value so Windows backslash paths survive both the Node parser
+    // (readEnvFile) and any shell that sources .env. readEnvFile strips one quote layer.
+    `CLAUDECLAW_CONFIG='${env.CLAUDECLAW_CONFIG || ''}'`,
     '',
     '# ── Claude auth (optional — uses claude login by default) ─────',
     `ANTHROPIC_API_KEY=${env.ANTHROPIC_API_KEY || ''}`,
