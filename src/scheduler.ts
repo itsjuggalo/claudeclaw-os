@@ -146,7 +146,11 @@ async function runDueTasks(): Promise<void> {
       const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
       try {
-        await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
+        // 2026-07-29: this used to announce every scheduled task by echoing its raw PROMPT
+        // ("Scheduled task running: \"[brief:premarket] You are Boba, lead AI t...\""). That is
+        // plumbing, not information — Mike gets the finished output a minute later either way.
+        // The fire is still recorded in the log line above and in the audit table; only the
+        // phone notification is gone. Failures and timeouts below still speak.
 
         // Run as a fresh agent call (no session — scheduled tasks are autonomous)
         const result = await runAgent(
