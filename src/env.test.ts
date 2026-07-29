@@ -122,4 +122,15 @@ describe('readEnvFile', () => {
     const result = readEnvFile(['CLAUDECLAW_CONFIG']);
     expect(result).toEqual({ CLAUDECLAW_CONFIG: 'C:\\Users\\mikek\\.claudeclaw-os' });
   });
+
+  // A path containing an apostrophe (e.g. a Windows user folder like O'Brien) cannot be
+  // single-quoted — the literal ' would be invalid shell syntax — so setup.ts writes it
+  // double-quoted instead. The Node parser must still strip exactly one quote layer and
+  // preserve the interior apostrophe and backslashes.
+  it('preserves an apostrophe in a double-quoted Windows path', () => {
+    writeEnv('CLAUDECLAW_CONFIG="C:\\Users\\O\'Brien\\.claudeclaw-os"\n');
+    mockCwd();
+    const result = readEnvFile(['CLAUDECLAW_CONFIG']);
+    expect(result).toEqual({ CLAUDECLAW_CONFIG: "C:\\Users\\O'Brien\\.claudeclaw-os" });
+  });
 });

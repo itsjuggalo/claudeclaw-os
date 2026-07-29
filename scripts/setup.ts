@@ -1286,9 +1286,14 @@ async function main() {
     `ALLOWED_CHAT_ID=${env.ALLOWED_CHAT_ID || ''}`,
     '',
     '# ── Config directory (personal config, never committed) ───────',
-    // Single-quote the value so Windows backslash paths survive both the Node parser
-    // (readEnvFile) and any shell that sources .env. readEnvFile strips one quote layer.
-    `CLAUDECLAW_CONFIG='${env.CLAUDECLAW_CONFIG || ''}'`,
+    // Quote the value so Windows backslash paths survive both the Node parser
+    // (readEnvFile) and any shell that sources .env; readers strip one quote layer.
+    // Single-quote by default; if the path itself contains an apostrophe, use double
+    // quotes instead — a literal ' inside single quotes is invalid shell syntax, whereas
+    // our readers (and POSIX double-quotes) accept it, and Windows paths carry no $/`/".
+    ((cfg) => cfg.includes("'")
+      ? `CLAUDECLAW_CONFIG="${cfg}"`
+      : `CLAUDECLAW_CONFIG='${cfg}'`)(env.CLAUDECLAW_CONFIG || ''),
     '',
     '# ── Claude auth (optional — uses claude login by default) ─────',
     `ANTHROPIC_API_KEY=${env.ANTHROPIC_API_KEY || ''}`,
