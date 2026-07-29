@@ -8,7 +8,9 @@ cd "$(dirname "$0")/.."
 
 # Resolve config directory — CLAUDECLAW_CONFIG from .env or environment, default ~/.claudeclaw
 if [ -z "$CLAUDECLAW_CONFIG" ]; then
-  CLAUDECLAW_CONFIG=$(grep '^CLAUDECLAW_CONFIG=' .env 2>/dev/null | cut -d'=' -f2- | sed "s|^~|$HOME|")
+  # Strip one layer of surrounding quotes (mirrors readEnvFile in src/env.ts) BEFORE expanding ~,
+  # so a single-quoted Windows path like 'C:\Users\me\.claudeclaw-os' resolves with backslashes intact.
+  CLAUDECLAW_CONFIG=$(grep '^CLAUDECLAW_CONFIG=' .env 2>/dev/null | cut -d'=' -f2- | sed -E "s/^'(.*)'\$/\1/; s/^\"(.*)\"\$/\1/" | sed "s|^~|$HOME|")
 fi
 CLAUDECLAW_CONFIG="${CLAUDECLAW_CONFIG:-$HOME/.claudeclaw}"
 

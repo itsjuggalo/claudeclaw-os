@@ -181,7 +181,9 @@ ok "Tailnet name: $TS_FQDN"
 # Preserve secrets that must stay stable across re-runs.
 step "Writing $ENV_FILE"
 preserve() { # preserve <VAR_NAME> — echo existing value from .env if present
-  [[ -f "$ENV_FILE" ]] && grep -E "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2- || true
+  # Strip one layer of surrounding quotes (mirrors readEnvFile in src/env.ts) so single- or
+  # double-quoted values (e.g. quoted paths) round-trip cleanly for any caller.
+  [[ -f "$ENV_FILE" ]] && grep -E "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2- | sed -E "s/^'(.*)'\$/\1/; s/^\"(.*)\"\$/\1/" || true
 }
 DASHBOARD_TOKEN="$(preserve DASHBOARD_TOKEN)"; DASHBOARD_TOKEN="${DASHBOARD_TOKEN:-$(openssl rand -hex 24)}"
 DB_ENCRYPTION_KEY="$(preserve DB_ENCRYPTION_KEY)"; DB_ENCRYPTION_KEY="${DB_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"
