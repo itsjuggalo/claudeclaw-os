@@ -1,0 +1,15 @@
+import { chromium } from "playwright";
+const STATE = `${process.env.HOME}/skool-mcp/storageState.json`;
+const browser = await chromium.launch({ headless: true });
+const ctx = await browser.newContext({ storageState: STATE });
+const page = await ctx.newPage();
+await page.goto("https://www.skool.com/earlyaidopters/classroom", { waitUntil: "domcontentloaded", timeout: 60000 });
+await page.waitForTimeout(3500);
+console.log("URL:", page.url());
+const links = await page.$$eval("a[href]", els => [...new Set(els.map(a => a.getAttribute("href")))].filter(h => h && h.includes("classroom")).slice(0, 30));
+console.log("classroom links:", JSON.stringify(links, null, 1));
+const cards = await page.$$eval("[class*=Course], [class*=course]", els => els.slice(0,15).map(e => ({ cls: e.className.toString().slice(0,50), txt: (e.innerText||"").trim().slice(0,60).replace(/\n/g," | ") })));
+console.log("course-ish nodes:", JSON.stringify(cards, null, 1));
+const raw = await page.evaluate(() => document.getElementById("__NEXT_DATA__")?.textContent?.length || 0);
+console.log("nextdata bytes:", raw);
+await browser.close();
