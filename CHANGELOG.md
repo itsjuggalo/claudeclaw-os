@@ -5,6 +5,16 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.8.1] - 2026-07-31
+
+### Bug Fixes
+
+- **warroom:** Correct tool/MCP policy semantics and cover with tests ([#178](https://github.com/earlyaidopters/claudeclaw-os/pull/178))
+
+### Documentation
+
+- **release:** Clarify v1.8.0 upgrade callout
+
 ## [1.8.0] - 2026-07-31
 
 ### Features
