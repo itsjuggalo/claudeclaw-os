@@ -660,7 +660,7 @@ function AppointmentsPanel({ client, canEdit, onDone }: { client: MassageClient;
       {rows.length === 0 && !appts.loading && <div class="text-[12px] text-[var(--color-text-faint)]">No appointments.</div>}
       <div class="space-y-1.5">
         {rows.map((a) => (
-          <div key={a.id} class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--color-border)] px-3 py-2 text-[12px]">
+          <div key={a.id} class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--color-border)] px-3 py-2.5 text-[12px] transition-colors hover:bg-[var(--color-elevated)]">
             <div class="text-[var(--color-text-muted)]">
               <span class="font-semibold text-[var(--color-text)]">{a.appt_date} {a.appt_time}</span> · {a.service_name} ·{' '}
               <span class={a.status === 'confirmed' ? 'text-[var(--color-status-done)]' : a.status === 'requested' ? 'text-[var(--color-warn)]' : 'text-[var(--color-text-faint)]'}>{a.status}</span>
@@ -787,8 +787,11 @@ function MessagingTab() {
           <div class="px-3 py-5 text-center text-[13px] text-[var(--color-text-faint)]">No messages sent yet.</div>
         ) : (
           <div class="max-h-[520px] overflow-y-auto">
+            <div class="sticky top-0 z-10 hidden gap-1 border-b border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-faint)] md:grid md:grid-cols-[70px_130px_1fr_110px_90px]">
+              <div>Channel</div><div>Template</div><div>Recipient · subject</div><div>Status</div><div class="text-right">When</div>
+            </div>
             {(log.data?.messages ?? []).map((m) => (
-              <div key={m.id} class="grid gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[12px] last:border-b-0 md:grid-cols-[70px_130px_1fr_110px_90px]">
+              <div key={m.id} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2.5 text-[12px] transition-colors last:border-b-0 hover:bg-[var(--color-elevated)] md:grid-cols-[70px_130px_1fr_110px_90px]">
                 <div class="font-mono text-[var(--color-accent)]">{m.channel}</div>
                 <div class="text-[var(--color-text-muted)]">{m.template}</div>
                 <div class="truncate text-[var(--color-text-faint)]">{m.recipient} · {m.subject}</div>
@@ -853,8 +856,11 @@ function PromosTab({ canEdit }: { canEdit: boolean }) {
         <div class="border-b border-[var(--color-border)] px-3 py-2 text-[13px] font-semibold text-[var(--color-text)]">{rows.length} codes</div>
         {rows.length === 0 ? <div class="px-3 py-5 text-center text-[13px] text-[var(--color-text-faint)]">No codes yet.</div> : (
           <div class="max-h-[520px] overflow-y-auto">
+            <div class="sticky top-0 z-10 hidden gap-1 border-b border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-faint)] md:grid md:grid-cols-[130px_90px_1fr_120px_80px]">
+              <div>Code</div><div>Value</div><div>Label · usage</div><div>Status</div><div></div>
+            </div>
             {rows.map((c) => (
-              <div key={c.code} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[12px] last:border-b-0 md:grid-cols-[130px_90px_1fr_120px_80px]">
+              <div key={c.code} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2.5 text-[12px] transition-colors last:border-b-0 hover:bg-[var(--color-elevated)] md:grid-cols-[130px_90px_1fr_120px_80px]">
                 <div class="font-mono font-semibold text-[var(--color-text)]">{c.code}</div>
                 <div class="text-[var(--color-text-muted)]">{c.type === 'percent' ? `${c.value}%` : c.type === 'gift' ? `$${c.balance}/${c.value}` : `$${c.value}`}</div>
                 <div class="truncate text-[var(--color-text-faint)]">{c.label || '—'} · {c.uses} used{c.max_uses ? `/${c.max_uses}` : ''}{c.expires_at ? ` · exp ${c.expires_at.slice(0, 10)}` : ''}</div>
@@ -1194,7 +1200,7 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
         {reqs.length === 0 ? <div class="px-3 py-5 text-center text-[13px] text-[var(--color-text-faint)]">No beyond-window requests right now.</div> : (
           <div class="max-h-[420px] overflow-y-auto">
             {reqs.map((r) => (
-              <div key={r.id} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[12px] last:border-b-0 md:grid-cols-[1fr_150px_auto]">
+              <div key={r.id} class="grid items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5 text-[12px] transition-colors last:border-b-0 hover:bg-[var(--color-elevated)] md:grid-cols-[1fr_150px_auto]">
                 <div>
                   <div class="font-semibold text-[var(--color-text)]">{r.client_name} <span class="font-normal text-[var(--color-text-faint)]">· {r.client_email}</span></div>
                   <div class="text-[var(--color-text-muted)]">{r.service_name}</div>
