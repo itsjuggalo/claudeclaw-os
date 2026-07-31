@@ -26,9 +26,9 @@ Eight surfaces, one bot, one machine. Telegram for chat, the dashboard for every
 
 <a id="disclaimer"></a>
 
-> **DISCLAIMER — Provider support.** Setup configures **Claude** as the agent provider. This release also introduces runtime support for OpenCode, Gemini CLI, the Codex ACP adapter, and custom ACP commands; those are gated behind `ENABLE_ACP=true` in `.env` and can be enabled post-setup via the dashboard Settings page or `npm run provider:setup` (or by editing `store/main-config.json`).
+> **DISCLAIMER — Provider support.** ClaudeClaw runs on two **stable** providers: **Claude** (the default) and **native OpenAI through Codex**. Either can be selected from the dashboard Settings page or `npm run provider:setup` — OpenAI needs no feature flag, just Codex auth (`codex login` or `OPENAI_API_KEY`). An **experimental** tier (OpenCode, Gemini CLI, the Codex ACP adapter, custom ACP commands) is gated behind `ENABLE_ACP=true` in `.env`.
 >
-> Non-Claude providers are experimental and new. Different models interpret prompts differently — some will treat a casual chat message as a request to run shell commands or modify files. To keep that surprise contained, conversational Telegram and dashboard chat with non-Claude providers is restricted to read-only tools (`Read`, `Grep`, `Glob`) by default. Mission tasks, scheduled jobs, and the war-room flows are unaffected. If a non-Claude provider isn't behaving the way you expect, switch back to Claude.
+> Different models interpret prompts differently, and some treat a casual chat message as a request to run shell commands or modify files. Experimental ACP providers stay on a restricted chat policy. Native OpenAI turns are governed by the shared Codex capability policy and the runtime's verified sandbox; `CODEX_DANGER_WRITE` is an explicit trusted-operator escape hatch and must stay off for untrusted or public input. If a provider is not behaving as expected, switch back to Claude.
 
 ---
 
@@ -357,6 +357,8 @@ The ACP providers below are an experimental opt-in (see the provider disclaimer 
 - **Custom ACP**: configure the provider and its API keys outside ClaudeClaw, then save the ACP command and args via the dashboard Settings page or `npm run provider:setup`.
 - **Codex ACP adapter**: ClaudeClaw includes the `codex-acp` adapter and uses it to connect to your locally signed-in Codex CLI. Run `codex` once in your terminal first to confirm your Codex account is authenticated. This is adapter-based support, not native Codex ACP.
 
+> **Fleet dispatch for non-Claude providers (`DISPATCH_ALLOW_HIVE_READ`).** Non-Claude providers reach the fleet dispatch tools (mission / schedule / hive) through an out-of-process MCP bridge. `hive_read` returns shared cross-agent memory, which would egress to that provider's vendor, so it is **withheld by default**; `hive_log` and the mission/schedule verbs stay available. Set `DISPATCH_ALLOW_HIVE_READ=true` in `.env` only if you accept shared-memory content leaving to the non-Claude vendor. Claude's own in-process dispatch path is unaffected.
+
 ### Telegram Bot Token (required)
 
 **Get it:** [@BotFather](https://t.me/botfather) → `/newbot`. free, instant.
@@ -459,6 +461,27 @@ The model dropdown is populated live from OpenRouter's `/models` endpoint (cache
 **Scope:** v1 is **chat-only** (no tool calling) and **single-turn** — each message is an independent `[system, user]` exchange (the system message is the project `CLAUDE.md`). Prior turns are **not** replayed, so pronoun and "rephrase that" follow-ups won't resolve against earlier messages. Persistent facts still reach the model through ClaudeClaw's memory injection (keyword-selective), but recent dialogue is not. For tool-heavy or multi-turn workflows (Read/Bash/Obsidian, threaded back-and-forth), use Claude. Paid models report per-turn cost (from OpenRouter's `usage.cost`) to the dashboard cost footer and the daily budget tracker.
 
 **Caveats:** Free models (suffix `:free`) are rate-limited by their upstream providers and rotate frequently — if one starts returning 429s or hangs, switch to a different one in the dashboard.
+
+---
+
+### OpenAI (native Codex)
+
+First-class OpenAI/GPT provider on the official Codex runtime. `CODEX_TRANSPORT=app-server` uses one warm App Server process for incremental text streaming, turn-scoped cancellation, and effective-policy verification. `CODEX_TRANSPORT=sdk` uses the temporary SDK rollback path. The Codex runtime owns the full agentic loop (shell, file edits, MCP servers, web search, session resume), so this is a real multi-turn agent, not the experimental Codex ACP adapter.
+
+**Setup (one-time), no feature flag:**
+
+1. Authenticate one way:
+   - **API key** (recommended for untrusted-input bots): add `OPENAI_API_KEY=sk-...` to `.env`, `pm2 restart claudeclaw --update-env`.
+   - **ChatGPT subscription:** `codex login` on the host (`npm i -g @openai/codex` first if needed). Flat-rate, no per-token billing.
+2. Dashboard: **Settings → Provider = OpenAI**, pick a model, **Save provider**.
+
+`CODEX_HOME` is auto-isolated per turn (under `~/.claudeclaw`, outside the project) so your global `~/.codex/config.toml` never bleeds in — **don't set it yourself.** Auth carries over from `~/.codex/auth.json` automatically.
+
+> **Security — untrusted input.** The read-only sandbox still lets the model *read* local files, so a prompt-injected message could try to echo on-disk credentials. Mitigations: outbound exfiltration guard redacts key/JWT-shaped strings, secrets are stripped from the model's shell env, MCP servers drop on read-only turns, network is off unless a turn is deliberately full-access, and `CODEX_HOME` is isolated. For a public bot, prefer **API-key auth with a scoped, rotatable key.**
+
+**Scope:** personas, multi-turn sessions (`openai:<thread-id>`, persisted in `~/.codex/sessions`), MCP (stdio + streamable HTTP), streamed text/tool events, and cost tracking all work. GPT costs are **estimates** from token counts (subscription auth = $0 marginal); override with `OPENAI_PRICING_JSON`.
+
+**Caveats:** AskUserQuestion buttons aren't supported (model asks in plain text), and per-tool allow/deny lists don't apply — Codex brings its own workspace-sandboxed toolset.
 
 ---
 

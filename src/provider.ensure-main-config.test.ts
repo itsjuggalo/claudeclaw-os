@@ -27,6 +27,7 @@ vi.mock('./config.js', () => ({
   STORE_DIR: path.join(dirs.projectRoot, 'store'),
   DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
   CLAUDECLAW_CONFIG: dirs.claudeclawConfig,
+  getClaudeclawConfig: () => dirs.claudeclawConfig,
   PROJECT_ROOT: dirs.projectRoot,
 }));
 
@@ -80,8 +81,9 @@ describe('ensureMainAgentConfig — runtime config bootstrap', () => {
     expect(fs.existsSync(externalAgentYaml)).toBe(true);
     const raw = readYaml(externalAgentYaml);
     expect(raw.name).toBe('Holden');
-    // Legacy provider carried forward, not shadowed by an empty stub.
-    expect(getMainProviderConfig()).toEqual({ type: 'codex', model: 'gpt-5.5' });
+    // Legacy provider carried forward, not shadowed by an empty stub. The
+    // pre-rename `codex` id in that file normalizes to acp-codex on read.
+    expect(getMainProviderConfig()).toEqual({ type: 'acp-codex', model: 'gpt-5.5' });
   });
 
   it('is idempotent — never overwrites an existing external agent.yaml', () => {

@@ -9,6 +9,7 @@ import {
   setSession,
   getSession,
   clearSession,
+  clearAgentSessions,
   saveStructuredMemory,
   searchMemories,
   setMemoryShared,
@@ -69,6 +70,17 @@ describe('database', () => {
 
     it('clearSession on missing session does not throw', () => {
       expect(() => clearSession('nonexistent')).not.toThrow();
+    });
+
+    it('clearAgentSessions removes every chat for only the selected agent', () => {
+      setSession('chat1', 'main-1', 'main');
+      setSession('chat2', 'main-2', 'main');
+      setSession('chat1', 'naomi-1', 'naomi');
+
+      expect(clearAgentSessions('main')).toBe(2);
+      expect(getSession('chat1', 'main')).toBeUndefined();
+      expect(getSession('chat2', 'main')).toBeUndefined();
+      expect(getSession('chat1', 'naomi')).toBe('naomi-1');
     });
   });
 

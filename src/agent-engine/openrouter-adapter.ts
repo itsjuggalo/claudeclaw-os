@@ -7,6 +7,7 @@ import { OPENROUTER_API_KEY, DEFAULT_OPENROUTER_MODEL } from '../config.js';
 import { logger } from '../logger.js';
 import type { AgentEngine, AgentEngineEvent, AgentTurnInput } from './types.js';
 import { emptyUsage } from './types.js';
+import { composeSystemPrompt } from '../runtime-identity.js';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
@@ -58,7 +59,8 @@ export class OpenRouterEngineAdapter implements AgentEngine {
     }
 
     const model = input.model ?? input.provider.model ?? DEFAULT_OPENROUTER_MODEL;
-    const systemPrompt = readSystemPromptFromCwd(input.cwd);
+    const persona = input.systemPrompt?.trim() || readSystemPromptFromCwd(input.cwd);
+    const systemPrompt = composeSystemPrompt(persona, input.runtimeIdentity);
 
     const client = new OpenAI({
       apiKey: OPENROUTER_API_KEY,

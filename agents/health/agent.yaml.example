@@ -12,13 +12,10 @@ description: A personal health coach grounded in your bloods, genetics, body com
 # The env var in ~/.env holding this bot's Telegram token (create via @BotFather).
 telegram_bot_token_env: HEALTH_BOT_TOKEN
 
-# A health coach benefits from strong reasoning. For Claude:
+# Provider settings belong here, never in CLAUDE.md. Choose the model and
+# reasoning options in the dashboard for the provider used by this install.
 provider:
   type: claude
-  model: claude-sonnet-4-6
-# Or use OpenCode's configured default:
-# provider:
-#   type: opencode
 
 # Render structured/tabular replies as rich Telegram HTML (aligned tables, bold).
 rich_messages: true

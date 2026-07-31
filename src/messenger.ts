@@ -11,6 +11,7 @@ import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CO
 import { startDashboard } from './dashboard.js';
 import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
 import { initSecurity, setAuditCallback } from './security.js';
+import { registerDispatchTools } from './dispatch-tools.js';
 import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
@@ -352,6 +353,14 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
       process.exit(1);
     }
     logger.info('Database ready');
+
+    // Register the in-process dispatch tools (mission/schedule/hive) into the
+    // process-global registry so runAgent merges them into eligible turns —
+    // including scheduled/mission turns, which fire with a scrubbed env. Done
+    // here (once per agent process, all entry points share bootMessenger) rather
+    // than in config.ts to avoid the config → descriptors → cli-actions → db →
+    // config import cycle that Phase 1 deliberately inverted.
+    registerDispatchTools();
 
     initSecurity({
       pinHash: SECURITY_PIN_HASH || undefined,

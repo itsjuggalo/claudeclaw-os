@@ -1,16 +1,278 @@
 import { describe, it, expect } from 'vitest';
-import { splitMessage, extractFileMarkers, modelStatusLine } from './bot.js';
+import {
+  splitMessage,
+  extractFileMarkers,
+  modelStatusLine,
+  endsAtStreamBoundary,
+  formatElapsed,
+  workingGlyphFor,
+  completionRoutesInline,
+  composeFinalTelegramText,
+  renderTurnActivity,
+  resolveTelegramModelSelection,
+  updateTurnActivity,
+  type TurnActivityEntry,
+} from './bot.js';
+import { completionStatusGlyph } from './completion-glyph.js';
+
+describe('completionStatusGlyph on the Telegram routing path', () => {
+  it('keeps non-streamed standalone statuses honest', () => {
+    for (const status of ['failed', 'error', 'notice']) {
+      expect(completionStatusGlyph(status)).not.toBe('✓');
+    }
+  });
+});
+
+describe('completionRoutesInline', () => {
+  it('folds every completion into the persistent ledger while streaming', () => {
+    expect(completionRoutesInline(true, 'completed', 'edit')).toBe(true);
+    expect(completionRoutesInline(true, 'notice', 'execute')).toBe(true);
+    expect(completionRoutesInline(true, 'failed', undefined)).toBe(true);
+  });
+
+  it('never inlines with streaming off — there is no line to fold into', () => {
+    expect(completionRoutesInline(false, 'completed', 'edit')).toBe(false);
+  });
+});
+
+describe('turn activity ledger', () => {
+  it('updates a Claude task start and completion on the same row', () => {
+    const entries = new Map<string, TurnActivityEntry>();
+    updateTurnActivity(entries, {
+      type: 'task_started',
+      description: 'Typecheck',
+      toolCallId: 'task-1',
+    });
+    expect(renderTurnActivity(entries)).toBe('Activity\n💭 Typecheck…');
+
+    updateTurnActivity(entries, {
+      type: 'task_completed',
+      description: 'Typecheck',
+      status: 'completed',
+      toolCallId: 'task-1',
+    });
+    expect(entries.size).toBe(1);
+    expect(renderTurnActivity(entries)).toBe('Activity\n✓ Typecheck');
+  });
+
+  it('collapses repeated identical rows into a single counted row', () => {
+    const entries = new Map<string, TurnActivityEntry>();
+    for (const id of ['g1', 'g2', 'g3']) {
+      updateTurnActivity(entries, {
+        type: 'task_completed',
+        description: 'Searched code',
+        status: 'completed',
+        kind: 'search',
+        toolCallId: id,
+      });
+    }
+    for (const id of ['e1', 'e2']) {
+      updateTurnActivity(entries, {
+        type: 'task_completed',
+        description: 'Edited file',
+        status: 'completed',
+        kind: 'edit',
+        toolCallId: id,
+      });
+    }
+    // Three search + two edit completions collapse to two counted rows in
+    // first-occurrence order, not five separate lines.
+    expect(renderTurnActivity(entries)).toBe(
+      'Activity\n✓ Searched code (x3)\n✓ Edited file (x2)',
+    );
+  });
+
+  it('collapses provider-specific detail (Codex filenames/queries) into the big-three labels', () => {
+    const entries = new Map<string, TurnActivityEntry>();
+    // Codex bakes per-call detail into the row text, so without normalization
+    // each edit/search would be its own line. They must fold by category.
+    updateTurnActivity(entries, {
+      type: 'task_completed', description: 'Edited 1 file: bot.ts', status: 'completed', kind: 'edit', toolCallId: 'c1',
+    });
+    updateTurnActivity(entries, {
+      type: 'task_completed', description: 'Edited 2 files: a.ts, b.ts', status: 'completed', kind: 'edit', toolCallId: 'c2',
+    });
+    updateTurnActivity(entries, {
+      type: 'task_completed', description: 'Web search: cats', status: 'completed', kind: 'search', toolCallId: 'c3',
+    });
+    updateTurnActivity(entries, {
+      type: 'task_completed', description: 'Web search: dogs', status: 'completed', kind: 'search', toolCallId: 'c4',
+    });
+    expect(renderTurnActivity(entries)).toBe(
+      'Activity\n✓ Edited file (x2)\n✓ Web search (x2)',
+    );
+  });
+
+  it('updates Claude subagent progress without creating duplicate rows', () => {
+    const entries = new Map<string, TurnActivityEntry>();
+    updateTurnActivity(entries, {
+      type: 'task_started',
+      description: 'Reviewing code',
+      kind: 'subagent',
+      toolCallId: 'agent-1',
+    });
+    updateTurnActivity(entries, {
+      type: 'tool_active',
+      description: 'Checking tests',
+      kind: 'subagent',
+      toolCallId: 'agent-1',
+    });
+
+    expect(entries.size).toBe(1);
+    expect(renderTurnActivity(entries)).toBe('Activity\n🤝 Checking tests…');
+  });
+
+  it('renders OpenAI plans as checklist rows and updates their state', () => {
+    const entries = new Map<string, TurnActivityEntry>();
+    updateTurnActivity(entries, {
+      type: 'plan',
+      description: 'Plan updated',
+      planEntries: [
+        { content: 'Inspect implementation', status: 'completed' },
+        { content: 'Run validation', status: 'in_progress' },
+      ],
+    });
+    expect(renderTurnActivity(entries)).toBe(
+      'Activity\n✓ Inspect implementation\n📋 Run validation…',
+    );
+
+    updateTurnActivity(entries, {
+      type: 'plan',
+      description: 'Plan updated',
+      planEntries: [
+        { content: 'Inspect implementation', status: 'completed' },
+        { content: 'Run validation', status: 'completed' },
+      ],
+    });
+    expect(entries.size).toBe(2);
+    expect(renderTurnActivity(entries)).toBe(
+      'Activity\n✓ Inspect implementation\n✓ Run validation',
+    );
+  });
+
+  it('retains compaction as a durable activity notice', () => {
+    const entries = new Map<string, TurnActivityEntry>();
+    updateTurnActivity(entries, {
+      type: 'task_completed',
+      description: 'Context compacted',
+      status: 'notice',
+      kind: 'compact',
+      toolCallId: 'context-compaction',
+    });
+    expect(renderTurnActivity(entries)).toBe('Activity\nℹ️ Context compacted');
+  });
+
+  it('retains OpenAI command advisories without a standalone reply', () => {
+    const entries = new Map<string, TurnActivityEntry>();
+    updateTurnActivity(entries, {
+      type: 'task_completed',
+      description: 'rg -n pattern src · exit 1',
+      status: 'notice',
+      kind: 'execute',
+      toolCallId: 'command-1',
+    });
+    expect(renderTurnActivity(entries)).toBe('Activity\nℹ️ rg -n pattern src · exit 1');
+  });
+
+  it('keeps the model footer below the activity ledger', () => {
+    const result = composeFinalTelegramText(
+      'Answer',
+      '\n\n[GPT-5.6 Sol · medium]',
+      'Activity\n✓ Web search',
+    );
+    expect(result).toBe(
+      'Answer\n\n**Activity**\n✓ Web search\n\n[GPT-5.6 Sol · medium]',
+    );
+  });
+});
+
+describe('workingGlyphFor', () => {
+  it('gives each activity kind its own glyph', () => {
+    expect(workingGlyphFor('execute')).toBe('⚡');
+    expect(workingGlyphFor('mcp')).toBe('🔌');
+    expect(workingGlyphFor('thinking')).toBe('💭');
+  });
+
+  it('falls back to the thinking glyph rather than an empty prefix', () => {
+    expect(workingGlyphFor(undefined)).toBe('💭');
+    expect(workingGlyphFor('some-future-kind')).toBe('💭');
+  });
+});
+
+describe('formatElapsed', () => {
+  it('stays in seconds below two minutes', () => {
+    expect(formatElapsed(9)).toBe('9s');
+    expect(formatElapsed(119)).toBe('119s');
+  });
+
+  it('switches to minutes at two minutes, dropping a zero-seconds remainder', () => {
+    expect(formatElapsed(120)).toBe('2m');
+    expect(formatElapsed(200)).toBe('3m20s');
+  });
+});
+
+describe('endsAtStreamBoundary', () => {
+  it('rejects the mid-quote stub that used to get published at 20 chars', () => {
+    expect(endsAtStreamBoundary('"Caller A" and "Caller ')).toBe(false);
+  });
+
+  it('rejects mid-sentence and mid-structure text', () => {
+    expect(endsAtStreamBoundary('Caller A and Caller B mean two ClaudeClaw turn')).toBe(false);
+    expect(endsAtStreamBoundary('| Codex App Server | One persistent')).toBe(false);
+    expect(endsAtStreamBoundary('ends in comma,')).toBe(false);
+  });
+
+  it('accepts sentence-final punctuation with or without trailing space', () => {
+    expect(endsAtStreamBoundary('They are two ClaudeClaw invocations.')).toBe(true);
+    expect(endsAtStreamBoundary('should therefore run sequentially. ')).toBe(true);
+    expect(endsAtStreamBoundary('Question here?')).toBe(true);
+  });
+
+  it('accepts newline and paragraph breaks so lists and tables flush per line', () => {
+    expect(endsAtStreamBoundary('- Direct `AgentEngine.invoke()` calls\n')).toBe(true);
+    expect(endsAtStreamBoundary('first paragraph\n\n')).toBe(true);
+  });
+});
 
 describe('modelStatusLine', () => {
   it('reports Codex model instead of the OpenCode fallback text', () => {
-    expect(modelStatusLine({ type: 'codex', model: 'gpt-5.5' }, 'chat-1')).toBe('Model: gpt-5.5');
+    expect(modelStatusLine({ type: 'acp-codex', model: 'gpt-5.5' }, 'chat-1')).toBe('Model: GPT-5.5');
   });
 
   it('reports provider-specific defaults for non-Claude providers', () => {
-    expect(modelStatusLine({ type: 'codex' }, 'chat-1')).toBe('Model: Codex default');
+    expect(modelStatusLine({ type: 'acp-codex' }, 'chat-1')).toBe('Model: Codex default');
     expect(modelStatusLine({ type: 'gemini' }, 'chat-1')).toBe('Model: Gemini CLI default');
     expect(modelStatusLine({ type: 'opencode' }, 'chat-1')).toBe('Model: OpenCode default');
     expect(modelStatusLine({ type: 'acp', command: 'my-agent' }, 'chat-1')).toBe('Model: Provider default');
+  });
+});
+
+describe('resolveTelegramModelSelection', () => {
+  it('resolves native OpenAI shortcuts used by Telegram', () => {
+    const provider = { type: 'openai' as const, model: 'gpt-5.5' };
+    expect(resolveTelegramModelSelection(provider, 'sol').model).toBe('gpt-5.6-sol');
+    expect(resolveTelegramModelSelection(provider, 'Terra').model).toBe('gpt-5.6-terra');
+    expect(resolveTelegramModelSelection(provider, ' luna ').model).toBe('gpt-5.6-luna');
+  });
+
+  it('accepts catalogued OpenAI ids and rejects unknown ids', () => {
+    const provider = { type: 'openai' as const };
+    expect(resolveTelegramModelSelection(provider, 'gpt-5.5').model).toBe('gpt-5.5');
+    expect(resolveTelegramModelSelection(provider, 'gpt-made-up').error).toBe(
+      'Unknown OpenAI model: gpt-made-up',
+    );
+  });
+
+  it('keeps existing Claude aliases and full model ids working', () => {
+    const provider = { type: 'claude' as const };
+    expect(resolveTelegramModelSelection(provider, 'opus').model).toBeTruthy();
+    expect(resolveTelegramModelSelection(provider, 'claude-sonnet-4-5').model).toBe('claude-sonnet-4-5');
+  });
+
+  it('rejects providers whose models are managed externally', () => {
+    expect(resolveTelegramModelSelection({ type: 'gemini' }, 'anything').error).toMatch(
+      /manages its model outside ClaudeClaw/,
+    );
   });
 });
 

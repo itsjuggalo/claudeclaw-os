@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { useFetch } from '@/lib/useFetch';
 
 export interface ProviderConfig {
-  type: 'claude' | 'opencode' | 'gemini' | 'codex' | 'acp';
+  type: 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'openai' | 'acp';
   model?: string;
   runtimeMode?: string;
   thinkingMode?: string;
@@ -22,23 +22,36 @@ interface ProviderModelsResponse {
 interface ProviderRuntimeOption { id: string; label: string; current?: boolean; }
 interface ProviderRuntimeOptionsResponse {
   provider: string;
+  modeLabel?: string;
+  thinkingLabel?: string;
   modeOptions: ProviderRuntimeOption[];
   thinkingOptions: ProviderRuntimeOption[];
   source: 'provider' | 'fallback' | 'static';
   error?: string;
 }
 
+export type ProviderTier = 'stable' | 'experimental';
+export interface ProviderOption {
+  type: ProviderConfig['type'];
+  label: string;
+  tier: ProviderTier;
+}
+
+// The set of selectable providers comes from /api/provider/status (registry-
+// driven, grouped by tier). Claude is always present as the safe fallback.
+const CLAUDE_ONLY: ProviderOption[] = [{ type: 'claude', label: 'Claude', tier: 'stable' }];
+
 function normalizeProviderType(
   nextType: ProviderConfig['type'],
-  acpEnabled: boolean,
+  providers: ProviderOption[],
 ): ProviderConfig['type'] {
-  return acpEnabled || nextType === 'claude' ? nextType : 'claude';
+  return providers.some((p) => p.type === nextType) ? nextType : 'claude';
 }
 
 export function ProviderConfigEditor({
   value,
   fallbackModel,
-  acpEnabled = true,
+  providers,
   onChange,
   onSave,
   saveLabel = 'Save provider',
@@ -46,14 +59,19 @@ export function ProviderConfigEditor({
 }: {
   value?: ProviderConfig;
   fallbackModel?: string;
-  acpEnabled?: boolean;
+  /** Selectable providers from /api/provider/status. Undefined = still loading
+   *  — the editor must NOT snap the saved type to claude before the list
+   *  arrives, or a fast Save persists the wrong provider. */
+  providers?: ProviderOption[];
   onChange?: (provider: ProviderConfig) => void;
   onSave?: (provider: ProviderConfig) => void | Promise<void>;
   saveLabel?: string;
   busy?: boolean;
 }) {
-  const initial = value ?? { type: 'opencode' as const };
-  const [type, setType] = useState<ProviderConfig['type']>(normalizeProviderType(initial.type, acpEnabled));
+  const loaded = providers !== undefined;
+  const availableProviders = providers && providers.length > 0 ? providers : CLAUDE_ONLY;
+  const initial = value ?? { type: 'claude' as const };
+  const [type, setType] = useState<ProviderConfig['type']>(initial.type);
   const models = useFetch<ProviderModelsResponse>('/api/providers/models?provider=' + encodeURIComponent(type), 0);
   const [model, setModel] = useState(initial.model ?? fallbackModel ?? '');
   const [customModel, setCustomModel] = useState('');
@@ -67,6 +85,7 @@ export function ProviderConfigEditor({
     ? null
     : '/api/providers/runtime-options?provider='
       + encodeURIComponent(type)
+      + (model && model !== '__custom__' ? '&model=' + encodeURIComponent(model) : '')
       + (type === 'acp' ? '&command=' + encodeURIComponent(command.trim()) + '&args=' + encodeURIComponent(args) : '');
   const runtimeOptions = useFetch<ProviderRuntimeOptionsResponse>(runtimeOptionsPath, 0);
 
@@ -87,24 +106,29 @@ export function ProviderConfigEditor({
     return provider;
   }
 
+  const providerKey = loaded ? availableProviders.map((p) => p.type).join(',') : 'loading';
+
   useEffect(() => {
     if (dirtyRef.current) return;
-    const next = value ?? { type: 'opencode' as const };
-    setType(normalizeProviderType(next.type, acpEnabled));
+    const next = value ?? { type: 'claude' as const };
+    // Before the provider list loads, keep the saved type verbatim; normalize
+    // only against a real list.
+    setType(loaded ? normalizeProviderType(next.type, availableProviders) : next.type);
     setModel(next.model ?? fallbackModel ?? '');
     setRuntimeMode(next.runtimeMode ?? '');
     setThinkingMode(next.thinkingMode ?? '');
     setCommand(next.command ?? '');
     setArgs((next.args ?? []).join(' '));
-  }, [acpEnabled, value?.type, value?.model, value?.runtimeMode, value?.thinkingMode, value?.command, JSON.stringify(value?.args ?? []), fallbackModel]);
+  }, [providerKey, value?.type, value?.model, value?.runtimeMode, value?.thinkingMode, value?.command, JSON.stringify(value?.args ?? []), fallbackModel]);
 
   useEffect(() => {
-    if (!acpEnabled && type !== 'claude') {
+    if (!loaded) return;
+    if (normalizeProviderType(type, availableProviders) !== type) {
       setType('claude');
       setModel('');
       setCustomModel('');
     }
-  }, [acpEnabled, type]);
+  }, [providerKey, type]);
 
   useEffect(() => {
     const defaultModel = models.data?.defaultModel;
@@ -141,36 +165,43 @@ export function ProviderConfigEditor({
     onChange?.(providerPayload());
   }, [type, model, customModel, runtimeMode, thinkingMode, command, args]);
 
-  const providerOptions: Array<{ value: ProviderConfig['type']; label: string }> = acpEnabled
-    ? [
-      { value: 'opencode', label: 'OpenCode' },
-      { value: 'gemini', label: 'Gemini CLI' },
-      { value: 'codex', label: 'Codex ACP' },
-      { value: 'claude', label: 'Claude Code' },
-      { value: 'acp', label: 'Custom ACP' },
-    ]
-    : [{ value: 'claude', label: 'Claude Code' }];
+  // Stable providers (Claude, OpenAI) first, then the experimental tier.
+  const stableOptions = availableProviders.filter((p) => p.tier === 'stable');
+  const experimentalOptions = availableProviders.filter((p) => p.tier === 'experimental');
+  const onlyStable = experimentalOptions.length === 0;
 
   return (
     <div class="space-y-3">
       <EditorField label="Provider">
         <select
           value={type}
+          disabled={!loaded}
           onChange={(event) => {
-            setType(normalizeProviderType((event.currentTarget as HTMLSelectElement).value as ProviderConfig['type'], acpEnabled));
+            setType(normalizeProviderType((event.currentTarget as HTMLSelectElement).value as ProviderConfig['type'], availableProviders));
             setModel('');
             setCustomModel('');
             markDirty();
           }}
-          class="w-full h-8 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)]"
+          class="w-full h-8 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
         >
-          {providerOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
+          {!loaded
+            ? <option value={type}>{type}</option>
+            : onlyStable
+              ? stableOptions.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)
+              : (
+                <>
+                  <optgroup label="Stable">
+                    {stableOptions.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
+                  </optgroup>
+                  <optgroup label="Experimental (beta)">
+                    {experimentalOptions.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
+                  </optgroup>
+                </>
+              )}
         </select>
-        {!acpEnabled && (
+        {loaded && onlyStable && (
           <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1">
-            Provider selection is disabled. Set ENABLE_ACP=true to enable ACP providers.
+            Experimental providers (ACP: Gemini, OpenCode, Codex-ACP, custom) are hidden. Set ENABLE_ACP=true in .env to enable them.
           </div>
         )}
       </EditorField>
@@ -198,7 +229,7 @@ export function ProviderConfigEditor({
       </EditorField>
 
       {(runtimeOptions.data?.modeOptions?.length ?? 0) > 0 && (
-        <EditorField label="Agent speed">
+        <EditorField label={runtimeOptions.data?.modeLabel ?? 'Agent speed'}>
           <SegmentedControl
             value={runtimeMode}
             options={(runtimeOptions.data?.modeOptions ?? []).map((option) => ({ value: option.id, label: option.label }))}
@@ -208,7 +239,7 @@ export function ProviderConfigEditor({
       )}
 
       {(runtimeOptions.data?.thinkingOptions?.length ?? 0) > 0 && (
-        <EditorField label="Thinking">
+        <EditorField label={runtimeOptions.data?.thinkingLabel ?? 'Thinking'}>
           <SegmentedControl
             value={thinkingMode}
             options={(runtimeOptions.data?.thinkingOptions ?? []).map((option) => ({ value: option.id, label: option.label }))}

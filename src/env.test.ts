@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { readEnvFile } from './env.js';
+import { fileURLToPath } from 'url';
+import { readEnvFile, envFileCandidates, REPO_ROOT_ENV } from './env.js';
 
 const TMP_DIR = '/tmp/claudeclaw-env-test';
 const TMP_ENV = path.join(TMP_DIR, '.env');
@@ -68,6 +69,48 @@ describe('readEnvFile', () => {
     vi.spyOn(process, 'cwd').mockReturnValue('/tmp/nonexistent-dir-xyz');
     const result = readEnvFile(['FOO']);
     expect(result).toEqual({});
+  });
+
+  it('derives the canonical fallback from the module location', () => {
+    const expected = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '.env',
+    );
+    expect(REPO_ROOT_ENV).toBe(expected);
+    expect(envFileCandidates('/tmp/non-repo-agent')).toEqual([
+      path.resolve('/tmp/non-repo-agent', '.env'),
+      expected,
+    ]);
+  });
+
+  it('falls back to the repo-root .env when invoked from a non-repo cwd', () => {
+    const agentCwd = path.resolve('/tmp/non-repo-agent');
+    const agentEnv = path.join(agentCwd, '.env');
+    vi.spyOn(process, 'cwd').mockReturnValue(agentCwd);
+    vi.spyOn(fs, 'readFileSync').mockImplementation((file, encoding) => {
+      const resolved = path.resolve(String(file));
+      if (resolved === agentEnv) {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      }
+      if (resolved === REPO_ROOT_ENV && encoding === 'utf-8') {
+        return 'DB_ENCRYPTION_KEY=repo-root-secret\nCLAUDECLAW_CONFIG="C:\\Users\\O\'Brien\\.claudeclaw"\n';
+      }
+      throw Object.assign(new Error(`unexpected read: ${resolved}`), { code: 'ENOENT' });
+    });
+
+    expect(readEnvFile(['DB_ENCRYPTION_KEY', 'CLAUDECLAW_CONFIG'])).toEqual({
+      DB_ENCRYPTION_KEY: 'repo-root-secret',
+      CLAUDECLAW_CONFIG: "C:\\Users\\O'Brien\\.claudeclaw",
+    });
+  });
+
+  it('keeps a cwd-local .env authoritative when one exists', () => {
+    writeEnv('DB_ENCRYPTION_KEY=local-override\n');
+    mockCwd();
+    expect(readEnvFile(['DB_ENCRYPTION_KEY'])).toEqual({
+      DB_ENCRYPTION_KEY: 'local-override',
+    });
   });
 
   it('only returns requested keys', () => {

@@ -28,12 +28,12 @@ export function Modal({ open, onClose, title, width = 480, children, footer }: P
   if (!open) return null;
   return (
     <div
-      class="fixed inset-0 z-[90] flex items-start justify-center pt-[10vh] bg-black/50"
+      class="fixed inset-0 z-[90] flex items-start justify-center px-4 pt-[6vh] sm:pt-[10vh] bg-black/50"
       onClick={onClose}
     >
       <div
         class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-xl shadow-2xl flex flex-col max-h-[80vh]"
-        style={{ width: width + 'px', maxWidth: '92vw' }}
+        style={{ width: width + 'px', maxWidth: 'calc(100vw - 2rem)' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div class="flex items-center px-5 py-3 border-b border-[var(--color-border)] shrink-0">

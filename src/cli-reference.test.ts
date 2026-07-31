@@ -28,21 +28,24 @@ describe('cli-reference drift guard', () => {
 });
 
 describe('cli-reference coverage guard', () => {
-  // Every shipped CLI (src/*-cli.ts) MUST have a matching entry in
-  // allDescriptors. This is what catches a future CLI shipped without docs —
-  // the exact drift that let mission-cli ship undocumented and unused
-  // fleet-wide.
-  const cliFiles = fs
+  // Every agent-facing entrypoint MUST have a matching entry in allDescriptors.
+  // This catches a future entrypoint shipped without docs — the exact drift that
+  // let mission-cli ship undocumented and unused fleet-wide. Covers both the
+  // `*-cli.ts` CLIs and dispatch server entrypoints (`*-mcp-server.ts`), whose
+  // descriptor may be ship=false (spawned by an adapter, not run by agents) but
+  // must still exist so the entrypoint cannot ship undocumented.
+  const entrypointFiles = fs
     .readdirSync(SRC_DIR)
-    .filter((f) => f.endsWith('-cli.ts') && !f.endsWith('.test.ts'))
+    .filter((f) => (f.endsWith('-cli.ts') || f.endsWith('-mcp-server.ts')) && !f.endsWith('.test.ts'))
     .sort();
 
-  it('finds the shipped CLI source files', () => {
-    expect(cliFiles.length).toBeGreaterThan(0);
+  it('finds the shipped entrypoint source files', () => {
+    expect(entrypointFiles.length).toBeGreaterThan(0);
   });
 
-  for (const file of cliFiles) {
-    // e.g. `mission-cli.ts` -> descriptor name `mission-cli`.
+  for (const file of entrypointFiles) {
+    // e.g. `mission-cli.ts` -> descriptor name `mission-cli`;
+    //      `dispatch-mcp-server.ts` -> `dispatch-mcp-server`.
     const expectedName = file.replace(/\.ts$/, '');
     it(`${file} has a matching descriptor in allDescriptors`, () => {
       const match = allDescriptors.find((d) => d.name === expectedName);

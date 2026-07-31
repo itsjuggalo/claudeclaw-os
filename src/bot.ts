@@ -1,9 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { isDeepStrictEqual } from 'util';
 import { Api, Bot, Context, InlineKeyboard, InputFile, RawApi } from 'grammy';
 
 import { runAgent, runAgentWithRetry, UsageInfo, AgentProgressEvent, AgentToolPolicy } from './agent.js';
+import { chatToolProfileFor } from './chat-tool-policy.js';
 import type {
   AskUserQuestionRequest,
   AskUserQuestionAnswer,
@@ -40,9 +42,10 @@ import {
   CLAUDE_MODEL_OPUS,
   CLAUDE_MODEL_SONNET,
   CLAUDE_MODEL_HAIKU,
+  DEFAULT_OPENAI_MODEL,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount, getMemoryMigrationNotice, setMemoryMigrationNotice, getCacheTokens } from './db.js';
-import { resolvePrimaryAgentId, setAgentProvider, resolveAgentDisplayName } from './agent-config.js';
+import { clearAgentSessions, clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount, getMemoryMigrationNotice, setMemoryMigrationNotice, getCacheTokens } from './db.js';
+import { loadAgentConfig, resolvePrimaryAgentId, setAgentProvider, resolveAgentDisplayName } from './agent-config.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage, buildMediaGroupMessage, createMediaGroupBuffer } from './media.js';
 import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn, shouldNudgeMemory, MEMORY_NUDGE_TEXT } from './memory.js';
@@ -50,8 +53,16 @@ import { classifyMessageComplexity } from './message-classifier.js';
 import { scanForSecrets, redactSecrets } from './exfiltration-guard.js';
 import { trackUsage, getRateStatus } from './rate-tracker.js';
 import { buildCostFooter } from './cost-footer.js';
+import { COMPLETION_DONE_GLYPH, completionStatusGlyph } from './completion-glyph.js';
 import { DEFAULT_CLAUDE_MODEL, getMainProviderConfig, getProviderDisplay, ProviderConfig, setMainProviderConfig } from './provider.js';
+import { defaultModelForProvider, getSelectedProviderConfig } from './active-provider.js';
 import { engineSupportsSystemPrompt } from './agent-engine/index.js';
+import {
+  OPENAI_MODEL_OPTIONS,
+  modelDisplayLabel,
+  reconcileRuntimeOptions,
+  selectedEffortForProvider,
+} from './model-catalog.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
 import { applyOtherSelection, stepHint } from './auq-selection.js';
@@ -72,21 +83,251 @@ import {
 // ── ACP tool policy for conversational chat turns ────────────────────
 // Telegram and dashboard chat are conversational by default. Claude has
 // months of demonstrated good judgment about when to run tools mid-chat,
-// so it keeps full access. ACP providers (codex/gemini/opencode) are new
+// so it keeps full access. ACP providers (acp-codex/gemini/opencode) are new
 // to this path and have shown they'll happily interpret a casual message
-// as a coding task — codex once ran the full test suite on "hey, wake up,
+// as a coding task — Codex once ran the full test suite on "hey, wake up,
 // time to solve the puzzle." Lock them to read-only by default; lift via
 // explicit per-turn escalation in a follow-up.
-const CHAT_ACP_TOOL_POLICY: AgentToolPolicy = { allowedTools: ['Read', 'Grep', 'Glob'] };
-
-function chatToolPolicyFor(provider: ProviderConfig | undefined): AgentToolPolicy | undefined {
-  if (!provider || provider.type === 'claude') return undefined;
-  return CHAT_ACP_TOOL_POLICY;
-}
+// Per-provider chat tool profiles live in one shared module (chat-tool-policy.ts),
+// so bot.ts and signal-bot.ts no longer each carry a duplicate copy.
 
 // ── Streaming rate limiter ───────────────────────────────────────────
+// Flush policy, in plain terms: the first visible chunk must be a coherent
+// paragraph, not the first 20 characters that happen to arrive. A stale
+// per-chat timestamp used to make the interval check pass instantly on the
+// first delta of a turn, so a 20-char threshold published stubs like
+// `"Caller A" and "Caller ` and then froze for a full interval while tool-call
+// progress messages landed underneath. We now seed the timestamp per turn and
+// prefer semantic boundaries (paragraph/sentence) over raw byte counts.
 const globalStreamLastEdit = new Map<string, number>();
 const GLOBAL_STREAM_INTERVAL_MS = 2500;
+/** The first published chunk of a turn must reach this length. */
+const STREAM_FIRST_FLUSH_CHARS = 300;
+/** Subsequent chunks need this much new text before a boundary counts. */
+const STREAM_MIN_DELTA_CHARS = 120;
+/** Hard cap: publish regardless of boundary once this much text is pending. */
+const STREAM_MAX_PENDING_CHARS = 700;
+/**
+ * Elapsed time is noise on a fast turn and the entire point on a slow one, so the
+ * working line stays bare until the turn has run this long.
+ */
+const WORKING_ELAPSED_AFTER_S = 10;
+/** How often the working line re-renders to advance its clock. */
+const WORKING_TICK_MS = 5000;
+
+/**
+ * One glyph per activity kind, so a glance at the working line says WHAT the turn is
+ * doing without reading it. Every adapter kind is covered; anything unmapped (a new
+ * kind, or a provider that omits it) falls back to the thinking glyph rather than
+ * rendering an empty prefix.
+ */
+const WORKING_GLYPHS: Record<string, string> = {
+  thinking: '💭',
+  execute: '⚡',
+  mcp: '🔌',
+  search: '🔎',
+  edit: '✏️',
+  read: '📄',
+  subagent: '🤝',
+  plan: '📋',
+  compact: '🧹',
+};
+
+export function workingGlyphFor(kind?: string): string {
+  return (kind && WORKING_GLYPHS[kind]) || WORKING_GLYPHS.thinking;
+}
+
+/**
+ * Glyph for a tool phase that finished, on the same line the phase was announced on.
+ *
+ * Successful rows use this glyph. Notices and failures retain their own glyph in the
+ * persistent activity ledger.
+ */
+const WORKING_DONE_GLYPH = COMPLETION_DONE_GLYPH;
+
+/**
+ * Whether a `task_completed` event should fold into the streaming working line
+ * instead of being sent as its own Telegram message.
+ *
+ * The working message now survives turn completion, so every completion can remain
+ * durable there, including Claude's kind-less sub-agent events and OpenAI notices.
+ */
+export function completionRoutesInline(
+  streamingEnabled: boolean,
+  _status?: string,
+  _kind?: string,
+): boolean {
+  return streamingEnabled;
+}
+
+type TurnActivityState = 'active' | 'completed' | 'notice' | 'failed';
+
+export interface TurnActivityEntry {
+  key: string;
+  description: string;
+  kind?: string;
+  state: TurnActivityState;
+}
+
+/**
+ * Record durable milestones only. Rapid tool-active pulses stay in the transient
+ * working footer; their eventual completion or advisory becomes a ledger row.
+ */
+export function updateTurnActivity(
+  entries: Map<string, TurnActivityEntry>,
+  event: AgentProgressEvent,
+): boolean {
+  if (event.type === 'plan' && event.planEntries) {
+    for (const planEntry of event.planEntries) {
+      const normalized = planEntry.content.replace(/\s+/g, ' ').trim();
+      if (!normalized) continue;
+      const description = normalized.length <= 180 ? normalized : `${normalized.slice(0, 179)}…`;
+      const failed = planEntry.status === 'failed' || planEntry.status === 'error';
+      const completed = planEntry.status === 'completed';
+      const key = `plan:${normalized}`;
+      entries.set(key, {
+        key,
+        description,
+        kind: 'plan',
+        state: failed ? 'failed' : completed ? 'completed' : 'active',
+      });
+    }
+    return event.planEntries.length > 0;
+  }
+
+  if (event.type === 'tool_active' && event.toolCallId) {
+    const existing = entries.get(event.toolCallId);
+    if (!existing || existing.state !== 'active') return false;
+    const normalized = event.description.replace(/\s+/g, ' ').trim();
+    const description = normalized.length <= 180 ? normalized : `${normalized.slice(0, 179)}…`;
+    entries.set(event.toolCallId, {
+      ...existing,
+      description,
+      kind: event.kind ?? existing.kind,
+    });
+    return true;
+  }
+
+  if (event.type !== 'task_started' && event.type !== 'task_completed') return false;
+  if (event.description === 'Tool result') return false;
+
+  const fallbackKey = `${event.type === 'task_started' ? 'task' : 'completion'}:${event.description}`;
+  const key = event.toolCallId || fallbackKey;
+  const failed = event.status === 'failed' || event.status === 'error' || event.status === 'stopped';
+  const state: TurnActivityState = event.type === 'task_started'
+    ? 'active'
+    : failed
+      ? 'failed'
+      : event.status === 'notice'
+        ? 'notice'
+        : 'completed';
+  const normalized = event.description.replace(/\s+/g, ' ').trim();
+  const description = normalized.length <= 180 ? normalized : `${normalized.slice(0, 179)}…`;
+
+  entries.set(key, {
+    key,
+    description,
+    kind: event.kind,
+    state,
+  });
+  return true;
+}
+
+/** The glyph a ledger row shows for its current state. */
+function activityGlyph(entry: Pick<TurnActivityEntry, 'state' | 'kind'>): string {
+  return entry.state === 'active'
+    ? workingGlyphFor(entry.kind)
+    : entry.state === 'failed'
+      ? '⚠️'
+      : entry.state === 'notice'
+        ? 'ℹ️'
+        : WORKING_DONE_GLYPH;
+}
+
+/**
+ * Canonical label used to GROUP high-volume tool rows, so repeats collapse even
+ * when a provider bakes per-call detail into the text. Codex writes
+ * `Edited 2 files: a.ts, b.ts` and `Web search: <query>`; Claude writes the
+ * already-generic `Edited file` / `Web search`. Normalizing the big three (file
+ * edits, code search, web search) to a shared label lets both providers fold
+ * into one counted line instead of a row per file/query. Everything else passes
+ * through verbatim, so distinct activity is untouched.
+ */
+export function collapseActivityLabel(entry: Pick<TurnActivityEntry, 'description' | 'kind'>): string {
+  const d = entry.description.trim();
+  if (/^web\s*search\b/i.test(d)) return 'Web search';
+  if (entry.kind === 'edit') return 'Edited file';
+  if (/^searched code\b/i.test(d)) return 'Searched code';
+  return d;
+}
+
+/**
+ * Render a compact ledger, retaining the newest rows when Telegram space is tight.
+ *
+ * Identical rows (same glyph + text, e.g. a dozen `Searched code` completions)
+ * collapse into one counted row — `Searched code (x12)` — in first-occurrence
+ * order, so a tool-heavy turn reads as a few lines that tick up live instead of
+ * a wall of repeats. Distinct rows are untouched, so single-shot activity keeps
+ * rendering exactly as before.
+ */
+export function renderTurnActivity(entries: Map<string, TurnActivityEntry>): string {
+  if (entries.size === 0) return '';
+  const groups = new Map<string, { glyph: string; label: string; active: boolean; count: number }>();
+  for (const entry of entries.values()) {
+    const glyph = activityGlyph(entry);
+    const label = collapseActivityLabel(entry);
+    const key = `${glyph} ${label}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.count += 1;
+      // A group reads as "still going" if any of its members is in flight.
+      if (entry.state === 'active') existing.active = true;
+    } else {
+      groups.set(key, { glyph, label, active: entry.state === 'active', count: 1 });
+    }
+  }
+
+  const grouped = [...groups.values()];
+  const visible = grouped.slice(-10);
+  const hidden = grouped.length - visible.length;
+  const rows = visible.map((g) => {
+    const count = g.count > 1 ? ` (x${g.count})` : '';
+    const suffix = g.active ? '…' : '';
+    return `${g.glyph} ${g.label}${count}${suffix}`;
+  });
+  if (hidden > 0) rows.unshift(`… ${hidden} earlier ${hidden === 1 ? 'activity' : 'activities'}`);
+  return `Activity\n${rows.join('\n')}`;
+}
+
+/** Keep the runtime identity/cost tag as the literal final line of the response. */
+export function composeFinalTelegramText(
+  responseText: string,
+  costFooter: string,
+  activityText: string,
+): string {
+  const activity = activityText
+    ? `\n\n**Activity**\n${activityText.split('\n').slice(1).join('\n')}`
+    : '';
+  return `${responseText}${activity}${costFooter}`;
+}
+
+/** `95s` under two minutes, `3m20s` above it. */
+export function formatElapsed(seconds: number): string {
+  if (seconds < 120) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s === 0 ? `${m}m` : `${m}m${s}s`;
+}
+
+/**
+ * True when `text` ends at a natural reading boundary — a paragraph break, or
+ * sentence-final punctuation followed by whitespace. Trailing whitespace is
+ * tolerated because deltas frequently arrive mid-gap.
+ */
+export function endsAtStreamBoundary(text: string): boolean {
+  if (/\n\s*$/.test(text)) return true;
+  return /[.!?:;)"'”’\]]\s+$/.test(text) || /[.!?]["'”’)\]]?$/.test(text);
+}
 
 // ── Context window tracking ──────────────────────────────────────────
 // Uses input_tokens from the last API call (= actual context window size:
@@ -140,15 +381,31 @@ function checkContextWarning(chatId: string, sessionId: string | undefined, usag
 }
 
 function activeProvider(): ProviderConfig {
-  return agentProvider ?? getMainProviderConfig();
+  // Dashboard writes happen in a different process from sub-agent bots.
+  // Refresh this agent's persisted provider before every command/turn so a
+  // dashboard model/provider change becomes live without restarting the bot.
+  try {
+    const persisted = AGENT_ID === 'main'
+      ? getMainProviderConfig()
+      : loadAgentConfig(AGENT_ID).provider;
+    updateAgentProvider(persisted);
+  } catch (err) {
+    // Keep the last known-good in-memory provider if yaml is transiently
+    // unreadable; a config refresh failure must not silently change engines.
+    logger.warn({ err, agentId: AGENT_ID }, 'Could not refresh provider config from agent.yaml');
+  }
+  // Delegate to the gated resolver so display and execution agree and a
+  // gated-off (experimental) saved provider falls back to Claude WITH a Claude
+  // model — never the saved provider's model against the Claude adapter.
+  return getSelectedProviderConfig();
 }
 
 export function modelStatusLine(provider: ProviderConfig, chatId: string): string {
   if (provider.type === 'claude') {
-    return `Model: ${chatModelOverride.get(chatId) ?? agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL}`;
+    return `Model: ${modelDisplayLabel(chatModelOverride.get(chatId) ?? agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL)}`;
   }
-  if (provider.model) return `Model: ${provider.model}`;
-  if (provider.type === 'codex') return 'Model: Codex default';
+  if (provider.model) return `Model: ${modelDisplayLabel(provider.model)}`;
+  if (provider.type === 'acp-codex') return 'Model: Codex default';
   if (provider.type === 'gemini') return 'Model: Gemini CLI default';
   if (provider.type === 'opencode') return 'Model: OpenCode default';
   return 'Model: Provider default';
@@ -188,7 +445,56 @@ const AVAILABLE_MODELS: Record<string, string> = {
   opus: CLAUDE_MODEL_OPUS,
   sonnet: CLAUDE_MODEL_SONNET,
   haiku: CLAUDE_MODEL_HAIKU,
+  opus5: 'claude-opus-5',
+  fable5: 'claude-fable-5',
+  sonnet5: 'claude-sonnet-5',
 };
+
+const OPENAI_MODEL_SHORTCUTS: Record<string, string> = {
+  sol: 'gpt-5.6-sol',
+  terra: 'gpt-5.6-terra',
+  luna: 'gpt-5.6-luna',
+};
+
+export interface TelegramModelSelection {
+  model?: string;
+  shortcuts: Record<string, string>;
+  example: string;
+  error?: string;
+}
+
+export function resolveTelegramModelSelection(provider: ProviderConfig, rawArg: string): TelegramModelSelection {
+  const arg = rawArg.trim().toLowerCase();
+  if (provider.type === 'claude') {
+    const model = AVAILABLE_MODELS[arg]
+      ?? (/^claude-[a-z0-9][a-z0-9.-]*$/.test(arg) ? arg : undefined);
+    return {
+      model,
+      shortcuts: AVAILABLE_MODELS,
+      example: 'claude-sonnet-4-5',
+      ...(!model ? { error: `Unknown Claude model: ${arg}` } : {}),
+    };
+  }
+
+  if (provider.type === 'openai') {
+    const candidate = OPENAI_MODEL_SHORTCUTS[arg] ?? arg;
+    const model = OPENAI_MODEL_OPTIONS.some((option) => option.id === candidate)
+      ? candidate
+      : undefined;
+    return {
+      model,
+      shortcuts: OPENAI_MODEL_SHORTCUTS,
+      example: 'gpt-5.6-sol',
+      ...(!model ? { error: `Unknown OpenAI model: ${arg}` } : {}),
+    };
+  }
+
+  return {
+    shortcuts: {},
+    example: '',
+    error: `Provider "${provider.type}" manages its model outside ClaudeClaw`,
+  };
+}
 
 export function setMainModelOverride(model: string): void {
   if (ALLOWED_CHAT_ID) chatModelOverride.set(ALLOWED_CHAT_ID, model);
@@ -1112,17 +1418,24 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
   setProcessing(chatIdStr, true);
 
+  // Declared out here so the catch below can stop it: an interval left running past a
+  // thrown turn would keep editing a message for a turn that no longer exists.
+  let workingTicker: ReturnType<typeof setInterval> | undefined;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let streamMsgId: number | undefined;
+  let streamMutation: Promise<void> = Promise.resolve();
+  const turnActivity = new Map<string, TurnActivityEntry>();
+
   try {
     // Progress callback: surface agent activity to Telegram + SSE.
     // Tool activity is throttled to avoid spam. ACP providers
-    // (codex/gemini/opencode) can run long, text-silent tool chains where the
+    // (acp-codex/gemini/opencode) can run long, text-silent tool chains where the
     // only feedback is the typing indicator, so a multi-minute sequence reads as
     // a hang (#86). They get a faster heartbeat; Claude streams text and keeps
     // the slower cadence.
     let lastToolNotifyTime = 0;
     let lastToolDesc = '';
     const TOOL_NOTIFY_INTERVAL_MS = provider.type === 'claude' ? 30_000 : 12_000;
-
     const onProgress = (event: AgentProgressEvent) => {
       const progressPayload = {
         type: 'progress' as const,
@@ -1137,26 +1450,57 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       };
       if (event.type === 'task_started') {
         emitChatEvent(progressPayload);
+        if (streamingEnabled && updateTurnActivity(turnActivity, event)) {
+          publishActivity();
+          return;
+        }
         void ctx.reply(`🔄 ${event.description}`).catch(() => {});
       } else if (event.type === 'task_completed') {
         emitChatEvent(progressPayload);
         // Only notify Telegram for meaningful completions (sub-agent results),
         // not generic "Tool result" from every individual tool call.
         if (event.description !== 'Tool result') {
-          void ctx.reply(`✓ ${event.description}`).catch(() => {});
+          // The persistent activity ledger owns every streamed completion. This
+          // includes Claude's sub-agent bookends and OpenAI command advisories.
+          if (completionRoutesInline(streamingEnabled, event.status, event.kind)) {
+            updateTurnActivity(turnActivity, event);
+            publishActivity();
+            return;
+          }
+          // The glyph has to follow `status`. A command only reaches task_completed
+          // when it exited NON-ZERO (successful ones stay quiet), so a hardcoded ✓ was
+          // reporting every one of those as a win.
+          void ctx.reply(`${completionStatusGlyph(event.status)} ${event.description}`).catch(() => {});
         }
       } else if (event.type === 'plan') {
         emitChatEvent(progressPayload);
+        if (streamingEnabled && updateTurnActivity(turnActivity, event)) {
+          publishActivity();
+        }
       } else if (event.type === 'tool_active') {
         emitChatEvent(progressPayload);
+        if (streamingEnabled && updateTurnActivity(turnActivity, event)) {
+          publishActivity();
+          return;
+        }
         lastToolDesc = event.description;
+        // While streaming, progress rides INSIDE the stream message rather than
+        // arriving as separate replies: a bubble before any text exists, a footer
+        // line beneath the text afterwards. Suppressing it entirely assumed live
+        // text was always covering the gap, but a turn goes text-silent both before
+        // the first token and during every tool phase after it, and those windows
+        // run for minutes.
+        if (streamingEnabled) {
+          publishWorking(event.description, event.kind);
+          return;
+        }
         // Only send tool notifications to Telegram if streaming is off.
         // When streaming is active, the live text updates already show progress.
         if (!streamingEnabled) {
           const now = Date.now();
           if (now - lastToolNotifyTime >= TOOL_NOTIFY_INTERVAL_MS) {
             lastToolNotifyTime = now;
-            void ctx.reply(`⚙️ ${event.description}...`).catch(() => {});
+            void ctx.reply(`${workingGlyphFor(event.kind)} ${event.description}…`).catch(() => {});
           }
         }
       }
@@ -1166,40 +1510,148 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     setActiveAbort(chatIdStr, abortCtrl);
 
     // Auto-abort if the agent runs too long (prevents runaway commands from blocking the bot)
-    const timeoutId = setTimeout(() => {
+    timeoutId = setTimeout(() => {
       logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Agent query timed out, aborting');
       abortCtrl.abort();
     }, AGENT_TIMEOUT_MS);
 
     // Streaming: send a placeholder message and edit it as text arrives
-    let streamMsgId: number | undefined;
+    let streamMsgPending = false;
     let lastEditLength = 0;
     const streamingEnabled = STREAM_STRATEGY !== 'off';
+    // The text last published, so the working footer can be appended beneath it
+    // without losing it, and the turn's start for the elapsed clock.
+    let lastStreamedText = '';
+    const turnStartedAt = Date.now();
+
+    // Seed the throttle at turn start. Without this, a timestamp left over from
+    // a previous turn makes the interval check pass on the very first delta.
+    if (streamingEnabled) globalStreamLastEdit.set(chatIdStr, Date.now());
 
     const onStreamText = streamingEnabled ? (accumulated: string) => {
       const now = Date.now();
       const globalLast = globalStreamLastEdit.get(chatIdStr) ?? 0;
       const deltaLen = accumulated.length - lastEditLength;
 
-      if (now - globalLast < GLOBAL_STREAM_INTERVAL_MS || deltaLen < 20) return;
+      if (now - globalLast < GLOBAL_STREAM_INTERVAL_MS) return;
+      // A placeholder send is in flight; skip rather than publish a duplicate.
+      if (streamMsgPending) return;
 
-      let displayText = accumulated;
-      if (displayText.length > 4000) {
-        displayText = '...' + displayText.slice(displayText.length - 3900);
-      }
-      displayText += ' ▍';
+      // The first chunk sets the reader's impression of the whole reply, so it
+      // has to be substantial. After that, publish on a reading boundary once
+      // enough new text exists, with a hard cap so boundary-free output (tables,
+      // long code blocks, unbroken lists) still streams.
+      const isFirstFlush = streamMsgId === undefined;
+      const threshold = isFirstFlush ? STREAM_FIRST_FLUSH_CHARS : STREAM_MIN_DELTA_CHARS;
+      if (deltaLen < threshold) return;
+      if (deltaLen < STREAM_MAX_PENDING_CHARS && !endsAtStreamBoundary(accumulated)) return;
 
       globalStreamLastEdit.set(chatIdStr, now);
       lastEditLength = accumulated.length;
-
-      if (!streamMsgId) {
-        void ctx.reply(displayText).then((sent) => {
-          streamMsgId = sent.message_id;
-        }).catch(() => {});
-      } else {
-        void ctx.api.editMessageText(chatId, streamMsgId, displayText).catch(() => {});
-      }
+      lastStreamedText = accumulated;
+      publishStreamBody(composeStreamBody(true));
     } : undefined;
+
+    /** What the working line currently says; the ticker re-renders it to advance the clock. */
+    let workingLabel = 'Thinking';
+    let workingGlyph = WORKING_GLYPHS.thinking;
+    let workingVisible = true;
+    /** A finished phase reads as done: check glyph, no trailing ellipsis. */
+    let workingDone = false;
+
+    function composeStreamBody(cursor = false): string {
+      const parts: string[] = [];
+      if (lastStreamedText) parts.push(`${lastStreamedText}${cursor ? ' ▍' : ''}`);
+      const ledger = renderTurnActivity(turnActivity);
+      if (ledger) parts.push(ledger);
+      if (workingVisible) {
+        const elapsedS = Math.round((Date.now() - turnStartedAt) / 1000);
+        const suffix = elapsedS >= WORKING_ELAPSED_AFTER_S ? ` · ${formatElapsed(elapsedS)}` : '';
+        const phrase = workingDone || /[.…!?]$/.test(workingLabel)
+          ? workingLabel
+          : `${workingLabel}…`;
+        parts.push(`${workingGlyph} ${phrase}${suffix}`);
+      }
+      const body = parts.join('\n\n') || `${WORKING_GLYPHS.thinking} Thinking…`;
+      return body.length > 4000 ? `...${body.slice(body.length - 3900)}` : body;
+    }
+
+    function publishStreamBody(text: string): void {
+      if (!streamMsgId) {
+        streamMsgPending = true;
+        streamMutation = streamMutation.then(async () => {
+          const sent = await ctx.reply(text);
+          streamMsgId = sent.message_id;
+        }).catch((err) => {
+          logger.debug({ err }, 'Failed to publish initial Telegram stream message');
+        }).finally(() => {
+          streamMsgPending = false;
+        });
+      } else {
+        streamMutation = streamMutation.then(async () => {
+          if (streamMsgId) await ctx.api.editMessageText(chatId, streamMsgId, text);
+        }).catch((err) => {
+          logger.debug({ err }, 'Failed to edit Telegram stream message');
+        });
+      }
+    }
+
+    /**
+     * Render the "still working" line into the stream message, sharing the stream's
+     * own rate-limit budget so progress and text never compete for edits.
+     *
+     * Before any text exists the line IS the message, which also means the first real
+     * text flush becomes an EDIT rather than a send. After text exists it trails the
+     * text so far and the next flush overwrites it — one message for the whole turn,
+     * no separate progress replies to scroll past.
+     */
+    function publishWorking(description: string, kind?: string, done = false): void {
+      if (!streamingEnabled) return;
+      const label = description.trim();
+      if (label) {
+        workingLabel = label;
+        workingGlyph = done ? WORKING_DONE_GLYPH : workingGlyphFor(kind);
+        workingDone = done;
+        workingVisible = true;
+      }
+
+      const now = Date.now();
+      if (now - (globalStreamLastEdit.get(chatIdStr) ?? 0) < GLOBAL_STREAM_INTERVAL_MS) return;
+      if (streamMsgPending) return;
+
+      globalStreamLastEdit.set(chatIdStr, now);
+      publishStreamBody(composeStreamBody());
+    }
+
+    /**
+     * A tool phase folds into the ledger — but the transient line and its
+     * elapsed clock must NOT blink out between phases. Previously this hid the
+     * working line, so after a tool completed the timer vanished until the next
+     * tool started (or, after the last tool, for the rest of the turn). Instead
+     * fall back to a neutral "Thinking" heartbeat so the clock runs continuously
+     * until the turn settles; the next `publishWorking` overwrites it with the
+     * real phase, and the 5s ticker keeps it advancing even while throttled.
+     */
+    function publishActivity(): void {
+      if (!streamingEnabled) return;
+      workingLabel = 'Thinking';
+      workingGlyph = WORKING_GLYPHS.thinking;
+      workingDone = false;
+      workingVisible = true;
+      const now = Date.now();
+      if (now - (globalStreamLastEdit.get(chatIdStr) ?? 0) < GLOBAL_STREAM_INTERVAL_MS) return;
+      if (streamMsgPending) return;
+      globalStreamLastEdit.set(chatIdStr, now);
+      publishStreamBody(composeStreamBody());
+    }
+
+    // A turn can emit NO events at all for minutes (one long tool call, or a slow
+    // final message). Progress events alone would leave the clock frozen mid-wait,
+    // which reads as a hang, so the line advances on its own. publishWorking is
+    // internally throttled, so this cannot outpace the rate budget.
+    workingTicker = streamingEnabled
+      ? setInterval(() => publishWorking(''), WORKING_TICK_MS)
+      : undefined;
 
     const result = await runAgentWithRetry(
       fullMessage,
@@ -1215,18 +1667,16 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       MODEL_FALLBACK_CHAIN.length > 0 ? MODEL_FALLBACK_CHAIN : undefined,
       agentMcpAllowlist,
       provider,
-      chatToolPolicyFor(provider),
+      chatToolProfileFor(provider),
       makeAskUserQuestionResolver(ctx, chatId, abortCtrl),
     );
 
-    clearTimeout(timeoutId);
+    if (timeoutId) clearTimeout(timeoutId);
     setActiveAbort(chatIdStr, null);
     clearInterval(typingInterval);
-
-    // Clean up the streaming placeholder before sending the final formatted response
-    if (streamMsgId) {
-      try { await ctx.api.deleteMessage(chatId, streamMsgId); } catch { /* best effort */ }
-    }
+    // Stop before finalizing the persistent stream message.
+    if (workingTicker) clearInterval(workingTicker);
+    await streamMutation;
 
     // Handle abort (manual /stop or timeout)
     if (result.aborted) {
@@ -1235,7 +1685,13 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
         ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. The task may have been too complex or a command got stuck. Try breaking it into smaller steps.`
         : 'Stopped.';
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'telegram' });
-      await ctx.reply(msg);
+      const ledger = renderTurnActivity(turnActivity);
+      const abortedText = ledger ? `${msg}\n\n${ledger}` : msg;
+      if (streamMsgId) {
+        await ctx.api.editMessageText(chatId, streamMsgId, abortedText).catch(() => {});
+      } else {
+        await ctx.reply(abortedText);
+      }
       return;
     }
 
@@ -1264,8 +1720,17 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // Extract file markers before any formatting
     const { text: responseText, files: fileMarkers } = extractFileMarkers(rawResponse);
 
-    // Add cost footer
-    const costFooter = buildCostFooter(SHOW_COST_FOOTER, result.usage, effectiveModel ?? provider.type);
+    // Add cost footer. Resolve the model the same way runAgent does (explicit
+    // override, else the provider's default) so the OpenAI path tags the actual
+    // model instead of the bare provider type, and report the effort dial the
+    // turn ran with when one was selected.
+    const footerModel = effectiveModel ?? defaultModelForProvider(provider);
+    const costFooter = buildCostFooter(
+      SHOW_COST_FOOTER,
+      result.usage,
+      footerModel ?? provider.type,
+      selectedEffortForProvider(provider, footerModel),
+    );
 
     // Save conversation turn to memory (including full log).
     // Skip logging for synthetic messages like /respin to avoid self-referential growth.
@@ -1306,23 +1771,65 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
     // Send text response (if there's any left after stripping markers)
     const textWithFooter = responseText ? responseText + costFooter : '';
+    const activityText = renderTurnActivity(turnActivity);
+    const activityHtml = activityText
+      ? `<b>Activity</b>\n${escapeHtml(activityText.split('\n').slice(1).join('\n'))}`
+      : '';
+
+    const settlePlaceholderToActivity = async (): Promise<void> => {
+      if (activityHtml) {
+        if (streamMsgId) {
+          await ctx.api.editMessageText(chatId, streamMsgId, activityHtml, { parse_mode: 'HTML' }).catch(() => {});
+        } else {
+          await ctx.reply(activityHtml, { parse_mode: 'HTML' });
+        }
+      } else if (streamMsgId) {
+        await ctx.api.deleteMessage(chatId, streamMsgId).catch(() => {});
+      }
+    };
+
+    const deliverTextResponse = async (): Promise<void> => {
+      const formatted = formatForTelegram(textWithFooter);
+      const combined = formatForTelegram(
+        composeFinalTelegramText(responseText, costFooter, activityText),
+      );
+      if (combined.length <= 4000) {
+        if (streamMsgId) {
+          try {
+            await ctx.api.editMessageText(chatId, streamMsgId, combined, { parse_mode: 'HTML' });
+            return;
+          } catch {
+            // If the final edit fails, send the result rather than losing the answer.
+          }
+        }
+        await ctx.reply(combined, { parse_mode: 'HTML' });
+        return;
+      }
+
+      // Telegram cannot hold the whole answer and ledger in one message. Preserve
+      // the ledger in the stream message, then emit only the necessary answer parts.
+      await settlePlaceholderToActivity();
+      for (const part of splitMessage(formatted)) {
+        await ctx.reply(part, { parse_mode: 'HTML' });
+      }
+    };
+
     if (textWithFooter) {
       if (shouldSpeakBack) {
+        await settlePlaceholderToActivity();
         try {
           // Don't speak the cost footer, just the actual response
           const audioBuffer = await synthesizeSpeech(responseText);
           await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.ogg'));
         } catch (ttsErr) {
           logger.error({ err: ttsErr }, 'TTS failed, falling back to text');
-          for (const part of splitMessage(formatForTelegram(textWithFooter))) {
-            await ctx.reply(part, { parse_mode: 'HTML' });
-          }
+          await deliverTextResponse();
         }
       } else {
-        for (const part of splitMessage(formatForTelegram(textWithFooter))) {
-          await ctx.reply(part, { parse_mode: 'HTML' });
-        }
+        await deliverTextResponse();
       }
+    } else {
+      await settlePlaceholderToActivity();
     }
 
     // Log token usage to SQLite and check for context warnings
@@ -1386,18 +1893,34 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     setProcessing(chatIdStr, false);
   } catch (err) {
     clearInterval(typingInterval);
+    if (workingTicker) clearInterval(workingTicker);
+    if (timeoutId) clearTimeout(timeoutId);
+    await streamMutation;
     setActiveAbort(chatIdStr, null);
     setProcessing(chatIdStr, false);
 
+    let errorMessage: string;
     if (err instanceof AgentError) {
       logger.error(
         { category: err.category, recovery: err.recovery },
         'Agent error (classified)',
       );
-      await ctx.reply(err.recovery.userMessage);
+      errorMessage = err.recovery.userMessage;
     } else {
       logger.error({ err }, 'Agent error (unclassified)');
-      await ctx.reply('Something went wrong. Check the logs and try again.');
+      errorMessage = 'Something went wrong. Check the logs and try again.';
+    }
+
+    const ledger = renderTurnActivity(turnActivity);
+    const finalError = ledger ? `${errorMessage}\n\n${ledger}` : errorMessage;
+    if (streamMsgId) {
+      try {
+        await ctx.api.editMessageText(chatId, streamMsgId, finalError);
+      } catch {
+        await ctx.reply(finalError);
+      }
+    } else {
+      await ctx.reply(finalError);
     }
   }
 }
@@ -1518,7 +2041,7 @@ export function createBot(): Bot {
     { command: 'newchat', description: 'Start a new Claude session' },
     { command: 'respin', description: 'Reload recent context' },
     { command: 'voice', description: 'Toggle voice mode on/off' },
-    { command: 'model', description: 'Switch model (opus/sonnet/haiku)' },
+    { command: 'model', description: 'Switch the active provider model' },
     { command: 'provider', description: 'Show active provider' },
     { command: 'memory', description: 'View recent memories' },
     { command: 'cache', description: 'Per-agent prompt-cache usage' },
@@ -1557,7 +2080,7 @@ export function createBot(): Bot {
       '/newchat — Start a new Claude session\n' +
       '/respin — Reload recent context\n' +
       '/voice — Toggle voice mode on/off\n' +
-      '/model — Switch model (opus/sonnet/haiku)\n' +
+      '/model — Switch the active provider model\n' +
       '/provider — Show active provider/model source\n' +
       '/memory — View recent memories\n' +
       '/cache — Per-agent prompt-cache usage ([days], default 30)\n' +
@@ -1704,11 +2227,10 @@ export function createBot(): Bot {
     }
   });
 
-  // /model — switch Claude model (opus, sonnet, haiku shortcuts, or any
-  // full claude-* id, e.g. /model claude-sonnet-4-5). Changes PERSIST to
-  // agent.yaml — the same provider block the dashboard writes — and take
-  // effect immediately in-process. Telegram, dashboard, and agent.yaml
-  // are one synced store; there is no temporary per-chat override.
+  // /model — switch the active Claude or native OpenAI model. Changes persist
+  // to agent.yaml — the same provider block the dashboard writes — and take
+  // effect immediately in-process. Telegram, dashboard, and agent.yaml are one
+  // synced store; there is no temporary per-chat override.
   bot.command('model', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
     const chatIdStr = ctx.chat!.id.toString();
@@ -1716,24 +2238,33 @@ export function createBot(): Bot {
     // what actually runs (the override map outranks it in the query path).
     chatModelOverride.delete(chatIdStr);
     const provider = activeProvider();
-    if (provider.type !== 'claude') {
-      await ctx.reply(`Active provider: ${getProviderDisplay(provider)}\n/model only applies to Claude. Use npm run provider:setup or the dashboard to change provider/model settings.`);
+    if (provider.type !== 'claude' && provider.type !== 'openai') {
+      await ctx.reply(`Active provider: ${getProviderDisplay(provider)}\nThis provider manages its model outside ClaudeClaw. Use npm run provider:setup or the dashboard to change provider settings.`);
       return;
     }
     const arg = ctx.match?.trim().toLowerCase();
 
-    const persist = (next: ProviderConfig): void => {
+    const persist = (next: ProviderConfig): boolean => {
+      if (isDeepStrictEqual(provider, next)) return false;
       if (AGENT_ID === 'main') setMainProviderConfig(next);
       else setAgentProvider(AGENT_ID, next);
       updateAgentProvider(next); // in-memory, effective this turn
+      // Model/provider identity belongs to the provider thread. Match the
+      // dashboard path by starting every chat on a fresh session after the
+      // persisted selection changes.
+      clearAgentSessions(AGENT_ID);
+      return true;
     };
 
     if (!arg) {
-      const effective = agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL;
-      const label = Object.entries(AVAILABLE_MODELS).find(([, v]) => v === effective)?.[0] ?? effective;
+      const effective = provider.type === 'claude'
+        ? (agentDefaultModel ?? provider.model ?? DEFAULT_CLAUDE_MODEL)
+        : (provider.model ?? DEFAULT_OPENAI_MODEL);
+      const label = modelDisplayLabel(effective);
       const source = agentDefaultModel || provider.model ? 'agent.yaml' : 'default';
-      const models = Object.keys(AVAILABLE_MODELS).join(', ');
-      await ctx.reply(`Current model: ${label} (${source})\nShortcuts: ${models}\nOr a full id: /model claude-sonnet-4-5\n\nChanges persist (agent.yaml), same as the dashboard picker.`);
+      const selection = resolveTelegramModelSelection(provider, '__list__');
+      const models = Object.keys(selection.shortcuts).join(', ');
+      await ctx.reply(`Current model: ${label} (${source})\nShortcuts: ${models}\nOr a full id: /model ${selection.example}\nReset to the provider default: /model reset\n\nChanges persist (agent.yaml), same as the dashboard picker.`);
       return;
     }
 
@@ -1741,33 +2272,39 @@ export function createBot(): Bot {
       // Drop the persisted model so the provider default applies.
       const next: ProviderConfig = { ...provider };
       delete next.model;
+      const defaultModel = provider.type === 'claude' ? DEFAULT_CLAUDE_MODEL : DEFAULT_OPENAI_MODEL;
+      const { provider: reconciled, cleared } = reconcileRuntimeOptions(next);
       try {
-        persist(next);
+        persist(reconciled);
       } catch (err) {
         await ctx.reply(`Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
-      await ctx.reply(`Model reset to default: ${DEFAULT_CLAUDE_MODEL} (persisted)`);
+      const clearedLine = cleared.length
+        ? `\nCleared unsupported options: ${cleared.map((item) => `${item.label}=${item.value}`).join(', ')}`
+        : '';
+      await ctx.reply(`Model reset to default: ${modelDisplayLabel(defaultModel)} (persisted)${clearedLine}`);
       return;
     }
 
-    // Shortcut label, or any full claude-* model id. Same format gate as
-    // the dashboard set-model endpoints — the SDK 404s clearly on first
-    // use if the id doesn't exist, which is the real validator.
-    const modelId = AVAILABLE_MODELS[arg]
-      ?? (/^claude-[a-z0-9][a-z0-9.-]*$/.test(arg) ? arg : undefined);
+    const selection = resolveTelegramModelSelection(provider, arg);
+    const modelId = selection.model;
     if (!modelId) {
-      await ctx.reply(`Unknown model: ${arg}\nShortcuts: ${Object.keys(AVAILABLE_MODELS).join(', ')}\nOr a full id, e.g. /model claude-sonnet-4-5`);
+      await ctx.reply(`${selection.error}\nShortcuts: ${Object.keys(selection.shortcuts).join(', ')}\nOr a full id, e.g. /model ${selection.example}`);
       return;
     }
 
+    const { provider: reconciled, cleared } = reconcileRuntimeOptions({ ...provider, model: modelId });
     try {
-      persist({ ...provider, model: modelId });
+      persist(reconciled);
     } catch (err) {
       await ctx.reply(`Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    await ctx.reply(`Model changed: ${arg === modelId ? modelId : `${arg} (${modelId})`}\nPersisted to agent.yaml — applies everywhere until changed again.`);
+    const clearedLine = cleared.length
+      ? `\nCleared unsupported options: ${cleared.map((item) => `${item.label}=${item.value}`).join(', ')}`
+      : '';
+    await ctx.reply(`Model changed: ${modelDisplayLabel(modelId)}\nPersisted to agent.yaml. Applies everywhere until changed again.${clearedLine}`);
   });
 
   // /provider — display active provider/model source only.
@@ -2510,7 +3047,7 @@ async function processDashboardMessage(
       undefined, // no streaming for dashboard
       agentMcpAllowlist,
       dashProvider,
-      chatToolPolicyFor(dashProvider),
+      chatToolProfileFor(dashProvider),
     );
 
     clearTimeout(dashTimeout);

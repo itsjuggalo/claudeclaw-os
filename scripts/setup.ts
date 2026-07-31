@@ -6,10 +6,15 @@ import os from 'os';
 import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
-import { setMainProviderConfig, type ProviderConfig, type ProviderType } from '../src/provider.js';
+import {
+  getMainProviderConfig,
+  setMainProviderConfig,
+  type ProviderType,
+} from '../src/provider.js';
 
 import { getVenvPython, getVenvPip } from '../src/platform.js';
 import { ensureAgentsMdSymlink } from '../src/agent-config.js';
+import { applyProviderToAgentYamlTemplate } from '../src/agent-template.js';
 
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 const c = {
@@ -173,213 +178,20 @@ async function validateBotToken(token: string): Promise<{ valid: boolean; userna
   }
 }
 
-function commandExists(command: string): boolean {
-  const check = PLATFORM === 'win32' ? ['where', command] : ['which', command];
-  return spawnSync(check[0], [check[1]], { stdio: 'pipe' }).status === 0;
-}
-
-function stripAnsi(s: string): string {
-  return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
-}
-
-function getOpenCodeCredentialCount(): number | null {
-  const result = spawnSync('opencode', ['providers', 'list'], { stdio: 'pipe', encoding: 'utf-8' });
-  if (result.status !== 0) return null;
-  const output = stripAnsi(`${result.stdout}\n${result.stderr}`);
-  const match = output.match(/(\d+)\s+credentials?/i);
-  if (match) return parseInt(match[1], 10);
-  return output.toLowerCase().includes('credentials') ? 0 : null;
-}
-
-function getOpenCodeModels(): string[] {
-  const result = spawnSync('opencode', ['models'], { stdio: 'pipe', encoding: 'utf-8' });
-  if (result.status !== 0) return [];
-  return stripAnsi(result.stdout)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(line));
-}
-
-async function selectOpenCodeModel(): Promise<string | null> {
-  const models = getOpenCodeModels();
-  if (models.length === 0) {
-    warn('Could not load OpenCode models. You can still enter a model id manually.');
-    const manual = await ask('OpenCode default model (provider/model, or Enter to keep current)');
-    return manual || null;
-  }
-
-  info('Available OpenCode models:');
-  console.log();
-  models.forEach((model, idx) => {
-    console.log(`  ${c.cyan}${String(idx + 1).padStart(2, ' ')}.${c.reset} ${model}`);
-  });
-  console.log();
-  info('Press Enter to keep OpenCode\'s current default model.');
-  const answer = await ask('Select model number, or type a model id');
-  if (!answer) return null;
-
-  const numeric = parseInt(answer, 10);
-  if (!Number.isNaN(numeric) && numeric >= 1 && numeric <= models.length) {
-    return models[numeric - 1];
-  }
-  if (/^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(answer)) return answer;
-
-  warn(`Unknown model selection "${answer}". Keeping OpenCode's current default model.`);
-  return null;
-}
-
-function updateOpenCodeDefaultModel(model: string): void {
-  const configDir = path.join(os.homedir(), '.config', 'opencode');
-  const configPath = path.join(configDir, 'opencode.jsonc');
-  fs.mkdirSync(configDir, { recursive: true });
-
-  let raw: Record<string, unknown> = {};
-  if (fs.existsSync(configPath)) {
-    try {
-      const content = fs.readFileSync(configPath, 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '');
-      raw = JSON.parse(content) as Record<string, unknown>;
-    } catch {
-      warn(`Could not parse ${configPath}; writing a clean config with the model setting.`);
-    }
-  }
-  raw['model'] = model;
-  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
-}
-
-type SetupProviderType = Extract<ProviderType, 'claude' | 'opencode' | 'gemini' | 'codex' | 'acp'>;
+type SetupProviderType = Extract<ProviderType, 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'acp'>;
 
 async function configureProvider(): Promise<SetupProviderType> {
   // Setup configures Claude. See the DISCLAIMER in README.md for ENABLE_ACP
-  // and non-Claude provider details. The original multi-provider picker is
-  // preserved in the commented block below — to re-enable it, remove the
-  // early-return and uncomment the original implementation.
+  // and non-Claude provider details. A registry-driven picker (Claude/OpenAI
+  // first, experimental ACP providers behind ENABLE_ACP) belongs here and is
+  // scoped to the bootstrap-hardening pass; the return type stays a union so
+  // that change is additive.
   section('Provider');
   info('Setup configures Claude as the agent provider.');
   info('See the DISCLAIMER in README.md for ENABLE_ACP and non-Claude providers.');
   setMainProviderConfig({ type: 'claude', model: 'claude-opus-4-6' });
   ok('Provider set to Claude');
   return 'claude';
-
-  /* ── ORIGINAL MULTI-PROVIDER PICKER (re-enable by removing the early
-   *    return above and uncommenting this block) ───────────────────────
-  section('Provider');
-  info('Choose the agent backend ClaudeClaw should use for the main bot.');
-  info('Claude is the default. Non-Claude providers are BETA and gated by ENABLE_ACP=true');
-  info('in .env — picking one below opts you in.');
-  console.log();
-
-  bullet('1. Claude (default, stable)');
-  bullet('2. OpenCode (beta)');
-  bullet('3. Gemini CLI (beta)');
-  bullet('4. Codex ACP adapter (beta)');
-  bullet('5. Custom ACP command (beta)');
-  console.log();
-
-  const answer = (await ask('Select provider', '1')).toLowerCase();
-  let choice: SetupProviderType;
-  if (answer === '1' || answer === 'claude' || answer === 'c') {
-    choice = 'claude';
-  } else if (answer === '2' || answer === 'opencode' || answer === 'o') {
-    choice = 'opencode';
-  } else if (answer === '3' || answer === 'gemini' || answer === 'g') {
-    choice = 'gemini';
-  } else if (answer === '4' || answer === 'codex') {
-    choice = 'codex';
-  } else if (answer === '5' || answer === 'acp' || answer === 'custom') {
-    choice = 'acp';
-  } else {
-    warn(`Unknown provider "${answer}". Using Claude.`);
-    choice = 'claude';
-  }
-
-  if (choice === 'claude') {
-    setMainProviderConfig({ type: 'claude', model: 'claude-opus-4-6' });
-    ok('Provider set to Claude');
-    return 'claude';
-  }
-
-  if (choice === 'gemini') {
-    if (!commandExists('gemini')) {
-      fail('Gemini CLI not found');
-      info('Install and authenticate Gemini CLI first, then re-run setup.');
-      process.exit(1);
-    }
-    ok('Gemini CLI found');
-    info('Gemini auth and model selection are managed by the Gemini CLI.');
-    setMainProviderConfig({ type: 'gemini' });
-    ok('Provider set to Gemini CLI');
-    return 'gemini';
-  }
-
-  if (choice === 'codex') {
-    if (!commandExists('codex-acp')) {
-      fail('codex-acp adapter not found');
-      info('Install and authenticate the Codex ACP adapter first, then re-run setup.');
-      process.exit(1);
-    }
-    ok('codex-acp adapter found');
-    info('Codex auth and model selection are managed by the adapter/Codex config.');
-    setMainProviderConfig({ type: 'codex' });
-    ok('Provider set to Codex ACP adapter');
-    return 'codex';
-  }
-
-  if (choice === 'acp') {
-    const command = await ask('ACP command');
-    if (!command) {
-      fail('Custom ACP provider requires a command');
-      process.exit(1);
-    }
-    const argsRaw = await ask('ACP arguments', '--acp');
-    const provider: ProviderConfig = { type: 'acp', command, args: splitArgs(argsRaw) };
-    if (!commandExists(command)) warn(`Command "${command}" was not found on PATH right now.`);
-    setMainProviderConfig(provider);
-    ok('Provider set to custom ACP');
-    return 'acp';
-  }
-
-  if (!commandExists('opencode')) {
-    fail('OpenCode CLI not found');
-    info('Install OpenCode first, then re-run setup. See: https://opencode.ai');
-    process.exit(1);
-  }
-  ok('OpenCode CLI found');
-
-  const credentialCount = getOpenCodeCredentialCount();
-  if (credentialCount && credentialCount > 0) {
-    ok(`OpenCode auth found (${credentialCount} credential${credentialCount === 1 ? '' : 's'})`);
-    info('OpenCode lists model provider credentials here, not an "OpenCode" account.');
-  } else if (await confirm('Run OpenCode auth login now?', true)) {
-    const result = spawnSync('opencode', ['auth', 'login'], { stdio: 'inherit' });
-    if (result.status === 0) ok('OpenCode auth flow completed');
-    else warn('OpenCode auth did not complete. You can run: opencode auth login');
-  } else {
-    info('Run this before starting the bot: opencode auth login');
-  }
-
-  if (await confirm('Choose an OpenCode model now?', false)) {
-    const model = await selectOpenCodeModel();
-    if (model) {
-      updateOpenCodeDefaultModel(model);
-      ok(`OpenCode default model set to ${model}`);
-    } else {
-      ok('Keeping OpenCode current default model');
-    }
-  } else {
-    ok('Keeping OpenCode current default model');
-  }
-
-  setMainProviderConfig({ type: 'opencode' });
-  ok('Provider set to OpenCode');
-  return 'opencode';
-  */
-}
-
-function splitArgs(input: string): string[] {
-  const matches = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
-  return matches.map((part) => part.replace(/^["']|["']$/g, ''));
 }
 
 const PLATFORM = process.platform;
@@ -487,6 +299,104 @@ async function main() {
     fail(`Node.js ${process.version} — version 20+ required`);
     info('Download: https://nodejs.org');
     process.exit(1);
+  }
+
+  // ── Config directory (CLAUDECLAW_CONFIG) ─────────────────────────────────
+  // Resolved BEFORE the provider is configured: provider persistence writes
+  // agents/main/agent.yaml into this dir, so asking here prevents the wizard
+  // from creating the default ~/.claudeclaw and orphaning it when the user
+  // later picks a custom path. process.env.CLAUDECLAW_CONFIG is set so the
+  // lazy getClaudeclawConfig() in config.ts/provider.ts targets the choice.
+  section('Config directory (CLAUDECLAW_CONFIG)');
+
+  info('Personal config files (CLAUDE.md, agent configs) live outside the repo');
+  info('so they are never accidentally committed. Defaults to ~/.claudeclaw');
+  console.log();
+
+  const envForConfig = parseEnvFile(path.join(PROJECT_ROOT, '.env'));
+  const defaultConfigDir = expandHome(
+    envForConfig.CLAUDECLAW_CONFIG || '~/.claudeclaw',
+  );
+  info(`Current path: ${defaultConfigDir}`);
+  console.log();
+
+  let claudeclawConfigDir = defaultConfigDir;
+  const configInput = await ask('Config directory (Enter to keep default)', defaultConfigDir);
+  const trimmedConfig = configInput.trim();
+  if (trimmedConfig && trimmedConfig !== defaultConfigDir) {
+    // Guard against accidental single-letter paths (e.g. typing "y" to confirm)
+    // Accept Unix paths (/..., ~/..., ./...) and Windows drive paths (C:\...)
+    const looksLikePath = trimmedConfig.startsWith('/') || trimmedConfig.startsWith('~') || trimmedConfig.startsWith('.') || /^[A-Za-z]:[\\/]/.test(trimmedConfig);
+    if (trimmedConfig.length < 3 || !looksLikePath) {
+      warn(`"${trimmedConfig}" doesn't look like a directory path. Using default: ${defaultConfigDir}`);
+    } else {
+      claudeclawConfigDir = expandHome(trimmedConfig);
+    }
+  }
+
+  // Publish the choice so every subsequent write (provider agent.yaml, CLAUDE.md,
+  // agent configs) resolves to it via getClaudeclawConfig() instead of the default.
+  process.env.CLAUDECLAW_CONFIG = claudeclawConfigDir;
+
+  // If the chosen directory already exists, just confirm
+  if (fs.existsSync(claudeclawConfigDir)) {
+    const hasClaudeMd = fs.existsSync(path.join(claudeclawConfigDir, 'CLAUDE.md'));
+    ok(`Using ${claudeclawConfigDir}${hasClaudeMd ? ' (CLAUDE.md found)' : ''}`);
+  }
+
+  // Create the directory if needed
+  if (!fs.existsSync(claudeclawConfigDir)) {
+    fs.mkdirSync(claudeclawConfigDir, { recursive: true });
+    ok(`Created ${claudeclawConfigDir}`);
+  }
+
+  if (ensureAgentsMdSymlink(claudeclawConfigDir)) {
+    ok(`Created AGENTS.md symlink → ${path.join(claudeclawConfigDir, 'AGENTS.md')}`);
+  }
+
+  // ── Main agent identity (agent.yaml) ───────────────────────────────────
+  // Runs BEFORE provider setup: configureProvider() persists a provider block
+  // into this same agent.yaml, and it preserves an existing name. Seeding the
+  // user's chosen name here first means the provider write keeps it, instead
+  // of the name prompt being skipped because provider setup already created
+  // the file (defaulting silently to "Main").
+  const mainAgentDir = path.join(claudeclawConfigDir, 'agents', 'main');
+  const mainYamlDest = path.join(mainAgentDir, 'agent.yaml');
+  if (fs.existsSync(mainYamlDest)) {
+    ok(`agent.yaml exists at ${mainYamlDest}`);
+  } else {
+    fs.mkdirSync(mainAgentDir, { recursive: true });
+    console.log();
+    info('Your main bot can have a display name shown on the dashboard and in chats.');
+    const mainName = await ask('Name for your main agent (Enter for "Main")') || 'Main';
+    const mainDesc = await ask('Short description (Enter to skip)') || '';
+
+    const yamlLines = [
+      '# Main agent configuration',
+      `name: ${mainName}`,
+    ];
+    if (mainDesc) {
+      yamlLines.push(`description: ${mainDesc}`);
+    }
+    yamlLines.push('');
+    yamlLines.push('# The main agent uses TELEGRAM_BOT_TOKEN from .env (no override needed).');
+    yamlLines.push('# telegram_bot_token_env: TELEGRAM_BOT_TOKEN');
+    yamlLines.push('');
+    yamlLines.push('# Provider, model, and runtime options are stored here.');
+    yamlLines.push('# Manage them through the dashboard or supported Telegram model controls.');
+    yamlLines.push('');
+    yamlLines.push('# Obsidian integration (optional).');
+    yamlLines.push('# obsidian:');
+    yamlLines.push('#   vault: /path/to/your/obsidian/vault');
+    yamlLines.push('#   folders:');
+    yamlLines.push('#     - FolderA/');
+    yamlLines.push('');
+
+    fs.writeFileSync(mainYamlDest, yamlLines.join('\n'), 'utf-8');
+    ok(`Created agent.yaml for main agent → ${mainYamlDest}`);
+    if (mainName !== 'Main') {
+      info(`Dashboard and chats will show "${mainName}" instead of "Main".`);
+    }
   }
 
   const selectedProvider = await configureProvider();
@@ -805,90 +715,13 @@ async function main() {
 
   // Ecosystem section removed — users can find alternatives in README "Other Channels".
 
-  // ── 6. Config directory (CLAUDECLAW_CONFIG) ──────────────────────────────
-  section('Config directory (CLAUDECLAW_CONFIG)');
+  // ── 6. Config directory was resolved earlier (before provider setup) ─────
+  // See the "Config directory (CLAUDECLAW_CONFIG)" block above section 3's
+  // provider step. claudeclawConfigDir / envForConfig are in scope from there.
 
-  info('Personal config files (CLAUDE.md, agent configs) live outside the repo');
-  info('so they are never accidentally committed. Defaults to ~/.claudeclaw');
-  console.log();
-
-  const envForConfig = parseEnvFile(path.join(PROJECT_ROOT, '.env'));
-  const defaultConfigDir = expandHome(
-    envForConfig.CLAUDECLAW_CONFIG || '~/.claudeclaw',
-  );
-  info(`Current path: ${defaultConfigDir}`);
-  console.log();
-
-  let claudeclawConfigDir = defaultConfigDir;
-  const configInput = await ask('Config directory (Enter to keep default)', defaultConfigDir);
-  const trimmedConfig = configInput.trim();
-  if (trimmedConfig && trimmedConfig !== defaultConfigDir) {
-    // Guard against accidental single-letter paths (e.g. typing "y" to confirm)
-    // Accept Unix paths (/..., ~/..., ./...) and Windows drive paths (C:\...)
-    const looksLikePath = trimmedConfig.startsWith('/') || trimmedConfig.startsWith('~') || trimmedConfig.startsWith('.') || /^[A-Za-z]:[\\/]/.test(trimmedConfig);
-    if (trimmedConfig.length < 3 || !looksLikePath) {
-      warn(`"${trimmedConfig}" doesn't look like a directory path. Using default: ${defaultConfigDir}`);
-    } else {
-      claudeclawConfigDir = expandHome(trimmedConfig);
-    }
-  }
-
-  // If the chosen directory already exists, just confirm
-  if (fs.existsSync(claudeclawConfigDir)) {
-    const hasClaudeMd = fs.existsSync(path.join(claudeclawConfigDir, 'CLAUDE.md'));
-    ok(`Using ${claudeclawConfigDir}${hasClaudeMd ? ' (CLAUDE.md found)' : ''}`);
-  }
-
-  // Create the directory if needed
-  if (!fs.existsSync(claudeclawConfigDir)) {
-    fs.mkdirSync(claudeclawConfigDir, { recursive: true });
-    ok(`Created ${claudeclawConfigDir}`);
-  }
-
-  if (ensureAgentsMdSymlink(claudeclawConfigDir)) {
-    ok(`Created AGENTS.md symlink → ${path.join(claudeclawConfigDir, 'AGENTS.md')}`);
-  }
-
-  // ── 6b. Main agent identity (agent.yaml) ───────────────────────────────
-  const mainAgentDir = path.join(claudeclawConfigDir, 'agents', 'main');
-  const mainYamlDest = path.join(mainAgentDir, 'agent.yaml');
-  if (fs.existsSync(mainYamlDest)) {
-    ok(`agent.yaml exists at ${mainYamlDest}`);
-  } else {
-    fs.mkdirSync(mainAgentDir, { recursive: true });
-    console.log();
-    info('Your main bot can have a display name shown on the dashboard and in chats.');
-    const mainName = await ask('Name for your main agent (Enter for "Main")') || 'Main';
-    const mainDesc = await ask('Short description (Enter to skip)') || '';
-
-    const yamlLines = [
-      '# Main agent configuration',
-      `name: ${mainName}`,
-    ];
-    if (mainDesc) {
-      yamlLines.push(`description: ${mainDesc}`);
-    }
-    yamlLines.push('');
-    yamlLines.push('# The main agent uses TELEGRAM_BOT_TOKEN from .env (no override needed).');
-    yamlLines.push('# telegram_bot_token_env: TELEGRAM_BOT_TOKEN');
-    yamlLines.push('');
-    yamlLines.push("# NOTE: the main bot's model/provider are NOT read from this file.");
-    yamlLines.push('# Configure them in the dashboard (persisted to store/main-config.json),');
-    yamlLines.push('# or per-chat with /model in Telegram. (Sub-agents DO take model from agent.yaml.)');
-    yamlLines.push('');
-    yamlLines.push('# Obsidian integration (optional).');
-    yamlLines.push('# obsidian:');
-    yamlLines.push('#   vault: /path/to/your/obsidian/vault');
-    yamlLines.push('#   folders:');
-    yamlLines.push('#     - FolderA/');
-    yamlLines.push('');
-
-    fs.writeFileSync(mainYamlDest, yamlLines.join('\n'), 'utf-8');
-    ok(`Created agent.yaml for main agent → ${mainYamlDest}`);
-    if (mainName !== 'Main') {
-      info(`Dashboard and chats will show "${mainName}" instead of "Main".`);
-    }
-  }
+  // ── 6b. Main agent identity resolved earlier (before provider setup) ────
+  // The name prompt + agent.yaml seeding now run just before configureProvider
+  // so the provider write preserves the chosen name. See the block above.
 
   // ── 6c. CLAUDE.md personalization ──────────────────────────────────────
   section('Personalize your assistant (CLAUDE.md)');
@@ -933,14 +766,7 @@ async function main() {
 
   const ownerName = await ask('Your name (so the bot knows who it\'s talking to)') || '';
   const ownerWork = await ask('One line: what you do / your main work (Enter to skip)') || '';
-
-  // Resolve the config + store paths the same way the runtime (config.ts) does,
-  // so we can stamp them into CLAUDE.md as an INFORMATIONAL hint. The canonical
-  // answer at runtime is always `hive-cli path` — the stamp is a snapshot that
-  // goes stale if the store is relocated, so the text points back at the CLI.
-  const rawStorePath =
-    process.env.CLAUDECLAW_STORE_DIR || envForConfig.CLAUDECLAW_STORE_DIR || path.join(PROJECT_ROOT, 'store');
-  const storeDbPath = path.join(expandHome(rawStorePath), 'claudeclaw.db');
+  env.CLAUDECLAW_OWNER_NAME = ownerName || env.CLAUDECLAW_OWNER_NAME || 'User';
 
   // Replace placeholders in CLAUDE.md and ENFORCE that none survive. A generated
   // runtime config with leftover bracket tokens (e.g. "[YOUR NAME]", "Michael
@@ -957,24 +783,18 @@ async function main() {
       ['[Brief description of your main projects/work]', ''],
       ['[YOUR ASSISTANT NAME]', assistantName || 'Assistant'],
       ['[YOUR NAME]', ownerName || 'the owner'],
-      ['[CONFIG_DIR]', claudeclawConfigDir],
-      ['[STORE_PATH]', storeDbPath],
     ];
     for (const [token, value] of replacements) {
       claudeContent = claudeContent.split(token).join(value);
     }
-    // Tidy the "[BRACKETED]" mention in the guidance comment.
-    claudeContent = claudeContent.split('[BRACKETED]').join('bracketed');
-
     fs.writeFileSync(claudeMdDest, claudeContent, 'utf-8');
-    ok('Personalized CLAUDE.md (names + self-location stamp)');
-    info(`Stamped store DB (informational): ${storeDbPath}`);
-    info('Agents get the live value from `hive-cli path`, not this stamp.');
+    ok('Personalized CLAUDE.md');
+    info('Runtime paths and provider identity are resolved dynamically each turn.');
 
     // Enforcement: fail loudly on any surviving placeholder token.
     const leftover = [
       '[YOUR NAME]', '[YOUR ASSISTANT NAME]', '[does what you do]',
-      '[Brief description of your main projects/work]', '[CONFIG_DIR]', '[STORE_PATH]',
+      '[Brief description of your main projects/work]',
     ].filter((t) => claudeContent.includes(t));
     // Catch any other ALL-CAPS "[PLACEHOLDER TOKEN]" we didn't enumerate,
     // without flagging legitimate mixed-case content like "[Voice transcribed]".
@@ -1294,6 +1114,9 @@ async function main() {
     ((cfg) => cfg.includes("'")
       ? `CLAUDECLAW_CONFIG="${cfg}"`
       : `CLAUDECLAW_CONFIG='${cfg}'`)(env.CLAUDECLAW_CONFIG || ''),
+    ((name) => name.includes("'")
+      ? `CLAUDECLAW_OWNER_NAME="${name}"`
+      : `CLAUDECLAW_OWNER_NAME='${name}'`)(env.CLAUDECLAW_OWNER_NAME || 'User'),
     '',
     '# ── Claude auth (optional — uses claude login by default) ─────',
     `ANTHROPIC_API_KEY=${env.ANTHROPIC_API_KEY || ''}`,
@@ -1328,7 +1151,7 @@ async function main() {
   ];
 
   // Preserve unknown keys
-  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','WARROOM_ENABLED','ENABLE_ACP','DB_ENCRYPTION_KEY','DASHBOARD_TOKEN','DASHBOARD_PORT','DASHBOARD_URL','SECURITY_PIN_HASH','IDLE_LOCK_MINUTES','EMERGENCY_KILL_PHRASE','DESTRUCTIVE_CONFIRM']);
+  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','CLAUDECLAW_OWNER_NAME','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','WARROOM_ENABLED','ENABLE_ACP','DB_ENCRYPTION_KEY','DASHBOARD_TOKEN','DASHBOARD_PORT','DASHBOARD_URL','SECURITY_PIN_HASH','IDLE_LOCK_MINUTES','EMERGENCY_KILL_PHRASE','DESTRUCTIVE_CONFIRM']);
   for (const [k, v] of Object.entries(env)) {
     if (!known.has(k) && v) lines.push(`${k}=${v}`);
   }
@@ -1387,11 +1210,11 @@ async function main() {
   info('Each agent is its own Telegram bot with a focused role, its own');
   info('context window, and its own chat on your phone.');
   console.log();
-  bullet('Each agent gets its own 1M context window (separate from main)');
-  bullet('Agents default to Sonnet (cheaper) — use /model opus when needed');
-  bullet('Each agent has its own CLAUDE.md personality and Obsidian folders');
+  bullet('Each agent gets its own runtime session and context window');
+  bullet('Each agent receives an explicit provider configuration');
+  bullet('Each agent has its own CLAUDE.md persona and optional integrations');
   bullet('A shared hive mind lets agents see what others have done');
-  bullet('All agents inherit every feature: voice, files, skills, scheduling');
+  bullet('Each runtime supplies the tools and features supported by its configuration');
   console.log();
 
   const wantAgents = await confirm('Set up specialist agents?', false);
@@ -1530,6 +1353,13 @@ async function main() {
         if (templateId === '_template') {
           yamlContent = yamlContent.replace(/name:.*/, `name: ${agentId.charAt(0).toUpperCase() + agentId.slice(1)}`);
         }
+        // The persona template is provider-neutral. Provider/model/runtime
+        // options are copied from the main agent into agent.yaml explicitly,
+        // so setup never smuggles a stale template default into a new agent.
+        yamlContent = applyProviderToAgentYamlTemplate(
+          yamlContent,
+          getMainProviderConfig(),
+        );
         fs.writeFileSync(destYaml, yamlContent, 'utf-8');
       }
 

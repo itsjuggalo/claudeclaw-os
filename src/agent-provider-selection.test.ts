@@ -71,6 +71,9 @@ describe('runAgent provider selection', () => {
     expect(result.text).toBe('ok');
     expect(state.capturedInputs[0].provider).toEqual({ type: 'opencode' });
     expect(state.capturedInputs[0].model).toBeUndefined();
+    expect(state.capturedInputs[0].runtimeIdentity).toBe(
+      'You are currently running on the provider-selected default model (provider: opencode).',
+    );
   });
 
   it('lets an explicit provider override the active provider', async () => {
@@ -78,6 +81,83 @@ describe('runAgent provider selection', () => {
 
     expect(state.capturedInputs[0].provider).toEqual({ type: 'claude' });
     expect(state.capturedInputs[0].model).toBe('claude-opus-4-6');
+    expect(state.capturedInputs[0].runtimeIdentity).toBe(
+      'You are currently running on Opus 4.6 (provider: claude).',
+    );
+  });
+
+  it('captures provider and identity per turn so a later swap cannot rewrite the first input', async () => {
+    await runAgent('first', undefined, () => {}, undefined, undefined, undefined, undefined, undefined, { type: 'openai', model: 'gpt-5.6-sol' });
+    await runAgent('second', undefined, () => {}, undefined, undefined, undefined, undefined, undefined, { type: 'openai', model: 'gpt-5.6-luna' });
+
+    expect(state.capturedInputs[0].runtimeIdentity).toBe('You are currently running on GPT-5.6 Sol (provider: openai).');
+    expect(state.capturedInputs[1].runtimeIdentity).toBe('You are currently running on GPT-5.6 Luna (provider: openai).');
+  });
+
+  it('reports Claude effort from runtimeMode', async () => {
+    await runAgent('t', undefined, () => {}, undefined, undefined, undefined, undefined, undefined, {
+      type: 'claude',
+      model: 'claude-opus-5',
+      runtimeMode: 'medium',
+    });
+
+    // Opus 5 is adaptive-only, so there is no thinking clause to print.
+    expect(state.capturedInputs[0].runtimeIdentity).toBe(
+      'You are currently running on Opus 5 (provider: claude, effort: medium).',
+    );
+  });
+
+  it('reports Claude effort and thinking together when the model exposes both', async () => {
+    await runAgent('t', undefined, () => {}, undefined, undefined, undefined, undefined, undefined, {
+      type: 'claude',
+      model: 'claude-opus-4-8',
+      runtimeMode: 'high',
+      thinkingMode: 'on',
+    });
+
+    expect(state.capturedInputs[0].runtimeIdentity).toMatch(
+      /^You are currently running on Opus 4\.8 \(provider: claude, effort: high, thinking: /,
+    );
+  });
+
+  it('omits the clause entirely when no effort or thinking is selected', async () => {
+    await runAgent('t', undefined, () => {}, undefined, undefined, undefined, undefined, undefined, {
+      type: 'claude',
+      model: 'claude-opus-5',
+    });
+
+    expect(state.capturedInputs[0].runtimeIdentity).toBe(
+      'You are currently running on Opus 5 (provider: claude).',
+    );
+  });
+
+  it('reads OpenAI reasoning effort from thinkingMode, the field the dashboard writes', async () => {
+    await runAgent('t', undefined, () => {}, undefined, undefined, undefined, undefined, undefined, {
+      type: 'openai',
+      model: 'gpt-5.6-sol',
+      thinkingMode: 'xhigh',
+    });
+
+    expect(state.capturedInputs[0].runtimeIdentity).toBe(
+      'You are currently running on GPT-5.6 Sol (provider: openai, reasoning effort: xhigh).',
+    );
+    expect(state.capturedInputs[0].effort).toBe('xhigh');
+    expect(state.capturedInputs[0].thinkingMode).toBe('xhigh');
+  });
+
+  it('drops an OpenAI effort the model does not support rather than reporting a lie', async () => {
+    // xhigh is not in OPENAI_LEGACY_EFFORT for gpt-5.4.
+    await runAgent('t', undefined, () => {}, undefined, undefined, undefined, undefined, undefined, {
+      type: 'openai',
+      model: 'gpt-5.4-mini',
+      thinkingMode: 'max',
+    });
+
+    expect(state.capturedInputs[0].runtimeIdentity).toBe(
+      'You are currently running on GPT-5.4 Mini (provider: openai).',
+    );
+    expect(state.capturedInputs[0].effort).toBeUndefined();
+    expect(state.capturedInputs[0].thinkingMode).toBeUndefined();
   });
 
   it('forwards an explicit toolPolicy to the engine', async () => {
@@ -90,7 +170,7 @@ describe('runAgent provider selection', () => {
       undefined,
       undefined,
       undefined,
-      { type: 'codex' },
+      { type: 'acp-codex' },
       { allowedTools: ['Read', 'Grep', 'Glob'] },
     );
 

@@ -27,12 +27,13 @@ describe('specialist seed CLAUDE.md drift guard', () => {
       it('documents the Telegram file markers (the only supported way to return files)', () => {
         expect(body).toContain('[SEND_FILE:');
         expect(body).toContain('[SEND_PHOTO:');
-        expect(body).toContain('Do NOT try to send files any other way');
+        expect(body).toContain('Do not use direct Telegram API calls');
+        expect(body).toContain('@BotFather');
       });
 
-      it('documents the handback / reporting-back path', () => {
+      it('documents the deterministic handback path', () => {
         expect(body).toContain('mission-cli handback');
-        expect(body.toLowerCase()).toContain('reporting back');
+        expect(body.toLowerCase()).toContain('task originator');
       });
 
       it('routes the hive mind through hive-cli, not a raw sqlite3 path', () => {
@@ -43,6 +44,22 @@ describe('specialist seed CLAUDE.md drift guard', () => {
 
       it('does not rediscover the project root via git rev-parse (issue #157)', () => {
         expect(body).not.toContain('git rev-parse');
+      });
+
+      it('keeps provider and capability state outside the persona', () => {
+        expect(body).toContain('Provider, model, reasoning, thinking, permission, and connector settings belong in `agent.yaml` and runtime state.');
+        expect(body).toContain('injected for the current turn as authoritative');
+        expect(body).not.toContain('Use /model');
+        expect(body).not.toContain('~/.claude/skills');
+        expect(body).not.toMatch(/claude-(?:opus|sonnet|haiku)-/i);
+        expect(body).not.toMatch(/gpt-\d/i);
+      });
+
+      it('resolves paths dynamically instead of shipping snapshots', () => {
+        expect(body).toContain('CLAUDECLAW_CONFIG');
+        expect(body).toContain('hive-cli path');
+        expect(body).toContain('Never rely on a stamped or remembered filesystem path.');
+        expect(body).not.toContain('Store DB (for reference)');
       });
     });
   }

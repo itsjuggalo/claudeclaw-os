@@ -8,6 +8,7 @@ const execFileAsync = promisify(execFile);
 
 import { runAgentWithRetry, AgentProgressEvent, AgentToolPolicy } from './agent.js';
 import { getMainProviderConfig, ProviderConfig } from './provider.js';
+import { chatToolProfileFor } from './chat-tool-policy.js';
 import {
   makeSignalAskUserQuestionResolver,
   feedPendingSignalQuestion,
@@ -42,6 +43,8 @@ import {
   CLAUDE_MODEL_HAIKU as LATEST_HAIKU_MODEL,
 } from './config.js';
 import { buildCostFooter } from './cost-footer.js';
+import { modelDisplayLabel, selectedEffortForProvider } from './model-catalog.js';
+import { getSelectedProviderConfig } from './active-provider.js';
 import {
   clearSession,
   getRecentMemories,
@@ -77,20 +80,15 @@ import {
 import { SignalIncomingMessage, SignalRpcClient, groupRecipient } from './signal-rpc.js';
 import { agentHasGroups, shouldHandleInbound } from './signal-groups.js';
 import { formatForSignal } from './bot.js';
+import { completionStatusGlyph } from './completion-glyph.js';
 import { emitChatEvent, setActiveAbort, setProcessing } from './state.js';
 import { synthesizeSpeech, transcribeAudio, voiceCapabilities } from './voice.js';
 
-// MINDFIELD (PR #111 review #4): mirror bot.ts's CHAT_ACP_TOOL_POLICY. Non-Claude
-// (ACP) chat turns run read-only by default; Claude turns are unconstrained. The
-// Signal receive loop is main-only (AGENT_ID === 'main' gate), so the main
-// provider config is the right one to resolve here — for Niko's Claude setup this
-// is a no-op (provider defaults to claude → policy undefined, same as before),
-// but a non-Claude main is now correctly sandboxed instead of running with full tools.
-const CHAT_ACP_TOOL_POLICY: AgentToolPolicy = { allowedTools: ['Read', 'Grep', 'Glob'] };
-function chatToolPolicyFor(provider: ProviderConfig | undefined): AgentToolPolicy | undefined {
-  if (!provider || provider.type === 'claude') return undefined;
-  return CHAT_ACP_TOOL_POLICY;
-}
+// Per-provider chat tool profiles are shared with bot.ts via chat-tool-policy.ts
+// (no longer a duplicated local copy). The Signal receive loop is main-only
+// (AGENT_ID === 'main' gate), so the main provider config is the right one to
+// resolve here: a Claude main stays unconstrained; a non-Claude main is sandboxed
+// to its profile instead of running with full tools.
 
 // MINDFIELD (PR #111 review #10): the message audit writes inbound bodies to
 // disk in plaintext. If a tokenized dashboard/review URL is ever pasted or
@@ -263,6 +261,9 @@ const AVAILABLE_MODELS: Record<string, string> = {
   opus: LATEST_OPUS_MODEL,
   sonnet: LATEST_SONNET_MODEL,
   haiku: LATEST_HAIKU_MODEL,
+  opus5: 'claude-opus-5',
+  fable5: 'claude-fable-5',
+  sonnet5: 'claude-sonnet-5',
 };
 
 export interface SignalBot {
@@ -477,7 +478,11 @@ export function createSignalBot(): SignalBot {
         // (and the empty-description case); keep real sub-agent descriptions.
         if (!event.description || event.description === 'Tool result') return;
         if (event.type === 'task_started') void sendMessage(chatId, `🔄 ${event.description}`);
-        if (event.type === 'task_completed') void sendMessage(chatId, `✓ ${event.description}`);
+        // The glyph follows `status`, same table Telegram uses. Hardcoding ✓ here
+        // reported every failure and every non-zero exit as a success on Signal.
+        if (event.type === 'task_completed') {
+          void sendMessage(chatId, `${completionStatusGlyph(event.status)} ${event.description}`);
+        }
       };
 
       const abortCtrl = new AbortController();
@@ -508,7 +513,7 @@ export function createSignalBot(): SignalBot {
         MODEL_FALLBACK_CHAIN.length > 0 ? MODEL_FALLBACK_CHAIN : undefined,
         agentMcpAllowlist,
         provider,
-        chatToolPolicyFor(provider),
+        chatToolProfileFor(provider),
         // MINDFIELD: AskUserQuestion → Signal numbered-reply bridge. The reply
         // is routed back in via feedPendingSignalQuestion() in onMessage.
         makeSignalAskUserQuestionResolver(chatId, sendMessage, abortCtrl),
@@ -545,7 +550,14 @@ export function createSignalBot(): SignalBot {
       }
 
       const { text: responseText, files: fileMarkers } = extractFileMarkers(rawResponse);
-      const costFooter = buildCostFooter(SHOW_COST_FOOTER, result.usage, effectiveModel);
+      // Effort comes from the same provider config runAgent resolves internally
+      // (no explicit provider is passed above), so the tag matches the turn.
+      const costFooter = buildCostFooter(
+        SHOW_COST_FOOTER,
+        result.usage,
+        effectiveModel,
+        selectedEffortForProvider(getSelectedProviderConfig(), effectiveModel),
+      );
 
       saveConversationTurn(chatId, message, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
 
@@ -722,13 +734,13 @@ export function createSignalBot(): SignalBot {
         const key = arg.toLowerCase();
         if (!key) {
           const current = chatModelOverride.get(chatId) ?? agentDefaultModel ?? LATEST_OPUS_MODEL;
-          await sendMessage(chatId, `Current model: ${current}\n\nUsage: /model <opus|sonnet|haiku>`);
+          await sendMessage(chatId, `Current model: ${modelDisplayLabel(current)}\n\nUsage: /model <opus|sonnet|haiku|opus5|fable5|sonnet5>`);
           return true;
         }
         const target = AVAILABLE_MODELS[key];
-        if (!target) { await sendMessage(chatId, 'Unknown model. Use opus, sonnet, or haiku.'); return true; }
+        if (!target) { await sendMessage(chatId, 'Unknown model. Use opus, sonnet, haiku, opus5, fable5, or sonnet5.'); return true; }
         chatModelOverride.set(chatId, target);
-        await sendMessage(chatId, `Model switched to ${target}.`);
+        await sendMessage(chatId, `Model switched to ${modelDisplayLabel(target)}.`);
         return true;
       }
 

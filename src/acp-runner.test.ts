@@ -259,7 +259,7 @@ describe('runAcpAgent', () => {
   it('launches Codex through the codex-acp adapter preset', async () => {
     const { oldPath } = writeFakePresetCommand('codex-acp', [], 'ok');
     try {
-      const result = await runAcpAgent({ type: 'codex' }, 'hi', undefined);
+      const result = await runAcpAgent({ type: 'acp-codex' }, 'hi', undefined);
       expect(result.newSessionId).toBe('sess-ok');
       expect(result.text).toBe('hello world');
     } finally {

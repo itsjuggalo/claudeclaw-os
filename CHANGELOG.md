@@ -5,6 +5,71 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.8.0] - 2026-07-31
+
+### Features
+
+- **telegram:** Switch native OpenAI models
+- **dashboard:** Enrich the sidebar runtime summary
+- **telegram:** Collapse repeated activity rows and keep the turn timer alive
+- **telegram:** Unify Telegram streaming activity
+- **setup:** Promote native OpenAI and prepare v1.8.0 notes
+- **runtime:** Inject resolved model identity per turn
+- **model:** Refresh model catalog and runtime controls
+- **codex:** Audit the inbound App Server schema surface
+- **codex:** Share the isolated CODEX_HOME credential lifecycle
+- **codex:** Enforce turn budgets and cap process concurrency
+- **codex:** Answer server-initiated requests instead of shrugging at them
+- **config:** Default STREAM_STRATEGY to global-throttle, drop dead single-agent-only
+- **telegram:** In-place streaming progress with an elapsed clock
+- **codex:** Surface reasoning and readable tool progress from the App Server adapter
+- **codex:** App Server manager + engine adapter behind a transport flag (Phase 2b)
+- **codex:** Effective-policy verification for App Server threads (Phase 2a)
+- **codex:** App Server transport client + pinned schema drift check (Phase 1)
+- **chat:** Align native Codex (openai) chat policy with Claude (full)
+- **chat:** Grant native Codex (openai) full write/exec chat policy
+- **codex:** Inject claudeclaw-dispatch stdio server on Codex turns (Part B)
+- **provider:** Initial cut of native OpenAI provider support via Codex SDK
+- **dispatch:** Stdio dispatch MCP server bridge (Part A)
+- **dispatch:** In-process dispatch API for mission/schedule/hive CLIs
+
+### Bug Fixes
+
+- **warroom:** Configure owner speaker identity
+- **config:** Migrate Windows config path quoting
+- **cli:** Load repo environment outside checkout
+- **runtime:** Synchronize agent settings and hide Codex windows
+- **claude:** Stream assistant text across the whole turn
+- **dashboard:** Refine dashboard agent card controls
+- **signal:** Stop reporting failed completions with a success glyph
+- **codex:** Report a non-zero command exit as an observation, not a verdict
+- **config:** Make agent templates provider-neutral
+- **telegram:** Render a notice completion as advisory, not a success
+- **codex:** Make launch-environment rotation drain instead of overlap
+- **codex:** Carry trusted MCP provenance into App Server thread config
+- **codex:** Establish cancellation instead of assuming it
+- **codex:** Make an unroutable consumed notification a protocol fault
+- **codex:** Quarantine the connection when turn/start's outcome is unknown
+- **codex:** Make the resumed thread's MCP set authoritative before turn/start
+- **codex:** Hold the per-thread lock across resume, verification and the turn
+- **telegram:** Fold successful tool completions into the streaming working line
+- **setup:** Ask main agent name before provider write so it isn't skipped
+- **setup:** Resolve config dir before provider setup to avoid orphaned default
+
+### Security
+
+- **codex:** Authorize dispatch above the engine seam + shared capability profiles
+
+### Refactor
+
+- **providers:** Clarify Codex taxonomy and fail closed on provider writes
+- **chat:** Shared per-provider chat tool policy module
+
+### Documentation
+
+- **telegram:** Advertise model reset
+- **readme:** Tighten OpenAI/Codex provider section
+
 ## [1.7.1] - 2026-07-23
 
 ### Bug Fixes

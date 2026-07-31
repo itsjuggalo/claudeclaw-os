@@ -103,6 +103,27 @@ describe('mission-cli create — resolve-then-store guard', () => {
     expect(created.status).toBe(0);
     expect(created.stdout).toContain('unassigned');
   });
+
+  it('resolves a gather summary display name to its canonical id', () => {
+    const gathered = run(
+      'gather --summary-agent holden --title "Probe" --task "amos:check the lane" "summarize"',
+    );
+    expect(gathered.status).toBe(0);
+    expect(gathered.stdout).toMatch(/Join .* -> @main/);
+    expect(gathered.stdout).not.toMatch(/Join .* -> @holden/);
+  });
+
+  it('rejects an unknown gather summary agent before writing any children', () => {
+    const gathered = run(
+      'gather --summary-agent bogus --title "Probe" --task "amos:check the lane" "summarize"',
+    );
+    expect(gathered.status).not.toBe(0);
+    expect(gathered.stderr).toContain("unknown agent 'bogus'");
+    expect(gathered.stderr).toContain('known:');
+
+    const listed = run('list');
+    expect(listed.stdout).toContain('No mission tasks');
+  });
 });
 
 describe('mission-cli — unknown flag rejection (#162)', () => {

@@ -23,6 +23,25 @@ describe('scanForSecrets', () => {
 
   // ── Slack tokens ───────────────────────────────────────────────────
 
+  it('detects a JWT (ChatGPT/Codex OAuth token from auth.json)', () => {
+    // A model that reads ~/.codex/auth.json and echoes an access_token must be
+    // caught before the reply leaves the agent.
+    const jwt = 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghij_KLMNOPqrst';
+    const matches = scanForSecrets(`your token is ${jwt}`);
+    expect(matches.some((m) => m.type === 'jwt')).toBe(true);
+  });
+
+  it('does not flag ordinary dotted text as a JWT', () => {
+    const matches = scanForSecrets('The file is at src/agent-engine/index.ts and it works.');
+    expect(matches.some((m) => m.type === 'jwt')).toBe(false);
+  });
+
+  it('detects an opaque Codex/ChatGPT refresh token (rt.<n>.<value>)', () => {
+    const rt = 'rt.1.AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-';
+    const matches = scanForSecrets(`refresh is ${rt}`);
+    expect(matches.some((m) => m.type === 'refresh_token')).toBe(true);
+  });
+
   it('detects xoxb- Slack bot token', () => {
     const text = 'SLACK_TOKEN=xoxb-1234567890-abcdefghij';
     const matches = scanForSecrets(text);

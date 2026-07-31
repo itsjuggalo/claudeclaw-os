@@ -200,6 +200,7 @@ const WARROOM_ENABLED = warroomEnabled;
       <div class="model-picker" onclick="toggleModelPicker(this)" style="display:inline-block">
         <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
         <div class="model-menu" style="display:none;right:0;left:auto">
+          <div class="model-opt" data-model="claude-opus-5" onclick="pickGlobalModel(this)">All Opus 5</div>
           <div class="model-opt" data-model="claude-fable-5" onclick="pickGlobalModel(this)">All Fable 5</div>
           <div class="model-opt" data-model="claude-sonnet-5" onclick="pickGlobalModel(this)">All Sonnet 5</div>
           <div class="model-opt" data-model="claude-opus-4-8" onclick="pickGlobalModel(this)">All Opus 4.8</div>
@@ -1522,12 +1523,20 @@ async function loadAgents() {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
       const statusText = a.running ? 'live' : 'off';
-      const modelOpts = ['claude-fable-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
-      const modelShort = function(m) { return {'claude-fable-5':'Fable 5','claude-sonnet-5':'Sonnet 5','claude-opus-4-8':'Opus 4.8','claude-opus-4-6':'Opus 4.6','claude-sonnet-4-6':'Sonnet 4.6','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
-      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-8' : 'claude-sonnet-4-6');
-      const modelLabel = modelShort(currentModel);
       const providerType = (a.provider && a.provider.type) || 'opencode';
-      const providerLabel = providerType === 'claude' ? 'Claude: ' + modelLabel : providerType === 'opencode' ? 'OpenCode' : 'ACP';
+      // Catalog comes from the API (src/model-catalog.ts) — no local copy to drift.
+      const catalog = (providerType === 'openai' ? data.openaiModels : data.claudeModels) || [];
+      const modelOpts = catalog.map(function(o) { return o.id; });
+      const modelShort = function(m) {
+        for (var i = 0; i < catalog.length; i++) { if (catalog[i].id === m) return catalog[i].label; }
+        return m;
+      };
+      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-8' : 'claude-sonnet-4-6');
+      // Provider-neutral: the pill shows the model only. Provider lives in the
+      // agent detail panel, so "Claude · Opus 5" collapses to "Opus 5".
+      const providerLabel = (providerType === 'claude' || providerType === 'openai')
+        ? (a.modelLabel || modelShort(currentModel))
+        : providerType === 'opencode' ? 'OpenCode' : 'ACP';
       const modelSelect = '<div class="model-picker" data-agent="' + a.id + '" onclick="event.stopPropagation();toggleModelPicker(this)">' +
         '<span class="model-current">' + providerLabel + ' <span style="font-size:8px;opacity:0.5">&#9662;</span></span>' +
         '<div class="model-menu" style="display:none">' +
@@ -1553,12 +1562,85 @@ async function loadAgents() {
             '<div class="font-bold text-white text-sm">' + escapeHtml(a.name) + '</div>' +
             '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
             modelSelect +
+            renderRuntimePills(a) +
             (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns</div>' : '') +
           '</div>' +
         '</div>' +
       '</div>';
     }).join('');
   } catch {}
+}
+
+// Secondary dropdowns beside the model pill. One pill per option list the
+// selected model actually advertises, sourced from staticRuntimeOptionsFor()
+// on the server: Opus 5 gets Effort only (adaptive thinking, no toggle),
+// Opus 4.8 gets Effort + Thinking, Sonnet 4.5 gets Thinking only, native
+// OpenAI gets Reasoning effort. A model with no lists renders nothing.
+function renderRuntimePills(a) {
+  var opts = a.runtimeOptions;
+  if (!opts) return '';
+  var pills = '';
+  if (opts.modeOptions && opts.modeOptions.length) {
+    pills += runtimePill(a.id, 'runtimeMode', opts.modeLabel || 'Effort', opts.modeOptions, a.runtimeMode || '');
+  }
+  if (opts.thinkingOptions && opts.thinkingOptions.length) {
+    pills += runtimePill(a.id, 'thinkingMode', opts.thinkingLabel || 'Thinking', opts.thinkingOptions, a.thinkingMode || '');
+  }
+  if (!pills) return '';
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' + pills + '</div>';
+}
+
+function runtimePill(agentId, field, groupLabel, options, current) {
+  var currentLabel = '';
+  for (var i = 0; i < options.length; i++) {
+    if (options[i].id === (current || '')) { currentLabel = options[i].label; break; }
+  }
+  // A persisted value that is no longer valid for this model (e.g. xhigh kept
+  // from Opus 4.8 after switching to Sonnet 4.6) shows as-is with a marker so
+  // it's visibly wrong rather than silently rendering as the default.
+  if (!currentLabel) currentLabel = current ? current + ' (?)' : 'default';
+  return '<div class="model-picker" data-agent="' + agentId + '" data-field="' + field + '"' +
+    ' title="' + escapeHtml(groupLabel) + '"' +
+    ' onclick="event.stopPropagation();toggleModelPicker(this)">' +
+    '<span class="model-current">' + escapeHtml(currentLabel) +
+      ' <span style="font-size:8px;opacity:0.5">&#9662;</span></span>' +
+    '<div class="model-menu" style="display:none">' +
+      '<div class="model-opt" style="opacity:0.5;font-size:10px;pointer-events:none">' + escapeHtml(groupLabel) + '</div>' +
+      options.map(function(o) {
+        return '<div class="model-opt' + (o.id === (current || '') ? ' model-active' : '') + '"' +
+          ' data-value="' + escapeHtml(o.id) + '" onclick="pickRuntimeOption(this)">' +
+          escapeHtml(o.label) + '</div>';
+      }).join('') +
+    '</div>' +
+  '</div>';
+}
+
+async function pickRuntimeOption(optEl) {
+  var picker = optEl.closest('.model-picker');
+  var agentId = picker.dataset.agent;
+  var field = picker.dataset.field;
+  var value = optEl.dataset.value || '';
+  picker.querySelector('.model-menu').style.display = 'none';
+  var body = {};
+  body[field] = value;
+  try {
+    var res = await fetch(BASE + '/api/agents/' + agentId + '/runtime?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      var err = {};
+      try { err = await res.json(); } catch(_) {}
+      alert('Update failed: ' + (err.error || ('HTTP ' + res.status)));
+      return;
+    }
+    var data = await res.json();
+    if (data.restartRequired) {
+      alert('Saved. Restart agent "' + agentId + '" for it to take effect.');
+    }
+    await loadAgents();
+  } catch(e) { console.error('Runtime option update failed:', e); alert('Update failed: ' + e); }
 }
 
 function toggleModelPicker(el) {
@@ -1817,6 +1899,7 @@ let cawTokenDebounce = null;
 let cawNameManuallyEdited = false;
 const CAW_FALLBACK_MODELS = {
   claude: [
+    { id: 'claude-opus-5', label: 'Opus 5' },
     { id: 'claude-fable-5', label: 'Fable 5' },
     { id: 'claude-sonnet-5', label: 'Sonnet 5' },
     { id: 'claude-opus-4-8', label: 'Opus 4.8' },
@@ -1824,6 +1907,18 @@ const CAW_FALLBACK_MODELS = {
     { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
     { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
     { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+  ],
+  openai: [
+    { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+    { id: 'gpt-5.5', label: 'GPT-5.5' },
+  ],
+  'acp-codex': [
+    { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+    { id: 'gpt-5.5', label: 'GPT-5.5' },
   ],
   opencode: [{ id: 'opencode-default', label: 'OpenCode default' }],
   acp: [{ id: 'provider-default', label: 'Provider default' }],

@@ -18,12 +18,51 @@
  * module, so there is no import cycle (the CLIs import `renderHelp` from here).
  */
 
+/**
+ * Scalar / array kinds a tool parameter can take. Kept deliberately small — the
+ * CLIs only ever accept strings, numbers, booleans, and (for repeated flags like
+ * `--task`) string arrays. `dispatch-tools.ts` derives the zod schema from this.
+ */
+export type CliToolParamType = 'string' | 'number' | 'boolean' | 'string[]';
+
+/** One input parameter of a command's first-class tool form. */
+export interface CliToolParam {
+  /** Parameter name as exposed in the tool schema (snake_case). */
+  name: string;
+  /** Value kind, used to derive the zod validator. */
+  type: CliToolParamType;
+  /** Whether the parameter is required. */
+  required: boolean;
+  /** One-line description surfaced in the tool schema. */
+  description: string;
+}
+
+/**
+ * The first-class in-process tool form of a command. When present, Phase 2
+ * (`dispatch-tools.ts`) derives an SDK tool from it: the tool `name` and the
+ * input schema come from THIS object, so the executable tool cannot drift from
+ * the documented CLI. Commands without a `tool` (e.g. purely informational
+ * forms) are documented but not promoted to a tool.
+ */
+export interface CliToolSpec {
+  /** Tool name exposed by the in-process MCP server, e.g. `mission_create`. */
+  name: string;
+  /** Input parameters; the zod schema is derived from these. */
+  params: CliToolParam[];
+}
+
 /** A single subcommand or invocation form of a CLI. */
 export interface CliCommand {
   /** Full usage line, e.g. `create --agent <id> --title "Label" "prompt"`. */
   usage: string;
   /** One-line description of what this command does. */
   description: string;
+  /**
+   * Optional first-class tool form. Purely additive — the doc/help/index
+   * renderers ignore it, so adding a `tool` does NOT change the generated
+   * reference (the Phase 1 drift guard stays green).
+   */
+  tool?: CliToolSpec;
 }
 
 /** Structured description of a shipped agent CLI. */

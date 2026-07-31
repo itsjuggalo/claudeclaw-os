@@ -18,6 +18,12 @@ vi.mock('./config.js', () => ({
   CLAUDE_MODEL_HAIKU: 'claude-haiku-4-5',
 }));
 
+// The openai/openrouter availability checks fall back to reading .env; return
+// an empty file so results don't depend on the developer's local .env.
+vi.mock('./env.js', () => ({
+  readEnvFile: () => ({}),
+}));
+
 import { checkProviderAvailability } from './provider.js';
 
 describe('checkProviderAvailability', () => {
@@ -76,18 +82,53 @@ describe('checkProviderAvailability', () => {
     });
   });
 
-  describe('codex', () => {
+  describe('acp-codex (Codex over ACP)', () => {
     it('reports ok when codex CLI is on PATH', () => {
       state.installed.add('codex');
-      const result = checkProviderAvailability({ type: 'codex' });
+      const result = checkProviderAvailability({ type: 'acp-codex' });
       expect(result.ok).toBe(true);
     });
 
     it('returns install command and auth hint when missing', () => {
-      const result = checkProviderAvailability({ type: 'codex' });
+      const result = checkProviderAvailability({ type: 'acp-codex' });
       expect(result.ok).toBe(false);
       expect(result.installCommand).toContain('@openai/codex');
       expect(result.setupHint).toMatch(/codex/i);
+    });
+  });
+
+  describe('openai (native Codex SDK)', () => {
+    // The SDK package resolves in this repo (bundled dependency), so
+    // availability turns purely on auth: codex login state or OPENAI_API_KEY.
+    const savedCodexHome = process.env.CODEX_HOME;
+    const savedOpenAiKey = process.env.OPENAI_API_KEY;
+
+    beforeEach(() => {
+      delete process.env.OPENAI_API_KEY;
+      // Point CODEX_HOME at a directory with no auth.json so the developer's
+      // real ~/.codex login can't leak into the assertions.
+      process.env.CODEX_HOME = '/tmp/definitely-missing-codex-home';
+    });
+
+    afterEach(() => {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      if (savedOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedOpenAiKey;
+    });
+
+    it('reports ok when OPENAI_API_KEY is set', () => {
+      process.env.OPENAI_API_KEY = 'sk-test';
+      const result = checkProviderAvailability({ type: 'openai' });
+      expect(result.ok).toBe(true);
+    });
+
+    it('returns codex login / API key hints when unauthenticated', () => {
+      const result = checkProviderAvailability({ type: 'openai' });
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/not authenticated/i);
+      expect(result.setupHint).toContain('codex login');
+      expect(result.setupHint).toContain('OPENAI_API_KEY');
     });
   });
 

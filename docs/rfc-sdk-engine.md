@@ -95,7 +95,7 @@ ACP command resolution is centralized:
 
 - `opencode` -> `opencode acp`
 - `gemini` -> `gemini --acp`
-- `codex` -> `codex-acp`
+- `acp-codex` -> `codex-acp`
 - `acp` -> custom `command` plus `args`
 
 The dashboard also exposes provider configuration through the engine seam:
@@ -181,7 +181,7 @@ EngineFactory.forProvider(provider)
     └── AcpEngineAdapter
         ├── opencode → `opencode acp`
         ├── gemini   → `gemini --acp`
-        ├── codex    → `codex-acp`
+        ├── acp-codex → `codex-acp`
         └── acp      → custom command + args
     │
     ▼

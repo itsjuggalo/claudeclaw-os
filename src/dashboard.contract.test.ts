@@ -37,9 +37,11 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { _initTestDatabase } from './db.js';
+import { _initTestDatabase, getSession, setSession } from './db.js';
 import { buildDashboardApp } from './dashboard.js';
-import { STORE_DIR, CLAUDECLAW_CONFIG } from './config.js';
+import { STORE_DIR, CLAUDECLAW_CONFIG, updateAgentProvider } from './config.js';
+import { getSelectedProviderConfig } from './active-provider.js';
+import { getMainProviderConfig, setMainProviderConfig } from './provider.js';
 import type { Hono } from 'hono';
 
 const TOKEN = 'test-contract-token';
@@ -58,6 +60,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   _initTestDatabase();
+  updateAgentProvider(undefined);
 });
 
 afterEach(() => {
@@ -255,6 +258,26 @@ describe('GET /api/agents', () => {
         running: expect.any(Boolean),
       });
     }
+  });
+
+  it('omits stranded runtime values the selected model does not support', async () => {
+    setMainProviderConfig({
+      type: 'claude',
+      model: 'claude-opus-5',
+      runtimeMode: 'bogus',
+      thinkingMode: 'bogus',
+    });
+    updateAgentProvider(undefined);
+
+    const res = await get('/api/agents');
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    const main = body.agents.find((agent: any) => agent.id === 'main');
+    expect(main).toBeTruthy();
+    expect(main.runtimeMode).toBe('');
+    expect(main.thinkingMode).toBe('');
+    expect(main.provider).not.toHaveProperty('runtimeMode');
+    expect(main.provider).not.toHaveProperty('thinkingMode');
   });
 });
 
@@ -487,6 +510,70 @@ describe('PATCH /api/agents/:id/model', () => {
       restartRequired: false,
     });
   });
+
+  it('resets the active session when a model actually changes', async () => {
+    setMainProviderConfig({ type: 'claude', model: 'claude-opus-4-8' });
+    updateAgentProvider({ type: 'claude', model: 'claude-opus-4-8' });
+    setSession('model-chat', 'claude:old-thread', 'main');
+
+    const res = await app.request('/api/agents/main/model' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      changed: true,
+      sessionReset: true,
+      restartRequired: false,
+    });
+    expect(getSession('model-chat', 'main')).toBeUndefined();
+  });
+
+  it('treats saving the current model as a no-op and preserves the session', async () => {
+    setMainProviderConfig({ type: 'claude', model: 'claude-sonnet-4-6' });
+    updateAgentProvider({ type: 'claude', model: 'claude-sonnet-4-6' });
+    setSession('model-chat', 'claude:current-thread', 'main');
+
+    const res = await app.request('/api/agents/main/model' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      changed: false,
+      sessionReset: false,
+      restartRequired: false,
+    });
+    expect(getSession('model-chat', 'main')).toBe('claude:current-thread');
+  });
+
+  it('hot-swaps the active OpenAI model instead of leaving the prior provider config in memory', async () => {
+    // Provider selection stores the active config in-process. This reproduces
+    // a dashboard provider swap followed by a same-provider model swap.
+    const original = getMainProviderConfig();
+    setMainProviderConfig({ type: 'openai', model: 'gpt-5.5' });
+    updateAgentProvider({ type: 'openai', model: 'gpt-5.5' });
+    try {
+      const res = await app.request('/api/agents/main/model' + Q, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-5.6-terra' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(getSelectedProviderConfig()).toMatchObject({
+        type: 'openai',
+        model: 'gpt-5.6-terra',
+      });
+    } finally {
+      setMainProviderConfig(original);
+      updateAgentProvider(undefined);
+    }
+  });
 });
 
 describe('provider selection endpoints', () => {
@@ -500,14 +587,141 @@ describe('provider selection endpoints', () => {
       allowCustom: true,
     });
 
-    const codexRes = await get('/api/providers/models?provider=codex');
+    const codexRes = await get('/api/providers/models?provider=acp-codex');
     expect(codexRes.status).toBe(200);
     expect(await jsonOf(codexRes)).toMatchObject({
-      provider: 'codex',
+      provider: 'acp-codex',
       defaultModel: expect.any(String),
       selectable: true,
       allowCustom: true,
     });
+  });
+
+  // A dashboard tab loaded before the provider rename still asks for `codex`.
+  // The endpoint normalizes it and echoes the canonical id back.
+  it('normalizes a legacy codex model query to acp-codex', async () => {
+    const res = await get('/api/providers/models?provider=codex');
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({ provider: 'acp-codex', selectable: true });
+  });
+
+  it('reports the native OpenAI (Codex) model provider', async () => {
+    const res = await get('/api/providers/models?provider=openai');
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      provider: 'openai',
+      defaultModel: expect.any(String),
+      selectable: true,
+      allowCustom: true,
+    });
+  });
+
+  it('reports static reasoning-effort runtime options for openai', async () => {
+    const res = await get('/api/providers/runtime-options?provider=openai&model=gpt-5.6-sol');
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      provider: 'openai',
+      source: 'static',
+      thinkingLabel: 'Reasoning effort',
+      modeOptions: [],
+      thinkingOptions: expect.arrayContaining([
+        expect.objectContaining({ id: '', label: 'Default (medium)' }),
+        expect.objectContaining({ id: 'none' }),
+        expect.objectContaining({ id: 'max' }),
+      ]),
+    });
+  });
+
+  it('updates main to the openai provider without restart', async () => {
+    // The openai preflight passes on either codex-login state or an API key;
+    // pin the key so the assertion doesn't depend on the host's ~/.codex.
+    const saved = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-contract-test';
+    try {
+      const res = await app.request('/api/agents/main/provider' + Q, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: { type: 'openai', model: 'gpt-5.5' } }),
+      });
+      expect(res.status).toBe(200);
+      expect(await jsonOf(res)).toMatchObject({
+        ok: true,
+        agent: 'main',
+        provider: { type: 'openai', model: 'gpt-5.5' },
+        restartRequired: false,
+      });
+    } finally {
+      if (saved === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = saved;
+    }
+  });
+
+  it('resets the active session on a provider change without requiring restart', async () => {
+    setMainProviderConfig({ type: 'claude', model: 'claude-sonnet-4-6' });
+    updateAgentProvider({ type: 'claude', model: 'claude-sonnet-4-6' });
+    setSession('provider-chat', 'claude:old-thread', 'main');
+
+    const saved = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-contract-test';
+    try {
+      const res = await app.request('/api/agents/main/provider' + Q, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: { type: 'openai', model: 'gpt-5.5' } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await jsonOf(res)).toMatchObject({
+        changed: true,
+        sessionReset: true,
+        restartRequired: false,
+      });
+      expect(getSession('provider-chat', 'main')).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = saved;
+    }
+  });
+
+  it('does not reset the session for an unchanged provider save', async () => {
+    const provider = { type: 'claude' as const, model: 'claude-sonnet-4-6' };
+    setMainProviderConfig(provider);
+    updateAgentProvider(provider);
+    setSession('provider-chat', 'claude:current-thread', 'main');
+
+    const res = await app.request('/api/agents/main/provider' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      changed: false,
+      sessionReset: false,
+      restartRequired: false,
+    });
+    expect(getSession('provider-chat', 'main')).toBe('claude:current-thread');
+  });
+
+  it('marks effort changes for a new chat instead of a process restart', async () => {
+    setMainProviderConfig({ type: 'claude', model: 'claude-opus-5' });
+    updateAgentProvider({ type: 'claude', model: 'claude-opus-5' });
+    setSession('runtime-chat', 'claude:current-thread', 'main');
+
+    const res = await app.request('/api/agents/main/runtime' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ runtimeMode: 'high' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      changed: true,
+      newChatRequired: true,
+      restartRequired: false,
+    });
+    expect(getSession('runtime-chat', 'main')).toBe('claude:current-thread');
   });
 
   it('updates main to a built-in ACP provider without restart', async () => {
@@ -529,25 +743,41 @@ describe('provider selection endpoints', () => {
     const res = await app.request('/api/agents/main/provider' + Q, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: { type: 'codex', model: 'gpt-5.3-codex' } }),
+      body: JSON.stringify({ provider: { type: 'acp-codex', model: 'gpt-5.3-codex' } }),
     });
     expect(res.status).toBe(200);
     expect(await jsonOf(res)).toMatchObject({
       ok: true,
       agent: 'main',
-      provider: { type: 'codex', model: 'gpt-5.3-codex' },
+      provider: { type: 'acp-codex', model: 'gpt-5.3-codex' },
       restartRequired: false,
     });
   });
 
+  // The API is the write boundary: whatever spelling arrives, what gets
+  // persisted and returned is the canonical acp-codex.
+  it('normalizes a legacy codex provider write to acp-codex', async () => {
+    const res = await app.request('/api/agents/main/provider' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: { type: 'codex', model: 'gpt-5.3-codex' } }),
+    });
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      ok: true,
+      provider: { type: 'acp-codex', model: 'gpt-5.3-codex' },
+    });
+  });
+
   it('reports provider-specific runtime options', async () => {
-    const claudeRes = await get('/api/providers/runtime-options?provider=claude');
+    const claudeRes = await get('/api/providers/runtime-options?provider=claude&model=claude-opus-5');
     expect(claudeRes.status).toBe(200);
     expect(await jsonOf(claudeRes)).toMatchObject({
       provider: 'claude',
       source: 'static',
+      modeLabel: 'Effort',
       modeOptions: expect.arrayContaining([expect.objectContaining({ id: 'max' })]),
-      thinkingOptions: expect.arrayContaining([expect.objectContaining({ id: 'auto' })]),
+      thinkingOptions: [],
     });
   });
 
@@ -576,6 +806,98 @@ describe('provider selection endpoints', () => {
     expect(res.status).toBe(400);
     expect(await jsonOf(res)).toMatchObject({ error: expect.stringMatching(/command/i) });
   });
+
+  // ── provider writes fail closed on a bad type ──────────────────────────────
+  //
+  // normalizeProviderConfig falls back to Claude for an unreadable type. That is
+  // right for a TRUSTED persisted read (never brick the install) and wrong for a
+  // write: a typo would answer 200 OK and quietly reconfigure the agent to
+  // Claude. Both write endpoints therefore validate the inbound type first.
+
+  const patchProvider = (provider: unknown) => app.request('/api/agents/main/provider' + Q, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider }),
+  });
+
+  const createWithProvider = (provider: unknown, id: string) => app.request('/api/agents/create' + Q, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, name: 'Provider Guard', description: 'test agent', botToken: '123:fake', provider }),
+  });
+
+  const BAD_TYPES: Array<[label: string, provider: unknown]> = [
+    ['an unknown type', { type: 'definitely-not-a-provider' }],
+    ['the adapter binary name, which is not a provider id', { type: 'codex-acp' }],
+    ['a missing type', { model: 'claude-opus-4-8' }],
+    ['a non-string type', { type: 42 }],
+    ['a null type', { type: null }],
+    ['an empty type', { type: '   ' }],
+  ];
+
+  for (const [i, [label, provider]] of BAD_TYPES.entries()) {
+    it(`PATCH rejects ${label} with 400 instead of silently choosing Claude`, async () => {
+      const res = await patchProvider(provider);
+      expect(res.status).toBe(400);
+      const body = await jsonOf(res);
+      expect(body).toMatchObject({ error: expect.any(String) });
+      expect(body).not.toHaveProperty('provider');
+    });
+
+    it(`POST /api/agents/create rejects ${label} with 400`, async () => {
+      const res = await createWithProvider(provider, `guard-bad-${i}`);
+      expect(res.status).toBe(400);
+      expect(await jsonOf(res)).toMatchObject({ error: expect.any(String) });
+    });
+  }
+
+  it('PATCH accepts the canonical acp-codex id', async () => {
+    const res = await patchProvider({ type: 'acp-codex' });
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({ ok: true, provider: { type: 'acp-codex' } });
+  });
+
+  it('PATCH accepts the legacy codex id and canonicalizes it', async () => {
+    const res = await patchProvider({ type: 'codex' });
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({ ok: true, provider: { type: 'acp-codex' } });
+  });
+
+  // Successful creation runs the real agent-create module here, so a request
+  // never gets past bot-token validation — this file cannot see what provider
+  // actually reaches createAgent(). That is proven in
+  // dashboard.agent-create-provider.test.ts, which mocks the module and asserts
+  // on the recorded opts (canonical / legacy / omitted / never-invoked).
+  it('does not reject a well-formed provider on the type gate', async () => {
+    for (const [i, type] of ['acp-codex', 'codex', 'openai'].entries()) {
+      const res = await createWithProvider({ type }, `guard-ok-${i}`);
+      const body = await jsonOf(res) as { error?: string };
+      expect(body.error ?? '').not.toMatch(/unknown provider|provider type required|must be an object/i);
+    }
+  });
+
+  it('a create with NO provider block stays valid — the agent inherits the default', async () => {
+    const res = await app.request('/api/agents/create' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'guard-no-provider', name: 'No Provider', description: 'test agent', botToken: '123:fake' }),
+    });
+    const body = await jsonOf(res) as { error?: string };
+    expect(body.error ?? '').not.toMatch(/unknown provider|provider type required|must be an object/i);
+  });
+
+  // Falsy-but-explicit provider values are the fail-closed regression: a
+  // truthiness check reads them as "omitted" and creates the agent on Claude.
+  for (const [i, [label, provider]] of ([
+    ['null', null], ['false', false], ['0', 0], ['an empty string', ''],
+    ['a bare string', 'openai'], ['an array', []],
+  ] as Array<[string, unknown]>).entries()) {
+    it(`create rejects an explicit falsy/mis-shaped provider: ${label}`, async () => {
+      const res = await createWithProvider(provider, `guard-shape-${i}`);
+      expect(res.status).toBe(400);
+      expect(await jsonOf(res)).toMatchObject({ error: expect.any(String) });
+    });
+  }
 
   it('preflights provider availability during agent creation', async () => {
     const res = await app.request('/api/agents/create' + Q, {

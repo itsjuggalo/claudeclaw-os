@@ -98,9 +98,6 @@ describe('setup placeholder enforcement', () => {
     const assistantName = 'Holden';
     const ownerName = 'Mike';
     const ownerWork = 'runs an AI automation shop';
-    const configDir = '/home/mike/.claudeclaw';
-    const storeDbPath = '/home/mike/.claudeclaw/store/claudeclaw.db';
-
     let content = example;
     const replacements: Array<[string, string]> = [
       ['[does what you do]', ownerWork],
@@ -108,15 +105,12 @@ describe('setup placeholder enforcement', () => {
       ['[Brief description of your main projects/work]', ''],
       ['[YOUR ASSISTANT NAME]', assistantName],
       ['[YOUR NAME]', ownerName],
-      ['[CONFIG_DIR]', configDir],
-      ['[STORE_PATH]', storeDbPath],
     ];
     for (const [token, value] of replacements) content = content.split(token).join(value);
-    content = content.split('[BRACKETED]').join('bracketed');
 
     const enumerated = [
       '[YOUR NAME]', '[YOUR ASSISTANT NAME]', '[does what you do]',
-      '[Brief description of your main projects/work]', '[CONFIG_DIR]', '[STORE_PATH]',
+      '[Brief description of your main projects/work]',
     ].filter((t) => content.includes(t));
     const generic = content.match(/\[[A-Z][A-Z ]{2,}\]/g) || [];
 

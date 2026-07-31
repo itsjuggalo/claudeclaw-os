@@ -1,5 +1,6 @@
 import type { CostFooterMode } from './config.js';
 import type { UsageInfo } from './agent.js';
+import { modelDisplayLabel } from './model-catalog.js';
 
 /**
  * Format token counts for display.
@@ -26,12 +27,15 @@ export function buildCostFooter(
   mode: CostFooterMode,
   usage: UsageInfo | null,
   model?: string,
+  effort?: string,
 ): string {
   if (mode === 'off' || !usage) return '';
 
-  const modelLabel = model
-    ? model.replace('claude-', '').replace(/-\d+[-\d]*$/, '')
-    : 'unknown';
+  // Catalog label ("Opus 5", "GPT-5.6 Sol"); an unknown id or a provider-type
+  // fallback ("openai") passes through as-is. Effort rides along when the turn
+  // ran with one so the tag reports the dial, not just the model.
+  const base = model ? modelDisplayLabel(model) : 'unknown';
+  const modelLabel = effort ? `${base} · ${effort}` : base;
 
   if (mode === 'compact') {
     return `\n\n[${modelLabel}]`;

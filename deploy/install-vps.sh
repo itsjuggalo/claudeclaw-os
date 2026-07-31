@@ -60,7 +60,8 @@ DASHBOARD_PORT="${DASHBOARD_PORT:-3141}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/claudeclaw}"
 RUN_USER="${RUN_USER:-claudeclaw}"
 SSH_HARDENING="${SSH_HARDENING:-public}"   # off | public | tailscale-only
-ENABLE_ACP="${ENABLE_ACP:-false}"          # true unlocks the beta provider switcher
+ENABLE_ACP="${ENABLE_ACP:-false}"          # true unlocks the experimental ACP provider tier
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"       # optional — native OpenAI also works via `codex login` on the host
 REPO_URL="${REPO_URL:-https://github.com/earlyaidopters/claudeclaw-os.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 REPO_CLONE_TOKEN="${REPO_CLONE_TOKEN:-}"   # temp GitHub token (ghs_/gho_/ghp_) for private clone
@@ -213,10 +214,15 @@ DASHBOARD_URL=https://$TS_FQDN
 CLAUDECLAW_STORE_DIR=$APP_DIR/store
 DB_ENCRYPTION_KEY=$DB_ENCRYPTION_KEY
 
-# Beta multi-provider (ACP) switcher in the dashboard. When false, the provider
-# is forced to Claude and the picker is hidden. Non-Claude providers additionally
-# require their CLI installed + authenticated on this host.
+# Experimental provider tier (ACP family: codex-acp, Gemini, OpenCode,
+# OpenRouter, custom). When false, the experimental picker is hidden; the
+# stable tier (Claude, native OpenAI) is always available. Experimental
+# providers additionally require their CLI installed + authenticated here.
 ENABLE_ACP=$ENABLE_ACP
+
+# Native OpenAI (Codex SDK) is a stable, ungated provider — auth via
+# \`codex login\` on this host (ChatGPT subscription) or OPENAI_API_KEY.
+${OPENAI_API_KEY:+OPENAI_API_KEY=$OPENAI_API_KEY}
 EOF
 chown "$RUN_USER:$RUN_USER" "$ENV_FILE"
 chmod 600 "$ENV_FILE"

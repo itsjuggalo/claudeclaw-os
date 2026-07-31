@@ -1,13 +1,49 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import yaml from 'js-yaml';
 
-import { STORE_DIR, DEFAULT_CLAUDE_MODEL, CLAUDECLAW_CONFIG, PROJECT_ROOT } from './config.js';
+import { STORE_DIR, DEFAULT_CLAUDE_MODEL, getClaudeclawConfig, PROJECT_ROOT } from './config.js';
 import { readEnvFile } from './env.js';
 
-export type ProviderType = 'claude' | 'acp' | 'opencode' | 'gemini' | 'codex' | 'openrouter';
+/**
+ * Provider identities. Two of these reach the same Codex runtime by different
+ * routes, so the names say which route:
+ *  - `openai`    — STABLE native provider, drives the Codex runtime directly
+ *                  (Codex SDK or App Server, per CODEX_TRANSPORT).
+ *  - `acp-codex` — EXPERIMENTAL provider, reaches Codex over ACP via the
+ *                  bundled `codex-acp` adapter.
+ */
+export type ProviderType = 'claude' | 'acp' | 'opencode' | 'gemini' | 'acp-codex' | 'openrouter' | 'openai';
+
+const PROVIDER_TYPES: readonly string[] = ['claude', 'acp', 'opencode', 'gemini', 'acp-codex', 'openrouter', 'openai'];
+
+/**
+ * Legacy provider identifiers → their current name. The Codex-over-ACP provider
+ * was spelled `codex` before the native `openai` provider existed; once both
+ * shipped the two names read as interchangeable, so the ACP one became
+ * `acp-codex`. Configs saved before the rename (agent.yaml provider blocks,
+ * store/main-config.json) still carry the old spelling.
+ */
+const LEGACY_PROVIDER_TYPES: Readonly<Record<string, ProviderType>> = { codex: 'acp-codex' };
+
+/**
+ * Canonicalizes a persisted or inbound provider id, migrating legacy spellings
+ * forward. Returns undefined for anything unrecognized so callers can apply
+ * their own fallback (saved config → DEFAULT_PROVIDER; API request → 400).
+ *
+ * THE normalization boundary: every read of persisted provider config and every
+ * provider id arriving from the dashboard/API passes through here, so nothing
+ * downstream — engine factory, registry, model defaults, UI — ever sees `codex`.
+ */
+export function normalizeProviderType(value: unknown): ProviderType | undefined {
+  if (typeof value !== 'string') return undefined;
+  const lower = value.trim().toLowerCase();
+  return LEGACY_PROVIDER_TYPES[lower]
+    ?? (PROVIDER_TYPES.includes(lower) ? lower as ProviderType : undefined);
+}
 export type ProviderRuntimeMode = string;
 export type ProviderThinkingMode = string;
 
@@ -26,8 +62,9 @@ export interface ProviderConfig {
    * Opt-in flag to skip permission prompts and let the provider auto-execute tools.
    * When unset, defaults asymmetrically: Claude keeps its existing permissive
    * behavior (it has months of demonstrated good judgment on Telegram chat
-   * conversational vs. coding intent), while ACP providers (codex/gemini/opencode)
-   * default to false so a casual Telegram message can't trigger a coding session.
+   * conversational vs. coding intent), while ACP providers (acp-codex/gemini/
+   * opencode) default to false so a casual Telegram message can't trigger a
+   * coding session.
    * Resolve via effectiveSkipPermissions() rather than reading this directly.
    */
   dangerouslySkipPermissions?: boolean;
@@ -42,10 +79,10 @@ export const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 
 export function normalizeProviderConfig(input: unknown, legacyModel?: string): ProviderConfig {
   const raw = input && typeof input === 'object' ? input as Record<string, unknown> : {};
-  const typeRaw = typeof raw.type === 'string' ? raw.type.toLowerCase() : undefined;
+  const type = normalizeProviderType(raw.type);
 
-  if (typeRaw === 'claude' || typeRaw === 'acp' || typeRaw === 'opencode' || typeRaw === 'gemini' || typeRaw === 'codex' || typeRaw === 'openrouter') {
-    const cfg: ProviderConfig = { type: typeRaw };
+  if (type) {
+    const cfg: ProviderConfig = { type };
     if (typeof raw.model === 'string' && raw.model.trim()) cfg.model = raw.model.trim();
     if (typeof raw.runtimeMode === 'string' && raw.runtimeMode.trim()) cfg.runtimeMode = raw.runtimeMode.trim();
     if (typeof raw.thinkingMode === 'string' && raw.thinkingMode.trim()) cfg.thinkingMode = raw.thinkingMode.trim();
@@ -78,7 +115,7 @@ export function providerToYaml(provider: ProviderConfig): Record<string, unknown
 /**
  * Asymmetric default: Claude keeps full tool access (load-bearing for
  * notify.sh, scheduling, mission tasks, memory queries, Obsidian, file
- * sending). ACP providers (codex/gemini/opencode) start locked down because
+ * sending). ACP providers (acp-codex/gemini/opencode) start locked down because
  * they have no track record on the conversational Telegram path and have
  * demonstrated a tendency to interpret casual prompts as coding tasks.
  * Set provider.dangerouslySkipPermissions explicitly to override.
@@ -116,7 +153,7 @@ function writeMainConfig(raw: Record<string, unknown>): void {
 // file if it doesn't exist), then agent.yaml is the single source.
 
 function externalMainAgentYamlPath(): string {
-  return path.join(CLAUDECLAW_CONFIG, 'agents', 'main', 'agent.yaml');
+  return path.join(getClaudeclawConfig(), 'agents', 'main', 'agent.yaml');
 }
 
 // Reads honor a pre-existing legacy file in PROJECT_ROOT (from installs
@@ -264,15 +301,36 @@ export function getProviderDisplay(provider: ProviderConfig): string {
   if (provider.type === 'claude') return `Claude${suffix ? ` (${suffix})` : ''}`;
   if (provider.type === 'opencode') return `OpenCode${suffix ? ` (${suffix})` : ' (model from OpenCode config)'}`;
   if (provider.type === 'gemini') return `Gemini CLI${suffix ? ` (${suffix})` : ' (ACP)'}`;
-  if (provider.type === 'codex') return `Codex${suffix ? ` (${suffix})` : ' (codex-acp adapter)'}`;
+  if (provider.type === 'acp-codex') return `Codex${suffix ? ` (${suffix})` : ' (codex-acp adapter)'}`;
   if (provider.type === 'openrouter') return `OpenRouter${suffix ? ` (${suffix})` : ' (no model selected)'}`;
+  if (provider.type === 'openai') return `OpenAI${suffix ? ` (${suffix})` : ' (native Codex)'}`;
   return `ACP (${provider.command ?? 'custom command'}${provider.args?.length ? ` ${provider.args.join(' ')}` : ''}${suffix ? `; ${suffix}` : ''})`;
+}
+
+/**
+ * Session-id prefixes `type` answers to on READ, canonical first.
+ *
+ * Sessions are stored namespaced as `<providerType>:<id>`, so renaming a
+ * provider would orphan every thread already saved under its old id. Derived
+ * from LEGACY_PROVIDER_TYPES rather than hardcoded, so a future rename gets
+ * resumability for free — and, critically, the legacy prefix is offered ONLY to
+ * the type that legacy id migrated to: `codex:` resolves for `acp-codex` and for
+ * nothing else, so native `openai` can never adopt a Codex-over-ACP thread.
+ *
+ * Read-only by design. Writes always use the canonical type
+ * (`encodeProviderSession`), so legacy prefixes decay as threads roll over.
+ */
+function acceptedSessionPrefixes(type: ProviderType): string[] {
+  const legacy = Object.entries(LEGACY_PROVIDER_TYPES)
+    .filter(([, current]) => current === type)
+    .map(([old]) => `${old}:`);
+  return [`${type}:`, ...legacy];
 }
 
 export function sessionBelongsToProvider(sessionId: string | undefined, provider: ProviderConfig): boolean {
   if (!sessionId) return false;
   if (!sessionId.includes(':')) return provider.type === 'claude';
-  return sessionId.startsWith(`${provider.type}:`);
+  return acceptedSessionPrefixes(provider.type).some((prefix) => sessionId.startsWith(prefix));
 }
 
 export function encodeProviderSession(provider: ProviderConfig, sessionId: string | undefined): string | undefined {
@@ -282,8 +340,9 @@ export function encodeProviderSession(provider: ProviderConfig, sessionId: strin
 
 export function decodeProviderSession(provider: ProviderConfig, sessionId: string | undefined): string | undefined {
   if (!sessionId) return undefined;
-  const prefix = `${provider.type}:`;
-  if (sessionId.startsWith(prefix)) return sessionId.slice(prefix.length);
+  for (const prefix of acceptedSessionPrefixes(provider.type)) {
+    if (sessionId.startsWith(prefix)) return sessionId.slice(prefix.length);
+  }
   if (!sessionId.includes(':') && provider.type === 'claude') return sessionId;
   return undefined;
 }
@@ -381,7 +440,7 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
         };
       }
       return { ok: true };
-    case 'codex':
+    case 'acp-codex':
       if (!commandExists('codex')) {
         return {
           ok: false,
@@ -404,6 +463,88 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
         };
       }
       return { ok: true };
+    }
+    case 'openai': {
+      // Native Codex SDK provider — the runtime binary ships with the bundled
+      // @openai/codex-sdk package (no PATH dependency). Auth comes from either
+      // `codex login` state (~/.codex/auth.json, ChatGPT subscription) or an
+      // OPENAI_API_KEY for API billing.
+      const req = createRequire(import.meta.url);
+      const sdkMissing = {
+        ok: false as const,
+        error: '@openai/codex-sdk is not installed.',
+        installCommand: 'npm install',
+        setupHint: 'Run `npm install` to pull the bundled Codex SDK, then authenticate with `codex login` or set OPENAI_API_KEY in .env.',
+        docsUrl: 'https://github.com/openai/codex',
+      };
+      try {
+        req.resolve('@openai/codex-sdk');
+      } catch (err) {
+        // The SDK is ESM-only (no `require` condition in its exports map), so
+        // require.resolve throws ERR_PACKAGE_PATH_NOT_EXPORTED even when the
+        // package IS installed — the exports map was found and parsed, which
+        // is proof of presence. Only a genuine module-not-found is a failure.
+        if ((err as NodeJS.ErrnoException)?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') return sdkMissing;
+      }
+      // The JS SDK is a thin wrapper around a platform-specific native binary
+      // shipped as an OPTIONAL dependency (@openai/codex-<platform>-<arch>). If
+      // optional deps were skipped or the arch is unsupported, the SDK resolves
+      // but every turn fails with "unable to locate binaries". Preflight the
+      // platform package so setup rejects OpenAI now rather than at first turn.
+      const platformPkgs: Record<string, string> = {
+        'win32-x64': '@openai/codex-win32-x64', 'win32-arm64': '@openai/codex-win32-arm64',
+        'darwin-x64': '@openai/codex-darwin-x64', 'darwin-arm64': '@openai/codex-darwin-arm64',
+        'linux-x64': '@openai/codex-linux-x64', 'linux-arm64': '@openai/codex-linux-arm64',
+      };
+      const platformPkg = platformPkgs[`${process.platform}-${process.arch}`];
+      if (!platformPkg) {
+        return {
+          ok: false,
+          error: `The native Codex runtime does not ship a binary for this platform/architecture (${process.platform}/${process.arch}).`,
+          setupHint: 'Use the Claude provider on this host, or run ClaudeClaw on a supported platform (win32/darwin/linux on x64/arm64).',
+          docsUrl: 'https://github.com/openai/codex',
+        };
+      }
+      try {
+        req.resolve(`${platformPkg}/package.json`);
+      } catch {
+        return {
+          ok: false,
+          error: `The native Codex runtime for this platform (${platformPkg}) is not installed.`,
+          installCommand: 'npm install --include=optional',
+          setupHint: 'Reinstall dependencies including optional packages so the platform-specific Codex binary is present.',
+          docsUrl: 'https://github.com/openai/codex',
+        };
+      }
+      // An API key is definitive (must be a non-empty string).
+      const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+      if (nonEmpty(process.env.OPENAI_API_KEY)) return { ok: true };
+      if (nonEmpty(readEnvFile(['OPENAI_API_KEY']).OPENAI_API_KEY)) return { ok: true };
+      // Otherwise require a parseable auth.json with a genuinely non-empty
+      // token — a bare {}, {"tokens":{}}, or empty-string field must NOT read as
+      // authenticated (the turn would then fail at call time). We don't shell
+      // out to `codex login status` here: preflight must stay fast and
+      // non-blocking, and a stale-but-present token still surfaces an actionable
+      // auth error at call time via the adapter.
+      const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
+      const authPath = path.join(codexHome, 'auth.json');
+      if (fs.existsSync(authPath)) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(authPath, 'utf-8')) as Record<string, unknown>;
+          const tokens = (raw.tokens && typeof raw.tokens === 'object') ? raw.tokens as Record<string, unknown> : undefined;
+          const hasApiKey = nonEmpty(raw.OPENAI_API_KEY);
+          const hasChatgptToken = !!tokens && (nonEmpty(tokens.access_token) || nonEmpty(tokens.id_token) || nonEmpty(tokens.refresh_token));
+          const hasTopLevelToken = nonEmpty(raw.access_token) || nonEmpty(raw.id_token) || nonEmpty(raw.refresh_token);
+          if (hasApiKey || hasChatgptToken || hasTopLevelToken) return { ok: true };
+        } catch { /* unreadable/malformed → treat as unauthenticated */ }
+      }
+      return {
+        ok: false,
+        error: 'Codex is not authenticated (no valid ~/.codex/auth.json) and OPENAI_API_KEY is not set.',
+        installCommand: 'npm install -g @openai/codex',
+        setupHint: 'Run `codex login` to sign in with your ChatGPT account (recommended), or add OPENAI_API_KEY=sk-... to .env and restart with `pm2 restart claudeclaw --update-env`.',
+        docsUrl: 'https://github.com/openai/codex/blob/main/docs/authentication.md',
+      };
     }
     case 'openrouter': {
       // OpenRouter has no CLI — just check the env var is present.

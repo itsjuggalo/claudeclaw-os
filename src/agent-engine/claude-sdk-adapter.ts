@@ -5,6 +5,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { logger } from '../logger.js';
 import { authError, isAuthErrorText } from '../errors.js';
+import { composeSystemPrompt } from '../runtime-identity.js';
 
 import type {
   AgentEngine,
@@ -132,13 +133,53 @@ const TOOL_LABELS: Record<string, string> = {
   AskUserQuestion: 'User question',
 };
 
-function toolLabel(toolName: string): string {
-  if (TOOL_LABELS[toolName]) return TOOL_LABELS[toolName];
+const TOOL_COMPLETION_LABELS: Record<string, string> = {
+  Write: 'Wrote file',
+  Edit: 'Edited file',
+  Grep: 'Searched code',
+  Glob: 'Found files',
+  WebSearch: 'Web search',
+  WebFetch: 'Fetched page',
+  NotebookEdit: 'Edited notebook',
+};
+
+interface ClaudeToolActivity {
+  description: string;
+  completionDescription: string;
+  kind: string;
+  persistCompletion: boolean;
+}
+
+function toolActivity(toolName: string): ClaudeToolActivity {
+  let description = TOOL_LABELS[toolName] ?? toolName;
+  let kind = 'thinking';
+  let persistCompletion = false;
+
   if (toolName.startsWith('mcp__')) {
     const parts = toolName.split('__');
-    return parts.length >= 3 ? `${parts[1]}: ${parts.slice(2).join(' ')}` : toolName;
+    description = parts.length >= 3 ? `${parts[1]}: ${parts.slice(2).join(' ')}` : toolName;
+    kind = 'mcp';
+    persistCompletion = true;
+  } else if (toolName === 'Write' || toolName === 'Edit' || toolName === 'NotebookEdit') {
+    kind = 'edit';
+    persistCompletion = true;
+  } else if (toolName === 'Grep' || toolName === 'Glob' || toolName === 'WebSearch' || toolName === 'WebFetch') {
+    kind = 'search';
+    persistCompletion = true;
+  } else if (toolName === 'Read') {
+    kind = 'read';
+  } else if (toolName === 'Bash') {
+    kind = 'execute';
+  } else if (toolName === 'Agent') {
+    kind = 'subagent';
   }
-  return toolName;
+
+  return {
+    description,
+    completionDescription: TOOL_COMPLETION_LABELS[toolName] ?? description,
+    kind,
+    persistCompletion,
+  };
 }
 
 /**
@@ -260,6 +301,15 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
     let lastCallCacheCreation = 0;
     let lastCallInputTokens = 0;
     let streamedText = '';
+    // A turn is many assistant messages (text, tool_use, tool_result, more
+    // text…). The SDK emits a fresh `message_start` per message, but the bot's
+    // stream throttle tracks ONE monotonically growing accumulator per turn, so
+    // resetting here made every post-first-tool message arrive with a shrinking
+    // length that the bot read as a negative delta and dropped — text only
+    // reappeared in the final result. Instead we accumulate across the whole
+    // turn and mark a paragraph break at each new message so `accumulatedText`
+    // grows monotonically and mirrors the final `turnTextBlocks.join('\n\n')`.
+    let pendingStreamSeparator = false;
     let emittedResult = false;
     // Accumulate every top-level assistant text block across the turn. The SDK's
     // final `result` field only carries the LAST assistant text block, so a turn
@@ -268,6 +318,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
     // top-level text blocks reconstructs the full response. Subagent text is
     // excluded (parent_tool_use_id != null) so it never leaks into the reply.
     const turnTextBlocks: string[] = [];
+    const activeTools = new Map<string, ClaudeToolActivity>();
 
     // SDK 0.3.x requires `allowDangerouslySkipPermissions: true` whenever
     // `permissionMode` is 'bypassPermissions'. Resolve the mode first, then default
@@ -291,10 +342,12 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           cwd: input.cwd,
           resume: input.sessionId,
           settingSources: input.settingSources ?? ['project', 'user'],
-          // Persona-only system prompt (plain string = no claude_code preset).
-          // Pins identity/boundaries in the system layer, present every turn and
-          // compaction-proof. Omitted when no persona is supplied.
-          ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
+          // Plain string system prompt (no claude_code preset). Stable persona
+          // plus the resolved per-turn runtime identity are present every turn
+          // and survive compaction.
+          ...(composeSystemPrompt(input.systemPrompt, input.runtimeIdentity)
+            ? { systemPrompt: composeSystemPrompt(input.systemPrompt, input.runtimeIdentity) }
+            : {}),
           permissionMode,
           ...(allowDangerouslySkipPermissions !== undefined
             ? { allowDangerouslySkipPermissions }
@@ -357,11 +410,14 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
               // When AskUserQuestion is handled interactively (the keyboard is
               // the surface), skip the redundant "User question..." tool label.
               if (block.name === 'AskUserQuestion' && input.onAskUserQuestion) continue;
+              const activity = toolActivity(block.name);
+              if (block.id) activeTools.set(block.id, activity);
               yield {
                 type: 'progress',
                 progress: {
                   type: 'tool_active',
-                  description: toolLabel(block.name),
+                  description: activity.description,
+                  kind: activity.kind,
                   toolCallId: block.id,
                 },
                 raw: ev,
@@ -373,17 +429,29 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
 
       if (ev.type === 'user') {
         const msg = ev.message as Record<string, unknown> | undefined;
-        const content = msg?.content as Array<{ type: string; tool_use_id?: string }> | undefined;
-        if (Array.isArray(content) && content.some((block) => block.type === 'tool_result')) {
-          yield {
-            type: 'progress',
-            progress: {
-              type: 'task_completed',
-              description: 'Tool result',
-              toolCallId: content.find((block) => block.type === 'tool_result')?.tool_use_id,
-            },
-            raw: ev,
-          };
+        const content = msg?.content as Array<{ type: string; tool_use_id?: string; is_error?: boolean }> | undefined;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type !== 'tool_result' || !block.tool_use_id) continue;
+            const activity = activeTools.get(block.tool_use_id);
+            activeTools.delete(block.tool_use_id);
+            if (!activity) continue;
+            // Sub-agent lifecycle has richer task_started/task_progress/task_notification
+            // events. Routine reads and successful shell commands remain transient.
+            if (activity.kind === 'subagent') continue;
+            if (!activity.persistCompletion && block.is_error !== true) continue;
+            yield {
+              type: 'progress',
+              progress: {
+                type: 'task_completed',
+                description: activity.completionDescription,
+                status: block.is_error === true ? 'failed' : 'completed',
+                kind: activity.kind,
+                toolCallId: block.tool_use_id,
+              },
+              raw: ev,
+            };
+          }
         }
       }
 
@@ -393,6 +461,22 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           progress: {
             type: 'task_started',
             description: (ev.description as string) ?? 'Sub-agent started',
+            kind: 'subagent',
+            toolCallId: ev.task_id as string,
+          },
+          raw: ev,
+        };
+      }
+
+      if (ev.type === 'system' && ev.subtype === 'task_progress') {
+        const description = (ev.summary as string) || (ev.description as string) || 'Sub-agent working';
+        yield {
+          type: 'progress',
+          progress: {
+            type: 'tool_active',
+            description,
+            kind: 'subagent',
+            toolCallId: ev.task_id as string,
           },
           raw: ev,
         };
@@ -406,6 +490,9 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           progress: {
             type: 'task_completed',
             description: status === 'failed' ? `Failed: ${summary}` : summary,
+            status,
+            kind: 'subagent',
+            toolCallId: ev.task_id as string,
           },
           raw: ev,
         };
@@ -413,12 +500,17 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
 
       if (ev.type === 'stream_event' && ev.parent_tool_use_id === null) {
         const streamEvent = ev.event as Record<string, unknown> | undefined;
-        if (streamEvent?.type === 'message_start') streamedText = '';
+        // Don't reset on a new message — defer a paragraph break until the next
+        // text actually arrives, so a message that emits only tool calls adds no
+        // stray separator.
+        if (streamEvent?.type === 'message_start' && streamedText) pendingStreamSeparator = true;
         if (streamEvent?.type === 'content_block_delta') {
           const delta = streamEvent.delta as Record<string, unknown> | undefined;
           if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-            streamedText += delta.text;
-            yield { type: 'text_delta', delta: delta.text, accumulatedText: streamedText, raw: ev };
+            const separator = pendingStreamSeparator ? '\n\n' : '';
+            pendingStreamSeparator = false;
+            streamedText += separator + delta.text;
+            yield { type: 'text_delta', delta: separator + delta.text, accumulatedText: streamedText, raw: ev };
           }
         }
       }

@@ -1,6 +1,5 @@
-import { CronExpressionParser } from 'cron-parser';
-
 import { AGENT_ID, ALLOWED_CHAT_ID, agentMcpAllowlist, agentDefaultModel } from './config.js';
+import { computeNextRun } from './cron.js';
 import { ingestConversationTurn } from './memory-ingest.js';
 import {
   getDueTasks,
@@ -324,7 +323,7 @@ async function runDueMissionTasks(): Promise<void> {
   });
 }
 
-export function computeNextRun(cronExpression: string): number {
-  const interval = CronExpressionParser.parse(cronExpression);
-  return Math.floor(interval.next().getTime() / 1000);
-}
+// Re-exported from the leaf `cron.ts` so the historical `./scheduler.js` import
+// path (dashboard.ts, etc.) keeps working while the single implementation lives
+// in a module the dispatch action layer can import without a cycle.
+export { computeNextRun } from './cron.js';

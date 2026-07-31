@@ -17,8 +17,9 @@ import { apiGet, apiPatch } from './api';
 
 // ── Defaults ────────────────────────────────────────────────────────────
 
-const DEFAULT_WORKSPACE_NAME = 'ClaudeClaw';
+const DEFAULT_WORKSPACE_NAME = 'ClaudeClaw - Business OS';
 const DEFAULT_COLLAPSED: string[] = []; // every section starts open
+const DEFAULT_RUNTIME_COLLAPSED = false; // footer runtime details start expanded
 
 // hotkey mod is 'auto' by default; resolveModKey() consults navigator.platform
 // when this is 'auto' so Mac users get ⌘ and everyone else gets Ctrl.
@@ -29,6 +30,7 @@ const DEFAULT_HOTKEY_MOD: HotkeyMod = 'auto';
 
 export const workspaceName = signal<string>(DEFAULT_WORKSPACE_NAME);
 export const collapsedSections = signal<Set<string>>(new Set(DEFAULT_COLLAPSED));
+export const runtimeDetailsCollapsed = signal<boolean>(DEFAULT_RUNTIME_COLLAPSED);
 export const hotkeyMod = signal<HotkeyMod>(DEFAULT_HOTKEY_MOD);
 export const missionColumnOrder = signal<string[]>([]);
 export const missionColumnWidths = signal<Record<string, number>>({});
@@ -51,6 +53,9 @@ export async function hydratePersonalization(): Promise<void> {
     if (typeof data?.sidebar_collapsed_sections === 'string') {
       const parsed = safeParseArray(data.sidebar_collapsed_sections);
       if (parsed) collapsedSections.value = new Set(parsed);
+    }
+    if (data?.sidebar_runtime_collapsed === '1' || data?.sidebar_runtime_collapsed === '0') {
+      runtimeDetailsCollapsed.value = data.sidebar_runtime_collapsed === '1';
     }
     if (typeof data?.mission_column_order === 'string') {
       const parsed = safeParseArray(data.mission_column_order);
@@ -86,6 +91,12 @@ export function setWorkspaceName(next: string): void {
 export function setHotkeyMod(next: HotkeyMod): void {
   hotkeyMod.value = next;
   debouncedSave('hotkey_mod', next);
+}
+
+export function toggleRuntimeDetailsCollapsed(): void {
+  const next = !runtimeDetailsCollapsed.value;
+  runtimeDetailsCollapsed.value = next;
+  debouncedSave('sidebar_runtime_collapsed', next ? '1' : '0');
 }
 
 export function toggleSectionCollapsed(name: string): void {
