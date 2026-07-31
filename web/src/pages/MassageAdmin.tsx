@@ -133,10 +133,10 @@ function Field({ label, children, prior, onPick }: {
   return (
     <div class="block">
       <div class="mb-1 flex items-center justify-between gap-2">
-        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
         {hasPrior && (
           <select
-            class="max-w-[55%] shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-[10px] text-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
+            class="max-w-[55%] shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-[11px] text-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
             title="Reuse a value you wrote before for this client"
             value=""
             onChange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) onPick!(v); (e.currentTarget as HTMLSelectElement).value = ''; }}
@@ -151,9 +151,9 @@ function Field({ label, children, prior, onPick }: {
   );
 }
 
-const inputClass = 'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] disabled:opacity-60';
-const btnGhost = 'inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40';
-const btnAccent = 'inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-40';
+const inputClass = 'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] disabled:opacity-60';
+const btnGhost = 'inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)] disabled:opacity-40';
+const btnAccent = 'inline-flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-[13px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40';
 
 // ── SOAP fast-entry toolkit (tap-first, <5-minute notes) ──────────────────────
 // Web Speech API dictation. onText appends each final transcript. Chrome-only; the
@@ -222,7 +222,7 @@ const DEFAULT_SEVERITY = 3;
 function Chip({ label, onClick, on }: { label: string; onClick: () => void; on?: boolean }) {
   return (
     <button type="button" onClick={onClick}
-      class={`rounded-full border px-2 py-0.5 text-[10px] leading-none transition ${on
+      class={`rounded-full border px-2 py-0.5 text-[11px] leading-none transition ${on
         ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-[var(--color-text)]'
         : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
       {label}
@@ -235,7 +235,7 @@ function MicButton({ onText }: { onText: (t: string) => void }) {
   if (!supported) return null;
   return (
     <button type="button" title={listening ? 'Stop dictation' : 'Dictate (voice to text)'} onClick={toggle}
-      class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] ${listening
+      class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] ${listening
         ? 'border-[var(--color-status-failed)] text-[var(--color-status-failed)] animate-pulse'
         : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
       <Mic size={12} /> {listening ? 'listening…' : 'voice'}
@@ -253,17 +253,17 @@ function NoteField({ label, value, onChange, phraseKey, prior }: {
   return (
     <div class="block">
       <div class="mb-1 flex flex-wrap items-center justify-between gap-1">
-        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
         <div class="flex items-center gap-1">
           <MicButton onText={(t) => onChange(appendText(value, t))} />
           <button type="button" title="Type manually" onClick={() => setTyping((v) => !v)}
-            class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] ${typing
+            class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] ${typing
               ? 'border-[var(--color-accent)] text-[var(--color-text)]'
               : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
             <Keyboard size={12} /> type
           </button>
           {prior && prior.length > 0 && (
-            <select class="max-w-[130px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-[10px] text-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
+            <select class="max-w-[130px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-[11px] text-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
               title="Reuse a value you wrote before for this client" value=""
               onChange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { onChange(v); setTyping(true); } (e.currentTarget as HTMLSelectElement).value = ''; }}>
               <option value="">↺ reuse…</option>
@@ -283,7 +283,7 @@ function NoteField({ label, value, onChange, phraseKey, prior }: {
     </div>
   );
 }
-const btnDanger = 'inline-flex items-center gap-1 rounded-md border border-[var(--color-status-failed)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--color-status-failed)] hover:bg-[color-mix(in_srgb,var(--color-status-failed)_12%,transparent)] disabled:opacity-40';
+const btnDanger = 'inline-flex items-center gap-1.5 rounded-md border border-[var(--color-status-failed)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-status-failed)] transition-colors hover:bg-[color-mix(in_srgb,var(--color-status-failed)_12%,transparent)] disabled:opacity-40';
 
 export function MassageAdmin() {
   const overview = useFetch<Overview>('/api/massage-admin/clients', 30000);
@@ -325,7 +325,7 @@ export function MassageAdmin() {
           <AuthBanner session={session.data} sessionError={session.error} />
 
           {migration?.required && (
-            <section class="mb-4 rounded-lg border border-[var(--color-warn)] px-4 py-3 text-[12px] text-[var(--color-warn)]">
+            <section class="mb-4 rounded-lg border border-[var(--color-warn)] px-4 py-3 text-[13px] text-[var(--color-warn)]">
               <div class="flex items-start gap-2">
                 <ShieldAlert size={16} class="mt-0.5 shrink-0" />
                 <div>
@@ -358,7 +358,7 @@ function AuthBanner({ session, sessionError }: { session: AdminSession | null; s
         <LockKeyhole size={18} class="mt-0.5 text-[var(--color-accent)]" />
         <div class="min-w-0 flex-1">
           <h2 class="text-[13px] font-semibold text-[var(--color-text)]">Admin console</h2>
-          <p class="mt-1 text-[12px] leading-relaxed text-[var(--color-text-muted)]">
+          <p class="mt-1 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
             {session?.canEdit
               ? <>Signed in as <span class="font-semibold text-[var(--color-text)]">{session.adminUser}</span>. Every change is backed up and written to the audit log.</>
               : 'Editing is disabled for this session. Local (loopback) use is trusted; remote access requires an authorized Google sign-in.'}
@@ -366,10 +366,10 @@ function AuthBanner({ session, sessionError }: { session: AdminSession | null; s
           {!session?.canEdit && (
             <div class="mt-2 flex items-center gap-3">
               <a href="/massage-admin/login" class={btnAccent} style="background:var(--color-accent)">Sign in with Google</a>
-              <span class="text-[11px] text-[var(--color-warn)]">{session?.reason || sessionError || ''}</span>
+              <span class="text-[12px] text-[var(--color-warn)]">{session?.reason || sessionError || ''}</span>
             </div>
           )}
-          <p class="mt-2 text-[11px] text-[var(--color-text-faint)]">
+          <p class="mt-2 text-[12px] text-[var(--color-text-faint)]">
             Marketing email/SMS requires the client's explicit opt-in; transactional messages (reminders, intake, resets) always send.
           </p>
         </div>
@@ -436,25 +436,29 @@ function AccountsTab({ overview, canEdit }: { overview: ReturnType<typeof useFet
               key={client.id}
               type="button"
               onClick={() => setSelectedId(client.id)}
-              class={`w-full border-b border-[var(--color-border)] px-3 py-2 text-left last:border-b-0 ${
+              class={`flex w-full items-center gap-3 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 ${
                 selected?.id === client.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'
               }`}
             >
-              <div class="flex items-center gap-2">
-                <UserRound size={13} class="text-[var(--color-accent)]" />
-                <span class="truncate text-[12px] font-semibold text-[var(--color-text)]">{client.name || client.email}</span>
-                {client.accountStatus !== 'active' && (
-                  <span class="rounded bg-[var(--color-elevated)] px-1 text-[9px] uppercase text-[var(--color-warn)]">{client.accountStatus}</span>
-                )}
-              </div>
-              <div class="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">{client.email}</div>
-              <div class="mt-0.5 text-[10px] text-[var(--color-text-faint)]">
-                {client.appointmentCount} appts · {client.upcomingAppointmentCount} upcoming · ★{client.rewardBalance}
-                {client.nextVisitFreeEnhancement ? ' · 🎁' : ''}
-              </div>
+              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-elevated)]">
+                <UserRound size={15} class="text-[var(--color-accent)]" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="flex items-center gap-2">
+                  <span class="truncate text-[14px] font-semibold text-[var(--color-text)]">{client.name || client.email}</span>
+                  {client.accountStatus !== 'active' && (
+                    <span class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--color-warn)]">{client.accountStatus}</span>
+                  )}
+                </span>
+                <span class="mt-0.5 block truncate text-[12px] text-[var(--color-text-muted)]">{client.email}</span>
+                <span class="mt-0.5 block text-[11px] text-[var(--color-text-faint)]">
+                  {client.appointmentCount} appts · {client.upcomingAppointmentCount} upcoming · ★{client.rewardBalance}
+                  {client.nextVisitFreeEnhancement ? ' · 🎁' : ''}
+                </span>
+              </span>
             </button>
           ))}
-          {filtered.length === 0 && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">No matching clients.</div>}
+          {filtered.length === 0 && <div class="px-3 py-6 text-center text-[13px] text-[var(--color-text-faint)]">No matching clients.</div>}
         </div>
       </aside>
 
@@ -497,14 +501,14 @@ function CreateAccountCard({ onClose, onDone }: { onClose: () => void; onDone: (
         <Field label="Phone"><input class={inputClass} value={phone} onInput={(e) => setPhone((e.currentTarget as HTMLInputElement).value)} /></Field>
       </div>
       <div class="mt-3 flex items-center justify-between">
-        <label class="inline-flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
+        <label class="inline-flex items-center gap-2 text-[13px] text-[var(--color-text-muted)]">
           <input type="checkbox" checked={welcome} onChange={(e) => setWelcome((e.currentTarget as HTMLInputElement).checked)} /> Send welcome email
         </label>
         <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !email.includes('@')} onClick={create}>
           {busy ? 'Creating…' : 'Create account'}
         </button>
       </div>
-      {err && <div class="mt-2 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+      {err && <div class="mt-2 text-[12px] text-[var(--color-status-failed)]">{err}</div>}
     </section>
   );
 }
@@ -547,7 +551,7 @@ function AccountDetail({ client, canEdit, onChanged }: { client: MassageClient; 
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-[15px] font-semibold text-[var(--color-text)]">{client.name || client.email}</h2>
-          <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[var(--color-text-faint)]">
+          <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] text-[var(--color-text-faint)]">
             <span>Created {agoFromIso(client.createdAt)}</span>
             <span>· Verified {client.emailVerifiedAt ? agoFromIso(client.emailVerifiedAt) : <span class="text-[var(--color-warn)]">no</span>}</span>
             <span>· {client.appointmentCount} visits · last {agoFromMs(client.lastVisitMs)}</span>
@@ -567,8 +571,8 @@ function AccountDetail({ client, canEdit, onChanged }: { client: MassageClient; 
         </div>
       </div>
 
-      {msg && <div class="mb-3 rounded-md border border-[var(--color-status-done)] px-3 py-2 text-[12px] text-[var(--color-status-done)]">{msg}</div>}
-      {err && <div class="mb-3 rounded-md border border-[var(--color-status-failed)] px-3 py-2 text-[12px] text-[var(--color-status-failed)]">{err}</div>}
+      {msg && <div class="mb-3 rounded-md border border-[var(--color-status-done)] px-3 py-2 text-[13px] text-[var(--color-status-done)]">{msg}</div>}
+      {err && <div class="mb-3 rounded-md border border-[var(--color-status-failed)] px-3 py-2 text-[13px] text-[var(--color-status-failed)]">{err}</div>}
 
       {/* edit fields */}
       <div class="grid gap-3 md:grid-cols-2">
@@ -585,13 +589,13 @@ function AccountDetail({ client, canEdit, onChanged }: { client: MassageClient; 
         <Field label="Notes"><textarea class={`${inputClass} min-h-[88px] resize-y md:col-span-2`} disabled={!editing} value={draft.notes} onInput={(e) => up('notes', (e.currentTarget as HTMLTextAreaElement).value)} /></Field>
       </div>
       <div class="mt-4 flex flex-wrap gap-4">
-        <label class="inline-flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]"><input type="checkbox" disabled={!editing} checked={draft.emailOptIn} onChange={(e) => up('emailOptIn', (e.currentTarget as HTMLInputElement).checked)} /><Mail size={13} /> Email opt-in</label>
-        <label class="inline-flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]"><input type="checkbox" disabled={!editing} checked={draft.smsOptIn} onChange={(e) => up('smsOptIn', (e.currentTarget as HTMLInputElement).checked)} /><MessageSquareText size={13} /> SMS opt-in</label>
+        <label class="inline-flex items-center gap-2 text-[13px] text-[var(--color-text-muted)]"><input type="checkbox" disabled={!editing} checked={draft.emailOptIn} onChange={(e) => up('emailOptIn', (e.currentTarget as HTMLInputElement).checked)} /><Mail size={13} /> Email opt-in</label>
+        <label class="inline-flex items-center gap-2 text-[13px] text-[var(--color-text-muted)]"><input type="checkbox" disabled={!editing} checked={draft.smsOptIn} onChange={(e) => up('smsOptIn', (e.currentTarget as HTMLInputElement).checked)} /><MessageSquareText size={13} /> SMS opt-in</label>
       </div>
 
       {/* lifecycle actions */}
       <div class="mt-5 border-t border-[var(--color-border)] pt-4">
-        <div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Account actions</div>
+        <div class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Account actions</div>
         <div class="flex flex-wrap gap-2">
           <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => action('reset-password')}>Send reset email</button>
           <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => { const p = window.prompt('New temporary password (min 8 chars):'); if (p) action('set-password', undefined, { password: p }); }}>Set temp password</button>
@@ -621,7 +625,7 @@ function RewardPanel({ client, canEdit, onDone }: { client: MassageClient; canEd
   return (
     <div class="mt-5 border-t border-[var(--color-border)] pt-4">
       <div class="mb-2 flex items-center justify-between">
-        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Loyalty · balance {client.rewardBalance}</div>
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Loyalty · balance {client.rewardBalance}</div>
         <div class="flex gap-2">
           <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => adjust(-1)}>−1</button>
           <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => adjust(1)}>+1</button>
@@ -649,14 +653,14 @@ function AppointmentsPanel({ client, canEdit, onDone }: { client: MassageClient;
   const rows = appts.data?.appointments ?? [];
   return (
     <div class="mt-5 border-t border-[var(--color-border)] pt-4">
-      <div class="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">
+      <div class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">
         <CalendarClock size={12} /> Appointments ({rows.length})
       </div>
-      {appts.loading && !appts.data && <div class="text-[11px] text-[var(--color-text-faint)]">Loading…</div>}
-      {rows.length === 0 && !appts.loading && <div class="text-[11px] text-[var(--color-text-faint)]">No appointments.</div>}
+      {appts.loading && !appts.data && <div class="text-[12px] text-[var(--color-text-faint)]">Loading…</div>}
+      {rows.length === 0 && !appts.loading && <div class="text-[12px] text-[var(--color-text-faint)]">No appointments.</div>}
       <div class="space-y-1.5">
         {rows.map((a) => (
-          <div key={a.id} class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--color-border)] px-3 py-2 text-[11px]">
+          <div key={a.id} class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--color-border)] px-3 py-2 text-[12px]">
             <div class="text-[var(--color-text-muted)]">
               <span class="font-semibold text-[var(--color-text)]">{a.appt_date} {a.appt_time}</span> · {a.service_name} ·{' '}
               <span class={a.status === 'confirmed' ? 'text-[var(--color-status-done)]' : a.status === 'requested' ? 'text-[var(--color-warn)]' : 'text-[var(--color-text-faint)]'}>{a.status}</span>
@@ -696,8 +700,8 @@ function MessagePanel({ client, canEdit, onDone }: { client: MassageClient; canE
   const optWarn = (channel !== 'sms' && !client.emailOptIn) || (channel !== 'email' && !client.smsOptIn);
   return (
     <div class="mt-5 border-t border-[var(--color-border)] pt-4">
-      <div class="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]"><Send size={12} /> Custom message</div>
-      <div class="mb-2 text-[11px] text-[var(--color-text-faint)]">Sends as <span class="font-semibold text-[var(--color-text-muted)]">Massage By Mike &lt;MassageByMike92@gmail.com&gt;</span> — your login is for attribution only, never the sender.</div>
+      <div class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]"><Send size={12} /> Custom message</div>
+      <div class="mb-2 text-[12px] text-[var(--color-text-faint)]">Sends as <span class="font-semibold text-[var(--color-text-muted)]">Massage By Mike &lt;MassageByMike92@gmail.com&gt;</span> — your login is for attribution only, never the sender.</div>
       <div class="grid gap-2 md:grid-cols-[120px_1fr]">
         <select class={inputClass} value={channel} onChange={(e) => setChannel((e.currentTarget as HTMLSelectElement).value as any)}>
           <option value="email">Email</option><option value="sms">SMS</option><option value="both">Both</option>
@@ -706,10 +710,10 @@ function MessagePanel({ client, canEdit, onDone }: { client: MassageClient; canE
       </div>
       <textarea class={`${inputClass} mt-2 min-h-[80px] resize-y`} placeholder="Message body" value={bodyText} onInput={(e) => setBodyText((e.currentTarget as HTMLTextAreaElement).value)} />
       <div class="mt-2 flex items-center justify-between">
-        <span class="text-[11px] text-[var(--color-text-faint)]">{optWarn ? '⚠ client is not opted in for that channel — send will be skipped' : 'client is opted in'}</span>
+        <span class="text-[12px] text-[var(--color-text-faint)]">{optWarn ? '⚠ client is not opted in for that channel — send will be skipped' : 'client is opted in'}</span>
         <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !bodyText.trim()} onClick={send}>{busy ? 'Sending…' : 'Send now'}</button>
       </div>
-      {err && <div class="mt-2 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+      {err && <div class="mt-2 text-[12px] text-[var(--color-status-failed)]">{err}</div>}
     </div>
   );
 }
@@ -717,15 +721,18 @@ function MessagePanel({ client, canEdit, onDone }: { client: MassageClient; canE
 function ActionLog({ actionLog }: { actionLog: AdminAction[] }) {
   return (
     <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
-      <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2 text-[12px] font-semibold text-[var(--color-text)]">
+      <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2 text-[13px] font-semibold text-[var(--color-text)]">
         <History size={14} class="text-[var(--color-accent)]" /> Admin action log
       </div>
       {actionLog.length === 0 ? (
-        <div class="px-3 py-5 text-center text-[12px] text-[var(--color-text-faint)]">No admin edits logged yet.</div>
+        <div class="px-3 py-5 text-center text-[13px] text-[var(--color-text-faint)]">No admin edits logged yet.</div>
       ) : (
         <div class="max-h-[300px] overflow-y-auto">
+          <div class="sticky top-0 z-10 hidden gap-1 border-b border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-faint)] md:grid md:grid-cols-[170px_150px_1fr_90px]">
+            <div>Admin</div><div>Field</div><div>Change</div><div class="text-right">When</div>
+          </div>
           {actionLog.map((e) => (
-            <div key={e.id} class="grid gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[11px] last:border-b-0 md:grid-cols-[170px_150px_1fr_90px]">
+            <div key={e.id} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2.5 text-[12px] transition-colors last:border-b-0 hover:bg-[var(--color-elevated)] md:grid-cols-[170px_150px_1fr_90px]">
               <div class="truncate text-[var(--color-text-muted)]">{e.adminUser}</div>
               <div class="font-mono text-[var(--color-accent)]">{e.field}</div>
               <div class="truncate font-mono text-[var(--color-text-faint)]">{e.oldValue ?? 'null'} {'->'} {e.newValue ?? 'null'}</div>
@@ -752,7 +759,7 @@ function MessagingTab() {
   const { busy: logRefreshing, spin: spinLog } = useSpin();
   const s = sched.data;
   const pill = (on: boolean, label: string) => (
-    <span class={`rounded px-2 py-0.5 text-[11px] font-semibold ${on ? 'bg-[color-mix(in_srgb,var(--color-status-done)_18%,transparent)] text-[var(--color-status-done)]' : 'bg-[var(--color-elevated)] text-[var(--color-text-faint)]'}`}>{label}</span>
+    <span class={`rounded px-2 py-0.5 text-[12px] font-semibold ${on ? 'bg-[color-mix(in_srgb,var(--color-status-done)_18%,transparent)] text-[var(--color-status-done)]' : 'bg-[var(--color-elevated)] text-[var(--color-text-faint)]'}`}>{label}</span>
   );
   return (
     <div class="space-y-4">
@@ -767,21 +774,21 @@ function MessagingTab() {
             {pill(s.mail.live, `email ${s.mail.live ? 'LIVE' : 'dry-run'}`)}
             {pill(s.sms.live, `SMS ${s.sms.label}`)}
           </div>
-        ) : <div class="text-[12px] text-[var(--color-text-faint)]">Loading…</div>}
-        <p class="mt-3 text-[11px] text-[var(--color-text-faint)]">Schedules are set on the massage server (env flags). SMS stays dry-run until a free provider is enabled. Per-appointment manual sends live on each account's Appointments panel.</p>
+        ) : <div class="text-[13px] text-[var(--color-text-faint)]">Loading…</div>}
+        <p class="mt-3 text-[12px] text-[var(--color-text-faint)]">Schedules are set on the massage server (env flags). SMS stays dry-run until a free provider is enabled. Per-appointment manual sends live on each account's Appointments panel.</p>
       </section>
 
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
         <div class="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
-          <div class="text-[12px] font-semibold text-[var(--color-text)]">Send log</div>
+          <div class="text-[13px] font-semibold text-[var(--color-text)]">Send log</div>
           <button type="button" class={btnGhost} onClick={() => void spinLog(log.refresh)} disabled={logRefreshing} aria-busy={logRefreshing}>{logRefreshing ? <NestedSquaresSpinner size={11} /> : <RefreshCw size={11} />} refresh</button>
         </div>
         {(log.data?.messages ?? []).length === 0 ? (
-          <div class="px-3 py-5 text-center text-[12px] text-[var(--color-text-faint)]">No messages sent yet.</div>
+          <div class="px-3 py-5 text-center text-[13px] text-[var(--color-text-faint)]">No messages sent yet.</div>
         ) : (
           <div class="max-h-[520px] overflow-y-auto">
             {(log.data?.messages ?? []).map((m) => (
-              <div key={m.id} class="grid gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[11px] last:border-b-0 md:grid-cols-[70px_130px_1fr_110px_90px]">
+              <div key={m.id} class="grid gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[12px] last:border-b-0 md:grid-cols-[70px_130px_1fr_110px_90px]">
                 <div class="font-mono text-[var(--color-accent)]">{m.channel}</div>
                 <div class="text-[var(--color-text-muted)]">{m.template}</div>
                 <div class="truncate text-[var(--color-text-faint)]">{m.recipient} · {m.subject}</div>
@@ -835,19 +842,19 @@ function PromosTab({ canEdit }: { canEdit: boolean }) {
         </div>
         <div class="mt-3 flex items-center gap-2 border-t border-[var(--color-border)] pt-3">
           <Gift size={14} class="text-[var(--color-accent)]" />
-          <span class="text-[12px] text-[var(--color-text-muted)]">Mint gift certificate $</span>
+          <span class="text-[13px] text-[var(--color-text-muted)]">Mint gift certificate $</span>
           <input class={`${inputClass} w-24`} type="number" value={giftAmt} onInput={(e) => setGiftAmt((e.currentTarget as HTMLInputElement).value)} />
           <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={issueGift}>Issue gift</button>
         </div>
-        {err && <div class="mt-2 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+        {err && <div class="mt-2 text-[12px] text-[var(--color-status-failed)]">{err}</div>}
       </section>
 
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
-        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[12px] font-semibold text-[var(--color-text)]">{rows.length} codes</div>
-        {rows.length === 0 ? <div class="px-3 py-5 text-center text-[12px] text-[var(--color-text-faint)]">No codes yet.</div> : (
+        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[13px] font-semibold text-[var(--color-text)]">{rows.length} codes</div>
+        {rows.length === 0 ? <div class="px-3 py-5 text-center text-[13px] text-[var(--color-text-faint)]">No codes yet.</div> : (
           <div class="max-h-[520px] overflow-y-auto">
             {rows.map((c) => (
-              <div key={c.code} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[11px] last:border-b-0 md:grid-cols-[130px_90px_1fr_120px_80px]">
+              <div key={c.code} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[12px] last:border-b-0 md:grid-cols-[130px_90px_1fr_120px_80px]">
                 <div class="font-mono font-semibold text-[var(--color-text)]">{c.code}</div>
                 <div class="text-[var(--color-text-muted)]">{c.type === 'percent' ? `${c.value}%` : c.type === 'gift' ? `$${c.balance}/${c.value}` : `$${c.value}`}</div>
                 <div class="truncate text-[var(--color-text-faint)]">{c.label || '—'} · {c.uses} used{c.max_uses ? `/${c.max_uses}` : ''}{c.expires_at ? ` · exp ${c.expires_at.slice(0, 10)}` : ''}</div>
@@ -1048,21 +1055,21 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
           <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => quickBlock('week')}><Plus size={12} /> Block rest of this week</button>
           <button type="button" class={paused ? btnAccent : btnGhost} style={paused ? 'background:var(--color-accent)' : ''} disabled={!canEdit || busy} onClick={togglePause}>{paused ? '▶ Resume online bookings' : '⏸ Pause all new bookings'}</button>
         </div>
-        {paused && <div class="mt-2 text-[11px] font-semibold text-[var(--color-status-failed)]">Online booking is PAUSED — clients can’t submit new requests until you resume.</div>}
+        {paused && <div class="mt-2 text-[12px] font-semibold text-[var(--color-status-failed)]">Online booking is PAUSED — clients can’t submit new requests until you resume.</div>}
       </section>
 
       {/* Month schedule view */}
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
         <div class="mb-2 flex items-center justify-between">
           <h3 class="flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> My schedule</h3>
-          <div class="flex items-center gap-2 text-[12px]">
+          <div class="flex items-center gap-2 text-[13px]">
             <button type="button" class={btnGhost} onClick={() => shiftMonth(-1)}>‹</button>
             <span class="min-w-[110px] text-center font-semibold text-[var(--color-text)]">{monthLabel}</span>
             <button type="button" class={btnGhost} onClick={() => shiftMonth(1)}>›</button>
           </div>
         </div>
         <div class="grid grid-cols-7 gap-1 text-center">
-          {DAY_NAMES.map((d) => <div key={d} class="text-[10px] font-semibold text-[var(--color-text-faint)]">{d}</div>)}
+          {DAY_NAMES.map((d) => <div key={d} class="text-[11px] font-semibold text-[var(--color-text-faint)]">{d}</div>)}
           {Array.from({ length: firstDow }).map((_, i) => <div key={`e${i}`} />)}
           {Array.from({ length: daysInMonth }).map((_, i) => {
             const day = i + 1;
@@ -1070,7 +1077,7 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
             const appts = apptsByDay[iso] || [];
             const off = offDays.has(iso);
             const partial = partialDays.has(iso);
-            const cls = 'flex h-12 flex-col items-center justify-start rounded-md border border-[var(--color-border)] p-1 text-[11px] transition-colors '
+            const cls = 'flex h-12 flex-col items-center justify-start rounded-md border border-[var(--color-border)] p-1 text-[12px] transition-colors '
               + (off ? 'bg-[color-mix(in_srgb,var(--color-status-failed)_18%,transparent)] '
                 : appts.length ? 'bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] '
                 : 'hover:bg-[var(--color-elevated)] ')
@@ -1079,26 +1086,26 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
             return (
               <button key={iso} type="button" class={cls} title={title} onClick={() => setTbDay(iso)}>
                 <span class="text-[var(--color-text)]">{day}</span>
-                {off ? <span class="text-[9px] font-semibold text-[var(--color-status-failed)]">OFF</span>
-                  : appts.length ? <span class="mt-0.5 text-[10px] font-semibold text-[var(--color-accent)]">●{appts.length}</span>
-                  : partial ? <span class="mt-0.5 text-[10px] text-[var(--color-text-muted)]">◐</span> : null}
+                {off ? <span class="text-[10px] font-semibold text-[var(--color-status-failed)]">OFF</span>
+                  : appts.length ? <span class="mt-0.5 text-[11px] font-semibold text-[var(--color-accent)]">●{appts.length}</span>
+                  : partial ? <span class="mt-0.5 text-[11px] text-[var(--color-text-muted)]">◐</span> : null}
               </button>
             );
           })}
         </div>
-        <div class="mt-2 text-[10px] text-[var(--color-text-faint)]">● booked · <span class="text-[var(--color-status-failed)]">OFF</span> day off · ◐ partial block · tap a day to target the partial-block form below</div>
+        <div class="mt-2 text-[11px] text-[var(--color-text-faint)]">● booked · <span class="text-[var(--color-status-failed)]">OFF</span> day off · ◐ partial block · tap a day to target the partial-block form below</div>
       </section>
 
       {/* Booking window */}
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
         <h3 class="mb-2 flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Booking window</h3>
-        <p class="mb-3 text-[12px] leading-relaxed text-[var(--color-text-muted)]">
+        <p class="mb-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
           Clients can book any open day within this many days. Beyond it (up to {cfg?.maxAdvanceDays ?? 365} days) they can only
           <span class="font-semibold text-[var(--color-text)]"> request</span> a date — it lands in the queue below for you to approve.
         </p>
         <div class="flex items-center gap-2">
           <input class={`${inputClass} w-24`} type="number" min={1} max={365} value={windowDays} onInput={(e) => setWindowDays((e.currentTarget as HTMLInputElement).value)} />
-          <span class="text-[12px] text-[var(--color-text-muted)]">days self-serve</span>
+          <span class="text-[13px] text-[var(--color-text-muted)]">days self-serve</span>
           <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !windowDays} onClick={saveWindow}><Save size={12} /> Save window</button>
         </div>
       </section>
@@ -1106,31 +1113,31 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
       {/* Weekly working hours */}
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
         <h3 class="mb-2 flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Weekly hours</h3>
-        <p class="mb-3 text-[12px] leading-relaxed text-[var(--color-text-muted)]">Your normal working days &amp; hours. A day with no time ranges is closed. Add a range to open a day (e.g. a Saturday); add two ranges for a lunch break. Changes apply immediately.</p>
+        <p class="mb-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">Your normal working days &amp; hours. A day with no time ranges is closed. Add a range to open a day (e.g. a Saturday); add two ranges for a lunch break. Changes apply immediately.</p>
         <div class="space-y-1.5">
           {week && DAY_NAMES.map((name, d) => {
             const ranges = week[String(d)] || [];
             return (
               <div key={d} class="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 last:border-b-0">
-                <span class="w-9 text-[12px] font-semibold text-[var(--color-text)]">{name}</span>
-                {ranges.length === 0 && <span class="text-[11px] text-[var(--color-text-faint)]">Closed</span>}
+                <span class="w-9 text-[13px] font-semibold text-[var(--color-text)]">{name}</span>
+                {ranges.length === 0 && <span class="text-[12px] text-[var(--color-text-faint)]">Closed</span>}
                 {ranges.map((r, i) => (
                   <span key={i} class="inline-flex items-center gap-1">
                     <input class={`${inputClass} w-24`} type="time" value={r[0]} onInput={(e) => mutRange(d, i, 0, (e.currentTarget as HTMLInputElement).value)} />
-                    <span class="text-[11px] text-[var(--color-text-faint)]">–</span>
+                    <span class="text-[12px] text-[var(--color-text-faint)]">–</span>
                     <input class={`${inputClass} w-24`} type="time" value={r[1]} onInput={(e) => mutRange(d, i, 1, (e.currentTarget as HTMLInputElement).value)} />
                     <button type="button" title="Remove range" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeRange(d, i)}><X size={12} /></button>
                   </span>
                 ))}
-                <button type="button" class="inline-flex items-center gap-0.5 text-[11px] text-[var(--color-accent)] hover:underline disabled:opacity-40" disabled={!canEdit || busy} onClick={() => addRange(d)}><Plus size={11} /> hours</button>
+                <button type="button" class="inline-flex items-center gap-0.5 text-[12px] text-[var(--color-accent)] hover:underline disabled:opacity-40" disabled={!canEdit || busy} onClick={() => addRange(d)}><Plus size={11} /> hours</button>
               </div>
             );
           })}
         </div>
         <div class="mt-3 flex flex-wrap items-end gap-3 border-t border-[var(--color-border)] pt-3">
-          <label class="text-[11px] text-[var(--color-text-muted)]">Slot step (min)<br /><input class={`${inputClass} w-20`} type="number" min={5} max={240} value={slotInc} onInput={(e) => setSlotInc((e.currentTarget as HTMLInputElement).value)} /></label>
-          <label class="text-[11px] text-[var(--color-text-muted)]">Buffer (min)<br /><input class={`${inputClass} w-20`} type="number" min={0} max={120} value={buffer} onInput={(e) => setBuffer((e.currentTarget as HTMLInputElement).value)} /></label>
-          <label class="text-[11px] text-[var(--color-text-muted)]">Lead time (hrs)<br /><input class={`${inputClass} w-20`} type="number" min={0} max={168} value={lead} onInput={(e) => setLead((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[12px] text-[var(--color-text-muted)]">Slot step (min)<br /><input class={`${inputClass} w-20`} type="number" min={5} max={240} value={slotInc} onInput={(e) => setSlotInc((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[12px] text-[var(--color-text-muted)]">Buffer (min)<br /><input class={`${inputClass} w-20`} type="number" min={0} max={120} value={buffer} onInput={(e) => setBuffer((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[12px] text-[var(--color-text-muted)]">Lead time (hrs)<br /><input class={`${inputClass} w-20`} type="number" min={0} max={168} value={lead} onInput={(e) => setLead((e.currentTarget as HTMLInputElement).value)} /></label>
           <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !week} onClick={saveHours}><Save size={12} /> Save hours</button>
         </div>
       </section>
@@ -1138,18 +1145,18 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
       {/* Days off */}
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
         <h3 class="mb-2 flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Days off</h3>
-        <p class="mb-3 text-[12px] leading-relaxed text-[var(--color-text-muted)]">Blocked days show no open times to clients. Leave the end date empty for a single day, or set it for a range (vacation).</p>
+        <p class="mb-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">Blocked days show no open times to clients. Leave the end date empty for a single day, or set it for a range (vacation).</p>
         <div class="flex flex-wrap items-center gap-2">
-          <label class="text-[11px] text-[var(--color-text-muted)]">From <input class={inputClass} type="date" value={start} onInput={(e) => setStart((e.currentTarget as HTMLInputElement).value)} /></label>
-          <label class="text-[11px] text-[var(--color-text-muted)]">To (optional) <input class={inputClass} type="date" value={end} onInput={(e) => setEnd((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[12px] text-[var(--color-text-muted)]">From <input class={inputClass} type="date" value={start} onInput={(e) => setStart((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[12px] text-[var(--color-text-muted)]">To (optional) <input class={inputClass} type="date" value={end} onInput={(e) => setEnd((e.currentTarget as HTMLInputElement).value)} /></label>
           <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !start} onClick={addBlackout}><Plus size={12} /> Block</button>
         </div>
-        {err && <div class="mt-2 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+        {err && <div class="mt-2 text-[12px] text-[var(--color-status-failed)]">{err}</div>}
         <div class="mt-3 border-t border-[var(--color-border)] pt-3">
-          {blackouts.length === 0 ? <div class="text-[12px] text-[var(--color-text-faint)]">No days off scheduled.</div> : (
+          {blackouts.length === 0 ? <div class="text-[13px] text-[var(--color-text-faint)]">No days off scheduled.</div> : (
             <div class="flex flex-wrap gap-2">
               {blackouts.map((d) => (
-                <span key={d} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11px] text-[var(--color-text)]">
+                <span key={d} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12px] text-[var(--color-text)]">
                   {fmtDay(d)}
                   <button type="button" title="Remove" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeDay(d)}><X size={12} /></button>
                 </span>
@@ -1160,18 +1167,18 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
 
         {/* Partial-day blocks — block a time range within a day (day stays otherwise bookable). */}
         <div class="mt-3 border-t border-[var(--color-border)] pt-3">
-          <div class="mb-2 text-[12px] font-semibold text-[var(--color-text)]">Partial-day blocks</div>
-          <p class="mb-2 text-[11px] text-[var(--color-text-muted)]">Block just part of a day (e.g. an errand 2–5pm) — the rest of the day stays bookable.</p>
+          <div class="mb-2 text-[13px] font-semibold text-[var(--color-text)]">Partial-day blocks</div>
+          <p class="mb-2 text-[12px] text-[var(--color-text-muted)]">Block just part of a day (e.g. an errand 2–5pm) — the rest of the day stays bookable.</p>
           <div class="flex flex-wrap items-end gap-2">
-            <label class="text-[11px] text-[var(--color-text-muted)]">Day<br /><input class={inputClass} type="date" value={tbDay} onInput={(e) => setTbDay((e.currentTarget as HTMLInputElement).value)} /></label>
-            <label class="text-[11px] text-[var(--color-text-muted)]">From<br /><input class={`${inputClass} w-24`} type="time" value={tbStart} onInput={(e) => setTbStart((e.currentTarget as HTMLInputElement).value)} /></label>
-            <label class="text-[11px] text-[var(--color-text-muted)]">To<br /><input class={`${inputClass} w-24`} type="time" value={tbEnd} onInput={(e) => setTbEnd((e.currentTarget as HTMLInputElement).value)} /></label>
+            <label class="text-[12px] text-[var(--color-text-muted)]">Day<br /><input class={inputClass} type="date" value={tbDay} onInput={(e) => setTbDay((e.currentTarget as HTMLInputElement).value)} /></label>
+            <label class="text-[12px] text-[var(--color-text-muted)]">From<br /><input class={`${inputClass} w-24`} type="time" value={tbStart} onInput={(e) => setTbStart((e.currentTarget as HTMLInputElement).value)} /></label>
+            <label class="text-[12px] text-[var(--color-text-muted)]">To<br /><input class={`${inputClass} w-24`} type="time" value={tbEnd} onInput={(e) => setTbEnd((e.currentTarget as HTMLInputElement).value)} /></label>
             <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !tbDay} onClick={addTimeBlock}><Plus size={12} /> Block time</button>
           </div>
           {timeBlocks.length > 0 && (
             <div class="mt-2 flex flex-wrap gap-2">
               {timeBlocks.map((t) => (
-                <span key={t.id} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11px] text-[var(--color-text)]">
+                <span key={t.id} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12px] text-[var(--color-text)]">
                   {fmtDay(t.day)} {t.start_hm}–{t.end_hm}
                   <button type="button" title="Remove" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeTimeBlock(t.id)}><X size={12} /></button>
                 </span>
@@ -1183,11 +1190,11 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
 
       {/* Beyond-window request queue */}
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
-        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[12px] font-semibold text-[var(--color-text)]">Requests awaiting approval ({reqs.length})</div>
-        {reqs.length === 0 ? <div class="px-3 py-5 text-center text-[12px] text-[var(--color-text-faint)]">No beyond-window requests right now.</div> : (
+        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[13px] font-semibold text-[var(--color-text)]">Requests awaiting approval ({reqs.length})</div>
+        {reqs.length === 0 ? <div class="px-3 py-5 text-center text-[13px] text-[var(--color-text-faint)]">No beyond-window requests right now.</div> : (
           <div class="max-h-[420px] overflow-y-auto">
             {reqs.map((r) => (
-              <div key={r.id} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[11px] last:border-b-0 md:grid-cols-[1fr_150px_auto]">
+              <div key={r.id} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2 text-[12px] last:border-b-0 md:grid-cols-[1fr_150px_auto]">
                 <div>
                   <div class="font-semibold text-[var(--color-text)]">{r.client_name} <span class="font-normal text-[var(--color-text-faint)]">· {r.client_email}</span></div>
                   <div class="text-[var(--color-text-muted)]">{r.service_name}</div>
@@ -1268,33 +1275,37 @@ function IntakesTab({ canEdit }: { canEdit: boolean }) {
           <input class={`${inputClass} py-1.5`} placeholder="Search client / email / service" value={query} onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
         </div>
         <div class="flex items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-1.5">
-          <label class="inline-flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
+          <label class="inline-flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
             <input type="checkbox" checked={onlyUnreviewed} onChange={(e) => setOnlyUnreviewed((e.currentTarget as HTMLInputElement).checked)} /> Unreviewed only
           </label>
-          <span class="text-[10px] text-[var(--color-text-faint)]">{filtered.length} of {intakes.length}</span>
+          <span class="text-[11px] text-[var(--color-text-faint)]">{filtered.length} of {intakes.length}</span>
         </div>
-        {list.loading && !list.data && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">Loading…</div>}
+        {list.loading && !list.data && <div class="px-3 py-6 text-center text-[13px] text-[var(--color-text-faint)]">Loading…</div>}
         <div class="max-h-[620px] overflow-y-auto">
           {filtered.map((i) => (
             <button key={i.id} type="button" onClick={() => setSelectedId(i.id)}
-              class={`w-full border-b border-[var(--color-border)] px-3 py-2 text-left last:border-b-0 ${selectedId === i.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
-              <div class="flex items-center gap-2">
-                <ClipboardList size={13} class="text-[var(--color-accent)]" />
-                <span class="truncate text-[12px] font-semibold text-[var(--color-text)]">{i.client_name || i.client_email || '(guest)'}</span>
-                {i.reviewed_at
-                  ? <span class="ml-auto rounded bg-[color-mix(in_srgb,var(--color-status-done)_18%,transparent)] px-1 text-[9px] uppercase text-[var(--color-status-done)]">reviewed</span>
-                  : <span class="ml-auto rounded bg-[var(--color-elevated)] px-1 text-[9px] uppercase text-[var(--color-warn)]">new</span>}
-              </div>
-              <div class="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">{i.client_email || '—'}</div>
-              <div class="mt-0.5 text-[10px] text-[var(--color-text-faint)]">
-                {i.service_name || 'intake'}{i.appt_date ? ` · ${i.appt_date} ${i.appt_time ?? ''}` : ''} · submitted {agoFromIso(i.submitted_at)}
-              </div>
+              class={`flex w-full items-center gap-3 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 ${selectedId === i.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
+              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-elevated)]">
+                <ClipboardList size={15} class="text-[var(--color-accent)]" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="flex items-center gap-2">
+                  <span class="truncate text-[14px] font-semibold text-[var(--color-text)]">{i.client_name || i.client_email || '(guest)'}</span>
+                  {i.reviewed_at
+                    ? <span class="ml-auto rounded bg-[color-mix(in_srgb,var(--color-status-done)_18%,transparent)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--color-status-done)]">reviewed</span>
+                    : <span class="ml-auto rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--color-warn)]">new</span>}
+                </span>
+                <span class="mt-0.5 block truncate text-[12px] text-[var(--color-text-muted)]">{i.client_email || '—'}</span>
+                <span class="mt-0.5 block text-[11px] text-[var(--color-text-faint)]">
+                  {i.service_name || 'intake'}{i.appt_date ? ` · ${i.appt_date} ${i.appt_time ?? ''}` : ''} · submitted {agoFromIso(i.submitted_at)}
+                </span>
+              </span>
             </button>
           ))}
-          {!list.loading && filtered.length === 0 && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">No intake forms.</div>}
+          {!list.loading && filtered.length === 0 && <div class="px-3 py-6 text-center text-[13px] text-[var(--color-text-faint)]">No intake forms.</div>}
         </div>
       </aside>
-      <main>{selectedId ? <IntakeViewer id={selectedId} canEdit={canEdit} onReviewed={() => list.refresh()} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[12px] text-[var(--color-text-faint)]">Select an intake to review.</div>}</main>
+      <main>{selectedId ? <IntakeViewer id={selectedId} canEdit={canEdit} onReviewed={() => list.refresh()} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[13px] text-[var(--color-text-faint)]">Select an intake to review.</div>}</main>
     </div>
   );
 }
@@ -1326,8 +1337,8 @@ function IntakeViewer({ id, canEdit, onReviewed }: { id: string; canEdit: boolea
     finally { setBusy(false); }
   }
 
-  if (loading) return <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[12px] text-[var(--color-text-faint)]">Loading intake…</div>;
-  if (err && !detail) return <div class="rounded-lg border border-[var(--color-status-failed)] px-4 py-4 text-[12px] text-[var(--color-status-failed)]">{err}</div>;
+  if (loading) return <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[13px] text-[var(--color-text-faint)]">Loading intake…</div>;
+  if (err && !detail) return <div class="rounded-lg border border-[var(--color-status-failed)] px-4 py-4 text-[13px] text-[var(--color-status-failed)]">{err}</div>;
   if (!detail) return null;
   const flags = Object.values(detail.flags || {});
   const i = detail.intake;
@@ -1337,7 +1348,7 @@ function IntakeViewer({ id, canEdit, onReviewed }: { id: string; canEdit: boolea
       <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-[15px] font-semibold text-[var(--color-text)]">{i.client_name || i.client_email || '(guest intake)'}</h2>
-          <div class="mt-1 flex flex-wrap gap-x-3 text-[11px] text-[var(--color-text-faint)]">
+          <div class="mt-1 flex flex-wrap gap-x-3 text-[12px] text-[var(--color-text-faint)]">
             <span>{i.service_name || 'intake'}{i.appt_date ? ` · ${i.appt_date} ${i.appt_time ?? ''}` : ''}</span>
             <span>· submitted {agoFromIso(i.submitted_at)}</span>
             {i.reviewed_at
@@ -1350,13 +1361,13 @@ function IntakeViewer({ id, canEdit, onReviewed }: { id: string; canEdit: boolea
         </button>
       </div>
       {flags.length > 0 && (
-        <div class="mb-3 rounded-md border border-[var(--color-warn)] px-3 py-2 text-[11px] text-[var(--color-warn)]">
+        <div class="mb-3 rounded-md border border-[var(--color-warn)] px-3 py-2 text-[12px] text-[var(--color-warn)]">
           <span class="font-semibold">⚠ Safety flags:</span> {flags.map((f) => `${f.label}: ${f.value}`).join(' · ')}
         </div>
       )}
-      {err && <div class="mb-3 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+      {err && <div class="mb-3 text-[12px] text-[var(--color-status-failed)]">{err}</div>}
       {/* Rendered intake (reuses the massage server's reviewHtml). */}
-      <div class="intake-review overflow-x-auto text-[12px] text-[var(--color-text)]" dangerouslySetInnerHTML={{ __html: detail.html }} />
+      <div class="intake-review overflow-x-auto text-[13px] text-[var(--color-text)]" dangerouslySetInnerHTML={{ __html: detail.html }} />
     </section>
   );
 }
@@ -1384,18 +1395,20 @@ function SoapTab({ overview, canEdit }: { overview: ReturnType<typeof useFetch<O
         <div class="max-h-[640px] overflow-y-auto">
           {filtered.map((c) => (
             <button key={c.id} type="button" onClick={() => setClientId(c.id)}
-              class={`w-full border-b border-[var(--color-border)] px-3 py-2 text-left last:border-b-0 ${clientId === c.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
-              <div class="flex items-center gap-2">
-                <Stethoscope size={13} class="text-[var(--color-accent)]" />
-                <span class="truncate text-[12px] font-semibold text-[var(--color-text)]">{c.name || c.email}</span>
-              </div>
-              <div class="mt-1 truncate text-[11px] text-[var(--color-text-muted)]">{c.email}</div>
+              class={`flex w-full items-center gap-3 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 ${clientId === c.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
+              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-elevated)]">
+                <Stethoscope size={15} class="text-[var(--color-accent)]" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-[14px] font-semibold text-[var(--color-text)]">{c.name || c.email}</span>
+                <span class="mt-0.5 block truncate text-[12px] text-[var(--color-text-muted)]">{c.email}</span>
+              </span>
             </button>
           ))}
-          {filtered.length === 0 && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">No matching clients.</div>}
+          {filtered.length === 0 && <div class="px-3 py-6 text-center text-[13px] text-[var(--color-text-faint)]">No matching clients.</div>}
         </div>
       </aside>
-      <main>{selected ? <SoapClientPanel key={selected.id} client={selected} canEdit={canEdit} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[12px] text-[var(--color-text-faint)]">Select a client to view their SOAP notes over time.</div>}</main>
+      <main>{selected ? <SoapClientPanel key={selected.id} client={selected} canEdit={canEdit} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[13px] text-[var(--color-text-faint)]">Select a client to view their SOAP notes over time.</div>}</main>
     </div>
   );
 }
@@ -1440,7 +1453,7 @@ function SoapClientPanel({ client, canEdit }: { client: MassageClient; canEdit: 
       </div>
 
       {cf && (Object.keys(cf.flags || {}).length > 0 || (cf.next_focus?.length ?? 0) > 0) && (
-        <div class="rounded-lg border border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] px-4 py-3 text-[11px]">
+        <div class="rounded-lg border border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] px-4 py-3 text-[12px]">
           {Object.keys(cf.flags || {}).length > 0 && (
             <div class="text-[var(--color-warn)]"><span class="font-semibold">⚠ Intake safety flags:</span> {Object.values(cf.flags).map((f) => `${f.label}: ${f.value}`).join(' · ')}</div>
           )}
@@ -1453,31 +1466,31 @@ function SoapClientPanel({ client, canEdit }: { client: MassageClient; canEdit: 
       {trend && (notes.length > 0) && <TissueTrend trend={trend} />}
 
       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
-        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[12px] font-semibold text-[var(--color-text)]">{notes.length} note{notes.length === 1 ? '' : 's'}</div>
-        {soap.loading && !soap.data && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">Loading…</div>}
-        {!soap.loading && notes.length === 0 && <div class="px-3 py-6 text-center text-[12px] text-[var(--color-text-faint)]">No SOAP notes yet. Create the first one.</div>}
+        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[13px] font-semibold text-[var(--color-text)]">{notes.length} note{notes.length === 1 ? '' : 's'}</div>
+        {soap.loading && !soap.data && <div class="px-3 py-6 text-center text-[13px] text-[var(--color-text-faint)]">Loading…</div>}
+        {!soap.loading && notes.length === 0 && <div class="px-3 py-6 text-center text-[13px] text-[var(--color-text-faint)]">No SOAP notes yet. Create the first one.</div>}
         <div class="max-h-[560px] overflow-y-auto">
           {notes.map((n) => (
             <button key={n.id} type="button" onClick={() => canEdit && setMode({ edit: n })}
               class="block w-full border-b border-[var(--color-border)] px-3 py-3 text-left last:border-b-0 hover:bg-[var(--color-elevated)]">
               <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-                <span class="text-[12px] font-semibold text-[var(--color-text)]">{n.session_date || (n.created_at || '').slice(0, 10)}</span>
+                <span class="text-[13px] font-semibold text-[var(--color-text)]">{n.session_date || (n.created_at || '').slice(0, 10)}</span>
                 {(n.pain_before != null || n.pain_after != null) && (
-                  <span class="text-[11px] text-[var(--color-text-muted)]">pain {n.pain_before ?? '—'} → <span class="text-[var(--color-status-done)]">{n.pain_after ?? '—'}</span></span>
+                  <span class="text-[12px] text-[var(--color-text-muted)]">pain {n.pain_before ?? '—'} → <span class="text-[var(--color-status-done)]">{n.pain_after ?? '—'}</span></span>
                 )}
-                {n.pressure && <span class="text-[11px] text-[var(--color-text-faint)]">· {n.pressure}</span>}
-                {n.duration_min ? <span class="text-[11px] text-[var(--color-text-faint)]">· {n.duration_min}m</span> : null}
-                {n.author && <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">{n.author}</span>}
+                {n.pressure && <span class="text-[12px] text-[var(--color-text-faint)]">· {n.pressure}</span>}
+                {n.duration_min ? <span class="text-[12px] text-[var(--color-text-faint)]">· {n.duration_min}m</span> : null}
+                {n.author && <span class="ml-auto text-[11px] text-[var(--color-text-faint)]">{n.author}</span>}
               </div>
-              {n.techniques?.length > 0 && <div class="mt-1 text-[11px] text-[var(--color-text-muted)]">{n.techniques.join(', ')}</div>}
+              {n.techniques?.length > 0 && <div class="mt-1 text-[12px] text-[var(--color-text-muted)]">{n.techniques.join(', ')}</div>}
               {n.areas_concern?.length > 0 && (
                 <div class="mt-1 flex flex-wrap gap-1">
                   {n.areas_concern.map((a, idx) => (
-                    <span key={idx} class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)]">{a.region} <span class="text-[var(--color-warn)]">{a.severity}</span>{a.focus ? ' ★' : ''}</span>
+                    <span key={idx} class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-muted)]">{a.region} <span class="text-[var(--color-warn)]">{a.severity}</span>{a.focus ? ' ★' : ''}</span>
                   ))}
                 </div>
               )}
-              {n.assessment && <div class="mt-1 truncate text-[11px] text-[var(--color-text-faint)]">A: {n.assessment}</div>}
+              {n.assessment && <div class="mt-1 truncate text-[12px] text-[var(--color-text-faint)]">A: {n.assessment}</div>}
             </button>
           ))}
         </div>
@@ -1491,13 +1504,13 @@ function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
   const regions = Object.entries(trend.regions || {}).filter(([, pts]) => pts.length > 0);
   return (
     <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
-      <div class="mb-3 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]"><Activity size={12} /> Tissue trend over time</div>
+      <div class="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]"><Activity size={12} /> Tissue trend over time</div>
       {trend.pain.length > 0 && (
         <div class="mb-3">
-          <div class="mb-1 text-[11px] font-semibold text-[var(--color-text-muted)]">Pain before → after</div>
+          <div class="mb-1 text-[12px] font-semibold text-[var(--color-text-muted)]">Pain before → after</div>
           <div class="flex flex-wrap gap-2">
             {trend.pain.map((p, i) => (
-              <div key={i} class="rounded border border-[var(--color-border)] px-2 py-1 text-[10px] text-[var(--color-text-muted)]">
+              <div key={i} class="rounded border border-[var(--color-border)] px-2 py-1 text-[11px] text-[var(--color-text-muted)]">
                 <span class="text-[var(--color-text-faint)]">{p.date}</span>{' '}
                 <span>{p.before ?? '—'}</span> → <span class="text-[var(--color-status-done)]">{p.after ?? '—'}</span>
               </div>
@@ -1509,7 +1522,7 @@ function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
         <div class="space-y-1.5">
           {regions.map(([region, pts]) => (
             <div key={region} class="flex items-center gap-2">
-              <div class="w-28 shrink-0 truncate text-[11px] text-[var(--color-text-muted)]">{region}</div>
+              <div class="w-28 shrink-0 truncate text-[12px] text-[var(--color-text-muted)]">{region}</div>
               <div class="flex flex-1 items-end gap-1" style="height:28px">
                 {pts.map((pt, i) => (
                   <div key={i} class="flex flex-col items-center justify-end" title={`${pt.date}: ${pt.severity}/10`}>
@@ -1517,12 +1530,12 @@ function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
                   </div>
                 ))}
               </div>
-              <div class="w-8 shrink-0 text-right text-[10px] text-[var(--color-text-faint)]">{pts[pts.length - 1]?.severity ?? '—'}</div>
+              <div class="w-8 shrink-0 text-right text-[11px] text-[var(--color-text-faint)]">{pts[pts.length - 1]?.severity ?? '—'}</div>
             </div>
           ))}
         </div>
       )}
-      {regions.length === 0 && trend.pain.length === 0 && <div class="text-[11px] text-[var(--color-text-faint)]">Trend appears once notes carry per-region severity.</div>}
+      {regions.length === 0 && trend.pain.length === 0 && <div class="text-[12px] text-[var(--color-text-faint)]">Trend appears once notes carry per-region severity.</div>}
     </section>
   );
 }
@@ -1622,20 +1635,20 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
         <h3 class="text-[14px] font-semibold text-[var(--color-text)]">{existing ? 'Edit SOAP note' : seed ? 'Duplicate note' : 'New SOAP note'} · {client.name || client.email}</h3>
         <button type="button" class={btnGhost} onClick={onCancel}><X size={13} /> Close</button>
       </div>
-      <div class="mb-3 text-[11px] text-[var(--color-text-faint)]">Private clinical note — the client never sees this.</div>
+      <div class="mb-3 text-[12px] text-[var(--color-text-faint)]">Private clinical note — the client never sees this.</div>
 
       {Object.keys(flags || {}).length > 0 && (
-        <div class="mb-3 rounded-md border border-[var(--color-warn)] px-3 py-2 text-[11px] text-[var(--color-warn)]">
+        <div class="mb-3 rounded-md border border-[var(--color-warn)] px-3 py-2 text-[12px] text-[var(--color-warn)]">
           <span class="font-semibold">⚠ Intake safety flags:</span> {Object.values(flags).map((f) => `${f.label}: ${f.value}`).join(' · ')}
         </div>
       )}
       {seed && (
-        <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
+        <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]">
           <span class="font-semibold text-[var(--color-accent)]">Duplicated from</span> the {seed.session_date || (seed.created_at || '').slice(0, 10)} note — clinical fields pre-filled; date reset to today. Adjust what changed and save as a new note.
         </div>
       )}
       {!existing && !seed && (carryForward?.next_focus?.length ?? 0) > 0 && (
-        <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
+        <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[12px] text-[var(--color-text-muted)]">
           <span class="font-semibold text-[var(--color-accent)]">Carried forward:</span> {carryForward!.next_focus.map((n) => n.region + (n.note ? ` (${n.note})` : '')).join(' · ')} — pre-loaded into the body-map below.
         </div>
       )}
@@ -1664,11 +1677,11 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
       </div>
 
       <div class="mt-4">
-        <div class="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Techniques</div>
+        <div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Techniques</div>
         <div class="flex flex-wrap gap-1.5">
           {SOAP_TECHNIQUES.map((t) => (
             <button key={t} type="button" onClick={() => toggleTechnique(t)}
-              class={`rounded-md border px-2 py-1 text-[11px] ${techniques.includes(t) ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+              class={`rounded-md border px-2 py-1 text-[12px] ${techniques.includes(t) ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
               {t}
             </button>
           ))}
@@ -1687,7 +1700,7 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
         <div class="md:col-span-2"><NoteField label="Adverse reactions" phraseKey="adverse_reactions" value={adverse} onChange={setAdverse} prior={priorVals((n) => n.adverse_reactions)} /></div>
       </div>
 
-      {err && <div class="mt-3 text-[11px] text-[var(--color-status-failed)]">{err}</div>}
+      {err && <div class="mt-3 text-[12px] text-[var(--color-status-failed)]">{err}</div>}
       <div class="mt-4 flex items-center justify-end gap-2">
         <button type="button" class={btnGhost} onClick={onCancel}>Cancel</button>
         <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !canEdit} onClick={save}><Save size={13} /> {busy ? 'Saving…' : existing ? 'Save changes' : 'Save note'}</button>
@@ -1735,7 +1748,7 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
         const on = used.has(r);
         return (
           <button key={r} type="button" title={`${r}${on ? ' — tap to remove' : ''}`} aria-pressed={on} onClick={() => toggleRegion(r)}
-            class="absolute flex items-center justify-center rounded-full border text-[8px] font-bold leading-none transition"
+            class="absolute flex items-center justify-center rounded-full border text-[10px] font-bold leading-none transition"
             style={`left:${pos[0]}%;top:${pos[1]}%;width:22px;height:22px;transform:translate(-50%,-50%);cursor:pointer;${on
               ? 'background:var(--color-accent);color:#fff;border-color:var(--color-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-accent) 32%,transparent)'
               : 'background:color-mix(in srgb,#000 45%,transparent);color:#fff;border-color:rgba(255,255,255,.6)'}`}>
@@ -1743,14 +1756,14 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
           </button>
         );
       })}
-      <figcaption class="mt-1 text-center text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</figcaption>
+      <figcaption class="mt-1 text-center text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</figcaption>
     </figure>
   );
 
   return (
     <div class="mt-4 rounded-lg border border-[var(--color-border)] p-3">
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Areas of concern — tap the body to flag a region</div>
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Areas of concern — tap the body to flag a region</div>
         <select class={`${inputClass} w-auto py-1`} value="" onChange={(e) => { addRegion((e.currentTarget as HTMLSelectElement).value); (e.currentTarget as HTMLSelectElement).value = ''; }}>
           <option value="">+ add region…</option>
           {SOAP_REGIONS.filter((r) => !used.has(r)).map((r) => <option key={r} value={r}>{r}</option>)}
@@ -1760,23 +1773,23 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
         {figure('front', 'Front')}
         {figure('back', 'Back')}
       </div>
-      {areas.length === 0 && <div class="py-2 text-center text-[11px] text-[var(--color-text-faint)]">No regions flagged. Tap a spot on the body (or use the dropdown) to record severity + findings.</div>}
+      {areas.length === 0 && <div class="py-2 text-center text-[12px] text-[var(--color-text-faint)]">No regions flagged. Tap a spot on the body (or use the dropdown) to record severity + findings.</div>}
       <div class="space-y-2">
         {areas.map((a, i) => (
           <div key={a.region} class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2">
             <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span class="min-w-[68px] text-[12px] font-semibold text-[var(--color-text)]">{a.region}</span>
-              <span class="text-[9px] uppercase tracking-wider text-[var(--color-text-faint)]">sev</span>
+              <span class="min-w-[68px] text-[13px] font-semibold text-[var(--color-text)]">{a.region}</span>
+              <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">sev</span>
               <div class="flex flex-wrap gap-0.5">
                 {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
                   <button key={n} type="button" title={`severity ${n}`} onClick={() => update(i, { severity: n })}
-                    class={`h-5 w-5 rounded text-[9px] font-bold leading-none transition ${a.severity === n ? 'text-white' : 'border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}
+                    class={`h-5 w-5 rounded text-[10px] font-bold leading-none transition ${a.severity === n ? 'text-white' : 'border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}
                     style={a.severity === n ? `background:hsl(${Math.round(120 - (n - 1) * 12)} 68% 42%)` : ''}>
                     {n}
                   </button>
                 ))}
               </div>
-              <label class="ml-auto inline-flex items-center gap-1 text-[10px] text-[var(--color-accent)]">
+              <label class="ml-auto inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)]">
                 <input type="checkbox" checked={!!a.focus} onChange={(e) => update(i, { focus: (e.currentTarget as HTMLInputElement).checked })} /> focus next
               </label>
               <button type="button" title="Remove region" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]" onClick={() => remove(i)}><X size={13} /></button>
