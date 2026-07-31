@@ -28,7 +28,7 @@ function StepAudio({ src }: { src: string }) {
   if (failed) return null;
   return (
     <div style={{ marginTop: '10px' }}>
-      <div style={{ fontSize: '11px', color: ACCENT, fontWeight: 700, marginBottom: '4px' }}>🔊 Erik’s voice — this step</div>
+      <div style={{ fontSize: '12px', color: ACCENT, fontWeight: 700, marginBottom: '4px' }}>🔊 Erik’s voice — this step</div>
       <audio controls preload="none" src={src} onError={() => setFailed(true)}
         style={{ width: '100%', maxWidth: '440px', height: '38px' }} />
     </div>
@@ -46,16 +46,16 @@ function TechClip({ src, caption }: { src: string; caption?: string }) {
   if (failed) return null;
   return (
     <div style={{ marginBottom: '14px' }}>
-      <div style={{ fontSize: '11px', color: ACCENT, fontWeight: 700, marginBottom: '4px' }}>🎬 Technique in motion</div>
+      <div style={{ fontSize: '12px', color: ACCENT, fontWeight: 700, marginBottom: '4px' }}>🎬 Technique in motion</div>
       <div style={{ position: 'relative', maxWidth: '640px' }}>
         <video ref={ref} src={src} autoPlay loop muted playsInline controls onError={() => setFailed(true)}
           style={{ width: '100%', borderRadius: '10px', display: 'block', background: '#000' }} />
         <button type="button" onClick={() => setMuted((m) => !m)}
-          style={{ position: 'absolute', top: '8px', right: '8px', padding: '4px 10px', borderRadius: '7px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', border: 'none', background: 'rgba(0,0,0,0.62)', color: '#fff' }}>
+          style={{ position: 'absolute', top: '8px', right: '8px', padding: '4px 10px', borderRadius: '7px', fontSize: '13px', fontWeight: 700, cursor: 'pointer', border: 'none', background: 'rgba(0,0,0,0.62)', color: '#fff' }}>
           {muted ? '🔇 Tap for Erik’s voice' : '🔊 Voice on'}
         </button>
       </div>
-      {caption && <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '6px', lineHeight: 1.5 }}>{caption}</div>}
+      {caption && <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginTop: '6px', lineHeight: 1.5 }}>{caption}</div>}
     </div>
   );
 }
@@ -144,20 +144,20 @@ export function TechniquePlayer({ itemId, videosMap }: {
     return (
       <div>
         <button type="button" onClick={() => setVideoId(null)}
-          style={{ fontSize: '12px', color: ACCENT, background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginBottom: '10px' }}>
+          style={{ fontSize: '13px', color: ACCENT, background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginBottom: '10px' }}>
           ← All techniques
         </button>
         <h3 style={{ margin: '0 0 2px', fontSize: '18px', color: 'var(--color-text)' }}>{video.title}</h3>
-        <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '10px' }}>{video.course} · step {step + 1} of {frames.length}</div>
+        <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '10px' }}>{video.course} · step {step + 1} of {frames.length}</div>
         <button type="button" onClick={() => toggleStudied(video.id)}
-          style={{ marginBottom: '14px', padding: '5px 12px', borderRadius: '7px', fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+          style={{ marginBottom: '14px', padding: '5px 12px', borderRadius: '7px', fontSize: '13px', fontWeight: 600, cursor: 'pointer',
             border: '1px solid ' + (studied.has(video.id) ? ACCENT : 'var(--color-border)'),
             background: studied.has(video.id) ? ACCENT + '22' : 'transparent',
             color: studied.has(video.id) ? ACCENT : 'var(--color-text-muted)' }}>
           {studied.has(video.id) ? '✓ Studied — click to unmark' : 'Mark as studied'}
         </button>
         <button type="button" onClick={() => setReading((r) => !r)}
-          style={{ marginLeft: '8px', marginBottom: '14px', padding: '5px 12px', borderRadius: '7px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)' }}>
+          style={{ marginLeft: '8px', marginBottom: '14px', padding: '5px 12px', borderRadius: '7px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)' }}>
           {reading ? '▶ Step view' : '📖 Read full lesson'}
         </button>
 
@@ -167,14 +167,14 @@ export function TechniquePlayer({ itemId, videosMap }: {
 
         {reading && (
           <div style={{ maxWidth: '680px' }}>
-            <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '12px' }}>Full transcript · {frames.length} segments in order — click a frame to jump to that step.</div>
+            <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '12px' }}>Full transcript · {frames.length} segments in order — click a frame to jump to that step.</div>
             {frames.map((fr, i) => (
               <div key={i} style={{ display: 'flex', gap: '12px', marginBottom: '14px', alignItems: 'flex-start' }}>
                 <img src={frameSrc(fr.file)} alt={'segment ' + (i + 1)} loading="lazy"
                   onClick={() => { setReading(false); setStep(i); }}
                   style={{ width: '120px', height: '68px', objectFit: 'cover', borderRadius: '6px', flex: '0 0 auto', cursor: 'pointer' }} />
                 <div>
-                  <div style={{ fontSize: '10px', color: ACCENT, fontWeight: 700, marginBottom: '2px', textTransform: 'capitalize' }}>{fmtTime(fr.t_mid)}{fr.region ? ' · ' + fr.region : ''}</div>
+                  <div style={{ fontSize: '11px', color: ACCENT, fontWeight: 700, marginBottom: '2px', textTransform: 'capitalize' }}>{fmtTime(fr.t_mid)}{fr.region ? ' · ' + fr.region : ''}</div>
                   <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.55 }}>{fr.text}</div>
                 </div>
               </div>
@@ -186,8 +186,8 @@ export function TechniquePlayer({ itemId, videosMap }: {
           <div style={{ maxWidth: '640px' }}>
             <div style={{ position: 'relative', background: '#000', borderRadius: '10px', overflow: 'hidden' }}>
               <img src={frameSrc(f.file)} alt={f.text.slice(0, 60)} style={{ width: '100%', display: 'block' }} />
-              <span style={{ position: 'absolute', top: '8px', right: '10px', fontSize: '11px', fontWeight: 700, color: '#fff', background: 'rgba(0,0,0,0.6)', padding: '2px 7px', borderRadius: '4px' }}>{fmtTime(f.t_mid)}</span>
-              {f.region && <span style={{ position: 'absolute', top: '8px', left: '10px', fontSize: '11px', fontWeight: 700, color: '#fff', background: 'rgba(16,120,90,0.85)', padding: '2px 7px', borderRadius: '4px', textTransform: 'capitalize' }}>{f.region}</span>}
+              <span style={{ position: 'absolute', top: '8px', right: '10px', fontSize: '12px', fontWeight: 700, color: '#fff', background: 'rgba(0,0,0,0.6)', padding: '2px 7px', borderRadius: '4px' }}>{fmtTime(f.t_mid)}</span>
+              {f.region && <span style={{ position: 'absolute', top: '8px', left: '10px', fontSize: '12px', fontWeight: 700, color: '#fff', background: 'rgba(16,120,90,0.85)', padding: '2px 7px', borderRadius: '4px', textTransform: 'capitalize' }}>{f.region}</span>}
             </div>
             <div style={{ marginTop: '10px', fontSize: '14px', lineHeight: 1.55, color: 'var(--color-text)' }}>{f.text}</div>
 
@@ -224,7 +224,7 @@ export function TechniquePlayer({ itemId, videosMap }: {
       </div>
       {/* study progress */}
       <div style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '4px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '4px' }}>
           <span>Your progress</span>
           <span><b style={{ color: ACCENT }}>{studiedCount}</b> / {withFrames.length} studied · {pct}%</span>
         </div>
@@ -254,12 +254,13 @@ export function TechniquePlayer({ itemId, videosMap }: {
             {matches.length === 0 && <div style={{ padding: '12px 14px', fontSize: '13px', color: 'var(--color-text-faint)' }}>No techniques match “{filter}”.</div>}
             {matches.map((v, i) => (
               <button key={v.id} type="button" onClick={() => openVideo(v.id)}
-                style={{ textAlign: 'left', padding: '9px 13px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                class="transition-colors hover:bg-[var(--color-elevated)]"
+                style={{ textAlign: 'left', padding: '11px 14px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
                 <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  <span style={{ fontSize: '12.5px', color: studied.has(v.id) ? ACCENT : 'var(--color-text)' }}>{studied.has(v.id) ? '✓ ' : ''}{v.title}</span>
-                  <span style={{ fontSize: '10.5px', color: 'var(--color-text-faint)', marginLeft: '8px' }}>{v.course}</span>
+                  <span style={{ fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text)' }}>{studied.has(v.id) ? '✓ ' : ''}{v.title}</span>
+                  <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginLeft: '8px' }}>{v.course}</span>
                 </span>
-                <span style={{ flexShrink: 0, fontSize: '10.5px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
+                <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
               </button>
             ))}
           </div>
@@ -272,9 +273,10 @@ export function TechniquePlayer({ itemId, videosMap }: {
           return (
             <div key={course} style={{ border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden' }}>
               <button type="button" onClick={() => setOpenCourse(open ? null : course)}
-                style={{ width: '100%', textAlign: 'left', padding: '10px 12px', background: 'var(--color-card)', border: 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                class="transition-colors hover:bg-[var(--color-elevated)]"
+                style={{ width: '100%', textAlign: 'left', padding: '12px 14px', background: 'var(--color-card)', border: 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)' }}>{course}</span>
-                <span style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>
+                <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>
                   {(() => { const s = vids.filter((v) => studied.has(v.id)).length; return s > 0 ? <span style={{ color: ACCENT }}>{s}/{vids.length} ✓ · </span> : null; })()}
                   {vids.length} · {open ? '▲' : '▼'}
                 </span>
@@ -283,11 +285,12 @@ export function TechniquePlayer({ itemId, videosMap }: {
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   {vids.map((v) => (
                     <button key={v.id} type="button" onClick={() => openVideo(v.id)}
-                      style={{ textAlign: 'left', padding: '8px 14px', background: 'transparent', border: 'none', borderTop: '1px solid var(--color-border)', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '12px', color: studied.has(v.id) ? ACCENT : 'var(--color-text-muted)' }}>
+                      class="transition-colors hover:bg-[var(--color-elevated)]"
+                      style={{ textAlign: 'left', padding: '10px 14px', background: 'transparent', border: 'none', borderTop: '1px solid var(--color-border)', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text-muted)' }}>
                         {studied.has(v.id) ? '✓ ' : ''}{v.title}
                       </span>
-                      <span style={{ fontSize: '10px', color: ACCENT }}>{v.frames.length} steps ▶</span>
+                      <span style={{ fontSize: '11px', color: ACCENT }}>{v.frames.length} steps ▶</span>
                     </button>
                   ))}
                 </div>

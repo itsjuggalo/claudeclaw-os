@@ -65,14 +65,15 @@ export function ErikLibrary({ videosMap, onOpen }: {
             <div key={course}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '6px' }}>
                 <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>{course}</span>
-                <span style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>{shown.length} lesson{shown.length !== 1 ? 's' : ''}</span>
+                <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>{shown.length} lesson{shown.length !== 1 ? 's' : ''}</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden', background: 'var(--color-card)' }}>
                 {shown.map((v, i) => (
                   <button key={v.id} type="button" onClick={() => onOpen(v.id)}
-                    style={{ textAlign: 'left', padding: '9px 13px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ fontSize: '12.5px', color: 'var(--color-text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title}</span>
-                    <span style={{ flexShrink: 0, fontSize: '10.5px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
+                    class="transition-colors hover:bg-[var(--color-elevated)]"
+                    style={{ textAlign: 'left', padding: '11px 14px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '13px', color: 'var(--color-text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title}</span>
+                    <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
                   </button>
                 ))}
               </div>

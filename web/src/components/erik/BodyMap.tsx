@@ -113,7 +113,7 @@ export function BodyMap({ selected, onSelect }: {
         <text x={(bOffX + bDrawW / 2).toFixed(0)} y={labelY} text-anchor="middle"
           fill="var(--color-text-faint)" font-size="12" font-weight="600" style={{ letterSpacing: '1px' }}>BACK</text>
       </svg>
-      <div style={{ textAlign: 'center', marginTop: '6px', minHeight: '18px', fontSize: '12px', fontWeight: 600, color: ACCENT }}>
+      <div style={{ textAlign: 'center', marginTop: '6px', minHeight: '18px', fontSize: '13px', fontWeight: 600, color: ACCENT }}>
         {active ? titleCase(active) : 'Click a body region to learn'}
       </div>
     </div>

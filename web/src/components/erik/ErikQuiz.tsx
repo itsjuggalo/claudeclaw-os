@@ -205,7 +205,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
 
   const tabBtn = (m: 'recall' | 'frames', label: string) => (
     <button type="button" onClick={() => switchMode(m)}
-      style={{ padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+      style={{ padding: '6px 12px', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer',
         border: '1px solid ' + (mode === m ? ACCENT : 'var(--color-border)'),
         background: mode === m ? ACCENT + '22' : 'transparent',
         color: mode === m ? ACCENT : 'var(--color-text-muted)' }}>{label}</button>
@@ -214,7 +214,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
   const diffColor = (d?: string) => d === 'hard' ? RED : d === 'easy' ? ACCENT : AMBER;
   const ctrlBtn = (label: string, on: boolean, onClick: () => void) => (
     <button type="button" onClick={onClick}
-      style={{ padding: '5px 11px', borderRadius: '7px', fontSize: '12px', fontWeight: 700, cursor: 'pointer',
+      style={{ padding: '5px 11px', borderRadius: '7px', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
         border: '1px solid ' + (on ? ACCENT : 'rgba(255,255,255,0.35)'),
         background: on ? ACCENT + 'cc' : 'rgba(0,0,0,0.62)', color: '#fff' }}>{label}</button>
   );
@@ -233,7 +233,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
 
       {q && (
         <>
-          <div style={{ display: 'flex', gap: '16px', marginBottom: '14px', fontSize: '12px', color: 'var(--color-text-muted)' }}>
+          <div style={{ display: 'flex', gap: '16px', marginBottom: '14px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
             <span>Score <b style={{ color: 'var(--color-text)' }}>{score}/{answered}</b></span>
             <span>Streak <b style={{ color: ACCENT }}>{streak}</b></span>
             <span>Best <b style={{ color: 'var(--color-text)' }}>{Math.max(best, streak)}</b></span>
@@ -244,7 +244,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
           {isSpot && (
             <div style={{ marginBottom: '12px' }}>
               <div style={{ fontSize: '20px', fontWeight: 800, color: 'var(--color-text)', lineHeight: 1.3, overflowWrap: 'break-word' }}>{q.prompt}</div>
-              <div style={{ fontSize: '12.5px', color: 'var(--color-text-muted)', marginTop: '5px', lineHeight: 1.45 }}>
+              <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginTop: '5px', lineHeight: 1.45 }}>
                 Watch where the therapist’s hands contact the client and which joint moves — then pick the area.
               </div>
             </div>
@@ -302,7 +302,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
             {/* Reveal: light up the correct region on the body + technique + cue + jumps. */}
             {picked && isSpot && q.regionKey && (
               <div style={{ marginTop: '14px', padding: '12px 14px', borderRadius: '9px', border: '1px solid ' + ACCENT + '55', background: ACCENT + '11' }}>
-                <div style={{ fontSize: '11px', fontWeight: 700, color: ACCENT, textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: '6px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: ACCENT, textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: '6px' }}>
                   ✓ {q.answer}
                 </div>
                 <div style={{ maxWidth: '320px', margin: '0 auto 8px' }}>
@@ -311,18 +311,18 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
                 {q.technique && (
                   <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     {q.technique}
-                    {q.difficulty && <span style={{ fontSize: '10px', fontWeight: 700, color: diffColor(q.difficulty), border: '1px solid ' + diffColor(q.difficulty) + '88', borderRadius: '5px', padding: '1px 6px', textTransform: 'uppercase' }}>{q.difficulty}</span>}
+                    {q.difficulty && <span style={{ fontSize: '11px', fontWeight: 700, color: diffColor(q.difficulty), border: '1px solid ' + diffColor(q.difficulty) + '88', borderRadius: '5px', padding: '1px 6px', textTransform: 'uppercase' }}>{q.difficulty}</span>}
                   </div>
                 )}
                 {q.caption && <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5, marginTop: '4px' }}>{q.caption}</div>}
-                {(q.course || q.lesson) && <div style={{ fontSize: '11.5px', color: 'var(--color-text-muted)', marginTop: '6px' }}>{[q.course, q.lesson].filter(Boolean).join(' · ')}</div>}
+                {(q.course || q.lesson) && <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '6px' }}>{[q.course, q.lesson].filter(Boolean).join(' · ')}</div>}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
                   <button type="button" onClick={replay}
-                    style={{ padding: '6px 12px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>▶ Watch again</button>
+                    style={{ padding: '6px 12px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>▶ Watch again</button>
                   <button type="button" onClick={() => onNavigate?.('explore', { region: q.regionKey! })}
-                    style={{ padding: '6px 12px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Explore this region ↗</button>
+                    style={{ padding: '6px 12px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>Explore this region ↗</button>
                   {q.videoId && <button type="button" onClick={() => onNavigate?.('techniques', { technique: q.videoId! })}
-                    style={{ padding: '6px 12px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>See full technique ↗</button>}
+                    style={{ padding: '6px 12px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>See full technique ↗</button>}
                 </div>
               </div>
             )}
@@ -334,7 +334,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
               </button>
             )}
           </div>
-          <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '10px' }}>
+          <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginTop: '10px' }}>
             {isSpot
               ? (clipBank.length ? 'Watch the technique in motion (replay / slow-mo / Erik’s voice), pick the area, then see it on the body. A neighbouring guess counts as “close”.' : 'Identify the body area in real technique stills from Erik’s library.')
               : 'Recall practice from Erik’s region ↔ muscle map.'} Best streak saved on this device.

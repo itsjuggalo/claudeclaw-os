@@ -117,7 +117,7 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
           ].map(([n, l], i) => (
             <div key={i} style={{ flex: '0 0 auto', padding: '6px 12px', borderRadius: '9px', background: 'var(--color-card)', border: '1px solid var(--color-border)', textAlign: 'center' }}>
               <span style={{ fontSize: '15px', fontWeight: 800, color: ACCENT }}>{n}</span>
-              <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginLeft: '5px' }}>{l}</span>
+              <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginLeft: '5px' }}>{l}</span>
             </div>
           ))}
         </div>
@@ -159,7 +159,7 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
               type="button"
               onClick={() => setSelected(on ? null : r.key)}
               style={{
-                fontSize: '11px', fontWeight: 600, padding: '4px 10px', borderRadius: '999px',
+                fontSize: '12px', fontWeight: 600, padding: '4px 10px', borderRadius: '999px',
                 cursor: 'pointer', border: '1px solid ' + (on ? ACCENT : 'var(--color-border)'),
                 background: on ? ACCENT + '22' : 'transparent',
                 color: on ? ACCENT : 'var(--color-text-muted)',
@@ -186,14 +186,14 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
           {region && (
             <>
               <h3 style={{ margin: '0 0 4px', fontSize: '18px', color: 'var(--color-text)' }}>{region.label}</h3>
-              <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '14px' }}>
+              <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '14px' }}>
                 {muscles.length} muscle plate{muscles.length !== 1 ? 's' : ''} · {frames.length} technique frame{frames.length !== 1 ? 's' : ''}
               </div>
 
               {/* Muscles */}
               {muscles.length > 0 && (
                 <div style={{ marginBottom: '18px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Muscles here</div>
+                  <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Muscles here</div>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     {muscles.map((m) => (
                       <div key={m.slug} style={{ width: '92px', textAlign: 'center' }}>
@@ -201,10 +201,10 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
                           <img src={muscleSrc(m)} alt={m.name} loading="lazy"
                             style={{ width: '92px', height: '92px', objectFit: 'contain', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '8px' }} />
                         )}
-                        <div style={{ fontSize: '10px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.2, textTransform: 'capitalize' }}>{m.name}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.2, textTransform: 'capitalize' }}>{m.name}</div>
                         {m.viewer_url && (
                           <a href={m.viewer_url} target="_blank" rel="noopener noreferrer"
-                            style={{ fontSize: '9px', color: ACCENT, textDecoration: 'none' }}>view 3D ↗</a>
+                            style={{ fontSize: '11px', color: ACCENT, textDecoration: 'none' }}>view 3D ↗</a>
                         )}
                       </div>
                     ))}
@@ -214,9 +214,9 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
 
               {/* Technique frames */}
               <div style={{ marginBottom: '18px' }}>
-                <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Erik's techniques — frames</div>
-                {!framesReady && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>Loading frames…</div>}
-                {framesReady && frames.length === 0 && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>No tagged frames for this region yet.</div>}
+                <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Erik's techniques — frames</div>
+                {!framesReady && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Loading frames…</div>}
+                {framesReady && frames.length === 0 && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>No tagged frames for this region yet.</div>}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   {frames.map((m, i) => {
                     const src = frameSrc(m.videoId, m.frame.file);
@@ -225,7 +225,7 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
                         style={{ width: '120px', cursor: 'pointer', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', overflow: 'hidden' }}
                         title={m.frame.text}>
                         <img src={src} alt={m.frame.text.slice(0, 50)} loading="lazy" style={{ width: '120px', height: '68px', objectFit: 'cover', display: 'block' }} />
-                        <div style={{ padding: '4px 6px', fontSize: '9px', color: 'var(--color-text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title}</div>
+                        <div style={{ padding: '4px 6px', fontSize: '11px', color: 'var(--color-text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title}</div>
                       </div>
                     );
                   })}
@@ -234,15 +234,15 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
 
               {/* Lessons (KB search) */}
               <div>
-                <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Lessons that cover this</div>
-                {loadingLessons && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>Searching…</div>}
-                {!loadingLessons && lessons.length === 0 && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>No lessons matched.</div>}
+                <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Lessons that cover this</div>
+                {loadingLessons && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Searching…</div>}
+                {!loadingLessons && lessons.length === 0 && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>No lessons matched.</div>}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {lessons.map((h, i) => (
-                    <div key={i} style={{ padding: '8px 10px', border: '1px solid var(--color-border)', borderRadius: '8px', background: 'var(--color-card)' }}>
-                      <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-text)' }}>{h.heading?.replace(/^\[meta\]\s*/, '') || h.source}</div>
-                      {h.course && <div style={{ fontSize: '10px', color: 'var(--color-text-faint)' }}>{h.course}</div>}
-                      <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.4, maxHeight: '40px', overflow: 'hidden' }}>{h.preview?.slice(0, 160)}</div>
+                    <div key={i} style={{ padding: '10px 12px', border: '1px solid var(--color-border)', borderRadius: '8px', background: 'var(--color-card)' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)' }}>{h.heading?.replace(/^\[meta\]\s*/, '') || h.source}</div>
+                      {h.course && <div style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>{h.course}</div>}
+                      <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.4, maxHeight: '40px', overflow: 'hidden' }}>{h.preview?.slice(0, 160)}</div>
                     </div>
                   ))}
                 </div>
@@ -258,7 +258,7 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
           <div style={{ maxWidth: '720px', width: '100%' }} onClick={(e) => e.stopPropagation()}>
             <img src={zoom.src} alt={zoom.text} style={{ width: '100%', borderRadius: '8px', display: 'block' }} />
             <div style={{ marginTop: '12px', color: '#e0e0e0', fontSize: '13px', lineHeight: 1.5 }}>{zoom.text}</div>
-            <div style={{ marginTop: '6px', fontSize: '11px', color: '#888' }}>{zoom.title}</div>
+            <div style={{ marginTop: '6px', fontSize: '12px', color: '#888' }}>{zoom.title}</div>
           </div>
         </div>
       )}

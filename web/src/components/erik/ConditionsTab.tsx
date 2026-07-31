@@ -182,7 +182,7 @@ export function ConditionsTab({ itemId, videosMap }: {
           const on = selected === c.key;
           return (
             <button key={c.key} type="button" onClick={() => setSelected(on ? null : c.key)}
-              style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12.5px', fontWeight: 600, padding: '7px 13px', borderRadius: '10px', cursor: 'pointer',
+              style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '13px', fontWeight: 600, padding: '7px 13px', borderRadius: '10px', cursor: 'pointer',
                 border: '1px solid ' + (on ? ACCENT : 'var(--color-border)'),
                 background: on ? ACCENT + '22' : 'var(--color-card)',
                 color: on ? ACCENT : 'var(--color-text)' }}>
@@ -190,7 +190,7 @@ export function ConditionsTab({ itemId, videosMap }: {
             </button>
           );
         })}
-        {list.length === 0 && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>No condition matches “{filter}”.</div>}
+        {list.length === 0 && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>No condition matches “{filter}”.</div>}
       </div>
 
       {cond && (
@@ -198,31 +198,31 @@ export function ConditionsTab({ itemId, videosMap }: {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
             <h3 style={{ margin: '0 0 4px', fontSize: '20px', color: 'var(--color-text)' }}>{cond.emoji} {cond.label}</h3>
             <button type="button" onClick={printCheatSheet}
-              style={{ fontSize: '12px', fontWeight: 600, padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', border: '1px solid ' + ACCENT, background: ACCENT + '22', color: ACCENT }}>
+              style={{ fontSize: '13px', fontWeight: 600, padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', border: '1px solid ' + ACCENT, background: ACCENT + '22', color: ACCENT }}>
               🖨 Print cheat sheet
             </button>
           </div>
 
           {detail && (
             <>
-              <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '12px 0 5px', textTransform: 'uppercase' }}>① Assess first</div>
+              <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '12px 0 5px', textTransform: 'uppercase' }}>① Assess first</div>
               <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5, marginBottom: '12px' }}>{detail.assess}</div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', padding: '10px 12px', borderRadius: '9px', background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.5)', marginBottom: '16px' }}>
                 <span style={{ fontSize: '15px', lineHeight: 1.3 }}>⚠️</span>
                 <div>
-                  <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: '#f59e0b', textTransform: 'uppercase', marginBottom: '2px' }}>Cautions / refer out</div>
-                  <div style={{ fontSize: '12.5px', color: 'var(--color-text)', lineHeight: 1.5 }}>{detail.caution}</div>
+                  <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: '#f59e0b', textTransform: 'uppercase', marginBottom: '2px' }}>Cautions / refer out</div>
+                  <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>{detail.caution}</div>
                 </div>
               </div>
             </>
           )}
 
           {/* Involved areas */}
-          <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '12px 0 6px', textTransform: 'uppercase' }}>Body areas involved</div>
+          <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '12px 0 6px', textTransform: 'uppercase' }}>Body areas involved</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '18px' }}>
             {cond.regions.map((rk) => (
               <a key={rk} href={'/databases/' + itemId + '?tab=explore&region=' + encodeURIComponent(rk)}
-                style={{ fontSize: '11px', fontWeight: 600, padding: '4px 10px', borderRadius: '999px', textDecoration: 'none', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)', background: 'transparent' }}
+                style={{ fontSize: '12px', fontWeight: 600, padding: '4px 10px', borderRadius: '999px', textDecoration: 'none', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)', background: 'transparent' }}
                 title="Open this area on the 3D body">
                 {REGION_BY_KEY[rk]?.label || rk} ↗
               </a>
@@ -230,11 +230,11 @@ export function ConditionsTab({ itemId, videosMap }: {
           </div>
 
           {/* Erik's matching techniques */}
-          <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
             ② Treat — Erik's techniques {framesReady ? `· ${frames.length} found` : ''}
           </div>
-          {!framesReady && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>Loading frames…</div>}
-          {framesReady && frames.length === 0 && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>No direct frame matches — see the lessons below.</div>}
+          {!framesReady && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Loading frames…</div>}
+          {framesReady && frames.length === 0 && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>No direct frame matches — see the lessons below.</div>}
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '20px' }}>
             {frames.map((m, i) => {
               const src = frameSrc(m.videoId, m.frame.file);
@@ -244,8 +244,8 @@ export function ConditionsTab({ itemId, videosMap }: {
                   title={m.frame.text}>
                   <img src={src} alt={m.frame.text.slice(0, 50)} loading="lazy" style={{ width: '150px', height: '85px', objectFit: 'cover', display: 'block' }} />
                   <div style={{ padding: '5px 7px' }}>
-                    <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--color-text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title}</div>
-                    <div style={{ fontSize: '9px', color: 'var(--color-text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.course}</div>
+                    <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--color-text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.course}</div>
                   </div>
                 </div>
               );
@@ -253,26 +253,26 @@ export function ConditionsTab({ itemId, videosMap }: {
           </div>
 
           {/* Lessons */}
-          <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Lessons that cover this</div>
-          {loadingLessons && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>Searching…</div>}
-          {!loadingLessons && lessons.length === 0 && <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>No lessons matched.</div>}
+          <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Lessons that cover this</div>
+          {loadingLessons && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Searching…</div>}
+          {!loadingLessons && lessons.length === 0 && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>No lessons matched.</div>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {lessons.map((h, i) => (
-              <div key={i} style={{ padding: '8px 10px', border: '1px solid var(--color-border)', borderRadius: '8px', background: 'var(--color-card)' }}>
-                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-text)' }}>{h.heading?.replace(/^\[meta\]\s*/, '') || h.source}</div>
-                {h.course && <div style={{ fontSize: '10px', color: 'var(--color-text-faint)' }}>{h.course}</div>}
-                <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.4, maxHeight: '40px', overflow: 'hidden' }}>{h.preview?.slice(0, 160)}</div>
+              <div key={i} style={{ padding: '10px 12px', border: '1px solid var(--color-border)', borderRadius: '8px', background: 'var(--color-card)' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)' }}>{h.heading?.replace(/^\[meta\]\s*/, '') || h.source}</div>
+                {h.course && <div style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>{h.course}</div>}
+                <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.4, maxHeight: '40px', overflow: 'hidden' }}>{h.preview?.slice(0, 160)}</div>
               </div>
             ))}
           </div>
 
           {detail && (
             <>
-              <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '18px 0 5px', textTransform: 'uppercase' }}>③ Client homecare</div>
+              <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '18px 0 5px', textTransform: 'uppercase' }}>③ Client homecare</div>
               <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>{detail.homecare}</div>
             </>
           )}
-          <div style={{ marginTop: '16px', fontSize: '10.5px', color: 'var(--color-text-faint)', fontStyle: 'italic' }}>{DISCLAIMER}</div>
+          <div style={{ marginTop: '16px', fontSize: '11px', color: 'var(--color-text-faint)', fontStyle: 'italic' }}>{DISCLAIMER}</div>
         </div>
       )}
 
@@ -288,7 +288,7 @@ export function ConditionsTab({ itemId, videosMap }: {
           <div style={{ maxWidth: '720px', width: '100%' }} onClick={(e) => e.stopPropagation()}>
             <img src={zoom.src} alt={zoom.text} style={{ width: '100%', borderRadius: '8px', display: 'block' }} />
             <div style={{ marginTop: '12px', color: '#e0e0e0', fontSize: '13px', lineHeight: 1.5 }}>{zoom.text}</div>
-            <div style={{ marginTop: '6px', fontSize: '11px', color: '#888' }}>{zoom.title}</div>
+            <div style={{ marginTop: '6px', fontSize: '12px', color: '#888' }}>{zoom.title}</div>
           </div>
         </div>
       )}

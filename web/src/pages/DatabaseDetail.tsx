@@ -84,7 +84,7 @@ function RefreshButton({ onClick, busy }: { onClick: () => void; busy: boolean }
       onClick={onClick}
       disabled={busy}
       title="Refresh"
-      class="flex items-center gap-1 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
+      class="flex items-center gap-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
     >
       {busy ? <NestedSquaresSpinner size={13} /> : <RefreshCw size={13} />} Refresh
     </button>
@@ -141,7 +141,7 @@ export function DatabaseDetail() {
     <button
       type="button"
       onClick={() => setLocation('/databases')}
-      class="flex items-center gap-1 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+      class="flex items-center gap-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
     >
       <ArrowLeft size={13} /> Databases
     </button>
@@ -252,18 +252,18 @@ function MuscleCard({ m, itemId }: { m: AnatomyMuscle; itemId: string }) {
         />
         {rear && (
           <span style={{
-            position: 'absolute', bottom: 0, right: 0, fontSize: '8px', fontWeight: 700,
+            position: 'absolute', bottom: 0, right: 0, fontSize: '10px', fontWeight: 700,
             color: 'var(--color-text-faint)', background: 'var(--color-card)',
             padding: '1px 4px', borderRadius: '4px',
           }}>{back ? 'back' : 'front'}</span>
         )}
       </div>
-      <div style={{ fontSize: '11px', color: 'var(--color-text)', marginTop: '4px', lineHeight: 1.2, textTransform: 'capitalize' }}>
+      <div style={{ fontSize: '12px', color: 'var(--color-text)', marginTop: '4px', lineHeight: 1.2, textTransform: 'capitalize' }}>
         {m.name}
       </div>
       {m.viewer_url && (
         <a href={m.viewer_url} target="_blank" rel="noopener noreferrer"
-          style={{ fontSize: '10px', color: 'var(--color-accent)' }}
+          style={{ fontSize: '11px', color: 'var(--color-accent)' }}
           class="hover:underline">view 3D ↗</a>
       )}
     </div>
@@ -278,13 +278,13 @@ function MuscleStrip({ slugs, anatomy, itemId }: {
   if (muscles.length === 0) return null;
   return (
     <div style={{ marginTop: '12px' }}>
-      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
+      <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
         Anatomy · {muscles.length} muscle{muscles.length > 1 ? 's' : ''}
       </div>
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         {muscles.map((m) => <MuscleCard key={m.slug} m={m} itemId={itemId} />)}
       </div>
-      <div style={{ fontSize: '9px', color: 'var(--color-text-faint)', marginTop: '6px' }}>
+      <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '6px' }}>
         BodyParts3D © DBCLS, CC BY-SA 2.1 JP · Wikimedia Commons
       </div>
     </div>
@@ -374,13 +374,13 @@ function FrameCard({ frame, videoId, itemId, videoTitle }: {
           />
           <span style={{
             position: 'absolute', bottom: '3px', right: '4px',
-            fontSize: '9px', fontWeight: 700, color: '#fff',
+            fontSize: '11px', fontWeight: 700, color: '#fff',
             background: 'rgba(0,0,0,0.6)', padding: '1px 4px', borderRadius: '3px',
           }}>{label}</span>
           {frame.region && (
             <span style={{
               position: 'absolute', top: '3px', left: '4px',
-              fontSize: '9px', fontWeight: 700, color: '#fff',
+              fontSize: '11px', fontWeight: 700, color: '#fff',
               background: 'rgba(16,120,90,0.82)', padding: '1px 5px', borderRadius: '3px',
               textTransform: 'capitalize',
             }}>{frame.region}</span>
@@ -388,13 +388,13 @@ function FrameCard({ frame, videoId, itemId, videoTitle }: {
         </div>
         <div style={{ padding: '4px 6px' }}>
           <div style={{
-            fontSize: '10px', color: 'var(--color-text-muted)', lineHeight: 1.3,
+            fontSize: '11px', color: 'var(--color-text-muted)', lineHeight: 1.3,
             overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
           }}>
             {frame.text.slice(0, 120)}
           </div>
-          <div style={{ fontSize: '9px', color: 'var(--color-text-faint)', marginTop: '2px' }}>{videoTitle}</div>
+          <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '2px' }}>{videoTitle}</div>
         </div>
       </div>
 
@@ -409,7 +409,7 @@ function FrameCard({ frame, videoId, itemId, videoTitle }: {
           <div style={{ maxWidth: '720px', width: '100%' }} onClick={(e) => e.stopPropagation()}>
             <img src={src} alt={frame.text} style={{ width: '100%', borderRadius: '8px', display: 'block' }} />
             <div style={{ marginTop: '12px', color: '#e0e0e0', fontSize: '13px', lineHeight: 1.5 }}>{frame.text}</div>
-            <div style={{ marginTop: '6px', fontSize: '11px', color: '#888' }}>{videoTitle} · {label}</div>
+            <div style={{ marginTop: '6px', fontSize: '12px', color: '#888' }}>{videoTitle} · {label}</div>
           </div>
         </div>
       )}
@@ -463,7 +463,7 @@ function TechniqueStrip({ text, videosMap, itemId }: {
   if (matches.length === 0) return null;
   return (
     <div style={{ marginTop: '14px' }}>
-      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
+      <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
         Technique Frames · {matches.length} clip{matches.length > 1 ? 's' : ''}
       </div>
       <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' }}>
@@ -477,7 +477,7 @@ function TechniqueStrip({ text, videosMap, itemId }: {
           />
         ))}
       </div>
-      <div style={{ fontSize: '9px', color: 'var(--color-text-faint)', marginTop: '4px' }}>
+      <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '4px' }}>
         Erik Dalton DVD frames — educational reference only
       </div>
     </div>
@@ -511,12 +511,12 @@ function ClayTraderPanel() {
           <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>
             ClayTrader Method Reference
           </div>
-          <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '2px' }}>
+          <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginTop: '2px' }}>
             5 university setups distilled from transcripts
           </div>
         </div>
         <span style={{
-          fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px',
+          fontSize: '11px', fontWeight: 700, letterSpacing: '0.5px',
           padding: '3px 8px', borderRadius: '999px',
           background: '#f59e0b22', color: '#f59e0b', border: '1px solid #f59e0b44',
         }}>
@@ -540,7 +540,7 @@ function ClayTraderPanel() {
                 }}
               >
                 <span style={{
-                  flexShrink: 0, fontSize: '10px', fontWeight: 700, padding: '2px 7px',
+                  flexShrink: 0, fontSize: '11px', fontWeight: 700, padding: '2px 7px',
                   borderRadius: '999px', background: vs.bg, color: vs.color, marginTop: '1px',
                 }}>
                   {s.verdict}
@@ -548,15 +548,15 @@ function ClayTraderPanel() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)' }}>
                     {s.name}
-                    <span style={{ fontSize: '10px', fontWeight: 400, color: 'var(--color-text-faint)', marginLeft: '8px' }}>
+                    <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--color-text-faint)', marginLeft: '8px' }}>
                       {s.course}
                     </span>
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.4 }}>
+                  <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.4 }}>
                     {s.summary}
                   </div>
                 </div>
-                <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', flexShrink: 0, marginTop: '2px' }}>
+                <span style={{ fontSize: '12px', color: 'var(--color-text-faint)', flexShrink: 0, marginTop: '2px' }}>
                   {open ? '▲' : '▼'}
                 </span>
               </button>
@@ -567,8 +567,8 @@ function ClayTraderPanel() {
                     { label: 'Stop', value: s.stop },
                     { label: 'R:R', value: s.rvr },
                   ].map((row) => (
-                    <div key={row.label} style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
-                      <span style={{ flexShrink: 0, width: '42px', fontWeight: 700, color: 'var(--color-text-faint)', fontSize: '10px', paddingTop: '2px', textTransform: 'uppercase' }}>
+                    <div key={row.label} style={{ display: 'flex', gap: '10px', fontSize: '13px' }}>
+                      <span style={{ flexShrink: 0, width: '42px', fontWeight: 700, color: 'var(--color-text-faint)', fontSize: '11px', paddingTop: '2px', textTransform: 'uppercase' }}>
                         {row.label}
                       </span>
                       <span style={{ color: 'var(--color-text-muted)', lineHeight: 1.45 }}>{row.value}</span>
@@ -583,17 +583,17 @@ function ClayTraderPanel() {
 
       {/* Habits section */}
       <div style={{ borderTop: '1px solid var(--color-border)', padding: '14px 18px' }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '10px' }}>
+        <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '10px' }}>
           5 Habits to Fix FOMO Entries
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {CLAY_HABITS.map((h) => (
-            <div key={h.n} style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
+            <div key={h.n} style={{ display: 'flex', gap: '10px', fontSize: '13px' }}>
               <span style={{
                 flexShrink: 0, width: '20px', height: '20px', borderRadius: '50%',
                 background: 'var(--color-elevated)', color: 'var(--color-accent)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '10px', fontWeight: 700,
+                fontSize: '11px', fontWeight: 700,
               }}>{h.n}</span>
               <div>
                 <div style={{ fontWeight: 600, color: 'var(--color-text)', lineHeight: 1.3 }}>{h.rule}</div>
@@ -602,7 +602,7 @@ function ClayTraderPanel() {
             </div>
           ))}
         </div>
-        <div style={{ marginTop: '12px', fontSize: '10px', color: 'var(--color-text-faint)' }}>
+        <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--color-text-faint)' }}>
           Source: ClayTrader University transcripts (~/claytrader-kb) · Distilled 2026-06-15
         </div>
       </div>
@@ -843,7 +843,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
               <button type="button" onClick={dismissIntro} aria-label="Dismiss"
                 style={{ position: 'absolute', top: '8px', right: '10px', background: 'none', border: 'none', color: 'var(--color-text-faint)', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }}>×</button>
               <div style={{ fontSize: '14px', fontWeight: 800, color: 'var(--color-text)', marginBottom: '6px' }}>👋 Learn Erik Dalton's bodywork — start anywhere</div>
-              <div style={{ fontSize: '12.5px', color: 'var(--color-text-muted)', lineHeight: 1.6, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '2px 18px' }}>
+              <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', lineHeight: 1.6, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '2px 18px' }}>
                 <div><b style={{ color: 'var(--color-text)' }}>Explore</b> — tap a body region to see its muscles & techniques.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Conditions</b> — start from a client complaint (sciatica, frozen shoulder…).</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Techniques</b> — step through each lesson frame-by-frame with Erik's voice.</div>
@@ -903,7 +903,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                   {asking ? 'Thinking…' : 'Ask'}
                 </button>
                 {asking && (
-                  <span class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
+                  <span class="flex items-center gap-2 text-[13px] text-[var(--color-text-muted)]">
                     <span class="animate-spin" style={{
                       width: '12px', height: '12px', borderRadius: '50%',
                       border: '2px solid var(--color-border)', borderTopColor: 'var(--color-accent)',
@@ -913,7 +913,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                   </span>
                 )}
                 {!asking && (
-                  <span class="text-[11px] text-[var(--color-text-faint)]">⌘/Ctrl+Enter to ask</span>
+                  <span class="text-[12px] text-[var(--color-text-faint)]">⌘/Ctrl+Enter to ask</span>
                 )}
               </div>
 
@@ -937,7 +937,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                       }}>
                         {answer.used_portfolio && (
                           <span style={{
-                            display: 'inline-block', fontSize: '10px', fontWeight: 700,
+                            display: 'inline-block', fontSize: '11px', fontWeight: 700,
                             color: '#10b981', background: '#10b98122', padding: '2px 8px',
                             borderRadius: '999px', marginBottom: '10px',
                           }}>portfolio context</span>
@@ -950,7 +950,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                       </div>
                       {answer.sources && answer.sources.length > 0 && (
                         <div style={{ marginTop: '14px' }}>
-                          <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '8px', textTransform: 'uppercase' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '8px', textTransform: 'uppercase' }}>
                             Sources — click to search
                           </div>
                           <ul style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -961,7 +961,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                                   onClick={() => jumpToSearch(citationHeading(s))}
                                   title={'Search this KB for "' + citationHeading(s) + '"'}
                                   style={{
-                                    fontSize: '12px', color: 'var(--color-text-muted)', fontFamily: MONO,
+                                    fontSize: '13px', color: 'var(--color-text-muted)', fontFamily: MONO,
                                     background: 'none', border: 'none', padding: 0, cursor: 'pointer',
                                     textAlign: 'left',
                                   }}
@@ -1001,7 +1001,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 class="w-full px-3 py-2 rounded-md bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
               />
               {searchErr && <div style={{ marginTop: '16px' }}><PageState error={searchErr} /></div>}
-              {searching && <div class="text-[12px] text-[var(--color-text-muted)]" style={{ marginTop: '14px' }}>Searching…</div>}
+              {searching && <div class="text-[13px] text-[var(--color-text-muted)]" style={{ marginTop: '14px' }}>Searching…</div>}
               {search && !searching && (search.abstained || search.hits.length === 0) && (
                 <div class="p-3 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] text-[13px] text-[var(--color-text-muted)]" style={{ marginTop: '14px' }}>
                   No relevant content in this knowledge base.
@@ -1065,7 +1065,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                               />
                               <span aria-hidden style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', color: '#fff', textShadow: '0 1px 6px rgba(0,0,0,0.7)' }}>▶</span>
                             </span>
-                            <span style={{ fontSize: '11px', fontWeight: 600, color: '#f59e0b' }}>Watch this lesson on Vimeo</span>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: '#f59e0b' }}>Watch this lesson on Vimeo</span>
                           </a>
                         )}
                       </div>
@@ -1091,7 +1091,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                     ? sources.totalChunks.toLocaleString() + ' chunks · ' + sources.totalSources.toLocaleString() + ' sources'
                     : item.stat}
                 </div>
-                <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                <div style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
                   {item.size} · updated {fmtUpdated(item.updated)}
                   {sources?.groupBy && <> · grouped by <code style={{ fontFamily: MONO }}>{sources.groupBy}</code></>}
                 </div>
@@ -1121,7 +1121,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                         }} />
                         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '10px' }}>
                           <span style={{ minWidth: 0, flex: 1, fontSize: '13px', color: 'var(--color-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.name}>{g.name}</span>
-                          <span style={{ flexShrink: 0, fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
+                          <span style={{ flexShrink: 0, fontSize: '12px', color: 'var(--color-text-faint)', fontFamily: MONO }}>
                             {g.sources > 0 && <>{g.sources.toLocaleString()} src · </>}{g.chunks.toLocaleString()} chunks
                           </span>
                         </div>
@@ -1324,7 +1324,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
           {meta && (
             <>
-              <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '12px' }}>
+              <div style={{ fontSize: '13px', color: 'var(--color-text-faint)', marginBottom: '12px' }}>
                 {meta.size} · {meta.tables.length} tables
               </div>
               <div style={{
@@ -1347,7 +1347,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                     }}
                   >
                     <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '3px' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginTop: '3px' }}>
                       {t.rows === 0 ? '0 rows · empty' : `${t.rows.toLocaleString()} rows`}
                     </div>
                   </button>
@@ -1358,7 +1358,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
           {presets.length > 0 && (
             <div style={{ marginBottom: '10px' }}>
-              <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '6px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '6px' }}>
                 Insights · one-click
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -1368,7 +1368,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                     type="button"
                     onClick={() => { setSql(p.sql); void runQuery(p.sql); }}
                     style={{
-                      fontSize: '12px', padding: '5px 10px', borderRadius: '999px',
+                      fontSize: '13px', padding: '5px 10px', borderRadius: '999px',
                       background: 'var(--color-card)', border: '1px solid var(--color-accent)',
                       color: 'var(--color-text)', cursor: 'pointer',
                     }}
@@ -1398,15 +1398,15 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             >
               {running ? 'Running…' : 'Run'}
             </button>
-            <span class="text-[11px] text-[var(--color-text-faint)]">SELECT only — writes are blocked.</span>
+            <span class="text-[12px] text-[var(--color-text-faint)]">SELECT only — writes are blocked.</span>
             {result && !running && (
-              <span class="text-[11px] text-[var(--color-text-faint)] ml-auto">{result.rows.length} rows · {result.elapsed_ms}ms</span>
+              <span class="text-[12px] text-[var(--color-text-faint)] ml-auto">{result.rows.length} rows · {result.elapsed_ms}ms</span>
             )}
           </div>
 
           {history.length > 0 && (
             <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginRight: '2px' }}>Recent</span>
+              <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginRight: '2px' }}>Recent</span>
               {history.map((h, i) => (
                 <button
                   key={i}
@@ -1414,31 +1414,31 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                   onClick={() => { setSql(h); void runQuery(h); }}
                   title={h}
                   style={{ maxWidth: '260px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: MONO }}
-                  class="px-2 py-0.5 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] bg-[var(--color-card)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]"
+                  class="px-2 py-0.5 rounded-md text-[12px] text-[var(--color-text-muted)] border border-[var(--color-border)] bg-[var(--color-card)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]"
                 >{h}</button>
               ))}
               <button
                 type="button"
                 onClick={() => { try { localStorage.removeItem(historyKey(item.id)); } catch { /* ignore */ } setHistory([]); }}
                 title="Clear query history"
-                class="px-2 py-0.5 rounded-md text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]"
+                class="px-2 py-0.5 rounded-md text-[12px] text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]"
               >clear</button>
             </div>
           )}
 
           {queryErr && (
             <div class="p-3 rounded-md border border-[var(--color-status-failed)] mt-3" style={{ background: 'color-mix(in srgb, var(--color-status-failed) 8%, transparent)' }}>
-              <div class="text-[var(--color-status-failed)] text-[12px] font-mono">{queryErr}</div>
+              <div class="text-[var(--color-status-failed)] text-[13px] font-mono">{queryErr}</div>
             </div>
           )}
 
           {result && !running && result.columns.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '16px' }}>
-              <span style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>
+              <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>
                 {result.rows.length.toLocaleString()} rows · {result.columns.length} cols · {result.elapsed_ms}ms
               </span>
               {result.capped && (
-                <span style={{ fontSize: '11px', fontWeight: 600, color: '#f59e0b' }}>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: '#f59e0b' }}>
                   showing first {result.rows.length.toLocaleString()} — result truncated
                 </span>
               )}
@@ -1447,7 +1447,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                   type="button"
                   onClick={() => void copyResult()}
                   title="Copy result as CSV to clipboard"
-                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
+                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
                 >
                   <Copy size={12} /> {copied === 'copy' ? 'copied' : 'Copy'}
                 </button>
@@ -1455,7 +1455,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                   type="button"
                   onClick={() => downloadResult('csv')}
                   title="Download as .csv file"
-                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
+                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
                 >
                   <Download size={12} /> CSV
                 </button>
@@ -1463,7 +1463,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                   type="button"
                   onClick={() => downloadResult('json')}
                   title="Download as .json file"
-                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
+                  class="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
                 >
                   <Download size={12} /> JSON
                 </button>
@@ -1473,7 +1473,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
           {result && !running && result.columns.length > 0 && (
             <div style={{ marginTop: '8px', overflowX: 'auto', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
-              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '12px', fontFamily: MONO }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '13px', fontFamily: MONO }}>
                 <thead>
                   <tr>
                     {result.columns.map((c, i) => {
@@ -1486,7 +1486,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                           position: 'sticky', top: 0,
                         }}>
                           {c}
-                          {ty && <span style={{ marginLeft: '6px', fontSize: '10px', fontWeight: 400, color: 'var(--color-text-faint)', textTransform: 'lowercase' }}>{ty}</span>}
+                          {ty && <span style={{ marginLeft: '6px', fontSize: '11px', fontWeight: 400, color: 'var(--color-text-faint)', textTransform: 'lowercase' }}>{ty}</span>}
                         </th>
                       );
                     })}
@@ -1512,7 +1512,7 @@ function SqlDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             </div>
           )}
           {result && !running && result.columns.length === 0 && (
-            <div class="text-[12px] text-[var(--color-text-muted)]" style={{ marginTop: '14px' }}>Query returned no columns.</div>
+            <div class="text-[13px] text-[var(--color-text-muted)]" style={{ marginTop: '14px' }}>Query returned no columns.</div>
           )}
 
         </div>
@@ -1575,12 +1575,12 @@ function SecretRow({ source, name, masked, modified }: SecretItem) {
     }}>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)', fontFamily: MONO }}>{name}</div>
-        <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {source}{modified && <span> · {fmtUpdated(modified)}</span>}
         </div>
       </div>
       <div style={{
-        fontSize: '12px', fontFamily: MONO, color: err ? 'var(--color-status-failed)' : 'var(--color-text-muted)',
+        fontSize: '13px', fontFamily: MONO, color: err ? 'var(--color-status-failed)' : 'var(--color-text-muted)',
         maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>
         {err ? err : (busy ? '…' : (revealed !== null ? revealed : masked))}
@@ -1599,7 +1599,7 @@ function SecretRow({ source, name, masked, modified }: SecretItem) {
         title="Copy"
         class="p-1.5 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"
       >
-        {copied ? <span style={{ fontSize: '10px', color: '#10b981' }}>copied</span> : <Copy size={15} />}
+        {copied ? <span style={{ fontSize: '11px', color: '#10b981' }}>copied</span> : <Copy size={15} />}
       </button>
     </div>
   );
@@ -1660,7 +1660,7 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
       />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '20px 24px', maxWidth: '900px', margin: '0 auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--color-text-faint)', marginBottom: '16px' }}>
             <KeyRound size={14} /> Values stay masked until you reveal them.
             {data && totalCount > 0 && <span style={{ marginLeft: 'auto' }}>{totalCount} secrets</span>}
           </div>
@@ -1691,7 +1691,7 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
                   key={group.category}
                   type="button"
                   onClick={() => sectionRefs.current[group.category]?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                  class="px-2.5 py-1 rounded-full text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] bg-[var(--color-card)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]"
+                  class="px-2.5 py-1 rounded-full text-[12px] text-[var(--color-text-muted)] border border-[var(--color-border)] bg-[var(--color-card)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]"
                 >
                   {group.category} <span style={{ opacity: 0.55 }}>{group.items.length}</span>
                 </button>
@@ -1709,7 +1709,7 @@ function SecretsDetail({ item, back }: { item: DbItem; back: ComponentChildren }
               style={{ marginBottom: '20px', scrollMarginTop: '12px' }}
             >
               <div style={{
-                fontSize: '11px', fontWeight: 700, letterSpacing: '1.5px',
+                fontSize: '12px', fontWeight: 700, letterSpacing: '1.5px',
                 textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '8px',
               }}>{group.category}</div>
               <div style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden' }}>

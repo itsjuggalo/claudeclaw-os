@@ -500,7 +500,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
 
   const layerBtn = (on: boolean, set: (v: boolean) => void, icon: string, text: string, tone: string) => (
     <button type="button" onClick={() => set(!on)}
-      style={{ padding: '6px 11px', borderRadius: '7px', fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+      style={{ padding: '6px 11px', borderRadius: '7px', fontSize: '12px', fontWeight: 700, cursor: 'pointer',
         border: '1px solid ' + (on ? tone : 'var(--color-border)'),
         background: on ? tone + '22' : 'var(--color-bg)',
         color: on ? tone : 'var(--color-text-faint)' }}>
@@ -520,14 +520,14 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
         }}
       />
       {/* hint — sits below the layer toggles when the real atlas is loaded so the two never overlap on a narrow phone canvas */}
-      <div style={{ position: 'absolute', top: (hasBone || hasMuscle) ? '44px' : '10px', left: '12px', maxWidth: '60%', lineHeight: 1.3, fontSize: '11px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', top: (hasBone || hasMuscle) ? '44px' : '10px', left: '12px', maxWidth: '60%', lineHeight: 1.3, fontSize: '12px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
         Drag to rotate · scroll to zoom · tap a region
       </div>
       {/* first-load indicator (the real atlas is ~14MB) */}
       {loading && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '10px', pointerEvents: 'none' }}>
           <div style={{ width: '26px', height: '26px', border: '3px solid var(--color-border)', borderTopColor: ACCENT, borderRadius: '50%', animation: 'erik-spin 0.8s linear infinite' }} />
-          <div style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>Loading 3D anatomy…</div>
+          <div style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>Loading 3D anatomy…</div>
           <style>{'@keyframes erik-spin{to{transform:rotate(360deg)}}'}</style>
         </div>
       )}
@@ -541,24 +541,24 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       {/* reset view */}
       <button type="button" onClick={() => stateRef.current?.resetView()}
         title="Reset camera"
-        style={{ position: 'absolute', bottom: '10px', right: '12px', fontSize: '11px', fontWeight: 600, color: 'var(--color-text-muted)', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '7px', padding: '4px 10px', cursor: 'pointer' }}>
+        style={{ position: 'absolute', bottom: '10px', right: '12px', fontSize: '12px', fontWeight: 600, color: 'var(--color-text-muted)', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '7px', padding: '4px 10px', cursor: 'pointer' }}>
         ⟲ Reset view
       </button>
       {/* attribution credit (only when a real atlas is loaded) */}
       {(hasBone || hasMuscle) && ANATOMY_CREDIT && (
-        <div style={{ position: 'absolute', bottom: '10px', left: '12px', fontSize: '9px', color: 'var(--color-text-faint)', pointerEvents: 'none', maxWidth: '60%' }}>
+        <div style={{ position: 'absolute', bottom: '10px', left: '12px', fontSize: '11px', color: 'var(--color-text-faint)', pointerEvents: 'none', maxWidth: '60%' }}>
           {ANATOMY_CREDIT}
         </div>
       )}
       {/* current region badge (top-right) */}
       {(selected && REGION_BY_KEY[selected]) && (
-        <div style={{ position: 'absolute', top: '10px', right: '12px', fontSize: '12px', fontWeight: 700, color: ACCENT, background: 'var(--color-bg)', border: '1px solid ' + ACCENT, borderRadius: '999px', padding: '3px 12px', pointerEvents: 'none' }}>
+        <div style={{ position: 'absolute', top: '10px', right: '12px', fontSize: '13px', fontWeight: 700, color: ACCENT, background: 'var(--color-bg)', border: '1px solid ' + ACCENT, borderRadius: '999px', padding: '3px 12px', pointerEvents: 'none' }}>
           {REGION_BY_KEY[selected].label}
         </div>
       )}
       {/* floating hover label that follows the cursor */}
       {label && mouse && (
-        <div style={{ position: 'fixed', left: mouse.x + 14, top: mouse.y + 14, zIndex: 50, fontSize: '12px', fontWeight: 700, color: '#fff', background: 'rgba(16,120,90,0.92)', padding: '3px 9px', borderRadius: '6px', pointerEvents: 'none', textTransform: 'capitalize' }}>
+        <div style={{ position: 'fixed', left: mouse.x + 14, top: mouse.y + 14, zIndex: 50, fontSize: '13px', fontWeight: 700, color: '#fff', background: 'rgba(16,120,90,0.92)', padding: '3px 9px', borderRadius: '6px', pointerEvents: 'none', textTransform: 'capitalize' }}>
           {label}
         </div>
       )}
