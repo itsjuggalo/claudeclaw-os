@@ -68,6 +68,7 @@ vi.mock('./security.js', () => ({
 }));
 
 const {
+  buildWarRoomRuntimeToolOptions,
   pickSlashRoster,
   maybeLogWarRoomToHive,
   meetingSpeakerLabel,
@@ -103,6 +104,39 @@ describe('meetingSpeakerLabel', () => {
 
   it('falls back to a neutral owner label when an override is blank', () => {
     expect(meetingSpeakerLabel('user', 'main', roster, '  ')).toBe('User');
+  });
+});
+
+describe('war-room runtime tool boundary', () => {
+  it('forwards built-in policy and only opted-in MCP servers to the runtime', () => {
+    const options = buildWarRoomRuntimeToolOptions(
+      'comms',
+      ['Write', 'mcp:gmail'],
+      {
+        gmail: { command: 'gmail-server' },
+        slack: { command: 'slack-server' },
+      },
+    );
+
+    expect(options.allowedTools).toEqual(expect.arrayContaining(['Read', 'Write']));
+    expect(options.allowedTools).not.toContain('Bash');
+    expect(options.allowedTools).not.toContain('mcp:gmail');
+    expect(options.disallowedTools).toContain('Bash');
+    expect(options.mcpServers).toEqual({
+      gmail: { command: 'gmail-server' },
+    });
+  });
+
+  it('omits the runtime MCP field when no server is opted in', () => {
+    const options = buildWarRoomRuntimeToolOptions(
+      'ops',
+      [],
+      { gmail: { command: 'gmail-server' } },
+    );
+
+    expect(options).not.toHaveProperty('mcpServers');
+    expect(options.allowedTools).not.toContain('Bash');
+    expect(options.disallowedTools).toContain('Bash');
   });
 });
 

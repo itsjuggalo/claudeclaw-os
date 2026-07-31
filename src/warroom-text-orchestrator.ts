@@ -1366,6 +1366,29 @@ interface RunAgentTurnArgs {
   roleBudgetMs?: number;
 }
 
+/**
+ * Build the exact tool-policy fields forwarded to the agent runtime.
+ * Keeping policy construction and MCP filtering in one seam prevents
+ * either half of the boundary from being omitted at the invoke call.
+ */
+export function buildWarRoomRuntimeToolOptions<T>(
+  agentId: string,
+  agentTools: string[] | undefined,
+  rawMcpServers: Record<string, T>,
+): {
+  allowedTools: string[];
+  disallowedTools: string[];
+  mcpServers?: Record<string, T>;
+} {
+  const policy = warRoomToolPolicy(agentId, agentTools);
+  const mcpServers = filterMcpServers(rawMcpServers, policy);
+  return {
+    allowedTools: policy.allowedTools,
+    disallowedTools: policy.disallowedTools,
+    ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+  };
+}
+
 async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
   const {
     agentId, meetingId, userText, originalUserText, meetingChatId,
@@ -1417,9 +1440,12 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
   // War-room tool boundary. Default-deny side-effect tools and MCPs
   // unless this agent explicitly opted in via `warroom_tools:` in
   // agent.yaml. Closes the "agents inherit unrestricted MCP" finding.
-  const toolPolicy = warRoomToolPolicy(agentId, warroomTools);
   const rawMcpServers = loadMcpServers(mcpAllowlist, agentDir);
-  const mcpServers = filterMcpServers(rawMcpServers, toolPolicy);
+  const runtimeToolOptions = buildWarRoomRuntimeToolOptions(
+    agentId,
+    warroomTools,
+    rawMcpServers,
+  );
   // Synthetic SDK session key — namespaced per meeting so each war-room
   // chat is its own SDK conversation. NEVER pass this into memory or
   // conversation_log queries; those need the real Telegram chat id
@@ -1635,11 +1661,9 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
       // with the per-agent tool policy below, every side-effect tool call
       // goes through the SDK's permission machinery.
       permissionMode: 'default',
-      allowedTools: toolPolicy.allowedTools,
-      disallowedTools: toolPolicy.disallowedTools,
+      ...runtimeToolOptions,
       maxTurns: agentId === 'main' ? 10 : 8,
       env: sdkEnvStripped(),
-      ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
       includePartialMessages: true,
       abortController: abortCtrl,
       ...(defaultModelForProvider(provider, agentModel) ? { model: defaultModelForProvider(provider, agentModel) } : {}),
