@@ -1,0 +1,14 @@
+import { chromium } from "playwright";
+const STATE = `${process.env.HOME}/skool-mcp/storageState.json`;
+const browser = await chromium.launch({ headless: true });
+const ctx = await browser.newContext({ storageState: STATE });
+const page = await ctx.newPage();
+await page.goto(process.argv[2], { waitUntil: "domcontentloaded", timeout: 45000 });
+await page.waitForTimeout(3000);
+console.log("URL:", page.url());
+console.log("TITLE:", await page.title());
+const nd = await page.evaluate(() => document.getElementById("__NEXT_DATA__")?.textContent?.length || 0);
+console.log("nextdata bytes:", nd);
+const body = await page.evaluate(() => document.body.innerText.slice(0, 400));
+console.log("BODY:", body.replace(/\n/g, " | "));
+await browser.close();
