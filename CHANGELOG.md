@@ -5,6 +5,23 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.8.2] - 2026-08-01
+
+### Bug Fixes
+
+- Warn on divergent cwd store env ([#182](https://github.com/earlyaidopters/claudeclaw-os/pull/182))
+- **deps:** Remediate compatible audit findings ([#181](https://github.com/earlyaidopters/claudeclaw-os/pull/181))
+- **test:** Make Codex path assertions portable ([#180](https://github.com/earlyaidopters/claudeclaw-os/pull/180))
+- **model:** Sync reset and runtime state ([#179](https://github.com/earlyaidopters/claudeclaw-os/pull/179))
+
+### Documentation
+
+- **release:** Upgrade applies to all installs + consolidated Codex .env block
+- **release:** Restore v1.8.0 upgrade steps (download, install, migrate, build, restart)
+- **release:** Drop redundant App Server/SDK line from v1.8.0 known limitations
+- **release:** Finalize v1.8.0 notes (transports, sandbox, hive-read governance, Windows write access)
+- **release:** Expand v1.8.0 notes (intro + Codex v0 framing + detail)
+
 ## [1.8.1] - 2026-07-31
 
 ### Bug Fixes
