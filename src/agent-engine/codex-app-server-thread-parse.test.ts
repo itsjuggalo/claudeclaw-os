@@ -7,6 +7,7 @@
 // exists to prevent.
 
 import { describe, expect, it } from 'vitest';
+import path from 'path';
 
 import {
   ASK_USER_QUESTION_METHOD,
@@ -24,14 +25,19 @@ import {
 } from './codex-app-server-protocol.js';
 import { verifyEffectivePolicy } from './codex-app-server-policy-verify.js';
 
-/** The shape observed from the account-free pinned-binary probe (0.144.6, Windows). */
+const AGENT_CWD = path.resolve('work', 'agent');
+
+/**
+ * The shape observed from the account-free pinned-binary probe (0.144.6,
+ * Windows), with filesystem paths adapted to the host running the test.
+ */
 const PROBE_RESULT = {
   thread: { id: '019f9824-72a4-78b3-b5c8-8f9ddf684324', sessionId: 's1', turns: [] },
   model: 'gpt-5.5',
   modelProvider: 'openai',
   serviceTier: null,
-  cwd: 'C:\\work\\agent',
-  runtimeWorkspaceRoots: ['C:\\work\\agent'],
+  cwd: AGENT_CWD,
+  runtimeWorkspaceRoots: [AGENT_CWD],
   instructionSources: [],
   approvalPolicy: 'never',
   approvalsReviewer: 'none',
@@ -63,7 +69,7 @@ describe('parses the real pinned-binary response', () => {
   it('parses each sandbox variant', () => {
     const ws = parseEffectiveThreadPolicy({
       ...PROBE_RESULT,
-      sandbox: { type: 'workspaceWrite', writableRoots: ['C:\\work\\agent'], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
+      sandbox: { type: 'workspaceWrite', writableRoots: [AGENT_CWD], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
     });
     expect(ws.sandbox).toMatchObject({ type: 'workspaceWrite', excludeSlashTmp: true });
     expect(parseEffectiveThreadPolicy({ ...PROBE_RESULT, sandbox: { type: 'dangerFullAccess' } }).sandbox.type).toBe('dangerFullAccess');
@@ -193,7 +199,7 @@ describe('every reported path must be ABSOLUTE', () => {
   });
 
   it('rejects a relative runtimeWorkspaceRoot', () => {
-    expect(() => parseEffectiveThreadPolicy({ ...PROBE_RESULT, runtimeWorkspaceRoots: ['C:\\work\\agent', './nested'] }))
+    expect(() => parseEffectiveThreadPolicy({ ...PROBE_RESULT, runtimeWorkspaceRoots: [AGENT_CWD, './nested'] }))
       .toThrow(/runtimeWorkspaceRoots: contains non-absolute path\(s\): \.\/nested/);
   });
 
@@ -224,7 +230,7 @@ describe('the parser is what stops an unknown policy from passing verification',
   it('a hostile response claiming full access is parsed and then REJECTED', () => {
     const parsed = parseEffectiveThreadPolicy({ ...PROBE_RESULT, sandbox: { type: 'dangerFullAccess' } });
     const mismatches = verifyEffectivePolicy(
-      { model: 'gpt-5.5', cwd: 'C:\\work\\agent', sandboxMode: 'read-only', networkAccess: false, reasoningEffort: 'high' },
+      { model: 'gpt-5.5', cwd: AGENT_CWD, sandboxMode: 'read-only', networkAccess: false, reasoningEffort: 'high' },
       parsed,
     );
     expect(mismatches.blocking.join('\n')).toMatch(/sandbox type is "dangerFullAccess", requested "read-only"/);

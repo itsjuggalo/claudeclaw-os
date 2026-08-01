@@ -253,8 +253,7 @@ describe('CodexSdkEngineAdapter — configuration', () => {
     state.scripts.push(happyScript);
     await collect(baseInput({ env: { PATH: '/usr/bin' } }));
     const codexHome = state.ctorOptions[0].env.CODEX_HOME as string;
-    expect(codexHome).toContain('codex-home');
-    expect(codexHome.startsWith(state.configDir)).toBe(true);
+    expect(codexHome).toBe(nodePath.join(nodeFs.realpathSync(state.configDir), 'codex-home'));
   });
 
   it('removes a stale subscription credential from the isolated home (API-key mode)', async () => {
