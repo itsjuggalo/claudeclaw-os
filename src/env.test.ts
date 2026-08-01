@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { readEnvFile, envFileCandidates, REPO_ROOT_ENV } from './env.js';
@@ -175,5 +176,137 @@ describe('readEnvFile', () => {
     mockCwd();
     const result = readEnvFile(['CLAUDECLAW_CONFIG']);
     expect(result).toEqual({ CLAUDECLAW_CONFIG: "C:\\Users\\O'Brien\\.claudeclaw-os" });
+  });
+});
+
+function mockEnvFiles(files: Map<string, string>): void {
+  vi.spyOn(fs, 'readFileSync').mockImplementation((file, encoding) => {
+    const resolved = path.resolve(String(file));
+    const content = files.get(resolved);
+    if (content !== undefined && encoding === 'utf-8') return content;
+    throw Object.assign(new Error(`missing: ${resolved}`), { code: 'ENOENT' });
+  });
+}
+
+describe('cwd .env store mismatch warning', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('warns once and names both env files and resolved store paths', async () => {
+    const { readEnvFile, REPO_ROOT_ENV } = await import('./env.js');
+    const cwd = path.resolve(path.dirname(REPO_ROOT_ENV), '..', 'sibling-checkout');
+    const cwdEnv = path.join(cwd, '.env');
+    const cwdStore = path.join(cwd, 'isolated-store');
+    const rootStore = path.join(path.dirname(REPO_ROOT_ENV), 'store');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    mockEnvFiles(new Map([
+      [cwdEnv, 'CLAUDECLAW_STORE_DIR=./isolated-store\nAPI_KEY=cwd\n'],
+      [REPO_ROOT_ENV, `CLAUDECLAW_STORE_DIR=${rootStore}\nAPI_KEY=root\n`],
+    ]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    expect(readEnvFile(['API_KEY'])).toEqual({ API_KEY: 'cwd' });
+    expect(readEnvFile(['API_KEY'])).toEqual({ API_KEY: 'cwd' });
+
+    expect(error).toHaveBeenCalledOnce();
+    const warning = String(error.mock.calls[0][0]);
+    expect(warning).toContain(cwdEnv);
+    expect(warning).toContain(REPO_ROOT_ENV);
+    expect(warning).toContain(cwdStore);
+    expect(warning).toContain(rootStore);
+  });
+
+  it('stays silent for equivalent resolved store paths', async () => {
+    const { readEnvFile, REPO_ROOT_ENV } = await import('./env.js');
+    const cwd = path.resolve(path.dirname(REPO_ROOT_ENV), '..', 'sibling-checkout');
+    const cwdEnv = path.join(cwd, '.env');
+    const rootStore = path.join(path.dirname(REPO_ROOT_ENV), 'store');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    mockEnvFiles(new Map([
+      [cwdEnv, `CLAUDECLAW_STORE_DIR=${path.relative(cwd, rootStore)}\n`],
+      [REPO_ROOT_ENV, `CLAUDECLAW_STORE_DIR=${rootStore}\n`],
+    ]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    readEnvFile(['CLAUDECLAW_STORE_DIR']);
+
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when a home-relative store resolves to the same path', async () => {
+    const { readEnvFile, REPO_ROOT_ENV } = await import('./env.js');
+    const cwd = path.resolve(path.dirname(REPO_ROOT_ENV), '..', 'sibling-checkout');
+    const cwdEnv = path.join(cwd, '.env');
+    const homeStore = path.join(os.homedir(), 'claudeclaw-test-store');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    mockEnvFiles(new Map([
+      [cwdEnv, 'CLAUDECLAW_STORE_DIR=~/claudeclaw-test-store\n'],
+      [REPO_ROOT_ENV, `CLAUDECLAW_STORE_DIR=${homeStore}\n`],
+    ]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    readEnvFile(['CLAUDECLAW_STORE_DIR']);
+
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when both env files use the default store', async () => {
+    const { readEnvFile, REPO_ROOT_ENV } = await import('./env.js');
+    const cwd = path.resolve(path.dirname(REPO_ROOT_ENV), '..', 'sibling-checkout');
+    const cwdEnv = path.join(cwd, '.env');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    mockEnvFiles(new Map([
+      [cwdEnv, 'API_KEY=cwd\n'],
+      [REPO_ROOT_ENV, 'API_KEY=root\n'],
+    ]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    readEnvFile(['API_KEY']);
+
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when process.env overrides both env files', async () => {
+    const { readEnvFile, REPO_ROOT_ENV } = await import('./env.js');
+    const cwd = path.resolve(path.dirname(REPO_ROOT_ENV), '..', 'sibling-checkout');
+    const cwdEnv = path.join(cwd, '.env');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    vi.stubEnv('CLAUDECLAW_STORE_DIR', path.join(cwd, 'explicit-store'));
+    mockEnvFiles(new Map([
+      [cwdEnv, 'CLAUDECLAW_STORE_DIR=./isolated-store\n'],
+      [REPO_ROOT_ENV, 'CLAUDECLAW_STORE_DIR=./store\n'],
+    ]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    readEnvFile(['CLAUDECLAW_STORE_DIR']);
+
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when cwd and repo root produce a single candidate', async () => {
+    const { readEnvFile, REPO_ROOT_ENV } = await import('./env.js');
+    vi.spyOn(process, 'cwd').mockReturnValue(path.dirname(REPO_ROOT_ENV));
+    mockEnvFiles(new Map([[REPO_ROOT_ENV, 'CLAUDECLAW_STORE_DIR=./store\n']]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    readEnvFile(['CLAUDECLAW_STORE_DIR']);
+
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when the repo-root .env is missing', async () => {
+    const { readEnvFile, REPO_ROOT_ENV } = await import('./env.js');
+    const cwd = path.resolve(path.dirname(REPO_ROOT_ENV), '..', 'sibling-checkout');
+    const cwdEnv = path.join(cwd, '.env');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    mockEnvFiles(new Map([[cwdEnv, 'CLAUDECLAW_STORE_DIR=./isolated-store\n']]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    readEnvFile(['CLAUDECLAW_STORE_DIR']);
+
+    expect(error).not.toHaveBeenCalled();
   });
 });
