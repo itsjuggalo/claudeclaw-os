@@ -100,6 +100,17 @@ describe('buildCostFooter', () => {
     expect(result).toBe('\n\n[GPT-5.6 Sol · xhigh | $0.04]');
   });
 
+  it('adds a one-turn runtime change notice without hiding the effective effort', () => {
+    const result = buildCostFooter(
+      'compact',
+      makeUsage(),
+      'gpt-5.6-sol',
+      'medium',
+      'reasoning xhigh → medium',
+    );
+    expect(result).toBe('\n\n[GPT-5.6 Sol · medium | reasoning xhigh → medium]');
+  });
+
   it('omits effort when none is selected', () => {
     const result = buildCostFooter('compact', makeUsage(), 'claude-opus-5');
     expect(result).toBe('\n\n[Opus 5]');

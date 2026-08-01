@@ -10,6 +10,7 @@ import {
   modelDisplayLabel,
   normalizedEffortForProvider,
   reconcileRuntimeOptions,
+  resetProviderModelSelection,
   staticRuntimeOptionsFor,
   validateProviderModelOptions,
 } from './model-catalog.js';
@@ -179,5 +180,33 @@ describe('reconcileRuntimeOptions', () => {
     const { provider, cleared } = reconcileRuntimeOptions(input);
     expect(provider.runtimeMode).toBe('whatever');
     expect(cleared).toEqual([]);
+  });
+});
+
+describe('resetProviderModelSelection', () => {
+  it('clears the OpenAI model and reasoning effort together', () => {
+    expect(resetProviderModelSelection({
+      type: 'openai',
+      model: 'gpt-5.6-sol',
+      thinkingMode: 'xhigh',
+    })).toEqual({ type: 'openai' });
+  });
+
+  it('clears both Claude runtime dials with the model', () => {
+    expect(resetProviderModelSelection({
+      type: 'claude',
+      model: 'claude-opus-4-8',
+      runtimeMode: 'high',
+      thinkingMode: 'on',
+    })).toEqual({ type: 'claude' });
+  });
+
+  it('preserves provider settings unrelated to model selection', () => {
+    expect(resetProviderModelSelection({
+      type: 'openai',
+      model: 'gpt-5.6-sol',
+      thinkingMode: 'medium',
+      dangerouslySkipPermissions: true,
+    })).toEqual({ type: 'openai', dangerouslySkipPermissions: true });
   });
 });

@@ -10,6 +10,8 @@ import {
   composeFinalTelegramText,
   renderTurnActivity,
   resolveTelegramModelSelection,
+  runtimeFooterChange,
+  runtimeFooterState,
   updateTurnActivity,
   type TurnActivityEntry,
 } from './bot.js';
@@ -244,6 +246,31 @@ describe('modelStatusLine', () => {
     expect(modelStatusLine({ type: 'gemini' }, 'chat-1')).toBe('Model: Gemini CLI default');
     expect(modelStatusLine({ type: 'opencode' }, 'chat-1')).toBe('Model: OpenCode default');
     expect(modelStatusLine({ type: 'acp', command: 'my-agent' }, 'chat-1')).toBe('Model: Provider default');
+  });
+});
+
+describe('runtime footer change detection', () => {
+  it('reports an OpenAI reasoning change on the same model', () => {
+    const before = runtimeFooterState({ type: 'openai', model: 'gpt-5.6-sol', thinkingMode: 'xhigh' }, 'gpt-5.6-sol');
+    const after = runtimeFooterState({ type: 'openai', model: 'gpt-5.6-sol', thinkingMode: 'medium' }, 'gpt-5.6-sol');
+    expect(runtimeFooterChange(before, after)).toBe('reasoning xhigh → medium');
+  });
+
+  it('reports Claude effort and thinking changes together', () => {
+    const before = runtimeFooterState({ type: 'claude', model: 'claude-opus-4-8', runtimeMode: 'high', thinkingMode: 'on' }, 'claude-opus-4-8');
+    const after = runtimeFooterState({ type: 'claude', model: 'claude-opus-4-8', runtimeMode: 'medium', thinkingMode: 'off' }, 'claude-opus-4-8');
+    expect(runtimeFooterChange(before, after)).toBe('effort high → medium, thinking on → off');
+  });
+
+  it('does not describe a model switch as a runtime-dial change', () => {
+    const before = runtimeFooterState({ type: 'openai', model: 'gpt-5.6-sol', thinkingMode: 'xhigh' }, 'gpt-5.6-sol');
+    const after = runtimeFooterState({ type: 'openai', model: 'gpt-5.6-terra', thinkingMode: 'medium' }, 'gpt-5.6-terra');
+    expect(runtimeFooterChange(before, after)).toBeUndefined();
+  });
+
+  it('does not emit a notice on the first observed turn', () => {
+    const current = runtimeFooterState({ type: 'openai', model: 'gpt-5.6-sol', thinkingMode: 'medium' }, 'gpt-5.6-sol');
+    expect(runtimeFooterChange(undefined, current)).toBeUndefined();
   });
 });
 

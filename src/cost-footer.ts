@@ -28,6 +28,7 @@ export function buildCostFooter(
   usage: UsageInfo | null,
   model?: string,
   effort?: string,
+  runtimeChange?: string,
 ): string {
   if (mode === 'off' || !usage) return '';
 
@@ -35,7 +36,8 @@ export function buildCostFooter(
   // fallback ("openai") passes through as-is. Effort rides along when the turn
   // ran with one so the tag reports the dial, not just the model.
   const base = model ? modelDisplayLabel(model) : 'unknown';
-  const modelLabel = effort ? `${base} · ${effort}` : base;
+  const runtimeLabel = effort ? `${base} · ${effort}` : base;
+  const modelLabel = runtimeChange ? `${runtimeLabel} | ${runtimeChange}` : runtimeLabel;
 
   if (mode === 'compact') {
     return `\n\n[${modelLabel}]`;

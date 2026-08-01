@@ -2357,10 +2357,14 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         const provider = id === 'main' ? getSelectedProviderConfig() : config.provider;
         const model = provider.type === 'claude'
           ? (mainOverride ?? mainPersistedModel ?? provider.model ?? config.model ?? DEFAULT_CLAUDE_MODEL)
-          : provider.model;
+          : provider.type === 'openai'
+            ? (provider.model ?? DEFAULT_OPENAI_MODEL)
+            : provider.model;
         // Report the effective model inside provider too so the dashboard
         // picker highlights the right entry.
-        const reportedProvider = provider.type === 'claude' && model ? { ...provider, model } : provider;
+        const reportedProvider = (provider.type === 'claude' || provider.type === 'openai') && model
+          ? { ...provider, model }
+          : provider;
         // Old configs can carry effort/thinking values from a previously
         // selected model. Reconcile the response so cards never advertise a
         // stranded "(unsupported)" control. Persistence is normalized on the
@@ -2621,6 +2625,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         thinkingMode: merged.thinkingMode ?? '',
         changed: false,
         newChatRequired: false,
+        sessionReset: false,
         restartRequired: false,
       });
     }
@@ -2632,15 +2637,15 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       } else {
         setAgentProvider(agentId, merged);
       }
+
       return c.json({
         ok: true,
         agent: agentId,
         runtimeMode: merged.runtimeMode ?? '',
         thinkingMode: merged.thinkingMode ?? '',
         changed: true,
-        // Effort/thinking belongs to an existing thread. Persist the new
-        // selection, but do not claim that the active conversation changed.
-        newChatRequired: true,
+        newChatRequired: false,
+        sessionReset: false,
         restartRequired: false,
       });
     } catch (err) {

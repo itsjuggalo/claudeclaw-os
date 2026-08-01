@@ -39,7 +39,7 @@ vi.mock('child_process', async () => {
 
 import { _initTestDatabase, getSession, setSession } from './db.js';
 import { buildDashboardApp } from './dashboard.js';
-import { STORE_DIR, CLAUDECLAW_CONFIG, updateAgentProvider } from './config.js';
+import { STORE_DIR, CLAUDECLAW_CONFIG, DEFAULT_OPENAI_MODEL, updateAgentProvider } from './config.js';
 import { getSelectedProviderConfig } from './active-provider.js';
 import { getMainProviderConfig, setMainProviderConfig } from './provider.js';
 import type { Hono } from 'hono';
@@ -278,6 +278,28 @@ describe('GET /api/agents', () => {
     expect(main.thinkingMode).toBe('');
     expect(main.provider).not.toHaveProperty('runtimeMode');
     expect(main.provider).not.toHaveProperty('thinkingMode');
+  });
+
+  it('reports the effective OpenAI default after its model override is cleared', async () => {
+    const original = getMainProviderConfig();
+    try {
+      setMainProviderConfig({ type: 'openai' });
+      updateAgentProvider({ type: 'openai' });
+
+      const res = await get('/api/agents');
+      expect(res.status).toBe(200);
+      const body = await jsonOf(res);
+      const main = body.agents.find((agent: any) => agent.id === 'main');
+      expect(main).toMatchObject({
+        model: DEFAULT_OPENAI_MODEL,
+        modelLabel: expect.any(String),
+        provider: { type: 'openai', model: DEFAULT_OPENAI_MODEL },
+        thinkingMode: '',
+      });
+    } finally {
+      setMainProviderConfig(original);
+      updateAgentProvider(undefined);
+    }
   });
 });
 
@@ -704,24 +726,27 @@ describe('provider selection endpoints', () => {
     expect(getSession('provider-chat', 'main')).toBe('claude:current-thread');
   });
 
-  it('marks effort changes for a new chat instead of a process restart', async () => {
-    setMainProviderConfig({ type: 'claude', model: 'claude-opus-5' });
-    updateAgentProvider({ type: 'claude', model: 'claude-opus-5' });
-    setSession('runtime-chat', 'claude:current-thread', 'main');
+  it('preserves active sessions when effort changes', async () => {
+    const provider = { type: 'openai' as const, model: 'gpt-5.6-sol', thinkingMode: 'xhigh' };
+    setMainProviderConfig(provider);
+    updateAgentProvider(provider);
+    setSession('runtime-chat', 'openai:current-thread', 'main');
 
     const res = await app.request('/api/agents/main/runtime' + Q, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ runtimeMode: 'high' }),
+      body: JSON.stringify({ thinkingMode: 'medium' }),
     });
 
     expect(res.status).toBe(200);
     expect(await jsonOf(res)).toMatchObject({
       changed: true,
-      newChatRequired: true,
+      newChatRequired: false,
+      sessionReset: false,
       restartRequired: false,
     });
-    expect(getSession('runtime-chat', 'main')).toBe('claude:current-thread');
+    expect(getMainProviderConfig()).toMatchObject({ thinkingMode: 'medium' });
+    expect(getSession('runtime-chat', 'main')).toBe('openai:current-thread');
   });
 
   it('updates main to a built-in ACP provider without restart', async () => {

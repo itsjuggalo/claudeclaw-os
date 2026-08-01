@@ -461,15 +461,15 @@ function RuntimeDropdowns({ agent, onChange }: { agent: Agent; onChange: () => v
   async function save(field: 'runtimeMode' | 'thinkingMode', value: string) {
     setBusy(field);
     try {
-      const res = await apiPatch<{ changed?: boolean; newChatRequired?: boolean; restartRequired: boolean }>(
+      const res = await apiPatch<{ changed?: boolean; newChatRequired?: boolean; sessionReset?: boolean; restartRequired: boolean }>(
         `/api/agents/${agent.id}/runtime`,
         { [field]: value },
       );
-      if (res?.newChatRequired) {
+      if (res?.changed) {
         pushToast({
           tone: 'info',
-          title: 'Saved for new chats',
-          description: `The current conversation keeps its existing setting. Use /newchat to apply this change.`,
+          title: 'Runtime setting applied',
+          description: 'Conversation continuity was preserved. The next Telegram footer will note the runtime change.',
         });
       }
       onChange();

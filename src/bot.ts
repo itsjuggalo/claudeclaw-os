@@ -61,6 +61,7 @@ import {
   OPENAI_MODEL_OPTIONS,
   modelDisplayLabel,
   reconcileRuntimeOptions,
+  resetProviderModelSelection,
   selectedEffortForProvider,
 } from './model-catalog.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
@@ -437,6 +438,50 @@ const voiceEnabledChats = new Set<string>();
 // Per-chat model override (in-memory, resets on restart)
 // When not set, uses CLI default (Opus via Max/OAuth)
 const chatModelOverride = new Map<string, string>();
+
+export interface RuntimeFooterState {
+  providerType: ProviderConfig['type'];
+  model: string;
+  effort: string;
+  thinking?: string;
+}
+
+// Last runtime selection that actually completed a turn in this process. The
+// dashboard persists runtime changes directly, so comparing at turn boundaries
+// lets Telegram call out a change without discarding the provider session.
+const lastRuntimeFooterState = new Map<string, RuntimeFooterState>();
+
+export function runtimeFooterState(provider: ProviderConfig, model: string): RuntimeFooterState {
+  return {
+    providerType: provider.type,
+    model,
+    effort: selectedEffortForProvider(provider, model) ?? 'default',
+    ...(provider.type === 'claude'
+      ? { thinking: provider.thinkingMode?.trim().toLowerCase() || 'default' }
+      : {}),
+  };
+}
+
+export function runtimeFooterChange(
+  previous: RuntimeFooterState | undefined,
+  current: RuntimeFooterState,
+): string | undefined {
+  if (!previous
+    || previous.providerType !== current.providerType
+    || previous.model !== current.model) return undefined;
+
+  const changes: string[] = [];
+  if (previous.effort !== current.effort) {
+    const label = current.providerType === 'openai' ? 'reasoning' : 'effort';
+    changes.push(`${label} ${previous.effort} → ${current.effort}`);
+  }
+  if (previous.thinking !== undefined
+    && current.thinking !== undefined
+    && previous.thinking !== current.thinking) {
+    changes.push(`thinking ${previous.thinking} → ${current.thinking}`);
+  }
+  return changes.length ? changes.join(', ') : undefined;
+}
 
 // Label → model ID for the /model opus|sonnet|haiku shortcuts. IDs resolve
 // from env/config (see config.ts) so they track new model releases without a
@@ -1725,12 +1770,20 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // model instead of the bare provider type, and report the effort dial the
     // turn ran with when one was selected.
     const footerModel = effectiveModel ?? defaultModelForProvider(provider);
+    const footerEffort = selectedEffortForProvider(provider, footerModel);
+    const currentRuntimeFooterState = runtimeFooterState(provider, footerModel ?? provider.type);
+    const runtimeChange = runtimeFooterChange(
+      lastRuntimeFooterState.get(chatIdStr),
+      currentRuntimeFooterState,
+    );
     const costFooter = buildCostFooter(
       SHOW_COST_FOOTER,
       result.usage,
       footerModel ?? provider.type,
-      selectedEffortForProvider(provider, footerModel),
+      footerEffort,
+      runtimeChange,
     );
+    lastRuntimeFooterState.set(chatIdStr, currentRuntimeFooterState);
 
     // Save conversation turn to memory (including full log).
     // Skip logging for synthetic messages like /respin to avoid self-referential growth.
@@ -2269,21 +2322,25 @@ export function createBot(): Bot {
     }
 
     if (arg === 'reset' || arg === 'default') {
-      // Drop the persisted model so the provider default applies.
-      const next: ProviderConfig = { ...provider };
-      delete next.model;
+      // Reset the complete model-specific selection. Keeping runtimeMode or
+      // thinkingMode here made `/model reset` only half a reset: OpenAI could
+      // return to its default model while remaining pinned to xhigh.
+      const next = resetProviderModelSelection(provider);
       const defaultModel = provider.type === 'claude' ? DEFAULT_CLAUDE_MODEL : DEFAULT_OPENAI_MODEL;
-      const { provider: reconciled, cleared } = reconcileRuntimeOptions(next);
+      let changed: boolean;
       try {
-        persist(reconciled);
+        changed = persist(next);
       } catch (err) {
         await ctx.reply(`Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
-      const clearedLine = cleared.length
-        ? `\nCleared unsupported options: ${cleared.map((item) => `${item.label}=${item.value}`).join(', ')}`
-        : '';
-      await ctx.reply(`Model reset to default: ${modelDisplayLabel(defaultModel)} (persisted)${clearedLine}`);
+      const runtimeDefaults = provider.type === 'openai'
+        ? 'Reasoning effort: provider default'
+        : 'Effort: provider default\nThinking: provider default';
+      const persisted = changed
+        ? 'Persisted to agent.yaml. Started a fresh session.'
+        : 'Already using provider defaults.';
+      await ctx.reply(`Reset to provider defaults:\nModel: ${modelDisplayLabel(defaultModel)}\n${runtimeDefaults}\n${persisted}`);
       return;
     }
 

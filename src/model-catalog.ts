@@ -213,6 +213,18 @@ export function reconcileRuntimeOptions(
   return { provider: next, cleared };
 }
 
+// `/model reset` means the whole model-specific selection returns to provider
+// defaults, not just the model id. Effort and thinking are persisted beside the
+// model and otherwise survive a reset, which leaves the dashboard and the next
+// provider turn visibly pinned to the old runtime behavior.
+export function resetProviderModelSelection(provider: ProviderConfig): ProviderConfig {
+  const next: ProviderConfig = { ...provider };
+  delete next.model;
+  delete next.runtimeMode;
+  delete next.thinkingMode;
+  return next;
+}
+
 export function claudeThinkingForModel(
   model: string,
   requested: string | undefined,
