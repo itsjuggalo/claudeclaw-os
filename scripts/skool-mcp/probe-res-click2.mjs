@@ -1,0 +1,18 @@
+import { chromium } from "playwright";
+const STATE = `${process.env.HOME}/skool-mcp/storageState.json`;
+const browser = await chromium.launch({ headless: true });
+const ctx = await browser.newContext({ storageState: STATE, acceptDownloads: true });
+const page = await ctx.newPage();
+const t0 = Date.now();
+let clicked = false;
+page.on("request", r => { if (clicked) console.log("REQ:", r.method(), r.url().slice(0, 200)); });
+ctx.on("page", p => console.log("POPUP:", p.url().slice(0, 200)));
+page.on("download", d => console.log("DOWNLOAD:", d.url().slice(0, 200), "->", d.suggestedFilename()));
+await page.goto("https://www.skool.com/earlyaidopters/classroom/205bbe56?md=4a8f9c4f4b424bc48dc5a7a0bb78ce8d", { waitUntil: "domcontentloaded", timeout: 45000 });
+await page.waitForTimeout(3500);
+clicked = true;
+await page.locator("div.haFjgC", { hasText: "Transcript" }).first().click({ force: true });
+await page.waitForTimeout(4000);
+const pages = ctx.pages().map(p => p.url());
+console.log("open pages:", JSON.stringify(pages));
+await browser.close();
