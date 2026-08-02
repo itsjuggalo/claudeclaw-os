@@ -628,11 +628,16 @@ function boundaryOk(left: string, right: string, right2: string): boolean {
   if (!isAlpha(right)) return true;
   return right === 's' && !isAlpha(right2); // plural: "rhomboids" yes, "psoasxyz" no
 }
+// Longer aliases CONSUME their span: once "biceps femoris" has claimed a run of
+// characters, the shorter "biceps" alias can't fire inside it — otherwise every
+// hamstring mention also lit up biceps brachii (the 2026-08-01 "bicep → hamstring"
+// bug). Mirrors the `taken` list in erikdalton-kb/anatomy_tags.py::tag_text.
 function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
   if (!text) return [];
   const low = ' ' + text.toLowerCase() + ' ';
   const n = low.length;
   const pos: Record<string, number> = {};
+  const taken: Array<[number, number]> = [];
   for (const [alias, slug] of aliasPairs) {
     if (slug in pos) continue;
     let start = 0;
@@ -643,7 +648,9 @@ function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
       const left = low[idx - 1];
       const right = e < n ? low[e] : ' ';
       const right2 = e + 1 < n ? low[e + 1] : ' ';
-      if (boundaryOk(left, right, right2)) { pos[slug] = idx; break; }
+      if (boundaryOk(left, right, right2) && !taken.some(([a, b]) => a <= idx && e <= b)) {
+        pos[slug] = idx; taken.push([idx, e]); break;
+      }
       start = idx + 1;
     }
   }
