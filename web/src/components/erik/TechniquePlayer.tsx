@@ -8,7 +8,7 @@ import { apiGet } from '@/lib/api';
 import { frameScore } from './ExploreTab';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
-interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
+interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; covers?: string; }
 interface QuizBankItem { clipUrl: string; videoId: string; technique: string; caption: string; }
 
 const ACCENT = '#10b981';
@@ -73,6 +73,74 @@ function TechClip({ src, caption }: { src: string; caption?: string }) {
         </button>
       </div>
       {caption && <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginTop: '6px', lineHeight: 1.5 }}>{caption}</div>}
+    </div>
+  );
+}
+
+interface ExamHit { id: string; n: number; stem: string; paper: string; answer: string | null; }
+
+// "The Art of Myoskeletal Alignment Therapy Q1" spends a whole line saying which
+// paper before it gets to the question. Only two of the five titles use an
+// em-dash, so stripping to the tail was not enough.
+function shortPaper(title: string): string {
+  const t = title.replace(/^(Advanced Myoskeletal Techniques|MAT|Dynamic Body)\s+—\s+/, '');
+  if (/Art of Myoskeletal/i.test(t)) return 'Art of MAT';
+  if (/Technique Tour/i.test(t)) return 'Technique Tour';
+  if (/Shoulder/i.test(t)) return 'Shoulder/Arm/Hand';
+  if (/Lower Body/i.test(t)) return 'Lower Body';
+  if (/Upper Body/i.test(t)) return 'Upper Body';
+  return t;
+}
+
+// The exam bank already records, per question, which technique clips teach it.
+// Reading that index BACKWARDS costs nothing and closes the loop the other way:
+// having just watched a technique, Mike sees exactly which certification
+// questions are on it and can go drill them while it is fresh. No matching, no
+// guessing — these are the same links, read from the other end.
+function ExamOnTechnique({ itemId, videoId }: { itemId: string; videoId: string }) {
+  const [hits, setHits] = useState<ExamHit[]>([]);
+  useEffect(() => {
+    let alive = true;
+    apiGet<{ papers: { id: string; title: string; questions: {
+      id: string; n: number; stem: string; answer: string | null;
+      lessons?: { videoId: string }[] }[] }[] }>(
+      '/api/databases/kb/' + itemId + '/exam-bank')
+      .then((b) => {
+        if (!alive) return;
+        const out: ExamHit[] = [];
+        for (const p of b.papers || []) {
+          for (const q of p.questions || []) {
+            if ((q.lessons || []).some((l) => l.videoId === videoId)) {
+              out.push({ id: q.id, n: q.n, stem: q.stem, paper: p.title, answer: q.answer });
+            }
+          }
+        }
+        setHits(out);
+      })
+      .catch(() => { /* exam bank not available — say nothing */ });
+    return () => { alive = false; };
+  }, [itemId, videoId]);
+  if (!hits.length) return null;
+  return (
+    <div style={{ marginTop: '18px', padding: '11px 13px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'var(--color-card)' }}>
+      <div style={{ fontSize: '12.5px', fontWeight: 800, color: ACCENT, marginBottom: '2px' }}>
+        On the exam · {hits.length} question{hits.length === 1 ? '' : 's'}
+      </div>
+      <div style={{ fontSize: '11.5px', color: 'var(--color-text-faint)', marginBottom: '7px' }}>
+        Certification questions this technique teaches — drill them now, while you've just watched it.
+      </div>
+      {hits.slice(0, 8).map((h) => (
+        <div key={h.id} style={{ fontSize: '12.5px', color: 'var(--color-text)', lineHeight: 1.5, marginBottom: '4px' }}>
+          <span style={{ color: 'var(--color-text-faint)' }}>{shortPaper(h.paper)} Q{h.n} · </span>
+          {h.stem.slice(0, 130)}{h.stem.length > 130 ? '…' : ''}
+          {!h.answer && <span style={{ color: 'var(--color-text-faint)' }}> (no key — study only)</span>}
+        </div>
+      ))}
+      {hits.length > 8 && (
+        <div style={{ fontSize: '11.5px', color: 'var(--color-text-faint)', marginTop: '3px' }}>
+          …and {hits.length - 8} more. Open the Exam tab to drill them with answers.
+        </div>
+      )}
     </div>
   );
 }
@@ -239,6 +307,9 @@ export function TechniquePlayer({ itemId, videosMap }: {
           <TechClip src={clipByVideo[video.id].clipUrl} caption={clipByVideo[video.id].caption} />
         )}
 
+        {/* what this technique is actually tested on */}
+        <ExamOnTechnique itemId={itemId} videoId={video.id} />
+
         {reading && (
           <div style={{ maxWidth: '680px' }}>
             <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '12px' }}>Full transcript · {frames.length} segments in order — click a frame to jump to that step.</div>
@@ -348,8 +419,24 @@ export function TechniquePlayer({ itemId, videosMap }: {
                 style={{ width: '92px', height: '52px', objectFit: 'cover', borderRadius: '6px', flex: '0 0 auto', background: '#000' }} />
             )}
             <span style={{ minWidth: 0, flex: 1 }}>
-              <span style={{ display: 'block', fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text)' }}>{studied.has(v.id) ? '✓ ' : ''}{v.title}</span>
+              {/* "VTS_01_2" is a DVD-VOB filename, not a lesson name. The Library
+                  already renders these as "Part N"; do the same here so the two
+                  tabs agree, and keep the raw token visible for cross-reference. */}
+              <span style={{ display: 'block', fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text)' }}>
+                {studied.has(v.id) ? '✓ ' : ''}
+                {/^VTS[_0-9]*$/i.test(v.title) ? `Part ${i + 1}` : v.title}
+                {/^VTS[_0-9]*$/i.test(v.title) && (
+                  <span style={{ color: 'var(--color-text-faint)', fontSize: '11px', marginLeft: '7px' }}>{v.title}</span>
+                )}
+              </span>
               <span style={{ display: 'block', fontSize: '11px', color: 'var(--color-text-faint)' }}>{v.course}</span>
+              {/* A DVD segment's filename says nothing. This says what it actually
+                  covers, worked out from its own transcript — not a title Erik gave it. */}
+              {v.covers && (
+                <span style={{ display: 'block', fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                  covers: {v.covers}
+                </span>
+              )}
               {sub}
             </span>
             <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
@@ -395,8 +482,9 @@ export function TechniquePlayer({ itemId, videosMap }: {
               </button>
               {open && (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  {vids.map((v) => {
+                  {vids.map((v, vi) => {
                     const at = resume[v.id];
+                    const cryptic = /^VTS[_0-9]*$/i.test(v.title);
                     return (
                       <button key={v.id} type="button" onClick={() => openVideo(v.id)}
                         class="transition-colors hover:bg-[var(--color-elevated)]"
@@ -406,7 +494,16 @@ export function TechniquePlayer({ itemId, videosMap }: {
                             style={{ width: '92px', height: '52px', objectFit: 'cover', borderRadius: '6px', flex: '0 0 auto', background: '#000' }} />
                         )}
                         <span style={{ minWidth: 0, flex: 1, fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text-muted)' }}>
-                          {studied.has(v.id) ? '✓ ' : ''}{v.title}
+                          {studied.has(v.id) ? '✓ ' : ''}
+                          {cryptic ? `Part ${vi + 1}` : v.title}
+                          {cryptic && <span style={{ color: 'var(--color-text-faint)', fontSize: '11px', marginLeft: '7px' }}>{v.title}</span>}
+                          {/* what the segment demonstrably covers, from its own
+                              transcript — the only handle these DVD rips have */}
+                          {v.covers && (
+                            <span style={{ display: 'block', fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                              covers: {v.covers}
+                            </span>
+                          )}
                           {at ? <span style={{ display: 'block', fontSize: '11px', color: 'var(--color-text-faint)' }}>resume at step {at + 1}</span> : null}
                         </span>
                         <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT }}>{v.frames.length} steps ▶</span>

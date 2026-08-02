@@ -48,6 +48,11 @@ interface ExamQuestion {
   topic: string;
   confidence: string | null;
   textbook: string | null;
+  // True when the linked clip/passage names the keyed answer and no distractor.
+  // Most keys were REASONED from the booklet's printed tip; this marks the ones
+  // that also stand on Erik's own words, so Mike knows which he can bank and
+  // which are worth a second look before the exam.
+  corroborated?: boolean;
   // The booklet's own "Tip:" line under a question — Erik nudging you at the
   // answer. Only the four home-study papers print these.
   hint?: string | null;
@@ -271,6 +276,9 @@ export function ErikExam({ onSearch, onLesson }: {
       {/* how the keys were arrived at — so a wrong key can never masquerade as gospel */}
       <KeyProvenance paper={paper} />
 
+      {/* the only question that matters: could he pass this paper today? */}
+      <Readiness paper={paper} progress={progress} />
+
       {/* what he'd actually fail on, by the booklet's own sections */}
       <WeakSections paper={paper} progress={progress} onPick={setTopicFilter}
         active={topicFilter} />
@@ -445,6 +453,64 @@ function Tip({ q }: { q: ExamQuestion }) {
 }
 
 // ── "Watch Erik teach this" ────────────────────────────────────────────────
+// "Am I ready to sit this?" is the only question that matters, and neither the
+// attempted count nor the mastered count answers it. This does — but honestly:
+// questions he has never touched are UNKNOWN, not wrong, so the estimate is a
+// range, and the point estimate only carries weight once he has drilled enough
+// of the paper for his accuracy to mean anything.
+function Readiness({ paper, progress }: { paper: ExamPaper; progress: Progress }) {
+  const keyed = paper.questions.filter((q) => q.answer);
+  if (!keyed.length) return null;
+  let right = 0, tries = 0, drilled = 0;
+  for (const q of keyed) {
+    const r = progress.right[q.id] || 0, w = progress.wrong[q.id] || 0;
+    if (r + w === 0) continue;
+    drilled += 1; right += r; tries += r + w;
+  }
+  if (!drilled) return null;
+  const acc = right / tries;
+  // best case: every untouched question goes his way. worst case: none do.
+  const known = drilled / keyed.length;
+  const point = Math.round(acc * 100);
+  const worst = Math.round((right / tries) * known * 100);
+  const best = Math.round((acc * known + (1 - known)) * 100);
+  const PASS = 70;
+  // Under a third of the paper drilled, one bad run swings the number wildly —
+  // say so rather than let a flattering 90% off six questions read as ready.
+  const thin = known < 0.33;
+  const ready = !thin && point >= PASS && worst >= PASS;
+  const colour = ready ? ACCENT : point >= PASS ? AMBER : RED;
+  return (
+    <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '10px', border: '1px solid ' + colour + '55', background: colour + '11' }}>
+      <span style={{ fontSize: '12.5px', fontWeight: 800, color: colour }}>
+        {ready ? '✓ On track to pass' : point >= PASS ? 'Borderline' : 'Not ready yet'}
+      </span>
+      <span style={{ fontSize: '12.5px', color: 'var(--color-text)', marginLeft: '8px' }}>
+        {'\u2014 '}you're getting <b>{point}%</b> of what you've drilled right. Pass mark is {PASS}%.
+      </span>
+      <div style={{ fontSize: '11.5px', color: 'var(--color-text-muted)', marginTop: '4px', lineHeight: 1.5 }}>
+        {drilled} of {keyed.length} keyed questions drilled ({Math.round(known * 100)}% of the paper).
+        If you sat it today you'd land somewhere between <b>{worst}%</b> and <b>{best}%</b>, depending on
+        the {keyed.length - drilled} you've never seen.
+        {thin && ' Too little drilled for that number to mean much yet — keep going.'}
+      </div>
+    </div>
+  );
+}
+
+// Which answers stand on Erik's own words rather than on an argument. Revising
+// is triage: this tells him where to spend the second look.
+function Corroboration({ q }: { q: ExamQuestion }) {
+  if (!q.answer) return null;
+  return q.corroborated
+    ? <div style={{ fontSize: '11px', color: ACCENT, marginTop: '6px' }}>
+        ✓ Corroborated — the clip/passage below names this answer and none of the others.
+      </div>
+    : <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '6px' }}>
+        Reasoned, not located — read the reasoning above before you bank it.
+      </div>;
+}
+
 // Reading why an answer is right is one pass; watching the hands that make it
 // true is what survives to exam day. Each link opens the technique player at the
 // exact second Erik covers it.
@@ -455,6 +521,11 @@ function WatchLessons({ q, onLesson }: { q: ExamQuestion; onLesson?: (videoId: s
     const t = Math.round(s || 0); const m = Math.floor(t / 60);
     return (m > 0 ? m + 'm' : '') + (t % 60) + 's';
   };
+  // The USB rips carry real lesson names ("6. Bicipital Tenosynovitis"); the DVD
+  // rips are raw DVD-VOB filenames — "VTS_01_2" tells him nothing and the course
+  // line already says which disk it is. Drop the token rather than dress it up:
+  // the quoted transcript underneath is what actually says what the clip covers.
+  const label = (t: string) => (/^VTS[_0-9]*$/i.test(t.trim()) ? null : t);
   return (
     <div style={{ marginTop: '10px' }}>
       <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '.8px', color: 'var(--color-text-faint)', textTransform: 'uppercase', marginBottom: '4px' }}>
@@ -466,7 +537,10 @@ function WatchLessons({ q, onLesson }: { q: ExamQuestion; onLesson?: (videoId: s
             class="transition-colors hover:bg-[var(--color-elevated)]"
             style={{ textAlign: 'left', padding: '7px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', background: 'transparent', cursor: 'pointer' }}>
             <span style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: ACCENT }}>
-              ▶ {l.title} <span style={{ color: 'var(--color-text-faint)', fontWeight: 400 }}>· {l.course} · {time(l.t_mid)}</span>
+              ▶ {label(l.title) ?? l.course}{' '}
+              <span style={{ color: 'var(--color-text-faint)', fontWeight: 400 }}>
+                {label(l.title) ? '· ' + l.course + ' ' : ''}· {time(l.t_mid)} in
+              </span>
               {l.manualPage ? (
                 <span title="Page in your printed course manual — these tests are open book"
                   style={{ marginLeft: '7px', fontSize: '11px', fontWeight: 700, color: AMBER, border: '1px solid ' + AMBER + '66', borderRadius: '5px', padding: '0 5px' }}>
@@ -591,7 +665,10 @@ function StudyCard({ q, progress, onSearch, onLesson }: {
       {show && (
         <div style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--color-border)', background: 'var(--color-bg)' }}>
           {q.answer
-            ? <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}><b style={{ color: ACCENT }}>{q.answer})</b> {q.why}</div>
+            ? <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>
+                <b style={{ color: ACCENT }}>{q.answer})</b> {q.why}
+                <Corroboration q={q} />
+              </div>
             : <div style={{ fontSize: '13px', color: AMBER, lineHeight: 1.5 }}>
                 {q.confidence === 'opinion'
                   ? 'This one is graded on your own judgement — the booklet asks what YOU consider worst, so there is no single key. It is shown for study but never scored.'
@@ -800,6 +877,7 @@ function DrillMode({ paper, progress, onProgress, count, instant, timed, onLesso
               <b style={{ color: chosen === q.answer ? ACCENT : RED }}>
                 {chosen === q.answer ? '✓ Correct.' : `✗ The answer is ${q.answer}).`}
               </b>{' '}{q.why}
+              <Corroboration q={q} />
             </div>
             {chosen !== q.answer && <WatchLessons q={q} onLesson={onLesson} />}
             {q.textbook && (

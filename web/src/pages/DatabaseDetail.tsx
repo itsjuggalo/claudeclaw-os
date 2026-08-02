@@ -411,6 +411,11 @@ interface VideoFrameData {
   title: string;
   course: string;
   frames: FrameEntry[];
+  // What a DVD segment demonstrably covers, taken from its own transcript
+  // (erikdalton-kb/name_dvd_segments.py). The USB rips carry Erik's real lesson
+  // names; the DVD rips are raw VOB filenames — "VTS_01_2" on its own is
+  // unusable, so this is what makes those 25 segments findable.
+  covers?: string;
 }
 
 // A single frame card: thumbnail + timestamp + transcript caption, clickable to enlarge.
@@ -788,14 +793,14 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
     if ((!isErikDalton && !isClayTrader) || videosLoaded.current) return;
     videosLoaded.current = true;
     // Load the _index.json to get the list of video IDs, then load each frames.json
-    apiGet<Record<string, { title: string; course: string; n_frames: number }>>('/api/databases/kb/' + item.id + '/frames-index')
+    apiGet<Record<string, { title: string; course: string; n_frames: number; covers?: string }>>('/api/databases/kb/' + item.id + '/frames-index')
       .then(async (idx) => {
         const map: Record<string, VideoFrameData> = {};
         // Load all videos in parallel (47 requests, each tiny JSON)
         await Promise.all(Object.entries(idx).map(async ([videoId, meta]) => {
           try {
             const r = await apiGet<{ frames: FrameEntry[] }>('/api/databases/kb/' + item.id + '/frames/' + videoId);
-            map[videoId] = { id: videoId, title: meta.title, course: meta.course, frames: r.frames || [] };
+            map[videoId] = { id: videoId, title: meta.title, course: meta.course, covers: meta.covers, frames: r.frames || [] };
           } catch { /* skip failed video */ }
         }));
         setVideosMap(map);

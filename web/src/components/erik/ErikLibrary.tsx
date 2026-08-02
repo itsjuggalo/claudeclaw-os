@@ -13,7 +13,7 @@ import coverageData from '@/data/erik-coverage.json';
 import { frameScore } from './ExploreTab';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
-interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
+interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; covers?: string; }
 interface Coverage {
   totalFiles: number;
   groups: Array<{ medium: string; note: string; files: number; courses: Array<[string, number]> }>;
@@ -198,6 +198,11 @@ export function ErikLibrary({ videosMap, onOpen, itemId }: {
                           {cryptic ? `Part ${i + 1}` : v.title}
                           {cryptic && <span style={{ color: 'var(--color-text-faint)', fontSize: '11px', marginLeft: '7px' }}>{v.title}</span>}
                         </span>
+                        {v.covers && (
+                          <span style={{ display: 'block', fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '1px' }}>
+                            covers: {v.covers}
+                          </span>
+                        )}
                         {p && (
                           <span style={{ display: '-webkit-box', fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.4, marginTop: '2px', overflow: 'hidden', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
                             {p.text.slice(0, 150)}…
