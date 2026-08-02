@@ -112,9 +112,6 @@ export const MUSCLE_FACTS: Record<string, MuscleFact> = {
     test: 'Scapular winging / medial-border lift-off with a short pectoralis minor',
     cue: 'Medial-border pain is usually STRETCH-weak rhomboids under a tight pec minor — treat the front to fix the back.',
   },
-  'levator-scapulae-note': {
-    origin: '', insertion: '', action: '',
-  },
   supraspinatus: {
     origin: 'Supraspinous fossa', insertion: 'Greater tubercle (superior facet)',
     action: 'Initiates abduction and centres the humeral head in the socket',

@@ -53,6 +53,14 @@ interface ExamQuestion {
   // that also stand on Erik's own words, so Mike knows which he can bank and
   // which are worth a second look before the exam.
   corroborated?: boolean;
+  // Where to open the PRINTED manual for this question. The booklet's section
+  // heading names one of Erik's techniques, and the manual indexes by that same
+  // technique name, so the section maps straight to a page. Shown BEFORE you
+  // answer, deliberately: these exams are open book, so the page number is the
+  // single most useful thing on the card. Only set when the section matched
+  // exactly one manual entry — an ambiguous match shows nothing rather than
+  // sending Mike to the wrong page mid-exam.
+  manualPage?: { page: number; title: string; usb?: string | null } | null;
   // The booklet's own "Tip:" line under a question — Erik nudging you at the
   // answer. Only the four home-study papers print these.
   hint?: string | null;
@@ -276,6 +284,9 @@ export function ErikExam({ onSearch, onLesson }: {
       {/* how the keys were arrived at — so a wrong key can never masquerade as gospel */}
       <KeyProvenance paper={paper} />
 
+      {/* open-book coverage — which sections he can look up on paper */}
+      <OpenBook paper={paper} />
+
       {/* the only question that matters: could he pass this paper today? */}
       <Readiness paper={paper} progress={progress} />
 
@@ -452,6 +463,50 @@ function Tip({ q }: { q: ExamQuestion }) {
   );
 }
 
+// Says up front how much of the paper he can look up on paper, and — just as
+// importantly — when the answer is NONE. The Dynamic Body and Upper Body papers
+// examine books that aren't in the manual index at all (Dynamic Body is an
+// anthology whose sections are author chapters, not Erik's techniques), so
+// silence there would read as a bug rather than as the truth.
+function OpenBook({ paper }: { paper: ExamPaper }) {
+  const withPage = paper.questions.filter((q) => q.manualPage);
+  const pages = new Set(withPage.map((q) => q.manualPage!.page));
+  if (!withPage.length) {
+    return (
+      <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', lineHeight: 1.6, marginBottom: '12px' }}>
+        📕 <b>Open book:</b> no printed manual is indexed for this paper — it examines a
+        different book, so study from the clips and the answer reasoning here.
+      </div>
+    );
+  }
+  return (
+    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: '12px' }}>
+      <b style={{ color: AMBER }}>📕 Open book:</b> {withPage.length} of {paper.questions.length} questions
+      map to a page in your printed manual, across {pages.size} pages. The page shows on each
+      section below — turn straight there instead of hunting.
+    </div>
+  );
+}
+
+// Open-book pointer. Rendered next to the question number so it is on screen
+// while he is still deciding, not buried in the after-the-fact explanation —
+// during the real exam the manual on the desk is the resource, and this says
+// which page to turn to.
+function ManualRef({ q }: { q: ExamQuestion }) {
+  if (!q.manualPage) return null;
+  return (
+    <span
+      title={`Open book: "${q.manualPage.title}" is on page ${q.manualPage.page} of your printed course manual`}
+      style={{
+        fontSize: '10px', fontWeight: 700, color: AMBER, background: AMBER + '1a',
+        border: '1px solid ' + AMBER + '55', borderRadius: '5px', padding: '1px 6px',
+      }}
+    >
+      📕 manual p.{q.manualPage.page}
+    </span>
+  );
+}
+
 // ── "Watch Erik teach this" ────────────────────────────────────────────────
 // "Am I ready to sit this?" is the only question that matters, and neither the
 // attempted count nor the mastered count answers it. This does — but honestly:
@@ -605,7 +660,13 @@ function StudyMode({ paper, progress, onSearch, onLesson, topicFilter }: {
             <div key={topic} style={{ border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden' }}>
               <button type="button" onClick={() => setOpen(isOpen && !fq && !weakOnly ? null : topic)}
                 style={{ width: '100%', textAlign: 'left', padding: '12px 14px', background: 'var(--color-card)', border: 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>{topic}</span>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  {topic}
+                  {/* The page belongs to the SECTION, so it reads best here: one
+                      glance down the collapsed list tells him where every topic
+                      lives in the physical manual before he opens anything. */}
+                  <ManualRef q={qs[0]} />
+                </span>
                 <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>
                   {missed > 0 && <span style={{ color: AMBER, fontWeight: 700 }}>{missed} missed · </span>}
                   {shown.length} question{shown.length !== 1 ? 's' : ''} {isOpen ? '▲' : '▼'}
@@ -635,6 +696,7 @@ function StudyCard({ q, progress, onSearch, onLesson }: {
     <div style={{ padding: '12px 14px', borderTop: '1px solid var(--color-border)' }}>
       <div style={{ display: 'flex', gap: '8px', alignItems: 'baseline', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-text-faint)' }}>Q{q.n}</span>
+        <ManualRef q={q} />
         <ConfBadge q={q} />
         {(wrong > 0 || right > 0) && (
           <span style={{ fontSize: '11px', color: wrong > right ? AMBER : ACCENT }}>
@@ -850,6 +912,7 @@ function DrillMode({ paper, progress, onProgress, count, instant, timed, onLesso
       <div style={{ padding: '16px', borderRadius: '12px', border: '1px solid var(--color-border)', background: 'var(--color-card)' }}>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'baseline', marginBottom: '6px' }}>
           <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-text-faint)' }}>Q{q.n} · {q.topic}</span>
+          <ManualRef q={q} />
           {graded && <ConfBadge q={q} />}
         </div>
         <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--color-text)', lineHeight: 1.5 }}>{q.stem}</div>

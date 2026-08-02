@@ -107,7 +107,13 @@ function buildBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
 function buildFactBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
   const pretty = (slug: string) =>
     anatomy[slug]?.name?.replace(/\b\w/g, (c) => c.toUpperCase()) || slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  const slugs = Object.keys(MUSCLE_FACTS);
+  // Only muscles that actually carry facts. A stub entry with empty strings was
+  // filtered out of the origin/insertion/action questions (empty is falsy) but
+  // still reached the referral question's DISTRACTOR pool, where it showed up as
+  // a fourth option reading "Levator Scapulae Note". A nonsense answer choice in
+  // a study quiz is a small thing that costs all the trust of the real ones.
+  const slugs = Object.keys(MUSCLE_FACTS).filter(
+    (s) => MUSCLE_FACTS[s].origin && MUSCLE_FACTS[s].insertion && MUSCLE_FACTS[s].action);
   const bank: Q[] = [];
 
   const fieldQ = (
