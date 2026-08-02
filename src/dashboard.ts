@@ -23,7 +23,7 @@ import { listReadings, readReadingHtml, getTodayTransits } from './astrology.js'
 import { getDailyPsychCard, getWeeklyReviews, getWeeklyReview, getDailyDrill, answerDailyDrill } from './coach.js';
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
-import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
+import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbExamBank, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
 import { registerAccounts } from './accounts.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getSignalMonitor } from './signal-monitor.js';
@@ -5895,6 +5895,14 @@ init();
     const id = c.req.param('id');
     try {
       return c.json(await kbSources(id));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/exam-bank', (c) => {
+    try {
+      return c.json(kbExamBank(c.req.param('id')) as Record<string, unknown>);
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }

@@ -930,7 +930,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 <div><b style={{ color: 'var(--color-text)' }}>Conditions</b> — start from a client complaint (sciatica, frozen shoulder…).</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Techniques</b> — step through each lesson frame-by-frame with Erik's voice.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Quiz</b> — test yourself: watch a clip, name the body area worked.</div>
-                <div><b style={{ color: 'var(--color-text)' }}>Exam</b> — Erik's real 137-question certification test: study, drill, or sit a timed mock.</div>
+                <div><b style={{ color: 'var(--color-text)' }}>Exam</b> — all 5 real Myoskeletal certification papers (708 questions): study, drill, or sit a timed mock.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Library</b> — browse every course & lesson.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Search / Ask</b> — find or ask anything across the library.</div>
               </div>

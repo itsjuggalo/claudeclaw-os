@@ -1,26 +1,30 @@
 // ErikExam — Myoskeletal Alignment certification exam prep.
 //
 // Everything else on this page teaches technique. This tab exists for one job:
-// passing the real Advanced Myoskeletal Techniques certification exam. The bank
-// is Erik's ACTUAL 137-question Upper Body test booklet, parsed straight out of
-// the PDF that ships on USB 1 (erikdalton-kb/build_exam_bank.py), not questions
-// invented about his material.
+// passing the real Myoskeletal Alignment certification exams. The bank is Erik's
+// ACTUAL papers — all five of them, 708 questions, parsed from the real PDFs
+// (erikdalton-kb/build_exam_bank.py), never questions invented about his material:
+//   Upper Body (ships on USB 1) and the four home-study finals — Art of MAT,
+//   Technique Tour, Dynamic Lower Body, Shoulder/Arm/Hand — whose question PDFs
+//   Erik publishes free on erikdalton.com.
 //
 // Three modes:
 //   Study    — browse by topic, answer visible, with the supporting passage from
 //              Erik's own e-Learning textbook underneath.
 //   Practice — 20 questions, graded as you go, weighted toward what you've been
 //              getting WRONG (a wrong answer comes back; a right one recedes).
-//   Mock     — all 137, timed, no feedback until you submit, scored against the
+//   Mock     — the whole paper, timed, no feedback until you submit, scored against the
 //              real 70% pass mark, then a per-topic breakdown of where you lost.
 //
 // Honesty rules, because a confident wrong answer is worse than no answer:
 //   • "verified" = the wording was located in Erik's textbook/transcripts.
 //   • "derived"  = reasoned from Myoskeletal doctrine, not literally located.
+//   • "evidence" = auto-keyed from Erik's own words, and ONLY where one option
+//     won decisively (key_from_evidence.py; 8/8 on the paper we can grade).
 //   • Questions with no defensible key are shown, flagged, and excluded from
 //     scoring rather than silently guessed.
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import examBank from '@/data/erik-exam-bank.json';
+import { apiGet } from '@/lib/api';
 
 const ACCENT = '#10b981';
 const AMBER = '#f59e0b';
@@ -36,6 +40,9 @@ interface ExamQuestion {
   topic: string;
   confidence: string | null;
   textbook: string | null;
+  // The booklet's own "Tip:" line under a question — Erik nudging you at the
+  // answer. Only the four home-study papers print these.
+  hint?: string | null;
   // The teaching moments in the video library that cover this question — built
   // by erikdalton-kb/build_exam_bank.py. Empty for pure-theory questions, on
   // purpose: the textbook passage teaches those, and inventing a clip would be
@@ -45,6 +52,10 @@ interface ExamQuestion {
 interface ExamLesson {
   videoId: string; title: string; course: string;
   seg: number; t_mid: number; text: string;
+  // Page in the PRINTED manual that this lesson corresponds to. These tests are
+  // open book and the manuals are physical, so this is often the fastest route
+  // to an answer. From the USB Table-of-Contents PDFs (build_manual_pages.py).
+  manualPage?: number | null;
 }
 interface ExamPaper {
   id: string; title: string; subtitle: string;
@@ -93,12 +104,29 @@ export function ErikExam({ onSearch, onLesson }: {
   onSearch?: (q: string) => void;
   onLesson?: (videoId: string, t: number) => void;
 }) {
-  // The bank is bundled rather than fetched: the server's top-level static route
-  // only allowlists binary extensions, so a .json dropped in web/public/ falls
-  // through to the SPA. Bundling keeps this a build:web-only change, and the
-  // Exam tab is lazily imported so the 150 KB only loads when you open it.
-  const paper = (examBank as unknown as { papers: ExamPaper[] }).papers?.[0] ?? null;
-  const loadErr = !paper;
+  // Fetched, not bundled: five papers with their textbook passages and lesson
+  // links are ~1 MB, which bloated this lazily-loaded chunk to 300 KB gzipped.
+  // (Serving it as JSON only became possible once the server's static-file route
+  // stopped swallowing /api paths — see dashboard.ts.)
+  const [bank, setBank] = useState<{ papers: ExamPaper[] } | null>(null);
+  const [fetchErr, setFetchErr] = useState(false);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ papers: ExamPaper[] }>('/api/databases/kb/erikdalton/exam-bank')
+      .then((r) => { if (live) setBank(r); })
+      .catch(() => { if (live) setFetchErr(true); });
+    return () => { live = false; };
+  }, []);
+  const papers = bank?.papers ?? [];
+  // Mike has five Myoskeletal exams to sit, not one. Remember which he was on.
+  const [paperIdx, setPaperIdx] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem(LS_KEY + '-paper'));
+      return Number.isFinite(saved) && saved >= 0 && saved < papers.length ? saved : 0;
+    } catch { return 0; }
+  });
+  const paper = papers[paperIdx] ?? papers[0] ?? null;
+  const loadErr = (bank !== null && papers.length === 0) || fetchErr;
   const [mode, setMode] = useState<Mode>('study');
   const [progress, setProgress] = useState<Progress>(loadProgress);
 
@@ -131,6 +159,24 @@ export function ErikExam({ onSearch, onLesson }: {
 
   return (
     <div>
+      {papers.length > 1 && (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          {papers.map((p, i) => (
+            <button key={p.id} type="button"
+              onClick={() => { setPaperIdx(i); setMode('study'); try { localStorage.setItem(LS_KEY + '-paper', String(i)); } catch { /* ignore */ } }}
+              title={p.subtitle}
+              style={{
+                padding: '5px 11px', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                border: '1px solid ' + (i === paperIdx ? ACCENT : 'var(--color-border)'),
+                background: i === paperIdx ? ACCENT + '22' : 'transparent',
+                color: i === paperIdx ? ACCENT : 'var(--color-text-muted)',
+              }}>
+              {p.title.replace(/^(Advanced Myoskeletal Techniques|MAT|The Art of Myoskeletal Alignment Therapy|Dynamic Body) — ?/, '') || p.title}
+              <span style={{ color: 'var(--color-text-faint)', fontWeight: 400 }}> · {p.total}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{ marginBottom: '12px' }}>
         <div style={{ fontSize: '15px', fontWeight: 800, color: 'var(--color-text)' }}>{paper.title}</div>
         <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '2px' }}>{paper.subtitle}</div>
@@ -157,13 +203,13 @@ export function ErikExam({ onSearch, onLesson }: {
         {tab('mock', '⏱ Mock exam', 'All questions, timed, scored at the real 70% pass mark')}
       </div>
 
-      {mode === 'study' && <StudyMode paper={paper} progress={progress} onSearch={onSearch} onLesson={onLesson} />}
+      {mode === 'study' && <StudyMode key={paper.id} paper={paper} progress={progress} onSearch={onSearch} onLesson={onLesson} />}
       {mode === 'practice' && (
-        <DrillMode key="practice" paper={paper} progress={progress} onLesson={onLesson}
+        <DrillMode key={'practice-' + paper.id} paper={paper} progress={progress} onLesson={onLesson}
           onProgress={(p) => { setProgress(p); saveProgress(p); }} count={20} instant />
       )}
       {mode === 'mock' && (
-        <DrillMode key="mock" paper={paper} progress={progress} onLesson={onLesson}
+        <DrillMode key={'mock-' + paper.id} paper={paper} progress={progress} onLesson={onLesson}
           onProgress={(p) => { setProgress(p); saveProgress(p); }} count={keyed.length} instant={false} timed />
       )}
     </div>
@@ -186,15 +232,31 @@ function ConfBadge({ q }: { q: ExamQuestion }) {
       </span>
     );
   }
-  const verified = q.confidence === 'verified';
-  const c = verified ? ACCENT : AMBER;
+  const tier = q.confidence === 'verified' ? 'verified'
+    : q.confidence === 'evidence' ? 'evidence' : 'derived';
+  const c = tier === 'derived' ? AMBER : ACCENT;
+  const title = tier === 'verified'
+    ? 'Answer located verbatim in Erik’s textbook or a course transcript.'
+    : tier === 'evidence'
+      ? 'Auto-keyed from Erik’s own words in this course, and only where one option won decisively. Measured 8/8 correct on the paper whose real key we hold — but that is a small sample, so the supporting quote is always shown. Check it.'
+      : 'Answer reasoned from Myoskeletal doctrine — check it against the passage below before trusting it.';
   return (
-    <span title={verified
-      ? 'Answer located verbatim in Erik’s textbook or a course transcript.'
-      : 'Answer reasoned from Myoskeletal doctrine — check it against the passage below before trusting it.'}
+    <span title={title}
       style={{ fontSize: '10px', fontWeight: 700, color: c, border: '1px solid ' + c + '77', borderRadius: '5px', padding: '1px 5px', textTransform: 'uppercase' }}>
-      {verified ? 'verified' : 'derived'}
+      {tier}
     </span>
+  );
+}
+
+// The booklet's own printed nudge. Shown BEFORE you answer, because that's how
+// Erik intended these open-book papers to be taken — it teaches the reasoning
+// instead of rewarding a lucky guess.
+function Tip({ q }: { q: ExamQuestion }) {
+  if (!q.hint) return null;
+  return (
+    <div style={{ marginTop: '8px', fontSize: '12px', color: AMBER, lineHeight: 1.5 }}>
+      💡 <b>Erik's tip:</b> <span style={{ color: 'var(--color-text-muted)' }}>{q.hint}</span>
+    </div>
   );
 }
 
@@ -221,6 +283,12 @@ function WatchLessons({ q, onLesson }: { q: ExamQuestion; onLesson?: (videoId: s
             style={{ textAlign: 'left', padding: '7px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', background: 'transparent', cursor: 'pointer' }}>
             <span style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: ACCENT }}>
               ▶ {l.title} <span style={{ color: 'var(--color-text-faint)', fontWeight: 400 }}>· {l.course} · {time(l.t_mid)}</span>
+              {l.manualPage ? (
+                <span title="Page in your printed course manual — these tests are open book"
+                  style={{ marginLeft: '7px', fontSize: '11px', fontWeight: 700, color: AMBER, border: '1px solid ' + AMBER + '66', borderRadius: '5px', padding: '0 5px' }}>
+                  📕 manual p.{l.manualPage}
+                </span>
+              ) : null}
             </span>
             <span style={{ display: 'block', fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.45, marginTop: '2px' }}>
               “{l.text}”
@@ -327,6 +395,7 @@ function StudyCard({ q, progress, onSearch, onLesson }: {
           );
         })}
       </div>
+      <Tip q={q} />
       <button type="button" onClick={() => setShow((s) => !s)}
         style={{ marginTop: '8px', padding: '4px 11px', borderRadius: '7px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: '1px solid var(--color-border)', background: 'transparent', color: ACCENT }}>
         {show ? 'Hide answer' : q.answer ? 'Show answer' : 'Why is there no answer?'}
@@ -514,7 +583,8 @@ function DrillMode({ paper, progress, onProgress, count, instant, timed, onLesso
           <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-text-faint)' }}>Q{q.n} · {q.topic}</span>
           {graded && <ConfBadge q={q} />}
         </div>
-        <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--color-text)', lineHeight: 1.5, marginBottom: '14px' }}>{q.stem}</div>
+        <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--color-text)', lineHeight: 1.5 }}>{q.stem}</div>
+        <div style={{ marginBottom: '14px' }}><Tip q={q} /></div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {Object.entries(q.options).sort().map(([k, v]) => {

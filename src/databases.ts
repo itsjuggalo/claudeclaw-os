@@ -642,6 +642,30 @@ export function kbAnatomy(id: string): AnatomyIndex {
   }
 }
 
+// The certification exam bank (erikdalton-kb/build_exam_bank.py). It's ~1 MB of
+// question text, supporting textbook passages and video-lesson links across five
+// papers — bundling that into the SPA made the lazily-loaded Exam chunk 300 KB
+// gzipped, which is a real cost on a phone. Served on demand instead, and cached
+// briefly so flipping between papers doesn't re-read it off disk each time.
+let examBankCache: { at: number; id: string; data: unknown } | null = null;
+
+export function kbExamBank(id: string): unknown {
+  const dir = getKbDir(id);
+  if (!dir) return { papers: [] };
+  if (examBankCache && examBankCache.id === id && Date.now() - examBankCache.at < 60_000) {
+    return examBankCache.data;
+  }
+  const f = join(dir, 'anatomy', 'exam_bank.json');
+  if (!existsSync(f)) return { papers: [] };
+  try {
+    const data = JSON.parse(readFileSync(f, 'utf8'));
+    examBankCache = { at: Date.now(), id, data };
+    return data;
+  } catch {
+    return { papers: [] };
+  }
+}
+
 // Serve a cached anatomy image. Hard-locked to anatomy/img/<sanitized>.png —
 // the filename is regex-gated AND realpath-confirmed to stay inside the dir, so
 // there is no traversal surface even though the client supplies the name.
