@@ -121,14 +121,19 @@ export function ErikExam({ onSearch, onLesson }: {
   // Mike has five Myoskeletal exams to sit, not one. Remember which he was on.
   const [paperIdx, setPaperIdx] = useState<number>(() => {
     try {
+      // The bank is still being fetched on this first render, so papers.length
+      // is 0 — bounding against it here silently discarded the saved paper every
+      // time. `paper` below already falls back if the index is out of range.
       const saved = Number(localStorage.getItem(LS_KEY + '-paper'));
-      return Number.isFinite(saved) && saved >= 0 && saved < papers.length ? saved : 0;
+      return Number.isFinite(saved) && saved >= 0 && saved < 20 ? saved : 0;
     } catch { return 0; }
   });
   const paper = papers[paperIdx] ?? papers[0] ?? null;
   const loadErr = (bank !== null && papers.length === 0) || fetchErr;
   const [mode, setMode] = useState<Mode>('study');
   const [progress, setProgress] = useState<Progress>(loadProgress);
+  // set from the weak-sections panel; Study mode then shows only that section
+  const [topicFilter, setTopicFilter] = useState<string | null>(null);
 
   const keyed = useMemo(() => (paper?.questions || []).filter((q) => q.answer), [paper]);
 
@@ -154,7 +159,11 @@ export function ErikExam({ onSearch, onLesson }: {
       }}>{label}</button>
   );
 
-  const seen = new Set([...Object.keys(progress.right), ...Object.keys(progress.wrong)]);
+  // progress is stored across all five papers, so it has to be narrowed to this
+  // one — otherwise drilling the shoulder paper inflated "you have attempted" on
+  // Upper Body, which is exactly the kind of wrong number that hides a weak spot
+  const attempted = new Set([...Object.keys(progress.right), ...Object.keys(progress.wrong)]);
+  const seen = new Set(keyed.filter((q) => attempted.has(q.id)).map((q) => q.id));
   const mastered = keyed.filter((q) => (progress.right[q.id] || 0) >= 2 && !(progress.wrong[q.id] || 0)).length;
 
   return (
@@ -197,13 +206,21 @@ export function ErikExam({ onSearch, onLesson }: {
         ))}
       </div>
 
+      {/* how the keys were arrived at — so a wrong key can never masquerade as gospel */}
+      <KeyProvenance paper={paper} />
+
+      {/* what he'd actually fail on, by the booklet's own sections */}
+      <WeakSections paper={paper} progress={progress} onPick={setTopicFilter}
+        active={topicFilter} />
+
       <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
         {tab('study', '📖 Study', 'Browse by topic with answers and Erik’s own wording')}
         {tab('practice', '🎯 Practice 20', 'Graded as you go, weighted to what you keep missing')}
         {tab('mock', '⏱ Mock exam', 'All questions, timed, scored at the real 70% pass mark')}
       </div>
 
-      {mode === 'study' && <StudyMode key={paper.id} paper={paper} progress={progress} onSearch={onSearch} onLesson={onLesson} />}
+      {mode === 'study' && <StudyMode key={paper.id} paper={paper} progress={progress}
+        onSearch={onSearch} onLesson={onLesson} topicFilter={topicFilter} />}
       {mode === 'practice' && (
         <DrillMode key={'practice-' + paper.id} paper={paper} progress={progress} onLesson={onLesson}
           onProgress={(p) => { setProgress(p); saveProgress(p); }} count={20} instant />
@@ -239,12 +256,105 @@ function ConfBadge({ q }: { q: ExamQuestion }) {
     ? 'Answer located verbatim in Erik’s textbook or a course transcript.'
     : tier === 'evidence'
       ? 'Auto-keyed from Erik’s own words in this course, and only where one option won decisively. Measured 8/8 correct on the paper whose real key we hold — but that is a small sample, so the supporting quote is always shown. Check it.'
-      : 'Answer reasoned from Myoskeletal doctrine — check it against the passage below before trusting it.';
+      : 'Answer worked out from the booklet’s own printed tip and Myoskeletal doctrine — not located word-for-word in Erik’s text. The reasoning is shown with the answer; check it before you trust it.';
   return (
     <span title={title}
       style={{ fontSize: '10px', fontWeight: 700, color: c, border: '1px solid ' + c + '77', borderRadius: '5px', padding: '1px 5px', textTransform: 'uppercase' }}>
       {tier}
     </span>
+  );
+}
+
+// Passing is a coverage problem, not an effort problem: you fail on the sections
+// you never drilled, and you can't see those in a 160-question list. This ranks
+// the booklet's own sections by how badly they're going — wrong answers first,
+// then sections never touched at all — and jumps straight into one.
+function WeakSections({ paper, progress, onPick, active }: {
+  paper: ExamPaper; progress: Progress;
+  onPick: (t: string | null) => void; active: string | null;
+}) {
+  const rows = useMemo(() => {
+    const m: Record<string, { total: number; right: number; wrong: number; seen: number }> = {};
+    for (const q of paper.questions) {
+      if (!q.answer) continue;
+      const r = (m[q.topic] ||= { total: 0, right: 0, wrong: 0, seen: 0 });
+      r.total++;
+      const w = progress.wrong[q.id] || 0;
+      const g = progress.right[q.id] || 0;
+      r.right += g; r.wrong += w;
+      if (w || g) r.seen++;
+    }
+    return Object.entries(m).map(([topic, r]) => {
+      const attempts = r.right + r.wrong;
+      // never-attempted sections are the real risk, so they rank as 0% known
+      // rather than being hidden by having no score at all
+      const score = attempts ? r.right / attempts : 0;
+      const coverage = r.total ? r.seen / r.total : 0;
+      return { topic, ...r, attempts, score, risk: (1 - score) * 0.6 + (1 - coverage) * 0.4 };
+    }).sort((a, b) => b.risk - a.risk || b.total - a.total).slice(0, 6);
+  }, [paper, progress]);
+
+  if (!rows.length) return null;
+  const anyAttempt = rows.some((r) => r.attempts > 0);
+  return (
+    <div style={{ marginBottom: '14px' }}>
+      <div style={{ fontSize: '11.5px', color: 'var(--color-text-muted)', marginBottom: '6px' }}>
+        <b style={{ color: RED }}>Where you'd lose marks</b>
+        {anyAttempt ? ' — ranked by what you get wrong and what you’ve never touched. Tap one to study just it.'
+          : ' — nothing drilled yet, so these are simply the biggest untouched sections. Tap one to start.'}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+        {rows.map((r) => {
+          const on = active === r.topic;
+          const label = r.attempts
+            ? `${Math.round(r.score * 100)}% right · ${r.seen}/${r.total} seen`
+            : `${r.total} question${r.total !== 1 ? 's' : ''} · untouched`;
+          return (
+            <button key={r.topic} type="button" onClick={() => onPick(on ? null : r.topic)}
+              title={`Study "${r.topic}" on its own`}
+              style={{
+                padding: '6px 11px', borderRadius: '8px', fontSize: '12px', cursor: 'pointer',
+                textAlign: 'left', border: '1px solid ' + (on ? RED : 'var(--color-border)'),
+                background: on ? RED + '1e' : 'var(--color-card)', color: 'var(--color-text)',
+              }}>
+              <span style={{ fontWeight: 700 }}>{r.topic}</span>
+              <span style={{ color: 'var(--color-text-faint)', marginLeft: '7px' }}>{label}</span>
+            </button>
+          );
+        })}
+        {active && (
+          <button type="button" onClick={() => onPick(null)}
+            style={{ padding: '6px 11px', borderRadius: '8px', fontSize: '12px', cursor: 'pointer',
+              border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)' }}>
+            ✕ show all sections
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Only the Upper Body paper ships a real answer key. Everything else was worked
+// out here — so the paper says out loud how its keys were arrived at rather than
+// letting a confident badge imply an authority it doesn't have.
+function KeyProvenance({ paper }: { paper: ExamPaper }) {
+  const n = { verified: 0, evidence: 0, derived: 0, none: 0 };
+  for (const q of paper.questions) {
+    if (!q.answer) n.none++;
+    else if (q.confidence === 'verified') n.verified++;
+    else if (q.confidence === 'evidence') n.evidence++;
+    else n.derived++;
+  }
+  const parts: string[] = [];
+  if (n.verified) parts.push(`${n.verified} located word-for-word in Erik’s text`);
+  if (n.evidence) parts.push(`${n.evidence} auto-keyed from a decisive quote`);
+  if (n.derived) parts.push(`${n.derived} worked out from the booklet’s printed tip`);
+  if (n.none) parts.push(`${n.none} left unkeyed rather than guessed`);
+  return (
+    <div style={{ fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: '14px' }}>
+      <b style={{ color: AMBER }}>Where these answers come from:</b>{' '}{parts.join(' · ')}.
+      {' '}Every answer shows its reasoning — read it, don’t just take the letter.
+    </div>
   );
 }
 
@@ -301,9 +411,10 @@ function WatchLessons({ q, onLesson }: { q: ExamQuestion; onLesson?: (videoId: s
 }
 
 // ── Study mode ─────────────────────────────────────────────────────────────
-function StudyMode({ paper, progress, onSearch, onLesson }: {
+function StudyMode({ paper, progress, onSearch, onLesson, topicFilter }: {
   paper: ExamPaper; progress: Progress; onSearch?: (q: string) => void;
   onLesson?: (videoId: string, t: number) => void;
+  topicFilter?: string | null;
 }) {
   const topics = useMemo(() => {
     const m: Record<string, ExamQuestion[]> = {};
@@ -311,6 +422,8 @@ function StudyMode({ paper, progress, onSearch, onLesson }: {
     return Object.entries(m).sort((a, b) => b[1].length - a[1].length);
   }, [paper]);
   const [open, setOpen] = useState<string | null>(topics[0]?.[0] ?? null);
+  // picking a weak section above opens it here instead of making him hunt for it
+  useEffect(() => { if (topicFilter) setOpen(topicFilter); }, [topicFilter]);
   const [filter, setFilter] = useState('');
   const [weakOnly, setWeakOnly] = useState(false);
 
@@ -335,7 +448,7 @@ function StudyMode({ paper, progress, onSearch, onLesson }: {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {topics.map(([topic, qs]) => {
+        {topics.filter(([t]) => !topicFilter || t === topicFilter).map(([topic, qs]) => {
           const shown = qs.filter(matches);
           if (shown.length === 0) return null;
           const isOpen = fq || weakOnly ? true : open === topic;

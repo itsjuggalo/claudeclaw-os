@@ -42,6 +42,11 @@ export const ROUTES: RouteDef[] = [
   { path: '/gallery',    label: 'Gallery',         section: 'studio',       icon: Images,        shortcut: 'g i' },
   { path: '/characters', label: 'Character Studio', section: 'studio',      icon: Drama,         shortcut: 'g d' },
   { path: '/rapidapi',   label: 'RapidAPI',        section: 'studio',       icon: Film,          shortcut: 'g v' },
+  // FileBrowser "dropbox" (PM2 dropbox :8096 behind vhs-bridge/nginx). Family VHS = direct
+  // public no-login share (works on desktop AND phone); File Browser = full UI via the
+  // tailscale funnel (login: mike). Absolute URLs on purpose — self: would break off-laptop.
+  { path: '/ext-vhs',     label: 'Family VHS',     section: 'studio',       icon: Film,          href: 'https://bridge.serveftp.com/vhs/share/0uVFrL-M' },
+  { path: '/ext-dropbox', label: 'File Browser',   section: 'studio',       icon: FolderKanban,  href: 'https://g59-wsl.taile1328b.ts.net/' },
 
   // Intelligence — knowledge / AI
   { path: '/memories',   label: 'Memories',        section: 'intelligence', icon: Brain,         shortcut: 'g e' },
