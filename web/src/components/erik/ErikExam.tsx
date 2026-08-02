@@ -468,6 +468,61 @@ function Tip({ q }: { q: ExamQuestion }) {
 // examine books that aren't in the manual index at all (Dynamic Body is an
 // anthology whose sections are author chapters, not Erik's techniques), so
 // silence there would read as a bug rather than as the truth.
+// Exam-day artifact. These papers are open book and the manual is a physical
+// binder, so the thing that actually saves time in the room is a one-page index:
+// every section of THIS paper, sorted by manual page, with how many marks ride on
+// it. The sections with no page are listed too, and labelled — knowing which
+// topics he can't look up is as useful as knowing which he can.
+function printIndex(paper: ExamPaper): void {
+  const esc = (s: string) => (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+  type Row = { topic: string; page: number | null; title: string; n: number; keyed: number };
+  const by = new Map<string, Row>();
+  for (const q of paper.questions) {
+    const r = by.get(q.topic) || {
+      topic: q.topic, page: q.manualPage?.page ?? null,
+      title: q.manualPage?.title || '', n: 0, keyed: 0,
+    };
+    r.n++;
+    if (q.answer) r.keyed++;
+    if (q.manualPage && r.page === null) { r.page = q.manualPage.page; r.title = q.manualPage.title; }
+    by.set(q.topic, r);
+  }
+  const rows = [...by.values()];
+  const found = rows.filter((r) => r.page !== null).sort((a, b) => a.page! - b.page! || a.topic.localeCompare(b.topic));
+  const missing = rows.filter((r) => r.page === null).sort((a, b) => b.n - a.n);
+  const tr = (r: Row) => `<tr><td class="p">${r.page === null ? '—' : 'p.' + r.page}</td>`
+    + `<td><b>${esc(r.topic)}</b>${r.title && r.title.toLowerCase() !== r.topic.toLowerCase()
+      ? `<br><span class="alt">manual: ${esc(r.title)}</span>` : ''}</td>`
+    + `<td class="n">${r.n}</td><td class="n">${r.keyed === r.n ? '' : r.n - r.keyed + ' unkeyed'}</td></tr>`;
+  // Without a header the right-hand "10" reads as a page number or a question
+  // number rather than "ten marks ride on this section" — the one number that
+  // decides what he looks up first.
+  const HEAD = '<tr class="h"><th class="p">Page</th><th>Section</th>'
+    + '<th class="n">Qs</th><th class="n"></th></tr>';
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(paper.title)} — open-book index</title>
+    <style>*{box-sizing:border-box}body{font:12px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:24px;max-width:760px}
+    h1{font-size:19px;margin:0 0 2px}.sub{color:#666;font-size:11px;margin-bottom:12px}
+    h2{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#0a7;border-bottom:1px solid #ddd;padding-bottom:3px;margin:16px 0 6px}
+    table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #eee;padding:4px 6px;vertical-align:top}
+    .h th{font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:#999;text-align:left;border-bottom:1px solid #ccc}
+    .h th.n{text-align:right}
+    .p{white-space:nowrap;font-weight:700;width:52px}.n{text-align:right;color:#666;white-space:nowrap;width:70px}
+    .alt{color:#888;font-size:10px}.note{color:#666;font-size:11px;margin:6px 0 0}
+    @media print{body{margin:10mm}h2{page-break-after:avoid}tr{page-break-inside:avoid}}</style></head><body>
+    <h1>${esc(paper.title)}</h1>
+    <div class="sub">Open-book index · ${paper.questions.length} questions · pass mark 70% · sorted by manual page</div>
+    <h2>In the printed manual · ${found.reduce((s, r) => s + r.n, 0)} questions</h2>
+    <table>${HEAD}${found.map(tr).join('')}</table>
+    ${missing.length ? `<h2>Not in the manual index · ${missing.reduce((s, r) => s + r.n, 0)} questions</h2>
+      <p class="note">No page to turn to for these — study them from Erik's clips and the answer reasoning in the app.</p>
+      <table>${HEAD}${missing.map(tr).join('')}</table>` : ''}
+    <p class="note">Built from Erik's own booklet sections and the USB table-of-contents page numbers.
+    A section is only given a page when it matched exactly one manual entry.</p>
+    <script>window.onload=function(){setTimeout(function(){window.print()},500)}</script></body></html>`;
+  const wnd = window.open('', '_blank');
+  if (wnd) { wnd.document.write(html); wnd.document.close(); }
+}
+
 function OpenBook({ paper }: { paper: ExamPaper }) {
   const withPage = paper.questions.filter((q) => q.manualPage);
   const pages = new Set(withPage.map((q) => q.manualPage!.page));
@@ -484,6 +539,11 @@ function OpenBook({ paper }: { paper: ExamPaper }) {
       <b style={{ color: AMBER }}>📕 Open book:</b> {withPage.length} of {paper.questions.length} questions
       map to a page in your printed manual, across {pages.size} pages. The page shows on each
       section below — turn straight there instead of hunting.
+      <button type="button" onClick={() => printIndex(paper)}
+        title="One page, sorted by manual page number — print it and keep it beside the booklet"
+        style={{ marginLeft: '9px', fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '6px', cursor: 'pointer', border: '1px solid ' + AMBER + '88', background: AMBER + '18', color: AMBER }}>
+        🖨 Print open-book index
+      </button>
     </div>
   );
 }
