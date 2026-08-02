@@ -11,6 +11,7 @@
 import { useMemo, useState } from 'preact/hooks';
 import coverageData from '@/data/erik-coverage.json';
 import { frameScore } from './ExploreTab';
+import { lessonOrder } from './TechniquePlayer';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; covers?: string; }
@@ -38,7 +39,8 @@ export function ErikLibrary({ videosMap, onOpen, itemId }: {
       if (!v.frames || v.frames.length === 0) continue;
       (m[v.course] ||= []).push(v);
     }
-    for (const c of Object.keys(m)) m[c].sort((a, b) => a.title.localeCompare(b.title));
+    // same numeric ordering as the Techniques tab — the two lists must agree
+    for (const c of Object.keys(m)) m[c].sort(lessonOrder);
     return Object.entries(m).sort((a, b) => a[0].localeCompare(b[0]));
   }, [videosMap]);
 

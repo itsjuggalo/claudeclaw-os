@@ -145,6 +145,21 @@ function ExamOnTechnique({ itemId, videoId }: { itemId: string; videoId: string 
   );
 }
 
+// Erik NUMBERS his lessons ("1. Addressing Thoracic Outlet Syndrome", "10.
+// Treating Functional Scoliosis"), and that number IS the teaching order. Plain
+// string sorting produced 1, 10, 12, 13, 14, 15, 2, 3, 4 — so a course could not
+// be stepped through in the order Erik built it, which is the whole point of
+// this tab. Sort on the leading number when there is one, and fall back to the
+// title for the DVD segments that carry none.
+export function lessonOrder(a: { title: string }, b: { title: string }): number {
+  const n = (t: string) => {
+    const m = t.match(/^\s*(\d+)\s*[.)-]/);
+    return m ? parseInt(m[1], 10) : Number.POSITIVE_INFINITY;
+  };
+  const d = n(a.title) - n(b.title);
+  return d === 0 || !Number.isFinite(d) ? a.title.localeCompare(b.title) : d;
+}
+
 export function TechniquePlayer({ itemId, videosMap }: {
   itemId: string;
   videosMap: Record<string, VideoFrameData>;
@@ -204,14 +219,14 @@ export function TechniquePlayer({ itemId, videosMap }: {
     } catch { /* ignore */ }
   }, [videosMap]);
 
-  // Group videos by course, sorted; each course's techniques sorted by title.
+  // Group videos by course; each course's lessons in Erik's own teaching order.
   const byCourse = useMemo(() => {
     const m: Record<string, VideoFrameData[]> = {};
     for (const v of Object.values(videosMap)) {
       if (!v.frames || v.frames.length === 0) continue;
       (m[v.course] ||= []).push(v);
     }
-    for (const c of Object.keys(m)) m[c].sort((a, b) => a.title.localeCompare(b.title));
+    for (const c of Object.keys(m)) m[c].sort(lessonOrder);
     return Object.entries(m).sort((a, b) => a[0].localeCompare(b[0]));
   }, [videosMap]);
 
@@ -408,7 +423,7 @@ export function TechniquePlayer({ itemId, videosMap }: {
           }
           if (best) spoken.push({ v, frame: best, hits });
         }
-        titled.sort((a, b) => a.title.localeCompare(b.title));
+        titled.sort(lessonOrder);
         spoken.sort((a, b) => b.hits - a.hits);
         const row = (v: VideoFrameData, i: number, sub?: ComponentChildren, jump?: number) => (
           <button key={v.id} type="button" onClick={() => { openVideo(v.id); if (jump !== undefined) setStep(jump); }}

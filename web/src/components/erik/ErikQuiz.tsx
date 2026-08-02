@@ -72,6 +72,28 @@ function pickDistractors(answerKey: string): string[] {
   return out;
 }
 
+// The bony/soft-tissue landmarks that define each region. A muscle whose ORIGIN
+// or INSERTION names one of these belongs to that region anatomically, whatever
+// list Erik files it under for teaching — so it can never be a fair wrong answer
+// for that region. Keys match ErikRegion.key.
+const REGION_ANATOMY: Record<string, string[]> = {
+  'head/face': ['mandible', 'zygomatic', 'skull', 'occiput', 'temporal'],
+  'jaw/TMJ': ['mandible', 'zygomatic', 'temporal'],
+  neck: ['cervical', 'c1', 'c2', 'c7', 'occiput', 'nuchal', 'atlas', 'axis'],
+  shoulder: ['scapula', 'acromion', 'coracoid', 'clavicle', 'glenoid', 'humerus'],
+  arm: ['humerus', 'radius', 'ulna'],
+  elbow: ['epicondyle', 'olecranon', 'radius', 'ulna'],
+  'wrist/hand': ['carpal', 'metacarpal', 'phalan', 'pisiform', 'hamate'],
+  'thoracic/ribs': ['rib', 'sternum', 'costal', 'thoracic'],
+  'spine/general': ['spinous', 'transverse process', 'vertebra', 'lamina'],
+  'core/abdomen': ['linea alba', 'pubis', 'costal', 'rib', 'iliac crest'],
+  'low back': ['lumbar', 'iliac crest', 'thoracolumbar'],
+  'pelvis/SI': ['sacrum', 'ilium', 'ischial', 'sacrotuberous', 'coccyx'],
+  'hip/glutes': ['femur', 'trochanter', 'ilium', 'ischial', 'pubis'],
+  knee: ['tibia', 'patella', 'femoral condyle', 'fibula', 'pes anserine'],
+  'foot/ankle': ['calcaneus', 'tarsal', 'metatarsal', 'plantar', 'navicular'],
+};
+
 function buildBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
   const name = (slug: string) => anatomy[slug]?.name?.replace(/\b\w/g, (c) => c.toUpperCase()) || slug.replace(/-/g, ' ');
   const muscleRegions: Record<string, string[]> = {};
@@ -92,7 +114,22 @@ function buildBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
     if (r.muscles.length === 0) continue;
     const correct = name(r.muscles[Math.floor(Math.random() * r.muscles.length)]);
     const otherMuscles = ERIK_REGIONS.filter((x) => x.key !== r.key).flatMap((x) => x.muscles).filter((m) => !r.muscles.includes(m));
-    const distractors = shuffle([...new Set(otherMuscles)]).slice(0, 3).map(name);
+    // Not being in Erik's list for this region is NOT enough to make a muscle a
+    // fair wrong answer. "Which muscle does Erik work when treating the Thoracic
+    // / Ribs?" offered Pectoralis Minor — which originates on ribs 3–5, so a
+    // student who knows their anatomy picks it and is told they're wrong. A quiz
+    // that punishes correct anatomy teaches the opposite of what it should. So a
+    // candidate is also dropped when its own attachments name this region's
+    // structures — checked against MUSCLE_FACTS, not a hand-kept exception list.
+    const kw = REGION_ANATOMY[r.key];
+    const fair = otherMuscles.filter((m) => {
+      if (!kw) return true;
+      const f = MUSCLE_FACTS[m];
+      if (!f) return true;
+      const attach = `${f.origin} ${f.insertion}`.toLowerCase();
+      return !kw.some((k) => attach.includes(k));
+    });
+    const distractors = shuffle([...new Set(fair)]).slice(0, 3).map(name);
     if (distractors.length < 3) continue;
     bank.push({ prompt: `Which muscle does Erik work when treating the ${r.label}?`, answer: correct, options: shuffle([correct, ...distractors]) });
   }

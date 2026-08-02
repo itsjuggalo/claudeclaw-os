@@ -8,6 +8,7 @@ import { apiGet } from '@/lib/api';
 import { BodyMap } from './BodyMap';
 import { ERIK_REGIONS, REGION_BY_KEY } from './regions';
 import { MUSCLE_FACTS } from './muscleFacts';
+import { clipName, fromSentence } from './clipLabel';
 
 // 3D viewer is heavy (Three.js ~700KB) — code-split it so the Explore tab
 // stays light. Falls back to the 2D <BodyMap> below if WebGL is unavailable.
@@ -21,7 +22,7 @@ interface AnatomyMuscle {
   viewer_url?: string | null;
 }
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
-interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
+interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; covers?: string; }
 interface KbHit { source: string; heading: string; course?: string; preview: string; }
 interface KbSearchResponse { hits: KbHit[]; abstained: boolean; }
 
@@ -39,6 +40,94 @@ export function frameScore(text: string): number {
   const theory = (text.match(THEORY) || []).length;
   // caption length still counts a little — a 5-word frame explains nothing
   return hands * 3 - theory * 2 + Math.min(text.length, 260) / 120;
+}
+
+// The real exam questions that name THIS muscle. Matching is deliberately
+// narrow: the muscle has to appear in the stem, the booklet's section heading,
+// or the KEYED answer. Searching the distractors too would surface questions
+// where the muscle is only ever the WRONG answer — which teaches Mike the
+// opposite of what the question is for.
+interface ExamQ {
+  id: string; n: number | string; stem: string; options: Record<string, string>;
+  answer?: string | null; why?: string | null; topic?: string;
+  manualPage?: { page: number; title: string } | null;
+}
+
+function ExamOnMuscle({ name, slug }: { name: string; slug: string }) {
+  const [bank, setBank] = useState<{ papers: { id: string; title: string; questions: ExamQ[] }[] } | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ papers: { id: string; title: string; questions: ExamQ[] }[] }>(
+      '/api/databases/kb/erikdalton/exam-bank')
+      .then((r) => { if (live) setBank(r); }).catch(() => { /* section stays hidden */ });
+    return () => { live = false; };
+  }, []);
+
+  const hits = useMemo(() => {
+    if (!bank) return [];
+    // "quadratus-lumborum" -> ["quadratus lumborum", "quadratus"]; the short form
+    // catches Erik writing "the QL" as "quadratus" mid-sentence. Single words
+    // under 6 letters are dropped — "teres" and "vastus" alone would drag in
+    // every question about a different head of the same group.
+    const full = slug.replace(/-/g, ' ').toLowerCase();
+    const terms = [full, ...(name || '').toLowerCase().split(/[\s/]+/)]
+      .filter((t) => t.length >= 6);
+    if (!terms.length) return [];
+    const out: { q: ExamQ; paper: string }[] = [];
+    for (const p of bank.papers) {
+      for (const q of p.questions) {
+        const keyed = q.answer ? q.options[q.answer] || '' : '';
+        const hay = (q.stem + ' ' + (q.topic || '') + ' ' + keyed).toLowerCase();
+        if (terms.some((t) => hay.includes(t))) out.push({ q, paper: p.title });
+      }
+    }
+    return out.sort((a, b) => Number(!!b.q.answer) - Number(!!a.q.answer)).slice(0, 6);
+  }, [bank, slug, name]);
+
+  if (!hits.length) return null;
+  return (
+    <div style={{ marginTop: '12px', borderTop: '1px solid var(--color-border)', paddingTop: '10px' }}>
+      <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', textTransform: 'uppercase', marginBottom: '6px' }}>
+        On the exam · {hits.length} question{hits.length !== 1 ? 's' : ''}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {hits.map(({ q, paper }) => (
+          <div key={q.id} style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '8px 10px', background: 'var(--color-card)' }}>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>
+              {paper} · Q{q.n}
+              {q.manualPage && (
+                <span title={`Open book: "${q.manualPage.title}" is on page ${q.manualPage.page} of your printed manual`}
+                  style={{ marginLeft: '7px', fontWeight: 700, color: '#f59e0b' }}>
+                  📕 manual p.{q.manualPage.page}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.45, marginTop: '2px' }}>{q.stem}</div>
+            {open === q.id ? (
+              <div style={{ fontSize: '12px', marginTop: '5px', lineHeight: 1.5 }}>
+                {q.answer ? (
+                  <>
+                    <span style={{ color: ACCENT, fontWeight: 700 }}>{q.answer}) {q.options[q.answer]}</span>
+                    {q.why && <div style={{ color: 'var(--color-text-muted)', marginTop: '3px' }}>{q.why}</div>}
+                  </>
+                ) : (
+                  <span style={{ color: 'var(--color-text-muted)' }}>
+                    Left unkeyed rather than guessed — the source for this one isn't in the library.
+                  </span>
+                )}
+              </div>
+            ) : (
+              <button type="button" onClick={() => setOpen(q.id)}
+                style={{ marginTop: '5px', fontSize: '11px', fontWeight: 600, padding: '3px 9px', borderRadius: '6px', cursor: 'pointer', border: '1px solid ' + ACCENT + '77', background: 'transparent', color: ACCENT }}>
+                Show answer
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // The study card behind a muscle plate. Origin / insertion / action is what the
@@ -86,6 +175,11 @@ function MuscleStudyCard({ slug, anatomy }: {
           Open the full 3D render ↗
         </a>
       )}
+      {/* Reading a muscle's origin and insertion, then meeting the real exam
+          questions on that muscle in the same breath, is worth more than either
+          alone — the Conditions tab already works this way. This closes the same
+          loop from the anatomy side. */}
+      <ExamOnMuscle name={m.name} slug={slug} />
     </div>
   );
 }
@@ -142,14 +236,14 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
   // Region-filtered technique frames (max 2 per video, cap 8).
   const frames = useMemo(() => {
     if (!region) return [];
-    const out: Array<{ frame: FrameEntry; videoId: string; title: string }> = [];
+    const out: Array<{ frame: FrameEntry; videoId: string; title: string; covers?: string }> = [];
     const perVideo: Record<string, number> = {};
     for (const [videoId, vd] of Object.entries(videosMap)) {
       for (const f of vd.frames) {
         if (f.region !== region.key) continue;
         if ((perVideo[videoId] ?? 0) >= 2) continue;
         perVideo[videoId] = (perVideo[videoId] ?? 0) + 1;
-        out.push({ frame: f, videoId, title: vd.title });
+        out.push({ frame: f, videoId, title: vd.title, covers: vd.covers });
         if (out.length >= 24) break;
       }
     }
@@ -333,13 +427,15 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
                           </span>
                         </div>
                         <div style={{ padding: '6px 8px' }}>
-                          {/* what's actually happening in this frame — the old tiles
-                              showed only a lesson title, which told you nothing */}
-                          <div style={{ fontSize: '11.5px', color: 'var(--color-text)', lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                            {m.frame.text}
+                          {/* Same hierarchy as the Conditions tab: the lesson Erik
+                              named leads, and what's happening in the frame backs
+                              it up. A raw mid-sentence transcript as the headline
+                              tells you no more than a bare title did. */}
+                          <div style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--color-text)', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                            {clipName(m.title, m.covers)}
                           </div>
-                          <div style={{ fontSize: '10.5px', color: 'var(--color-text-faint)', marginTop: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {m.title}
+                          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', lineHeight: 1.35, marginTop: '3px', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                            {fromSentence(m.frame.text)}
                           </div>
                         </div>
                       </div>

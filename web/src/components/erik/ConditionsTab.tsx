@@ -7,9 +7,10 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 import { apiGet } from '@/lib/api';
 import { REGION_BY_KEY } from './regions';
 import { frameScore } from './ExploreTab';
+import { clipName, fromSentence } from './clipLabel';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
-interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
+interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; covers?: string; }
 interface KbHit { source: string; heading: string; course?: string; preview: string; }
 interface KbSearchResponse { hits: KbHit[]; abstained: boolean; }
 
@@ -56,6 +57,9 @@ const CONDITIONS: Condition[] = [
 interface ExamQ {
   id: string; n: number | string; stem: string; options: Record<string, string>;
   answer?: string | null; why?: string | null; confidence?: string | null; topic?: string;
+  // These exams are open book — the printed manual page is the fastest route to
+  // an answer, so it travels with the question wherever the question is shown.
+  manualPage?: { page: number; title: string } | null;
 }
 
 function ExamOnThis({ cond }: { cond: Condition }) {
@@ -101,6 +105,12 @@ function ExamOnThis({ cond }: { cond: Condition }) {
             <div key={q.id} style={{ border: '1px solid var(--color-border)', borderRadius: '9px', padding: '9px 12px', background: 'var(--color-card)' }}>
               <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '3px' }}>
                 {paper} · Q{q.n}{q.topic ? ' · ' + q.topic : ''}
+                {q.manualPage && (
+                  <span title={`Open book: "${q.manualPage.title}" is on page ${q.manualPage.page} of your printed manual`}
+                    style={{ marginLeft: '7px', fontWeight: 700, color: '#f59e0b' }}>
+                    📕 manual p.{q.manualPage.page}
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.45 }}>{q.stem}</div>
               {shown ? (
@@ -185,7 +195,7 @@ export function ConditionsTab({ itemId, videosMap }: {
   // Live keyword scan of every frame for the selected condition.
   const frames = useMemo(() => {
     if (!cond) return [];
-    const out: Array<{ frame: FrameEntry; videoId: string; title: string; course: string }> = [];
+    const out: Array<{ frame: FrameEntry; videoId: string; title: string; course: string; covers?: string }> = [];
     const perVideo: Record<string, number> = {};
     for (const [videoId, vd] of Object.entries(videosMap)) {
       const titleHit = cond.match.some((m) => vd.title.toLowerCase().includes(m) || vd.course.toLowerCase().includes(m));
@@ -194,7 +204,7 @@ export function ConditionsTab({ itemId, videosMap }: {
         if (!titleHit && !cond.match.some((m) => t.includes(m))) continue;
         if ((perVideo[videoId] ?? 0) >= 2) continue;
         perVideo[videoId] = (perVideo[videoId] ?? 0) + 1;
-        out.push({ frame: f, videoId, title: vd.title, course: vd.course });
+        out.push({ frame: f, videoId, title: vd.title, course: vd.course, covers: vd.covers });
       }
     }
     // hands-on demonstration frames beat rambling theory frames — see frameScore
@@ -332,10 +342,17 @@ export function ConditionsTab({ itemId, videosMap }: {
                   <img src={src} alt={m.frame.text.slice(0, 60)} loading="lazy"
                     style={{ width: '100%', aspectRatio: '16 / 9', objectFit: 'cover', display: 'block', background: '#000' }} />
                   <div style={{ padding: '6px 8px' }}>
-                    {/* the caption is the point — a cropped still with only a
-                        lesson title told the learner nothing */}
-                    <div style={{ fontSize: '11.5px', color: 'var(--color-text)', lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.frame.text}</div>
-                    <div style={{ fontSize: '10.5px', color: 'var(--color-text-faint)', marginTop: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title} · {m.course}</div>
+                    {/* The caption still matters — a cropped still with only a
+                        lesson title taught nothing. But leading with a raw ASR
+                        fragment ("Put it up here now. Just pull your shoulder
+                        down two three four…") is no better: you can't tell what
+                        the clip IS. So the name Erik gave the lesson leads, and
+                        the transcript backs it up. */}
+                    <div style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--color-text)', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                      {clipName(m.title, m.covers)}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', lineHeight: 1.35, marginTop: '3px', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{fromSentence(m.frame.text)}</div>
+                    <div style={{ fontSize: '10.5px', color: 'var(--color-text-faint)', marginTop: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.course}</div>
                   </div>
                 </div>
               );
