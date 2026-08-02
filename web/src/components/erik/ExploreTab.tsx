@@ -7,6 +7,7 @@ import { lazy, Suspense } from 'preact/compat';
 import { apiGet } from '@/lib/api';
 import { BodyMap } from './BodyMap';
 import { ERIK_REGIONS, REGION_BY_KEY } from './regions';
+import { MUSCLE_FACTS } from './muscleFacts';
 
 // 3D viewer is heavy (Three.js ~700KB) — code-split it so the Explore tab
 // stays light. Falls back to the 2D <BodyMap> below if WebGL is unavailable.
@@ -25,6 +26,69 @@ interface KbHit { source: string; heading: string; course?: string; preview: str
 interface KbSearchResponse { hits: KbHit[]; abstained: boolean; }
 
 const ACCENT = '#10b981';
+
+// Words that mean Erik is demonstrating with his hands on the client, versus
+// lecturing. Frames whose caption scores high make far better thumbnails than
+// the old "longest caption wins" rule, which surfaced digressions.
+const HANDS_ON = /\b(place|placing|put|hook|hooking|contact|press|pressing|push|pull|drag|dragging|glide|gliding|lift|lifting|hold|holding|grab|grip|elbow|thumb|fingers|forearm|knuckle|traction|stretch|release|releasing|mobilize|mobilizing|rotate|rotating|sidebend|side-bend|inhale|exhale|resist|resisting|barrier|client's|therapist's)\b/gi;
+const THEORY = /\b(research|study|studies|percent|book|chapter|doctor|university|years ago|history|remember when)\b/gi;
+
+export function frameScore(text: string): number {
+  if (!text) return -99;
+  const hands = (text.match(HANDS_ON) || []).length;
+  const theory = (text.match(THEORY) || []).length;
+  // caption length still counts a little — a 5-word frame explains nothing
+  return hands * 3 - theory * 2 + Math.min(text.length, 260) / 120;
+}
+
+// The study card behind a muscle plate. Origin / insertion / action is what the
+// Myoskeletal exams actually ask for, and `cue` is the practical Dalton note —
+// without these the atlas is a picture book.
+function MuscleStudyCard({ slug, anatomy }: {
+  slug: string | null; anatomy: Record<string, AnatomyMuscle>;
+}) {
+  if (!slug) return null;
+  const f = MUSCLE_FACTS[slug];
+  const m = anatomy[slug];
+  if (!m) return null;
+  const row = (label: string, value?: string) => value ? (
+    <div style={{ display: 'flex', gap: '8px', marginTop: '5px' }}>
+      <span style={{ flex: '0 0 74px', fontSize: '11px', fontWeight: 700, letterSpacing: '.5px', color: 'var(--color-text-faint)', textTransform: 'uppercase', paddingTop: '1px' }}>{label}</span>
+      <span style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>{value}</span>
+    </div>
+  ) : null;
+  return (
+    <div style={{ marginTop: '10px', padding: '12px 14px', borderRadius: '10px', border: '1px solid ' + ACCENT + '55', background: ACCENT + '0e' }}>
+      <div style={{ fontSize: '15px', fontWeight: 800, color: 'var(--color-text)', textTransform: 'capitalize' }}>{m.name}</div>
+      {!f && (
+        <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginTop: '4px', lineHeight: 1.5 }}>
+          No study notes written for this plate yet — the 3D render and Erik's lessons below still apply.
+        </div>
+      )}
+      {f && (
+        <>
+          {row('Origin', f.origin)}
+          {row('Insertion', f.insertion)}
+          {row('Action', f.action)}
+          {row('Refers', f.refers)}
+          {row('Test', f.test)}
+          {f.cue && (
+            <div style={{ marginTop: '9px', padding: '8px 10px', borderRadius: '8px', background: 'var(--color-card)', border: '1px solid var(--color-border)' }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '.5px', color: ACCENT, textTransform: 'uppercase', marginBottom: '2px' }}>Myoskeletal note</div>
+              <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>{f.cue}</div>
+            </div>
+          )}
+        </>
+      )}
+      {m.viewer_url && (
+        <a href={m.viewer_url} target="_blank" rel="noopener noreferrer"
+          style={{ display: 'inline-block', marginTop: '8px', fontSize: '12px', color: ACCENT, textDecoration: 'none', fontWeight: 600 }}>
+          Open the full 3D render ↗
+        </a>
+      )}
+    </div>
+  );
+}
 
 export function ExploreTab({ itemId, anatomy, videosMap }: {
   itemId: string;
@@ -81,13 +145,23 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
         if (out.length >= 24) break;
       }
     }
-    // longest-caption first = usually the most descriptive moments
-    return out.sort((a, b) => b.frame.text.length - a.frame.text.length).slice(0, 8);
+    // Rank by how much the caption sounds like Erik DOING the technique, not
+    // talking theory — "longest caption wins" was picking rambling asides, which
+    // is why the thumbnails weren't helping anyone.
+    return out.sort((a, b) => frameScore(b.frame.text) - frameScore(a.frame.text)).slice(0, 8);
   }, [region, videosMap]);
+
+  // Which muscle plate is expanded into its study card (origin/insertion/action).
+  const [openMuscle, setOpenMuscle] = useState<string | null>(null);
+  useEffect(() => { setOpenMuscle(null); }, [selected]);
 
   const [zoom, setZoom] = useState<{ src: string; text: string; title: string } | null>(null);
   const frameSrc = (videoId: string, file: string) =>
     '/api/databases/kb/' + itemId + '/anatomy/frames/' + videoId + '/' + (file.split('/').pop() ?? file);
+  const fmtTime = (s: number) => {
+    const t = Math.round(s); const mm = Math.floor(t / 60);
+    return (mm > 0 ? mm + 'm' : '') + (t % 60) + 's';
+  };
   const muscleSrc = (m: AnatomyMuscle) =>
     m.images?.front ? '/api/databases/kb/' + itemId + '/anatomy/img/' + m.images.front.split('/').pop() : '';
 
@@ -190,25 +264,37 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
                 {muscles.length} muscle plate{muscles.length !== 1 ? 's' : ''} · {frames.length} technique frame{frames.length !== 1 ? 's' : ''}
               </div>
 
-              {/* Muscles */}
+              {/* Muscles — click a plate for the exam-recall facts on it */}
               {muscles.length > 0 && (
                 <div style={{ marginBottom: '18px' }}>
-                  <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Muscles here</div>
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    {muscles.map((m) => (
-                      <div key={m.slug} style={{ width: '92px', textAlign: 'center' }}>
-                        {muscleSrc(m) && (
-                          <img src={muscleSrc(m)} alt={m.name} loading="lazy"
-                            style={{ width: '92px', height: '92px', objectFit: 'contain', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '8px' }} />
-                        )}
-                        <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.2, textTransform: 'capitalize' }}>{m.name}</div>
-                        {m.viewer_url && (
-                          <a href={m.viewer_url} target="_blank" rel="noopener noreferrer"
-                            style={{ fontSize: '11px', color: ACCENT, textDecoration: 'none' }}>view 3D ↗</a>
-                        )}
-                      </div>
-                    ))}
+                  <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>
+                    Muscles here — tap one for origin / insertion / action
                   </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {muscles.map((m) => {
+                      const on = openMuscle === m.slug;
+                      const hasFacts = !!MUSCLE_FACTS[m.slug];
+                      return (
+                        <button key={m.slug} type="button"
+                          onClick={() => setOpenMuscle(on ? null : m.slug)}
+                          title={hasFacts ? 'Show the study card for ' + m.name : m.name}
+                          style={{
+                            width: '92px', textAlign: 'center', cursor: 'pointer', padding: '4px',
+                            background: on ? ACCENT + '18' : 'transparent',
+                            border: '1px solid ' + (on ? ACCENT : 'transparent'), borderRadius: '10px',
+                          }}>
+                          {muscleSrc(m) && (
+                            <img src={muscleSrc(m)} alt={m.name} loading="lazy"
+                              style={{ width: '84px', height: '84px', objectFit: 'contain', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '8px' }} />
+                          )}
+                          <span style={{ display: 'block', fontSize: '11px', color: on ? ACCENT : 'var(--color-text-muted)', marginTop: '3px', lineHeight: 1.2, textTransform: 'capitalize' }}>
+                            {m.name}{hasFacts ? '' : ' ·'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <MuscleStudyCard slug={openMuscle} anatomy={anatomy} />
                 </div>
               )}
 
@@ -217,15 +303,30 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
                 <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', marginBottom: '6px', textTransform: 'uppercase' }}>Erik's techniques — frames</div>
                 {!framesReady && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Loading frames…</div>}
                 {framesReady && frames.length === 0 && <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>No tagged frames for this region yet.</div>}
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                   {frames.map((m, i) => {
                     const src = frameSrc(m.videoId, m.frame.file);
                     return (
                       <div key={i} onClick={() => setZoom({ src, text: m.frame.text, title: m.title })}
-                        style={{ width: '120px', cursor: 'pointer', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', overflow: 'hidden' }}
+                        style={{ width: '178px', cursor: 'pointer', background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden' }}
                         title={m.frame.text}>
-                        <img src={src} alt={m.frame.text.slice(0, 50)} loading="lazy" style={{ width: '120px', height: '68px', objectFit: 'cover', display: 'block' }} />
-                        <div style={{ padding: '4px 6px', fontSize: '11px', color: 'var(--color-text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title}</div>
+                        <div style={{ position: 'relative' }}>
+                          <img src={src} alt={m.frame.text.slice(0, 60)} loading="lazy"
+                            style={{ width: '100%', aspectRatio: '16 / 9', objectFit: 'cover', display: 'block', background: '#000' }} />
+                          <span style={{ position: 'absolute', bottom: '4px', right: '5px', fontSize: '10px', fontWeight: 700, color: '#fff', background: 'rgba(0,0,0,0.66)', padding: '1px 5px', borderRadius: '4px' }}>
+                            {fmtTime(m.frame.t_mid)}
+                          </span>
+                        </div>
+                        <div style={{ padding: '6px 8px' }}>
+                          {/* what's actually happening in this frame — the old tiles
+                              showed only a lesson title, which told you nothing */}
+                          <div style={{ fontSize: '11.5px', color: 'var(--color-text)', lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                            {m.frame.text}
+                          </div>
+                          <div style={{ fontSize: '10.5px', color: 'var(--color-text-faint)', marginTop: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {m.title}
+                          </div>
+                        </div>
                       </div>
                     );
                   })}

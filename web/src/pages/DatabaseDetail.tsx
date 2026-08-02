@@ -7,6 +7,7 @@
 // the SQL runner is SELECT-only on the backend; secrets never auto-reveal.
 import type { ComponentChildren } from 'preact';
 import { useState, useEffect, useRef, useMemo } from 'preact/hooks';
+import { lazy, Suspense } from 'preact/compat';
 import { useRoute, useLocation } from 'wouter-preact';
 import { KeyRound, Eye, EyeOff, Copy, ArrowLeft, Search, Download, RefreshCw } from 'lucide-preact';
 import { NestedSquaresSpinner } from '../components/NestedSquaresSpinner';
@@ -18,6 +19,9 @@ import { ConditionsTab } from '@/components/erik/ConditionsTab';
 import { TechniquePlayer } from '@/components/erik/TechniquePlayer';
 import { ErikQuiz } from '@/components/erik/ErikQuiz';
 import { ErikLibrary } from '@/components/erik/ErikLibrary';
+// lazily loaded — it bundles the 150 KB exam bank
+const ErikExam = lazy(() => import('@/components/erik/ErikExam').then((m) => ({ default: m.ErikExam })));
+import { disambiguate } from '@/components/erik/disambiguation';
 import { ClayQuiz } from '@/components/clay/ClayQuiz';
 import { ClayExamples } from '@/components/clay/ClayExamples';
 import { useDebouncedValue } from '@/lib/useDebounce';
@@ -286,6 +290,59 @@ function MuscleStrip({ slugs, anatomy, itemId }: {
       </div>
       <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '6px' }}>
         BodyParts3D © DBCLS, CC BY-SA 2.1 JP · Wikimedia Commons
+      </div>
+    </div>
+  );
+}
+
+// ── DidYouMean: the clarifier for ambiguous anatomy terms ──────────────────
+// Searching "bicep" used to return biceps FEMORIS (a hamstring) with no hint
+// that anything was wrong. Now an ambiguous term shows every reading first —
+// plate, one-line differentiator, and a jump straight into that body region —
+// so the learner disambiguates before reading a single transcript hit.
+function DidYouMean({ query, anatomy, itemId, onRegion }: {
+  query: string;
+  anatomy: Record<string, AnatomyMuscle>;
+  itemId: string;
+  onRegion: (regionKey: string) => void;
+}) {
+  const opts = disambiguate(query);
+  if (!opts) return null;
+  const shown = opts.filter((o) => anatomy[o.slug]);
+  if (shown.length < 2) return null;
+  const imgUrl = (rel?: string) =>
+    rel ? '/api/databases/kb/' + itemId + '/anatomy/img/' + rel.split('/').pop() : '';
+  return (
+    <div style={{
+      marginTop: '14px', padding: '12px 14px', borderRadius: '10px',
+      border: '1px solid #f59e0b66', background: 'rgba(245,158,11,0.08)',
+    }}>
+      <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '.5px', color: '#f59e0b', textTransform: 'uppercase', marginBottom: '8px' }}>
+        “{query.trim()}” means more than one thing — which did you mean?
+      </div>
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        {shown.map((o) => {
+          const m = anatomy[o.slug];
+          const src = imgUrl(m.images?.front);
+          return (
+            <button key={o.slug} type="button" onClick={() => onRegion(o.region)}
+              style={{
+                display: 'flex', gap: '10px', alignItems: 'flex-start', textAlign: 'left',
+                width: '300px', maxWidth: '100%', padding: '8px', cursor: 'pointer',
+                borderRadius: '9px', border: '1px solid var(--color-border)',
+                background: 'var(--color-card)',
+              }}
+              title={'Open ' + o.label + ' in the body explorer'}>
+              {src && <img src={src} alt={o.label} loading="lazy"
+                style={{ width: '56px', height: '56px', objectFit: 'contain', flex: '0 0 auto', background: 'var(--color-bg)', borderRadius: '6px' }} />}
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>{o.label}</span>
+                <span style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.4, marginTop: '2px' }}>{o.note}</span>
+                <span style={{ display: 'block', fontSize: '11px', color: '#10b981', fontWeight: 600, marginTop: '3px' }}>Explore {o.region} ↗</span>
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -658,11 +715,11 @@ function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
 }
 
 function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
-  type KbTab = 'explore' | 'conditions' | 'techniques' | 'quiz' | 'examples' | 'ask' | 'search' | 'sources';
+  type KbTab = 'explore' | 'conditions' | 'techniques' | 'quiz' | 'exam' | 'examples' | 'ask' | 'search' | 'sources';
   const urlTab = (() => {
     try {
       const t = new URLSearchParams(window.location.search).get('tab');
-      return (['explore', 'conditions', 'techniques', 'quiz', 'examples', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
+      return (['explore', 'conditions', 'techniques', 'quiz', 'exam', 'examples', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
     } catch { return null; }
   })();
   const [tab, setTab] = useState<KbTab>(
@@ -752,12 +809,13 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
   // First-visit onboarding strip (Erik Dalton page only), dismissible per device.
   const [showIntro, setShowIntro] = useState(() => {
-    try { return item.id === 'erikdalton' && localStorage.getItem('erik-intro-dismissed') !== '1'; }
+    // bumped to v2 on 2026-08-01 so everyone sees the new Exam tab once
+    try { return item.id === 'erikdalton' && localStorage.getItem('erik-intro-dismissed') !== 'v2'; }
     catch { return item.id === 'erikdalton'; }
   });
   function dismissIntro() {
     setShowIntro(false);
-    try { localStorage.setItem('erik-intro-dismissed', '1'); } catch { /* ignore */ }
+    try { localStorage.setItem('erik-intro-dismissed', 'v2'); } catch { /* ignore */ }
   }
 
   async function runAsk() {
@@ -834,6 +892,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             {isErikDalton && <Tab label="Conditions" active={tab === 'conditions'} onClick={() => setTab('conditions')} />}
             {isErikDalton && <Tab label="Techniques" active={tab === 'techniques'} onClick={() => setTab('techniques')} />}
             {isErikDalton && <Tab label="Quiz" active={tab === 'quiz'} onClick={() => setTab('quiz')} />}
+            {isErikDalton && <Tab label="Exam" active={tab === 'exam'} onClick={() => setTab('exam')} />}
             {isClayTrader && <Tab label="Examples" active={tab === 'examples'} onClick={() => setTab('examples')} />}
             {isClayTrader && <Tab label="Quiz" active={tab === 'quiz'} onClick={() => setTab('quiz')} />}
             {item.askable && <Tab label="Ask" active={tab === 'ask'} onClick={() => setTab('ask')} />}
@@ -855,6 +914,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 <div><b style={{ color: 'var(--color-text)' }}>Conditions</b> — start from a client complaint (sciatica, frozen shoulder…).</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Techniques</b> — step through each lesson frame-by-frame with Erik's voice.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Quiz</b> — test yourself: watch a clip, name the body area worked.</div>
+                <div><b style={{ color: 'var(--color-text)' }}>Exam</b> — Erik's real 137-question certification test: study, drill, or sit a timed mock.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Library</b> — browse every course & lesson.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Search / Ask</b> — find or ask anything across the library.</div>
               </div>
@@ -871,6 +931,12 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
           {tab === 'techniques' && (
             <TechniquePlayer itemId={item.id} videosMap={videosMap} />
+          )}
+
+          {tab === 'exam' && isErikDalton && (
+            <Suspense fallback={<div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Loading exam bank…</div>}>
+              <ErikExam onSearch={(q) => { setQuery(q); goTo('search'); }} />
+            </Suspense>
           )}
 
           {tab === 'quiz' && isErikDalton && (
@@ -923,6 +989,11 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                   <span class="text-[12px] text-[var(--color-text-faint)]">⌘/Ctrl+Enter to ask</span>
                 )}
               </div>
+
+              {isErikDalton && (
+                <DidYouMean query={question} anatomy={anatomy} itemId={item.id}
+                  onRegion={(r) => goTo('explore', { region: r })} />
+              )}
 
               {askErr && (
                 <div style={{ marginTop: '16px' }}>
@@ -1007,6 +1078,10 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 placeholder={'Search ' + item.label + '…'}
                 class="w-full px-3 py-2 rounded-md bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
               />
+              {isErikDalton && (
+                <DidYouMean query={dq} anatomy={anatomy} itemId={item.id}
+                  onRegion={(r) => goTo('explore', { region: r })} />
+              )}
               {searchErr && <div style={{ marginTop: '16px' }}><PageState error={searchErr} /></div>}
               {searching && <div class="text-[13px] text-[var(--color-text-muted)]" style={{ marginTop: '14px' }}>Searching…</div>}
               {search && !searching && (search.abstained || search.hits.length === 0) && (

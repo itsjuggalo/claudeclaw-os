@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { apiGet } from '@/lib/api';
 import { REGION_BY_KEY } from './regions';
+import { frameScore } from './ExploreTab';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
@@ -111,7 +112,8 @@ export function ConditionsTab({ itemId, videosMap }: {
         out.push({ frame: f, videoId, title: vd.title, course: vd.course });
       }
     }
-    return out.sort((a, b) => b.frame.text.length - a.frame.text.length).slice(0, 12);
+    // hands-on demonstration frames beat rambling theory frames — see frameScore
+    return out.sort((a, b) => frameScore(b.frame.text) - frameScore(a.frame.text)).slice(0, 12);
   }, [cond, videosMap]);
 
   // KB lessons for the condition.
@@ -240,12 +242,15 @@ export function ConditionsTab({ itemId, videosMap }: {
               const src = frameSrc(m.videoId, m.frame.file);
               return (
                 <div key={i} onClick={() => setZoom({ src, text: m.frame.text, title: m.title })}
-                  style={{ width: '150px', cursor: 'pointer', background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden' }}
+                  style={{ width: '178px', cursor: 'pointer', background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden' }}
                   title={m.frame.text}>
-                  <img src={src} alt={m.frame.text.slice(0, 50)} loading="lazy" style={{ width: '150px', height: '85px', objectFit: 'cover', display: 'block' }} />
-                  <div style={{ padding: '5px 7px' }}>
-                    <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--color-text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.course}</div>
+                  <img src={src} alt={m.frame.text.slice(0, 60)} loading="lazy"
+                    style={{ width: '100%', aspectRatio: '16 / 9', objectFit: 'cover', display: 'block', background: '#000' }} />
+                  <div style={{ padding: '6px 8px' }}>
+                    {/* the caption is the point — a cropped still with only a
+                        lesson title told the learner nothing */}
+                    <div style={{ fontSize: '11.5px', color: 'var(--color-text)', lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.frame.text}</div>
+                    <div style={{ fontSize: '10.5px', color: 'var(--color-text-faint)', marginTop: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.title} · {m.course}</div>
                   </div>
                 </div>
               );
