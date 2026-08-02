@@ -48,6 +48,91 @@ const CONDITIONS: Condition[] = [
   { key: 'hip', label: 'Hip pain / snapping hip', emoji: '🕺', match: ['snapping hip', 'hip pain', 'tensor', 'tfl', 'trochanter'], regions: ['hip/glutes', 'knee'], query: 'hip pain TFL trochanteric bursitis' },
 ];
 
+// ── the certification papers, filtered to this condition ───────────────────
+// Mike has five Myoskeletal exams to sit. Reading how Erik treats thoracic outlet
+// and then meeting the exam questions on thoracic outlet in the same breath is
+// worth far more than either alone — so the condition page pulls its own
+// questions out of the bank.
+interface ExamQ {
+  id: string; n: number | string; stem: string; options: Record<string, string>;
+  answer?: string | null; why?: string | null; confidence?: string | null; topic?: string;
+}
+
+function ExamOnThis({ cond }: { cond: Condition }) {
+  const [bank, setBank] = useState<{ papers: { id: string; title: string; questions: ExamQ[] }[] } | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ papers: { id: string; title: string; questions: ExamQ[] }[] }>(
+      '/api/databases/kb/erikdalton/exam-bank')
+      .then((r) => { if (live) setBank(r); }).catch(() => { /* section just stays hidden */ });
+    return () => { live = false; };
+  }, []);
+
+  const hits = useMemo(() => {
+    if (!bank) return [];
+    const out: { q: ExamQ; paper: string }[] = [];
+    for (const p of bank.papers) {
+      for (const q of p.questions) {
+        // Match on the stem, the booklet's section heading, and the KEYED answer
+        // only. Searching the distractors too dragged in questions where
+        // "thoracic outlet syndrome" is merely the wrong answer — the question
+        // isn't about this condition at all.
+        const keyed = q.answer ? q.options[q.answer] || '' : '';
+        const hay = (q.stem + ' ' + (q.topic || '') + ' ' + keyed).toLowerCase();
+        if (cond.match.some((m) => hay.includes(m))) out.push({ q, paper: p.title });
+      }
+    }
+    // keyed questions first — an unkeyed one can still be worth reading, but it
+    // shouldn't push a keyed one off the list
+    return out.sort((a, b) => Number(!!b.q.answer) - Number(!!a.q.answer)).slice(0, 10);
+  }, [bank, cond]);
+
+  if (!hits.length) return null;
+  return (
+    <>
+      <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '1px', color: 'var(--color-text-faint)', margin: '18px 0 5px', textTransform: 'uppercase' }}>
+        ④ On the exam · {hits.length} question{hits.length !== 1 ? 's' : ''}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {hits.map(({ q, paper }) => {
+          const shown = open === q.id;
+          return (
+            <div key={q.id} style={{ border: '1px solid var(--color-border)', borderRadius: '9px', padding: '9px 12px', background: 'var(--color-card)' }}>
+              <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '3px' }}>
+                {paper} · Q{q.n}{q.topic ? ' · ' + q.topic : ''}
+              </div>
+              <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.45 }}>{q.stem}</div>
+              {shown ? (
+                <div style={{ marginTop: '6px', fontSize: '12.5px', lineHeight: 1.5 }}>
+                  {q.answer ? (
+                    <>
+                      <span style={{ color: ACCENT, fontWeight: 700 }}>{q.answer}) {q.options[q.answer]}</span>
+                      {q.why && <div style={{ color: 'var(--color-text-muted)', marginTop: '4px' }}>{q.why}</div>}
+                    </>
+                  ) : (
+                    <span style={{ color: 'var(--color-text-muted)' }}>
+                      No defensible key for this one — it’s shown, not guessed at.
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
+                  {Object.entries(q.options).map(([k, v]) => `${k}) ${v}`).join('   ')}
+                </div>
+              )}
+              <button type="button" onClick={() => setOpen(shown ? null : q.id)}
+                style={{ marginTop: '6px', padding: '3px 9px', fontSize: '11.5px', fontWeight: 600, borderRadius: '7px', cursor: 'pointer', border: '1px solid var(--color-border)', background: 'transparent', color: ACCENT }}>
+                {shown ? 'Hide answer' : 'Show answer'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 // Clinical scaffold per condition — standard bodywork guidance (NOT a diagnosis).
 // assess = what to check first · caution = red flags / refer-out · homecare = client self-care.
 interface CondDetail { assess: string; caution: string; homecare: string; }
@@ -277,6 +362,11 @@ export function ConditionsTab({ itemId, videosMap }: {
               <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>{detail.homecare}</div>
             </>
           )}
+
+          {/* What the certification papers ask about this condition. Reading how
+              Erik treats TOS and then meeting the four exam questions on it in
+              the same place is the whole point — clinic and exam are one subject. */}
+          <ExamOnThis cond={cond} />
           <div style={{ marginTop: '16px', fontSize: '11px', color: 'var(--color-text-faint)', fontStyle: 'italic' }}>{DISCLAIMER}</div>
         </div>
       )}

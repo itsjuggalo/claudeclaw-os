@@ -2,23 +2,31 @@
 //
 // Everything else on this page teaches technique. This tab exists for one job:
 // passing the real Myoskeletal Alignment certification exams. The bank is Erik's
-// ACTUAL papers — all five of them, 708 questions, parsed from the real PDFs
+// ACTUAL papers — all five of them, 756 questions: every question the five
+// booklets print, with nothing invented. (Technique Tour reads 169, not 170 —
+// Erik's own numbering jumps 29 -> 31.)
 // (erikdalton-kb/build_exam_bank.py), never questions invented about his material:
 //   Upper Body (ships on USB 1) and the four home-study finals — Art of MAT,
 //   Technique Tour, Dynamic Lower Body, Shoulder/Arm/Hand — whose question PDFs
 //   Erik publishes free on erikdalton.com.
 //
-// Three modes:
+// Four modes:
 //   Study    — browse by topic, answer visible, with the supporting passage from
 //              Erik's own e-Learning textbook underneath.
 //   Practice — 20 questions, graded as you go, weighted toward what you've been
 //              getting WRONG (a wrong answer comes back; a right one recedes).
 //   Mock     — the whole paper, timed, no feedback until you submit, scored against the
 //              real 70% pass mark, then a per-topic breakdown of where you lost.
+//   Review   — spaced repetition. Every answer stamps a Leitner box (right moves
+//              it out to 1/3/7/16/35 days, wrong drops it back to tomorrow), and
+//              this drills only what has come due. An exam a month away is won by
+//              reviewing on a schedule, not by re-reading what you already know.
 //
 // Honesty rules, because a confident wrong answer is worse than no answer:
 //   • "verified" = the wording was located in Erik's textbook/transcripts.
-//   • "derived"  = reasoned from Myoskeletal doctrine, not literally located.
+//   • "derived"  = worked out from the booklet's own printed "Tip:" and
+//     Myoskeletal doctrine, with that tip quoted in the reasoning. This is most
+//     of the four home-study papers — they ship no answer key at all.
 //   • "evidence" = auto-keyed from Erik's own words, and ONLY where one option
 //     won decisively (key_from_evidence.py; 8/8 on the paper we can grade).
 //   • Questions with no defensible key are shown, flagged, and excluded from
@@ -62,19 +70,70 @@ interface ExamPaper {
   questions: ExamQuestion[]; answered: number; total: number;
   expected: number; missing: number[];
 }
-type Mode = 'study' | 'practice' | 'mock';
+type Mode = 'study' | 'practice' | 'mock' | 'review';
 
-// per-question history: how many times right / wrong on this device
-interface Progress { right: Record<string, number>; wrong: Record<string, number>; best?: number; }
+// per-question history: how many times right / wrong on this device, plus a
+// Leitner box and when it was last answered — getting a question right once
+// proves nothing three weeks later, and an exam you sit in a month is won by
+// reviewing on a schedule instead of re-reading what you already know.
+interface Progress {
+  right: Record<string, number>; wrong: Record<string, number>; best?: number;
+  box?: Record<string, number>; at?: Record<string, number>;
+}
+
+// days before a question in each box comes back. Box 1 = tomorrow, box 5 = a
+// question that's genuinely stuck.
+const BOX_DAYS = [0, 1, 3, 7, 16, 35];
+const DAY = 86400000;
+
+function boxOf(p: Progress, id: string): number {
+  return p.box?.[id] ?? 0;
+}
+
+/** Questions already answered whose review interval has elapsed, most overdue
+ *  first. Never-answered questions are NOT due — they're new work, not review. */
+function dueQuestions(qs: ExamQuestion[], p: Progress, now: number): ExamQuestion[] {
+  return qs
+    .map((q) => {
+      const at = p.at?.[q.id];
+      if (!at) {
+        // answered before scheduling existed — treat as long overdue rather than
+        // invisible, otherwise every question drilled up to now never comes back
+        const tallied = (p.right[q.id] || 0) + (p.wrong[q.id] || 0);
+        return tallied ? { q, over: Number.MAX_SAFE_INTEGER } : null;
+      }
+      const wait = BOX_DAYS[Math.min(boxOf(p, q.id), BOX_DAYS.length - 1)] * DAY;
+      const over = now - at - wait;
+      return over >= 0 ? { q, over } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => (b as { over: number }).over - (a as { over: number }).over)
+    .map((x) => (x as { q: ExamQuestion }).q);
+}
 
 function loadProgress(): Progress {
   try {
     const p = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
-    return { right: p.right || {}, wrong: p.wrong || {}, best: p.best };
-  } catch { return { right: {}, wrong: {} }; }
+    return { right: p.right || {}, wrong: p.wrong || {}, best: p.best,
+             box: p.box || {}, at: p.at || {} };
+  } catch { return { right: {}, wrong: {}, box: {}, at: {} }; }
 }
 function saveProgress(p: Progress) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+}
+
+/** Record one answer: tally, advance or reset the Leitner box, stamp the time.
+ *  Both drill paths go through here so the schedule can't diverge. */
+function record(p: Progress, id: string, correct: boolean, now: number) {
+  p.box ||= {}; p.at ||= {};
+  if (correct) {
+    p.right[id] = (p.right[id] || 0) + 1;
+    p.box[id] = Math.min((p.box[id] ?? 0) + 1, BOX_DAYS.length - 1);
+  } else {
+    p.wrong[id] = (p.wrong[id] || 0) + 1;
+    p.box[id] = 1;                 // missed = back to tomorrow, however well it went before
+  }
+  p.at[id] = now;
 }
 
 function shuffle<T>(a: T[]): T[] {
@@ -162,6 +221,9 @@ export function ErikExam({ onSearch, onLesson }: {
   // progress is stored across all five papers, so it has to be narrowed to this
   // one — otherwise drilling the shoulder paper inflated "you have attempted" on
   // Upper Body, which is exactly the kind of wrong number that hides a weak spot
+  // recomputed on every progress change; `now` is read once per render so the
+  // list doesn't reshuffle mid-drill
+  const due = dueQuestions(keyed, progress, Date.now());
   const attempted = new Set([...Object.keys(progress.right), ...Object.keys(progress.wrong)]);
   const seen = new Set(keyed.filter((q) => attempted.has(q.id)).map((q) => q.id));
   const mastered = keyed.filter((q) => (progress.right[q.id] || 0) >= 2 && !(progress.wrong[q.id] || 0)).length;
@@ -217,6 +279,8 @@ export function ErikExam({ onSearch, onLesson }: {
         {tab('study', '📖 Study', 'Browse by topic with answers and Erik’s own wording')}
         {tab('practice', '🎯 Practice 20', 'Graded as you go, weighted to what you keep missing')}
         {tab('mock', '⏱ Mock exam', 'All questions, timed, scored at the real 70% pass mark')}
+        {due.length > 0 && tab('review', `🔁 Review ${due.length}`,
+          'Questions you answered before that are due again — spaced so they stick')}
       </div>
 
       {mode === 'study' && <StudyMode key={paper.id} paper={paper} progress={progress}
@@ -224,6 +288,12 @@ export function ErikExam({ onSearch, onLesson }: {
       {mode === 'practice' && (
         <DrillMode key={'practice-' + paper.id} paper={paper} progress={progress} onLesson={onLesson}
           onProgress={(p) => { setProgress(p); saveProgress(p); }} count={20} instant />
+      )}
+      {mode === 'review' && (
+        <DrillMode key={'review-' + paper.id} paper={{ ...paper, questions: due }}
+          progress={progress} onLesson={onLesson}
+          onProgress={(p) => { setProgress(p); saveProgress(p); }}
+          count={Math.min(due.length, 25)} instant />
       )}
       {mode === 'mock' && (
         <DrillMode key={'mock-' + paper.id} paper={paper} progress={progress} onLesson={onLesson}
@@ -295,7 +365,11 @@ function WeakSections({ paper, progress, onPick, active }: {
   }, [paper, progress]);
 
   if (!rows.length) return null;
-  const anyAttempt = rows.some((r) => r.attempts > 0);
+  // ask the whole paper, not just the six rows on show — the sections he HAS
+  // drilled are exactly the ones that fall off this list, so checking the rows
+  // said "nothing drilled yet" to someone who had just sat a mock
+  const anyAttempt = paper.questions.some(
+    (q) => (progress.right[q.id] || 0) + (progress.wrong[q.id] || 0) > 0);
   return (
     <div style={{ marginBottom: '14px' }}>
       <div style={{ fontSize: '11.5px', color: 'var(--color-text-muted)', marginBottom: '6px' }}>
@@ -587,20 +661,25 @@ function DrillMode({ paper, progress, onProgress, count, instant, timed, onLesso
     const next = { ...picked, [q.id]: letter };
     setPicked(next);
     if (instant) {
-      const p: Progress = { ...progress, right: { ...progress.right }, wrong: { ...progress.wrong } };
-      if (letter === q.answer) p.right[q.id] = (p.right[q.id] || 0) + 1;
-      else p.wrong[q.id] = (p.wrong[q.id] || 0) + 1;
+      const p: Progress = {
+        ...progress, right: { ...progress.right }, wrong: { ...progress.wrong },
+        box: { ...(progress.box || {}) }, at: { ...(progress.at || {}) },
+      };
+      record(p, q.id, letter === q.answer, Date.now());
       onProgress(p);
     }
   }
 
   function submit() {
     setSubmitted(true);
-    const p: Progress = { ...progress, right: { ...progress.right }, wrong: { ...progress.wrong } };
+    const p: Progress = {
+      ...progress, right: { ...progress.right }, wrong: { ...progress.wrong },
+      box: { ...(progress.box || {}) }, at: { ...(progress.at || {}) },
+    };
+    const now = Date.now();
     for (const x of set) {
       if (!picked[x.id]) continue;
-      if (picked[x.id] === x.answer) p.right[x.id] = (p.right[x.id] || 0) + 1;
-      else p.wrong[x.id] = (p.wrong[x.id] || 0) + 1;
+      record(p, x.id, picked[x.id] === x.answer, now);
     }
     const s = set.filter((x) => picked[x.id] === x.answer).length;
     const percent = set.length ? Math.round((s / set.length) * 100) : 0;
