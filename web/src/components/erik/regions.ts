@@ -22,11 +22,11 @@ export interface ErikRegion {
 // arm, quads, calf stabilisers, abdominal wall, suboccipitals, IT band). Every
 // new slug is placed in the region(s) a bodyworker would look for it in.
 export const ERIK_REGIONS: ErikRegion[] = [
-  { key: 'head/face',     label: 'Head / Face',   muscles: ['temporalis', 'masseter', 'suboccipitals'],
+  { key: 'head/face',     label: 'Head / Face',   muscles: ['temporalis', 'masseter', 'suboccipitals', 'rectus-capitis-posterior-major', 'rectus-capitis-posterior-minor'],
     query: 'headache cranial occiput release' },
   { key: 'jaw/TMJ',       label: 'Jaw / TMJ',     muscles: ['masseter', 'temporalis'],
     query: 'TMJ jaw masseter release technique' },
-  { key: 'neck',          label: 'Neck',          muscles: ['sternocleidomastoid', 'scalene', 'splenius', 'levator-scapulae', 'trapezius', 'suboccipitals', 'semispinalis', 'longus-colli', 'multifidus'],
+  { key: 'neck',          label: 'Neck',          muscles: ['sternocleidomastoid', 'scalene', 'splenius', 'levator-scapulae', 'trapezius', 'suboccipitals', 'rectus-capitis-posterior-major', 'rectus-capitis-posterior-minor', 'semispinalis', 'longus-colli', 'longus-capitis', 'multifidus', 'rotatores'],
     query: 'neck cervical pain scalene release technique' },
   { key: 'shoulder',      label: 'Shoulder',      muscles: ['supraspinatus', 'infraspinatus', 'subscapularis', 'teres', 'pectoralis-minor', 'pectoralis-major', 'rhomboid', 'deltoid', 'serratus-anterior', 'subclavius', 'coracobrachialis'],
     query: 'shoulder rotator cuff frozen shoulder technique' },
@@ -36,9 +36,9 @@ export const ERIK_REGIONS: ErikRegion[] = [
     query: 'elbow forearm tennis elbow pronator technique' },
   { key: 'wrist/hand',    label: 'Wrist / Hand',  muscles: ['flexor-carpi-radialis', 'flexor-carpi-ulnaris', 'flexor-digitorum-superficialis', 'flexor-digitorum-profundus', 'palmaris-longus', 'wrist-extensors', 'median-nerve'],
     query: 'carpal tunnel wrist median nerve technique' },
-  { key: 'thoracic/ribs', label: 'Thoracic / Ribs', muscles: ['rhomboid', 'erector-spinae', 'latissimus-dorsi', 'diaphragm', 'serratus-anterior', 'serratus-posterior', 'intercostals', 'semispinalis', 'multifidus'],
+  { key: 'thoracic/ribs', label: 'Thoracic / Ribs', muscles: ['rhomboid', 'erector-spinae', 'latissimus-dorsi', 'diaphragm', 'serratus-anterior', 'serratus-posterior', 'intercostals', 'semispinalis', 'multifidus', 'rotatores'],
     query: 'thoracic rib mid back kyphosis technique' },
-  { key: 'spine/general', label: 'Spine',         muscles: ['erector-spinae', 'multifidus', 'semispinalis', 'thoracolumbar-fascia'],
+  { key: 'spine/general', label: 'Spine',         muscles: ['erector-spinae', 'multifidus', 'rotatores', 'semispinalis', 'thoracolumbar-fascia'],
     query: 'spine alignment myoskeletal technique' },
   { key: 'core/abdomen',  label: 'Core / Abdomen', muscles: ['diaphragm', 'psoas', 'iliacus', 'rectus-abdominis', 'external-oblique', 'internal-oblique', 'transversus-abdominis', 'intercostals', 'pelvic-floor'],
     query: 'diaphragm psoas abdomen pelvic floor technique' },
