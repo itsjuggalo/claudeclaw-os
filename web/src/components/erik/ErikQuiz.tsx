@@ -20,8 +20,9 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { apiGet } from '@/lib/api';
 import { ERIK_REGIONS, REGION_BY_KEY, LABEL_BY_KEY, KEY_BY_LABEL, REGION_NEIGHBORS, regionsAreNeighbors } from './regions';
 import { BodyMap } from './BodyMap';
+import { MUSCLE_FACTS } from './muscleFacts';
 
-interface AnatomyMuscle { name: string; slug: string; }
+interface AnatomyMuscle { name: string; slug: string; images?: { front?: string; back?: string }; }
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
 interface QuizBankItem {
@@ -42,6 +43,8 @@ interface Q {
   img?: string; clip?: string; poster?: string;
   technique?: string; caption?: string; difficulty?: string;
   regionKey?: string; lesson?: string; course?: string; videoId?: string;
+  why?: string;        // shown after answering — the reason, not just the tick
+  muscleSlug?: string; // lights up the plate on reveal
 }
 
 function shuffle<T>(a: T[]): T[] {
@@ -96,6 +99,77 @@ function buildBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
   return shuffle(bank);
 }
 
+// Muscle-fact drill — the exam-recall layer. Every question is generated from
+// MUSCLE_FACTS, so an answer is always defensible from the same origin /
+// insertion / action / referral data the Explore study card shows. Distractors
+// come from the SAME field on OTHER muscles, which is what makes it a real test:
+// four plausible insertions beat four random muscle names.
+function buildFactBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
+  const pretty = (slug: string) =>
+    anatomy[slug]?.name?.replace(/\b\w/g, (c) => c.toUpperCase()) || slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const slugs = Object.keys(MUSCLE_FACTS);
+  const bank: Q[] = [];
+
+  const fieldQ = (
+    field: 'origin' | 'insertion' | 'action' | 'refers' | 'test',
+    ask: (name: string) => string,
+  ) => {
+    const have = slugs.filter((s) => MUSCLE_FACTS[s][field]);
+    for (const slug of have) {
+      const correct = MUSCLE_FACTS[slug][field] as string;
+      const pool = shuffle(have.filter((s) => s !== slug))
+        .map((s) => MUSCLE_FACTS[s][field] as string)
+        .filter((v, i, a) => v !== correct && a.indexOf(v) === i);
+      if (pool.length < 3) continue;
+      const f = MUSCLE_FACTS[slug];
+      bank.push({
+        prompt: ask(pretty(slug)),
+        answer: correct, options: shuffle([correct, ...pool.slice(0, 3)]),
+        muscleSlug: slug,
+        why: `${pretty(slug)} — origin ${f.origin}; insertion ${f.insertion}; action ${f.action}.`
+          + (f.cue ? ` ${f.cue}` : ''),
+      });
+    }
+  };
+
+  fieldQ('origin', (n) => `Where does the ${n} ORIGINATE?`);
+  fieldQ('insertion', (n) => `Where does the ${n} INSERT?`);
+  fieldQ('action', (n) => `What is the primary ACTION of the ${n}?`);
+
+  // Reverse direction: symptom/referral → muscle. This is the one that shows up
+  // on the exam as a case stem, and it's the one that's hardest to fake.
+  const referrers = slugs.filter((s) => MUSCLE_FACTS[s].refers);
+  for (const slug of referrers) {
+    const correct = pretty(slug);
+    const pool = shuffle(slugs.filter((s) => s !== slug)).map(pretty).filter((v) => v !== correct);
+    if (pool.length < 3) continue;
+    const f = MUSCLE_FACTS[slug];
+    bank.push({
+      prompt: `A client reports: “${f.refers}”. Which muscle is the usual culprit?`,
+      answer: correct, options: shuffle([correct, ...pool.slice(0, 3)]),
+      muscleSlug: slug,
+      why: `${correct} refers there. Action: ${f.action}.` + (f.test ? ` Confirm with: ${f.test}` : ''),
+    });
+  }
+
+  // Assessment → muscle: "which test implicates it".
+  const tested = slugs.filter((s) => MUSCLE_FACTS[s].test);
+  for (const slug of tested) {
+    const correct = pretty(slug);
+    const pool = shuffle(tested.filter((s) => s !== slug)).map(pretty).filter((v) => v !== correct);
+    if (pool.length < 3) continue;
+    const f = MUSCLE_FACTS[slug];
+    bank.push({
+      prompt: `Which muscle does this assessment implicate — “${f.test}”?`,
+      answer: correct, options: shuffle([correct, ...pool.slice(0, 3)]),
+      muscleSlug: slug,
+      why: `${correct}. ${f.action}.` + (f.cue ? ` ${f.cue}` : ''),
+    });
+  }
+
+  return shuffle(bank);
+}
+
 // "Spot the region" via MOTION CLIPS — preferred. Low-confidence cards are dropped
 // so the quiz only asks about clearly-identifiable techniques.
 function buildClipBank(items: QuizBankItem[]): Q[] {
@@ -147,13 +221,20 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
   }, [itemId]);
 
   const recallBank = useMemo(() => buildBank(anatomy), [anatomy]);
+  const factBank = useMemo(() => buildFactBank(anatomy), [anatomy]);
   const clipBank = useMemo(() => buildClipBank(clipItems), [clipItems]);
   const frameBank = useMemo(() => buildFrameBank(itemId, videosMap), [itemId, videosMap]);
   const spotBank = clipBank.length ? clipBank : frameBank;
 
-  const initialMode = (() => { try { return new URLSearchParams(window.location.search).get('quizmode') === 'frames' ? 'frames' : 'recall'; } catch { return 'recall'; } })();
-  const [mode, setMode] = useState<'recall' | 'frames'>(initialMode);
-  const bank = mode === 'frames' ? spotBank : recallBank;
+  type Mode = 'recall' | 'frames' | 'facts';
+  const initialMode = (() => {
+    try {
+      const m = new URLSearchParams(window.location.search).get('quizmode');
+      return m === 'frames' ? 'frames' : m === 'facts' ? 'facts' : 'recall';
+    } catch { return 'recall' as Mode; }
+  })() as Mode;
+  const [mode, setMode] = useState<Mode>(initialMode);
+  const bank = mode === 'frames' ? spotBank : mode === 'facts' ? factBank : recallBank;
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [score, setScore] = useState(0);
@@ -161,7 +242,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
   const [muted, setMuted] = useState(true);
   const [slow, setSlow] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const switchMode = (m: 'recall' | 'frames') => { setMode(m); setIdx(0); setPicked(null); setSlow(false); };
+  const switchMode = (m: Mode) => { setMode(m); setIdx(0); setPicked(null); setSlow(false); };
 
   const saved = (() => { try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch { return {}; } })();
   const best: number = saved.bestStreak || 0;
@@ -172,6 +253,12 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
   // Keep the actual <video> muted/rate in sync with toggles (Preact attr unreliable).
   useEffect(() => { if (videoRef.current) videoRef.current.muted = muted; }, [muted, idx, mode]);
   useEffect(() => { if (videoRef.current) videoRef.current.playbackRate = slow ? 0.5 : 1; }, [slow, idx, mode]);
+
+  // Muscle plate for a slug (front view, back if that's all we rendered).
+  const plateSrc = (slug: string) => {
+    const rel = anatomy[slug]?.images?.front || anatomy[slug]?.images?.back;
+    return rel ? '/api/databases/kb/' + itemId + '/anatomy/img/' + (rel.split('/').pop() ?? rel) : '';
+  };
 
   function replay() { const v = videoRef.current; if (v) { try { v.currentTime = 0; void v.play(); } catch { /* ignore */ } } }
 
@@ -203,7 +290,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
   }
   function next() { setPicked(null); setSlow(false); setIdx((i) => i + 1); }
 
-  const tabBtn = (m: 'recall' | 'frames', label: string) => (
+  const tabBtn = (m: Mode, label: string) => (
     <button type="button" onClick={() => switchMode(m)}
       style={{ padding: '6px 12px', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer',
         border: '1px solid ' + (mode === m ? ACCENT : 'var(--color-border)'),
@@ -226,6 +313,7 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
     <div style={{ maxWidth: '560px' }}>
       <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
         {tabBtn('recall', '🧠 Recall')}
+        {tabBtn('facts', '🦴 Muscle facts')}
         {tabBtn('frames', clipBank.length ? '🎬 Spot the region' : '👁 Spot the region')}
       </div>
 
@@ -327,6 +415,26 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
               </div>
             )}
 
+            {/* Fact cards explain themselves — a right answer you can't justify
+                is worth nothing on the exam. */}
+            {picked && q.why && (
+              <div style={{ marginTop: '14px', padding: '12px 14px', borderRadius: '9px', border: '1px solid ' + ACCENT + '55', background: ACCENT + '11', display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                {q.muscleSlug && plateSrc(q.muscleSlug) && (
+                  <img src={plateSrc(q.muscleSlug)} alt="" loading="lazy"
+                    style={{ width: '78px', height: '78px', objectFit: 'contain', background: '#fff', borderRadius: '7px', flex: '0 0 auto' }} />
+                )}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}>{q.why}</div>
+                  {q.muscleSlug && (
+                    <button type="button" onClick={() => onNavigate?.('explore', { muscle: q.muscleSlug! })}
+                      style={{ marginTop: '8px', padding: '5px 11px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '12.5px', fontWeight: 600 }}>
+                      Open the study card ↗
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {picked && (
               <button type="button" onClick={next}
                 style={{ marginTop: '16px', padding: '9px 18px', borderRadius: '8px', border: '1px solid ' + ACCENT, background: ACCENT + '22', color: ACCENT, cursor: 'pointer', fontSize: '14px', fontWeight: 600 }}>
@@ -337,7 +445,9 @@ export function ErikQuiz({ anatomy, itemId, videosMap, onNavigate }: {
           <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginTop: '10px' }}>
             {isSpot
               ? (clipBank.length ? 'Watch the technique in motion (replay / slow-mo / Erik’s voice), pick the area, then see it on the body. A neighbouring guess counts as “close”.' : 'Identify the body area in real technique stills from Erik’s library.')
-              : 'Recall practice from Erik’s region ↔ muscle map.'} Best streak saved on this device.
+              : mode === 'facts'
+                ? 'Origin / insertion / action / referral / assessment recall — the Myoskeletal exam layer. Every answer shows its reasoning and the plate.'
+                : 'Recall practice from Erik’s region ↔ muscle map.'} Best streak saved on this device.
           </div>
         </>
       )}

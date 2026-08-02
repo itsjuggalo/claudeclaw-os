@@ -10,6 +10,7 @@
 //     made it into the knowledge base (built by erikdalton-kb/build_coverage.py).
 import { useMemo, useState } from 'preact/hooks';
 import coverageData from '@/data/erik-coverage.json';
+import { frameScore } from './ExploreTab';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
@@ -21,9 +22,10 @@ interface Coverage {
 const ACCENT = '#10b981';
 const MEDIA_ICON: Record<string, string> = { DVD: '💿', USB: '🔌', PDF: '📄' };
 
-export function ErikLibrary({ videosMap, onOpen }: {
+export function ErikLibrary({ videosMap, onOpen, itemId }: {
   videosMap: Record<string, VideoFrameData>;
   onOpen: (videoId: string) => void;
+  itemId: string;
 }) {
   const [q, setQ] = useState('');
   // bundled, not fetched — see the note in ErikExam.tsx
@@ -41,6 +43,21 @@ export function ErikLibrary({ videosMap, onOpen }: {
   }, [videosMap]);
 
   const fq = q.trim().toLowerCase();
+
+  // Ripped-DVD lessons are named VTS_01_1 — a filename, not a title. Pair every
+  // row with its best hands-on frame and the line Erik says there, so the list
+  // reads as "what you'll learn" instead of a directory listing.
+  const preview = useMemo(() => {
+    const m: Record<string, FrameEntry> = {};
+    for (const v of Object.values(videosMap)) {
+      if (!v.frames?.length) continue;
+      m[v.id] = [...v.frames].sort((a, b) => frameScore(b.text) - frameScore(a.text))[0];
+    }
+    return m;
+  }, [videosMap]);
+  const thumb = (vid: string, file: string) =>
+    '/api/databases/kb/' + itemId + '/anatomy/frames/' + vid + '/' + (file.split('/').pop() ?? file);
+  const CRYPTIC = /^(VTS[_\s-]?\d|VIDEO_TS|title\s*\d+$)/i;
 
   const totals = useMemo(() => {
     const vids = Object.values(videosMap).filter((v) => v.frames?.length);
@@ -167,14 +184,30 @@ export function ErikLibrary({ videosMap, onOpen }: {
                 <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>{shown.length} lesson{shown.length !== 1 ? 's' : ''}</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden', background: 'var(--color-card)' }}>
-                {shown.map((v, i) => (
-                  <button key={v.id} type="button" onClick={() => onOpen(v.id)}
-                    class="transition-colors hover:bg-[var(--color-elevated)]"
-                    style={{ textAlign: 'left', padding: '11px 14px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ fontSize: '13px', color: 'var(--color-text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title}</span>
-                    <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
-                  </button>
-                ))}
+                {shown.map((v, i) => {
+                  const p = preview[v.id];
+                  const cryptic = CRYPTIC.test(v.title.trim());
+                  return (
+                    <button key={v.id} type="button" onClick={() => onOpen(v.id)}
+                      class="transition-colors hover:bg-[var(--color-elevated)]"
+                      style={{ textAlign: 'left', padding: '10px 14px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '11px' }}>
+                      {p && <img src={thumb(v.id, p.file)} alt="" loading="lazy"
+                        style={{ width: '92px', height: '52px', objectFit: 'cover', borderRadius: '6px', flex: '0 0 auto', background: '#000' }} />}
+                      <span style={{ minWidth: 0, flex: 1 }}>
+                        <span style={{ display: 'block', fontSize: '13px', color: 'var(--color-text)' }}>
+                          {cryptic ? `Part ${i + 1}` : v.title}
+                          {cryptic && <span style={{ color: 'var(--color-text-faint)', fontSize: '11px', marginLeft: '7px' }}>{v.title}</span>}
+                        </span>
+                        {p && (
+                          <span style={{ display: '-webkit-box', fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.4, marginTop: '2px', overflow: 'hidden', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                            {p.text.slice(0, 150)}…
+                          </span>
+                        )}
+                      </span>
+                      <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           );

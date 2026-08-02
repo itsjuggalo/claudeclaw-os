@@ -1348,8 +1348,13 @@ init();
   // Top-level static files copied from web/public/ at build time
   // (e.g. /brain.glb for the 3D Hive Mind view). These have stable
   // names so they sit at the root rather than under /assets/.
-  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico)}', (c) => {
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico)}', (c, next) => {
     const filename = c.req.param('filename');
+    // The pattern's `.+` swallows slashes, so any API path ending in one of these
+    // extensions (e.g. /api/databases/kb/erikdalton/anatomy/img/psoas-front.png)
+    // was being answered here as a missing static file — an empty 404 that made
+    // every anatomy plate render broken. Let API routes handle themselves.
+    if (filename.startsWith('api/')) return next();
     const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
     const root = path.join(PROJECT_ROOT, 'dist', 'web');
     if (!filePath.startsWith(root + path.sep)) return c.text('', 403);

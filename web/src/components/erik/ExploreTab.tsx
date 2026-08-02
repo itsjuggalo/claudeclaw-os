@@ -2,7 +2,7 @@
 // → see the muscles there, Erik's technique frames for that area, and his
 // lessons (KB search). This is the offline 2D learning surface; the 3D model
 // (AnatomyViewer) slots in above the body map when its GLB is available.
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { lazy, Suspense } from 'preact/compat';
 import { apiGet } from '@/lib/api';
 import { BodyMap } from './BodyMap';
@@ -97,10 +97,18 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
 }) {
   // Initial region can come from the URL (?region=wrist/hand) so a body area is
   // shareable/bookmarkable; falls back to no selection.
+  // ?muscle=<slug> (from the quiz "open the study card" jump) resolves to whichever
+  // region owns that muscle, and opens its study card directly.
+  const initialMuscle = (() => {
+    try { return new URLSearchParams(window.location.search).get('muscle'); }
+    catch { return null; }
+  })();
   const initialRegion = (() => {
     try {
       const q = new URLSearchParams(window.location.search).get('region');
-      return q && REGION_BY_KEY[q] ? q : null;
+      if (q && REGION_BY_KEY[q]) return q;
+      if (initialMuscle) return ERIK_REGIONS.find((r) => r.muscles.includes(initialMuscle))?.key ?? null;
+      return null;
     } catch { return null; }
   })();
   const [selected, setSelected] = useState<string | null>(initialRegion);
@@ -152,8 +160,15 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
   }, [region, videosMap]);
 
   // Which muscle plate is expanded into its study card (origin/insertion/action).
-  const [openMuscle, setOpenMuscle] = useState<string | null>(null);
-  useEffect(() => { setOpenMuscle(null); }, [selected]);
+  // Set straight from the URL — the anatomy map arrives async, so gating on it
+  // here would silently drop every deep link that lands before the fetch.
+  const [openMuscle, setOpenMuscle] = useState<string | null>(initialMuscle);
+  const firstSelect = useRef(true);
+  useEffect(() => {
+    // Don't wipe the deep-linked study card on the initial render.
+    if (firstSelect.current) { firstSelect.current = false; return; }
+    setOpenMuscle(null);
+  }, [selected]);
 
   const [zoom, setZoom] = useState<{ src: string; text: string; title: string } | null>(null);
   const frameSrc = (videoId: string, file: string) =>

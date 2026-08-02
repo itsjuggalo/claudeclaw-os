@@ -2,8 +2,10 @@
 // extracted key-frames in time order, each paired with the transcript at that
 // moment. Turns the 2,107 recovered frames into step-by-step visual lessons.
 // All data comes from the already-loaded frames map (no extra fetch).
+import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { apiGet } from '@/lib/api';
+import { frameScore } from './ExploreTab';
 
 interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; }
@@ -11,6 +13,21 @@ interface QuizBankItem { clipUrl: string; videoId: string; technique: string; ca
 
 const ACCENT = '#10b981';
 const STUDIED_KEY = 'erik-studied-techniques';
+const RESUME_KEY = 'erik-technique-step';
+
+// Where you stopped in each technique, so a half-finished lesson picks up where
+// you left it instead of restarting at step 1 every time.
+function loadResume(): Record<string, number> {
+  try { return JSON.parse(localStorage.getItem(RESUME_KEY) || '{}'); }
+  catch { return {}; }
+}
+function saveResume(id: string, step: number) {
+  try {
+    const m = loadResume();
+    if (step > 0) m[id] = step; else delete m[id];
+    localStorage.setItem(RESUME_KEY, JSON.stringify(m));
+  } catch { /* ignore */ }
+}
 
 function loadStudied(): Set<string> {
   try { return new Set(JSON.parse(localStorage.getItem(STUDIED_KEY) || '[]')); }
@@ -125,6 +142,9 @@ export function TechniquePlayer({ itemId, videosMap }: {
 
   const frameSrc = (file: string) =>
     '/api/databases/kb/' + itemId + '/anatomy/frames/' + (videoId ?? '') + '/' + (file.split('/').pop() ?? file);
+  // Same URL for any technique (browse rows need a thumb before one is opened).
+  const frameSrcOf = (vid: string, file: string) =>
+    '/api/databases/kb/' + itemId + '/anatomy/frames/' + vid + '/' + (file.split('/').pop() ?? file);
   const audioSrc = (fr: FrameEntry) =>
     '/api/databases/kb/' + itemId + '/anatomy/audio/' + (videoId ?? '') + '/seg-' + String(fr.seg).padStart(3, '0') + '.mp3';
   const fmtTime = (s: number) => {
@@ -132,7 +152,48 @@ export function TechniquePlayer({ itemId, videosMap }: {
     return (m > 0 ? m + 'm' : '') + sec + 's';
   };
 
-  function openVideo(id: string) { setVideoId(id); setStep(0); setReading(false); }
+  // Best "hands-on" frame per technique — the same ranker Explore/Conditions use,
+  // so a browse row previews Erik's hands on the client instead of frame 0 (a
+  // title card or a wide shot of him talking).
+  const coverOf = useMemo(() => {
+    const m: Record<string, FrameEntry> = {};
+    for (const v of Object.values(videosMap)) {
+      if (!v.frames?.length) continue;
+      m[v.id] = [...v.frames].sort((a, b) => frameScore(b.text) - frameScore(a.text))[0];
+    }
+    return m;
+  }, [videosMap]);
+
+  function openVideo(id: string) {
+    setVideoId(id);
+    const saved = loadResume()[id];
+    const n = videosMap[id]?.frames?.length ?? 0;
+    setStep(typeof saved === 'number' && saved > 0 && saved < n ? saved : 0);
+    setReading(false);
+  }
+
+  // Remember the step so a lesson resumes where you stopped.
+  const [resume, setResume] = useState<Record<string, number>>(loadResume);
+  useEffect(() => {
+    if (!videoId) return;
+    saveResume(videoId, step);
+    setResume(loadResume());
+  }, [videoId, step]);
+
+  // ← / → step through the lesson (hands stay on the keyboard while studying).
+  useEffect(() => {
+    if (!videoId || reading) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+      if (e.key === 'ArrowRight') setStep((s) => Math.min(frames.length - 1, s + 1));
+      else if (e.key === 'ArrowLeft') setStep((s) => Math.max(0, s - 1));
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [videoId, reading, frames.length]);
 
   if (Object.keys(videosMap).length === 0) {
     return <div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Loading techniques…</div>;
@@ -198,6 +259,7 @@ export function TechniquePlayer({ itemId, videosMap }: {
                 style={{ padding: '6px 14px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'var(--color-card)', color: step === 0 ? 'var(--color-text-faint)' : 'var(--color-text)', cursor: step === 0 ? 'default' : 'pointer', fontSize: '13px' }}>← Prev</button>
               <button type="button" disabled={step >= frames.length - 1} onClick={() => setStep((s) => Math.min(frames.length - 1, s + 1))}
                 style={{ padding: '6px 14px', borderRadius: '7px', border: '1px solid ' + ACCENT, background: ACCENT + '22', color: ACCENT, cursor: step >= frames.length - 1 ? 'default' : 'pointer', fontSize: '13px', fontWeight: 600, opacity: step >= frames.length - 1 ? 0.5 : 1 }}>Next step →</button>
+              <span style={{ fontSize: '11px', color: 'var(--color-text-faint)' }}>or use ← / →</span>
             </div>
 
             {/* filmstrip */}
@@ -246,23 +308,60 @@ export function TechniquePlayer({ itemId, videosMap }: {
       {(() => {
         const fq = filter.trim().toLowerCase();
         if (!fq) return null;
-        const matches = withFrames
-          .filter((v) => (v.title + ' ' + v.course).toLowerCase().includes(fq))
-          .sort((a, b) => a.title.localeCompare(b.title));
+        // Match the TITLE first, then fall back to what Erik actually SAYS in the
+        // lesson — searching "bicep" or "firing order" used to return nothing
+        // because those words live in the transcript, not in a lesson title.
+        const titled: VideoFrameData[] = [];
+        const spoken: Array<{ v: VideoFrameData; frame: FrameEntry; hits: number }> = [];
+        for (const v of withFrames) {
+          if ((v.title + ' ' + v.course).toLowerCase().includes(fq)) { titled.push(v); continue; }
+          if (fq.length < 3) continue;
+          let best: FrameEntry | null = null; let hits = 0;
+          for (const fr of v.frames) {
+            if (!(fr.text || '').toLowerCase().includes(fq)) continue;
+            hits++;
+            if (!best || fr.text.length > best.text.length) best = fr;
+          }
+          if (best) spoken.push({ v, frame: best, hits });
+        }
+        titled.sort((a, b) => a.title.localeCompare(b.title));
+        spoken.sort((a, b) => b.hits - a.hits);
+        const row = (v: VideoFrameData, i: number, sub?: ComponentChildren, jump?: number) => (
+          <button key={v.id} type="button" onClick={() => { openVideo(v.id); if (jump !== undefined) setStep(jump); }}
+            class="transition-colors hover:bg-[var(--color-elevated)]"
+            style={{ textAlign: 'left', padding: '10px 14px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '11px' }}>
+            {coverOf[v.id] && (
+              <img src={frameSrcOf(v.id, coverOf[v.id].file)} alt="" loading="lazy"
+                style={{ width: '92px', height: '52px', objectFit: 'cover', borderRadius: '6px', flex: '0 0 auto', background: '#000' }} />
+            )}
+            <span style={{ minWidth: 0, flex: 1 }}>
+              <span style={{ display: 'block', fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text)' }}>{studied.has(v.id) ? '✓ ' : ''}{v.title}</span>
+              <span style={{ display: 'block', fontSize: '11px', color: 'var(--color-text-faint)' }}>{v.course}</span>
+              {sub}
+            </span>
+            <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
+          </button>
+        );
         return (
-          <div style={{ display: 'flex', flexDirection: 'column', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden', marginBottom: '4px' }}>
-            {matches.length === 0 && <div style={{ padding: '12px 14px', fontSize: '13px', color: 'var(--color-text-faint)' }}>No techniques match “{filter}”.</div>}
-            {matches.map((v, i) => (
-              <button key={v.id} type="button" onClick={() => openVideo(v.id)}
-                class="transition-colors hover:bg-[var(--color-elevated)]"
-                style={{ textAlign: 'left', padding: '11px 14px', background: 'transparent', border: 'none', borderTop: i ? '1px solid var(--color-border)' : 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  <span style={{ fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text)' }}>{studied.has(v.id) ? '✓ ' : ''}{v.title}</span>
-                  <span style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginLeft: '8px' }}>{v.course}</span>
-                </span>
-                <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT, fontWeight: 600 }}>{v.frames.length} steps ▶</span>
-              </button>
-            ))}
+          <div style={{ marginBottom: '4px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden' }}>
+              {titled.length === 0 && spoken.length === 0 && <div style={{ padding: '12px 14px', fontSize: '13px', color: 'var(--color-text-faint)' }}>No technique matches “{filter}” — not in a title and not in anything Erik says.</div>}
+              {titled.map((v, i) => row(v, i))}
+            </div>
+            {spoken.length > 0 && (
+              <div style={{ marginTop: '14px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', marginBottom: '5px' }}>
+                  Erik says “{filter.trim()}” inside {spoken.length} more lesson{spoken.length !== 1 ? 's' : ''} — opens at that moment
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', border: '1px solid var(--color-border)', borderRadius: '9px', overflow: 'hidden' }}>
+                  {spoken.slice(0, 20).map(({ v, frame, hits }, i) => row(v, i, (
+                    <span style={{ display: '-webkit-box', fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.4, marginTop: '3px', overflow: 'hidden', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                      {hits}× · {frame.text.slice(0, 150)}…
+                    </span>
+                  ), [...v.frames].sort((a, b) => a.t_mid - b.t_mid).indexOf(frame)))}
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
@@ -283,16 +382,24 @@ export function TechniquePlayer({ itemId, videosMap }: {
               </button>
               {open && (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  {vids.map((v) => (
-                    <button key={v.id} type="button" onClick={() => openVideo(v.id)}
-                      class="transition-colors hover:bg-[var(--color-elevated)]"
-                      style={{ textAlign: 'left', padding: '10px 14px', background: 'transparent', border: 'none', borderTop: '1px solid var(--color-border)', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text-muted)' }}>
-                        {studied.has(v.id) ? '✓ ' : ''}{v.title}
-                      </span>
-                      <span style={{ fontSize: '11px', color: ACCENT }}>{v.frames.length} steps ▶</span>
-                    </button>
-                  ))}
+                  {vids.map((v) => {
+                    const at = resume[v.id];
+                    return (
+                      <button key={v.id} type="button" onClick={() => openVideo(v.id)}
+                        class="transition-colors hover:bg-[var(--color-elevated)]"
+                        style={{ textAlign: 'left', padding: '10px 14px', background: 'transparent', border: 'none', borderTop: '1px solid var(--color-border)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '11px' }}>
+                        {coverOf[v.id] && (
+                          <img src={frameSrcOf(v.id, coverOf[v.id].file)} alt="" loading="lazy"
+                            style={{ width: '92px', height: '52px', objectFit: 'cover', borderRadius: '6px', flex: '0 0 auto', background: '#000' }} />
+                        )}
+                        <span style={{ minWidth: 0, flex: 1, fontSize: '13px', color: studied.has(v.id) ? ACCENT : 'var(--color-text-muted)' }}>
+                          {studied.has(v.id) ? '✓ ' : ''}{v.title}
+                          {at ? <span style={{ display: 'block', fontSize: '11px', color: 'var(--color-text-faint)' }}>resume at step {at + 1}</span> : null}
+                        </span>
+                        <span style={{ flexShrink: 0, fontSize: '11px', color: ACCENT }}>{v.frames.length} steps ▶</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>

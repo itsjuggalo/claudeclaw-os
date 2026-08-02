@@ -300,11 +300,12 @@ function MuscleStrip({ slugs, anatomy, itemId }: {
 // that anything was wrong. Now an ambiguous term shows every reading first —
 // plate, one-line differentiator, and a jump straight into that body region —
 // so the learner disambiguates before reading a single transcript hit.
-function DidYouMean({ query, anatomy, itemId, onRegion }: {
+function DidYouMean({ query, anatomy, itemId, onRegion, onRefine }: {
   query: string;
   anatomy: Record<string, AnatomyMuscle>;
   itemId: string;
   onRegion: (regionKey: string) => void;
+  onRefine?: (term: string) => void;
 }) {
   const opts = disambiguate(query);
   if (!opts) return null;
@@ -325,22 +326,37 @@ function DidYouMean({ query, anatomy, itemId, onRegion }: {
           const m = anatomy[o.slug];
           const src = imgUrl(m.images?.front);
           return (
-            <button key={o.slug} type="button" onClick={() => onRegion(o.region)}
+            <div key={o.slug}
               style={{
                 display: 'flex', gap: '10px', alignItems: 'flex-start', textAlign: 'left',
-                width: '300px', maxWidth: '100%', padding: '8px', cursor: 'pointer',
+                width: '300px', maxWidth: '100%', padding: '8px',
                 borderRadius: '9px', border: '1px solid var(--color-border)',
                 background: 'var(--color-card)',
-              }}
-              title={'Open ' + o.label + ' in the body explorer'}>
+              }}>
               {src && <img src={src} alt={o.label} loading="lazy"
-                style={{ width: '56px', height: '56px', objectFit: 'contain', flex: '0 0 auto', background: 'var(--color-bg)', borderRadius: '6px' }} />}
+                style={{ width: '56px', height: '56px', objectFit: 'contain', flex: '0 0 auto', background: '#fff', borderRadius: '6px' }} />}
               <span style={{ minWidth: 0 }}>
                 <span style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>{o.label}</span>
                 <span style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.4, marginTop: '2px' }}>{o.note}</span>
-                <span style={{ display: 'block', fontSize: '11px', color: '#10b981', fontWeight: 600, marginTop: '3px' }}>Explore {o.region} ↗</span>
+                <span style={{ display: 'flex', gap: '10px', marginTop: '5px', flexWrap: 'wrap' }}>
+                  {/* Re-running the search with the precise name is what actually
+                      fixes the ranking — "bicep" alone still pulls biceps femoris
+                      chunks out of the vector index. */}
+                  {onRefine && (
+                    <button type="button" onClick={() => onRefine(o.label)}
+                      style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer', fontSize: '11px', color: '#f59e0b', fontWeight: 700 }}
+                      title={'Search “' + o.label + '” instead'}>
+                      Search “{o.label}”
+                    </button>
+                  )}
+                  <button type="button" onClick={() => onRegion(o.region)}
+                    style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer', fontSize: '11px', color: '#10b981', fontWeight: 600 }}
+                    title={'Open ' + o.label + ' in the body explorer'}>
+                    Explore {o.region} ↗
+                  </button>
+                </span>
               </span>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -800,7 +816,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
     try {
       const u = new URL(window.location.href);
       u.searchParams.set('tab', t);
-      ['region', 'condition', 'technique', 'quizmode', 'reading'].forEach((k) => u.searchParams.delete(k));
+      ['region', 'muscle', 'condition', 'technique', 'quizmode', 'reading'].forEach((k) => u.searchParams.delete(k));
       for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
       window.history.replaceState({}, '', u.toString());
     } catch { /* ignore */ }
@@ -992,7 +1008,8 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
               {isErikDalton && (
                 <DidYouMean query={question} anatomy={anatomy} itemId={item.id}
-                  onRegion={(r) => goTo('explore', { region: r })} />
+                  onRegion={(r) => goTo('explore', { region: r })}
+                  onRefine={(t) => setQuestion(t)} />
               )}
 
               {askErr && (
@@ -1080,7 +1097,8 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
               />
               {isErikDalton && (
                 <DidYouMean query={dq} anatomy={anatomy} itemId={item.id}
-                  onRegion={(r) => goTo('explore', { region: r })} />
+                  onRegion={(r) => goTo('explore', { region: r })}
+                  onRefine={(t) => setQuery(t)} />
               )}
               {searchErr && <div style={{ marginTop: '16px' }}><PageState error={searchErr} /></div>}
               {searching && <div class="text-[13px] text-[var(--color-text-muted)]" style={{ marginTop: '14px' }}>Searching…</div>}
@@ -1159,7 +1177,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
           )}
 
           {tab === 'sources' && isErikDalton && (
-            <ErikLibrary videosMap={videosMap} onOpen={(id) => goTo('techniques', { technique: id })} />
+            <ErikLibrary videosMap={videosMap} itemId={item.id} onOpen={(id) => goTo('techniques', { technique: id })} />
           )}
 
           {tab === 'sources' && !isErikDalton && (
