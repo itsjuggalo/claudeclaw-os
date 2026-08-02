@@ -431,22 +431,48 @@ function WeakSections({ paper, progress, onPick, active }: {
 // out here — so the paper says out loud how its keys were arrived at rather than
 // letting a confident badge imply an authority it doesn't have.
 function KeyProvenance({ paper }: { paper: ExamPaper }) {
-  const n = { verified: 0, evidence: 0, derived: 0, none: 0 };
+  // Counted off the EXPLANATION each answer actually carries, not off the
+  // confidence tier. Those had drifted apart: the tier still said "derived —
+  // worked out from the booklet's printed tip" for 145 questions whose own why
+  // line now says no passage in the library states it at all. A provenance
+  // summary that contradicts the cards beneath it is worse than none.
+  const n = { verified: 0, evidence: 0, tip: 0, gap: 0, none: 0 };
   for (const q of paper.questions) {
+    const w = q.why || '';
     if (!q.answer) n.none++;
+    else if (w.startsWith('Erik’s own words') || w.startsWith("Erik's own words")) n.evidence++;
+    else if (w.includes('Not stated outright')) n.gap++;
     else if (q.confidence === 'verified') n.verified++;
     else if (q.confidence === 'evidence') n.evidence++;
-    else n.derived++;
+    else n.tip++;
   }
   const parts: string[] = [];
   if (n.verified) parts.push(`${n.verified} located word-for-word in Erik’s text`);
-  if (n.evidence) parts.push(`${n.evidence} auto-keyed from a decisive quote`);
-  if (n.derived) parts.push(`${n.derived} worked out from the booklet’s printed tip`);
+  if (n.evidence) parts.push(`${n.evidence} quoted from a decisive passage`);
+  if (n.tip) parts.push(`${n.tip} worked out from the booklet’s printed tip`);
+  if (n.gap) parts.push(`${n.gap} from the answer sheet with no passage to back them`);
   if (n.none) parts.push(`${n.none} left unkeyed rather than guessed`);
+  // When most of a paper's answers have nothing behind them, the per-question
+  // notes are too quiet to convey it — you'd have to read fifty cards to notice.
+  // Both papers this fires on have a known, specific cause worth naming, because
+  // it tells him what to study FROM rather than just that we can't help.
+  const keyed = n.verified + n.evidence + n.tip + n.gap;
+  const thin = keyed > 0 && n.gap / keyed >= 0.6;
+  const cause = paper.id === 'lower-body'
+    ? 'This paper tests the Dynamic Body book — its guest-author chapters (Aaron Mattes, Art Riggs, the fascia chapters). This library holds Erik’s lower-body video demos, which are different material, so it mostly cannot show you the reasoning here.'
+    : paper.id === 'technique-tour'
+      ? 'This paper tests the printed Technique Tour manual, including its Preface. Only the videos were transcribed into this library — the manual itself isn’t in it, so it mostly cannot show you the reasoning here.'
+      : 'Most of this paper’s answers aren’t backed by anything in this library.';
   return (
     <div style={{ fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: '14px' }}>
       <b style={{ color: AMBER }}>Where these answers come from:</b>{' '}{parts.join(' · ')}.
       {' '}Every answer shows its reasoning — read it, don’t just take the letter.
+      {thin && (
+        <div style={{ marginTop: '6px', color: RED }}>
+          <b>Study this one from the book, not from here.</b>{' '}{cause}
+          {' '}The letters are still the real answer key — but check them against your own copy.
+        </div>
+      )}
     </div>
   );
 }
@@ -530,7 +556,8 @@ function OpenBook({ paper }: { paper: ExamPaper }) {
     return (
       <div style={{ fontSize: '12px', color: 'var(--color-text-faint)', lineHeight: 1.6, marginBottom: '12px' }}>
         📕 <b>Open book:</b> no printed manual is indexed for this paper — it examines a
-        different book, so study from the clips and the answer reasoning here.
+        different book. Sit it with that book open; the clips here cover the technique
+        demos, which are only part of what it asks about.
       </div>
     );
   }

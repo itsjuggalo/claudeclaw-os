@@ -21,7 +21,7 @@ interface AnatomyMuscle {
   images?: Record<string, string>;
   viewer_url?: string | null;
 }
-interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
+interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; q?: number; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; covers?: string; }
 interface KbHit { source: string; heading: string; course?: string; preview: string; }
 interface KbSearchResponse { hits: KbHit[]; abstained: boolean; }
@@ -250,7 +250,11 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
     // Rank by how much the caption sounds like Erik DOING the technique, not
     // talking theory — "longest caption wins" was picking rambling asides, which
     // is why the thumbnails weren't helping anyone.
-    return out.sort((a, b) => frameScore(b.frame.text) - frameScore(a.frame.text)).slice(0, 8);
+    // Weighted by the still's own legibility (score_frames.py) as well as its
+    // transcript, so the eight tiles aren't a lottery between a hands-on shot
+    // and a black frame between takes. Relevance still leads.
+    return out.sort((a, b) => frameScore(b.frame.text) * (b.frame.q ?? 0.5)
+      - frameScore(a.frame.text) * (a.frame.q ?? 0.5)).slice(0, 8);
   }, [region, videosMap]);
 
   // Which muscle plate is expanded into its study card (origin/insertion/action).

@@ -12,8 +12,9 @@ import { useMemo, useState } from 'preact/hooks';
 import coverageData from '@/data/erik-coverage.json';
 import { frameScore } from './ExploreTab';
 import { lessonOrder } from './TechniquePlayer';
+import { fromSentence } from './clipLabel';
 
-interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
+interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; q?: number; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; covers?: string; }
 interface Coverage {
   totalFiles: number;
@@ -53,7 +54,14 @@ export function ErikLibrary({ videosMap, onOpen, itemId }: {
     const m: Record<string, FrameEntry> = {};
     for (const v of Object.values(videosMap)) {
       if (!v.frames?.length) continue;
-      m[v.id] = [...v.frames].sort((a, b) => frameScore(b.text) - frameScore(a.text))[0];
+      // Ranking on the transcript alone made the PICTURE luck of the draw — you
+      // got title cards, black frames between takes and motion blur. `q` is the
+      // still's own legibility, scored offline by score_frames.py. Multiplying
+      // keeps relevance in charge (a pretty frame about nothing still loses) and
+      // only breaks the tie among frames that are already on-topic. Frames with
+      // no q predate the scorer and are treated as average rather than dropped.
+      m[v.id] = [...v.frames].sort((a, b) =>
+        frameScore(b.text) * (b.q ?? 0.5) - frameScore(a.text) * (a.q ?? 0.5))[0];
     }
     return m;
   }, [videosMap]);
@@ -207,7 +215,11 @@ export function ErikLibrary({ videosMap, onOpen, itemId }: {
                         )}
                         {p && (
                           <span style={{ display: '-webkit-box', fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.4, marginTop: '2px', overflow: 'hidden', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                            {p.text.slice(0, 150)}…
+                            {/* The raw frame starts wherever the ASR window opened, so these
+                                read "You lean into the to it with both hands…" — a garbled
+                                half-sentence is a worse advert for a lesson than none. Same
+                                rule the Explore and Conditions tiles already use. */}
+                            {fromSentence(p.text).slice(0, 150)}…
                           </span>
                         )}
                       </span>

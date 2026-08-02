@@ -9,7 +9,7 @@ import { REGION_BY_KEY } from './regions';
 import { frameScore } from './ExploreTab';
 import { clipName, fromSentence } from './clipLabel';
 
-interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; }
+interface FrameEntry { seg: number; t_mid: number; file: string; text: string; region?: string; q?: number; }
 interface VideoFrameData { id: string; title: string; course: string; frames: FrameEntry[]; covers?: string; }
 interface KbHit { source: string; heading: string; course?: string; preview: string; }
 interface KbSearchResponse { hits: KbHit[]; abstained: boolean; }
@@ -208,7 +208,10 @@ export function ConditionsTab({ itemId, videosMap }: {
       }
     }
     // hands-on demonstration frames beat rambling theory frames — see frameScore
-    return out.sort((a, b) => frameScore(b.frame.text) - frameScore(a.frame.text)).slice(0, 12);
+    // Same rule as Explore and Library: transcript relevance decides WHICH
+    // moments qualify, the still's legibility decides which of them is shown.
+    return out.sort((a, b) => frameScore(b.frame.text) * (b.frame.q ?? 0.5)
+      - frameScore(a.frame.text) * (a.frame.q ?? 0.5)).slice(0, 12);
   }, [cond, videosMap]);
 
   // KB lessons for the condition.
