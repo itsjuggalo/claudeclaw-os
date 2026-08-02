@@ -1,9 +1,12 @@
 ---
+Type: RFC
 Author: Michael Kidder
 Title: /respin enhancement + /respin-session checkpoint restore
-Status: Draft — earmarked for Claude Code handoff
+Decision: Draft
+Implementation: Not started
 Created: 2026-07-10
 Component: session restore / context management
+Last reviewed: 2026-08-01
 ---
 
 # `/respin` enhancement + `/respin-session` checkpoint restore

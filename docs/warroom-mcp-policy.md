@@ -1,5 +1,8 @@
 # War-room tool & MCP policy
 
+_Living security policy. Last reviewed against v1.8.2 on 2026-08-01. The
+enforcement in `src/warroom-tool-policy.ts` is authoritative._
+
 The text war room runs each agent's SDK call with a **default-deny** posture for side-effect tools. If your agent isn't on the per-agent allowlist below, it can only do read-only work (Read, Glob, Grep, WebSearch, WebFetch, TodoWrite). Bash, Write, Edit, Skill, and every MCP server require explicit opt-in.
 
 This is enforced by `src/warroom-tool-policy.ts`, which sets `allowedTools` and `disallowedTools` on every war-room `query()` call in `src/warroom-text-orchestrator.ts`. `permissionMode: 'default'` (NOT bypass) so the SDK's permission machinery still applies.

@@ -1,5 +1,7 @@
 # Signal Messenger Adapter
 
+_Living integration guide. Last reviewed against v1.8.2 on 2026-08-01._
+
 ClaudeClaw ships with a Signal adapter as an alternative to the default
 Telegram bot. Signal offers end-to-end encryption by default, a native
 "Note to Self" chat that works elegantly with ClaudeClaw's

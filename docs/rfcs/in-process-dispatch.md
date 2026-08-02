@@ -1,12 +1,24 @@
 ---
+Type: RFC
 Title: In-Process Dispatch API for Fleet CLIs
 Author: Michael Kidder
-Status: Draft
+Decision: Accepted
+Decision date: 2026-07-31
+Implementation: Complete
+Implemented in: v1.8.0 (PR #174)
 Scope: Phase 2 of the Agent CLI Tooling roadmap (mission / schedule / hive)
 Related: docs/agent-cli-reference.md (Phase 1, v1.5.1, #153), PR #163 (#157), .claude/plans/backlog/agent-cli-tooling.md
+Last reviewed: 2026-08-01
 ---
 
-# RFC: In-Process Dispatch API for Fleet CLIs
+# In-Process Dispatch API for Fleet CLIs
+
+## Outcome
+
+The scoped mission, schedule, and hive actions shipped in v1.8.0 through PR
+#174. Claude-backed agents receive the shared in-process MCP tools, while native
+OpenAI uses the stdio dispatch bridge backed by the same action handlers and
+descriptor-derived schemas. The remaining fleet CLIs stay outside this RFC.
 
 ## Summary
 

@@ -1,12 +1,24 @@
 ---
+Type: RFC
 Author: Michael Kidder
 Title: Agent Identity Reconciliation
-Status: Accepted (2026-07-17)
+Decision: Accepted
+Decision date: 2026-07-17
+Implementation: Complete
+Implemented in: v1.6.0 (PR #154)
 Created: 2026-07-08
 Component: agent identity / name-to-id routing
+Last reviewed: 2026-08-01
 ---
 
 # Agent Identity Reconciliation
+
+## Outcome
+
+The canonical-id, display-name, and append-only alias model shipped in v1.6.0
+through PR #154. CLI and dashboard assignment paths now resolve names to stable
+canonical ids, reject unknown or colliding identities, and preserve routing
+across renames.
 
 ## Problem
 
@@ -210,14 +222,14 @@ Framework is `vitest run`; homes already exist. Concrete additions:
 
 - `README.md` — agent-identity section: canonical id vs display name vs aliases;
   note you can address an agent by any of the three.
-- `docs/agent-common.md` — mission-cli / schedule-cli `--agent` now accepts
+- `docs/agent-identity-and-addressing.md` — mission-cli / schedule-cli `--agent` now accepts
   id **or** display name **or** alias, and errors on unknown (was: silent).
 - Agent-creation docs / `agent-create-cli` help — document `--name` and (1b)
   `aliases`, and that renames preserve history via alias append.
 - Upgrade guide — mention the one-time backfill runs automatically on first start
   (self-healing; nothing for the user to do). Keep it in the agent-prompt style
   per the casual-user guide convention.
-- This RFC — flip Status to Accepted once approved.
+- This RFC — record the accepted decision and shipped outcome in its metadata.
 
 ## Existing-user upgrade / self-heal
 
@@ -305,8 +317,7 @@ Affected surfaces (use `resolveAgentName`, mis-render `main` when cache unseeded
 2. Add a hard `main → Holden` fallback in `resolveAgentName` (cheap stopgap).
 3. Unify with the backend `resolveAgentDisplayName` source so front/back agree.
 
-**Already done** (on the cache-savings metrics branch `feat/cache-savings-metrics`,
-not yet merged): `/savings` and the dashboard Cache-savings panel render display
+**Shipped in v1.5.0 through PR #143:** `/savings` and the dashboard Cache-savings panel render display
 names via the **backend** resolver (`resolveAgentDisplayName`), so those are correct
 independent of the frontend cache. The sweep above covers the remaining
 frontend-only surfaces.

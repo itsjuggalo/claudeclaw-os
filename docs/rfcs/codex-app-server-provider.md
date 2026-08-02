@@ -1,13 +1,28 @@
 ---
-Author: Michael / Lawrence
+Type: RFC
+Author: Michael Kidder
+Contributors: Lawrence
 Title: Native OpenAI Provider via Codex App Server
-Status: Proposed
+Decision: Accepted
+Decision date: 2026-07-31
+Implementation: Complete
+Implemented in: v1.8.0 (PR #174)
 Component: provider engine / native OpenAI transport
 Target baseline: Codex CLI 0.144.6
 Last updated: 2026-07-24
+Last reviewed: 2026-08-01
 ---
 
 # Native OpenAI Provider via Codex App Server
+
+## Outcome
+
+The initial production scope shipped in v1.8.0 through PR #174. Codex App
+Server is the default native OpenAI transport behind the existing `AgentEngine`
+interface, with policy verification, isolated credentials, dispatch parity,
+schema drift checks, and the SDK adapter retained as the planned rollback path.
+Post-soak removal of that rollback path remains a follow-up rather than an
+unfinished part of the initial release.
 
 ## Summary
 
@@ -1752,5 +1767,5 @@ These do not block the initial implementation:
 - [Codex 0.144.6 feature registry](https://github.com/openai/codex/blob/rust-v0.144.6/codex-rs/features/src/lib.rs)
 - [Codex 0.144.6 host-owned Apps MCP gate](https://github.com/openai/codex/blob/rust-v0.144.6/codex-rs/codex-mcp/src/mcp/mod.rs)
 - [Codex TypeScript SDK source](https://github.com/openai/codex/tree/main/sdk/typescript)
-- [Agent Provider Engine](./rfc-sdk-engine.md)
-- [In-process Dispatch RFC](./rfc-in-process-dispatch.md)
+- [Agent Provider Engine](sdk-engine.md)
+- [In-process Dispatch RFC](in-process-dispatch.md)

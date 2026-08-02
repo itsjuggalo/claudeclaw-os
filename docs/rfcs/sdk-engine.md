@@ -1,12 +1,24 @@
 ---
+Type: RFC
 Author: promptadvisers
 Contributors: JJ Eaton (PR #58 - provider engine + ACP)
 Title: Agent Provider Engine
-Status: Implemented for current provider paths; direct Anthropic SDK backend remains a follow-up
+Decision: Accepted
+Decision date: 2026-05-19
+Implementation: Partial
+Implemented in: v1.2.0 (provider engine and ACP, PR #58)
 Component: provider engine / agent invocation seam
+Last reviewed: 2026-08-01
 ---
 
 # Agent Provider Engine
+
+## Outcome
+
+The shared `AgentEngine` seam and ACP provider path shipped in v1.2.0 through
+PR #58 and now support the current provider implementations. A direct Anthropic
+SDK backend remains a follow-up, so the RFC is accepted but only partially
+implemented.
 
 ## Summary
 

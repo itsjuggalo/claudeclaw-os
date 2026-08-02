@@ -1,12 +1,24 @@
 ---
+Type: RFC
 Author: Michael Kidder
 Title: Agent Awareness & Deterministic Comms
-Status: Draft — Tier 1 built (feat/agent-self-location, PR #142); Tier 2 built (feat/deterministic-comms); tracked via GH issue
+Decision: Accepted
+Decision date: 2026-07-17
+Implementation: Complete
+Implemented in: v1.5.0 (issue #141; PRs #142 and #144)
 Created: 2026-07-12
 Component: setup / config generation / mission-cli / hive accessor / docs
+Last reviewed: 2026-08-01
 ---
 
 # Agent Awareness & Deterministic Comms
+
+## Outcome
+
+All tiers in this RFC shipped in v1.5.0. PR #142 delivered agent self-location
+and the store-aware Hive accessor. PR #144 delivered deterministic handbacks,
+grouped gather orchestration, and join release behavior. OS-level provider
+containment and operator-owned lane routing remain explicitly separate work.
 
 ## Summary
 
@@ -70,7 +82,7 @@ Two live findings on 2026-07-12, both verified from source:
   in a nicer file. The **canonical** answer is always `hive-cli path` / the accessor. The CLAUDE.md line
   says as much ("for reference; run `hive-cli path` for the live value"). Ship in `CLAUDE.md.example`
   (main) and align `agents/_template` (sub-agents already carry hive_mind refs) to the accessor.
-- **Fix `agent-common.md`** to reference `hive-cli` instead of the build-relative sqlite command; ship
+- **Fix the installed `agent-common.md` operational reference** to use `hive-cli` instead of the build-relative sqlite command; ship
   it (or its substance) so fresh installs get the how-to, not just the hand-curated live config.
 - **Template hygiene (from the 2026-07-12 self-diagnosis).** The loaded template still carried
   unedited bracket placeholders (`Michael [does what you do]`) and **install-time scaffolding** —

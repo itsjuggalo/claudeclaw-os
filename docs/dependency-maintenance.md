@@ -1,5 +1,7 @@
 # Dependency maintenance
 
+_Maintainer policy. Last reviewed against v1.8.2 on 2026-08-01._
+
 This guide defines how ClaudeClaw maintainers handle dependency updates,
 security advisories, npm overrides, and cross-platform validation.
 

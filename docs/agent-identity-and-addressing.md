@@ -1,4 +1,9 @@
-# Addressing agents from the CLIs (`--agent`)
+# Agent identity and addressing
+
+_Living guide. Last reviewed against v1.8.2 on 2026-08-01._
+
+ClaudeClaw uses canonical ids, display names, and aliases to keep agent routing
+stable while allowing operators to change the names people see.
 
 Every ClaudeClaw agent has three kinds of name:
 

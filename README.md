@@ -334,11 +334,16 @@ an agent by **any of the three**: the CLIs and dashboard resolve whatever you
 pass to the canonical id before doing anything with it. An unknown name fails
 loudly with the list of known agents instead of silently going nowhere, and a
 rename never orphans an old reference. Full details in
-[docs/agent-common.md](docs/agent-common.md).
+[docs/agent-identity-and-addressing.md](docs/agent-identity-and-addressing.md).
 
 ## What's included
 
 See the feature table at the top of this README. Core features work with zero extra API keys. Experimental features are opt-in.
+
+## Documentation
+
+The [documentation index](docs/README.md) separates architecture decisions from
+living guides, generated references, operational runbooks, and security policy.
 
 ---
 
