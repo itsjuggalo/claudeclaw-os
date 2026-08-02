@@ -141,6 +141,57 @@ function buildBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
 // insertion / action / referral data the Explore study card shows. Distractors
 // come from the SAME field on OTHER muscles, which is what makes it a real test:
 // four plausible insertions beat four random muscle names.
+// Some plates are GROUPS and others are their members. "Where does rectus
+// capitis posterior minor originate?" must never offer the suboccipitals' origin
+// as a wrong answer, because rectus capitis posterior minor IS a suboccipital —
+// both strings are right and the card marks one of them wrong. String-inequality
+// dedup can't catch it: the two entries are worded differently precisely because
+// one describes the group and one the member.
+//
+// Only genuine containment goes in here. Muscles that merely sit near each other
+// still make good distractors — that's what a real test looks like.
+const PLATE_GROUPS: Record<string, string[]> = {
+  suboccipitals: ['rectus-capitis-posterior-major', 'rectus-capitis-posterior-minor'],
+  'erector-spinae': ['multifidus', 'rotatores', 'semispinalis'],
+  hamstring: ['semitendinosus', 'semimembranosus'],
+};
+
+// The same "the wrong option is also right" failure, between muscles that aren't
+// related at all — it just wasn't visible because the two strings differ.
+// Asking where PALMARIS LONGUS originates, the answer is "Medial epicondyle" and
+// flexor carpi radialis's "Medial epicondyle (common flexor tendon)" was offered
+// as a wrong option. Both name the medial epicondyle. Likewise soleus's
+// "Calcaneus via the Achilles" against gastrocnemius's "Calcaneus via the
+// Achilles tendon", and sartorius's "ASIS" against TFL's "ASIS and the anterior
+// iliac crest". The exact-string dedup can't see any of it.
+//
+// Rule: if one option's meaningful words are a SUBSET of the other's, they don't
+// name different things and can't be told apart — drop the distractor. Options
+// that merely sound alike survive, which is what makes the quiz worth sitting:
+// scalene "Transverse processes of C2–C7" vs levator scapulae "C1–C4", and
+// flexor carpi radialis "radially deviates" vs ulnaris "ulnarly deviates", are
+// both kept. Erring toward one fewer distractor is always safer than erring
+// toward a card that marks a correct answer wrong.
+const OPT_STOP = new Set('the a an of to in and or is at on via with from for its it by'.split(' '));
+function contentWords(s: string): Set<string> {
+  return new Set((s.toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => !OPT_STOP.has(w)));
+}
+function indistinguishable(x: string, y: string): boolean {
+  const a = contentWords(x), b = contentWords(y);
+  if (!a.size || !b.size) return false;
+  const subset = (p: Set<string>, q: Set<string>) => [...p].every((w) => q.has(w));
+  return subset(a, b) || subset(b, a);
+}
+
+function overlaps(a: string, b: string): boolean {
+  for (const [group, members] of Object.entries(PLATE_GROUPS)) {
+    const inA = a === group || members.includes(a);
+    const inB = b === group || members.includes(b);
+    if (inA && inB) return true;
+  }
+  return false;
+}
+
 function buildFactBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
   const pretty = (slug: string) =>
     anatomy[slug]?.name?.replace(/\b\w/g, (c) => c.toUpperCase()) || slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -160,9 +211,10 @@ function buildFactBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
     const have = slugs.filter((s) => MUSCLE_FACTS[s][field]);
     for (const slug of have) {
       const correct = MUSCLE_FACTS[slug][field] as string;
-      const pool = shuffle(have.filter((s) => s !== slug))
+      const pool = shuffle(have.filter((s) => s !== slug && !overlaps(s, slug)))
         .map((s) => MUSCLE_FACTS[s][field] as string)
-        .filter((v, i, a) => v !== correct && a.indexOf(v) === i);
+        .filter((v, i, a) => v !== correct && a.indexOf(v) === i
+          && !indistinguishable(v, correct));
       if (pool.length < 3) continue;
       const f = MUSCLE_FACTS[slug];
       bank.push({
@@ -184,7 +236,10 @@ function buildFactBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
   const referrers = slugs.filter((s) => MUSCLE_FACTS[s].refers);
   for (const slug of referrers) {
     const correct = pretty(slug);
-    const pool = shuffle(slugs.filter((s) => s !== slug)).map(pretty).filter((v) => v !== correct);
+    // same containment guard — the suboccipitals and rectus capitis posterior
+    // minor refer to the same place because they are the same tissue
+    const pool = shuffle(slugs.filter((s) => s !== slug && !overlaps(s, slug)))
+      .map(pretty).filter((v) => v !== correct);
     if (pool.length < 3) continue;
     const f = MUSCLE_FACTS[slug];
     bank.push({
@@ -199,7 +254,8 @@ function buildFactBank(anatomy: Record<string, AnatomyMuscle>): Q[] {
   const tested = slugs.filter((s) => MUSCLE_FACTS[s].test);
   for (const slug of tested) {
     const correct = pretty(slug);
-    const pool = shuffle(tested.filter((s) => s !== slug)).map(pretty).filter((v) => v !== correct);
+    const pool = shuffle(tested.filter((s) => s !== slug && !overlaps(s, slug)))
+      .map(pretty).filter((v) => v !== correct);
     if (pool.length < 3) continue;
     const f = MUSCLE_FACTS[slug];
     bank.push({

@@ -33,6 +33,7 @@
 //     scoring rather than silently guessed.
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { apiGet } from '@/lib/api';
+import { MUSCLE_FACTS } from './muscleFacts';
 
 const ACCENT = '#10b981';
 const AMBER = '#f59e0b';
@@ -53,6 +54,7 @@ interface ExamQuestion {
   // that also stand on Erik's own words, so Mike knows which he can bank and
   // which are worth a second look before the exam.
   corroborated?: boolean;
+  dupOptions?: string[] | null;
   // Where to open the PRINTED manual for this question. The booklet's section
   // heading names one of Erik's techniques, and the manual indexes by that same
   // technique name, so the section maps straight to a page. Shown BEFORE you
@@ -237,6 +239,15 @@ export function ErikExam({ onSearch, onLesson }: {
   // recomputed on every progress change; `now` is read once per render so the
   // list doesn't reshuffle mid-drill
   const due = dueQuestions(keyed, progress, Date.now());
+  // Progress is one store keyed by "<paper>:<n>", so what's due on the OTHER
+  // four papers is already known here — it just was never shown.
+  const dueByPaper: Record<string, number> = {};
+  for (const p of papers) {
+    dueByPaper[p.id] = dueQuestions(
+      p.questions.filter((q) => q.answer), progress, Date.now()).length;
+  }
+  const duePapers = papers.filter((p) => dueByPaper[p.id] > 0).map((p) => p.id);
+  const totalDue = Object.values(dueByPaper).reduce((a, b) => a + b, 0);
   const attempted = new Set([...Object.keys(progress.right), ...Object.keys(progress.wrong)]);
   const seen = new Set(keyed.filter((q) => attempted.has(q.id)).map((q) => q.id));
   const mastered = keyed.filter((q) => (progress.right[q.id] || 0) >= 2 && !(progress.wrong[q.id] || 0)).length;
@@ -257,8 +268,29 @@ export function ErikExam({ onSearch, onLesson }: {
               }}>
               {p.title.replace(/^(Advanced Myoskeletal Techniques|MAT|The Art of Myoskeletal Alignment Therapy|Dynamic Body) — ?/, '') || p.title}
               <span style={{ color: 'var(--color-text-faint)', fontWeight: 400 }}> · {p.total}</span>
+              {/* Review was only ever visible from INSIDE a paper, so with five of
+                  them the schedule rots silently — you don't click through five
+                  tabs to discover you owe nothing. The count rides on the tab. */}
+              {dueByPaper[p.id] > 0 && (
+                <span title={`${dueByPaper[p.id]} question${dueByPaper[p.id] === 1 ? '' : 's'} due for review on this paper`}
+                  style={{ marginLeft: '6px', fontSize: '10px', fontWeight: 800, padding: '1px 5px', borderRadius: '9px', background: AMBER + '28', color: AMBER }}>
+                  🔁 {dueByPaper[p.id]}
+                </span>
+              )}
             </button>
           ))}
+        </div>
+      )}
+      {totalDue > 0 && (
+        <div style={{ fontSize: '11.5px', color: AMBER, marginBottom: '12px', lineHeight: 1.6 }}>
+          <b>🔁 {totalDue} question{totalDue === 1 ? '' : 's'} due for review</b>
+          {duePapers.length > 1 && ` across ${duePapers.length} papers`} — these are ones you have
+          already answered whose interval has elapsed. Clearing them is worth more than new questions:
+          an exam a month out is won on the review schedule, not on rereading.
+          {dueByPaper[paper.id] > 0
+            ? ' Open 🔁 Review below to start on this paper.'
+            : duePapers.length > 0 && ` Nothing due here — start with ${
+              papers.find((p) => p.id === duePapers[0])?.title ?? duePapers[0]}.`}
         </div>
       )}
       <div style={{ marginBottom: '12px' }}>
@@ -286,6 +318,9 @@ export function ErikExam({ onSearch, onLesson }: {
 
       {/* open-book coverage — which sections he can look up on paper */}
       <OpenBook paper={paper} />
+
+      {/* collapsed by default: it's a last resort, not the way to study */}
+      <GuessGuide paper={paper} />
 
       {/* the only question that matters: could he pass this paper today? */}
       <Readiness paper={paper} progress={progress} />
@@ -429,6 +464,94 @@ function WeakSections({ paper, progress, onPick, active }: {
 
 // Only the Upper Body paper ships a real answer key. Everything else was worked
 // out here — so the paper says out loud how its keys were arrived at rather than
+// Last-resort guessing guide. Every one of these papers is scored on marks, not
+// on honesty, so on the ones he genuinely cannot work out he should still put
+// down the most likely letter — and the booklet's own habits are measurable.
+//
+// The numbers are computed from THIS paper, live, never hardcoded, and the
+// caveat is the important part: only Upper Body ships a real answer key, so only
+// its statistics describe the actual exam. On the other four the key was derived
+// here, so their statistics partly measure OUR adjudication rather than Erik's
+// paper — quoting them as exam facts would be circular. They're shown, and
+// labelled as such.
+//
+// The findings are also genuinely paper-specific, which is why this can't be one
+// rule of thumb: "all/both the above" is right 19 times out of 23 on Upper Body
+// and 0 times out of 9 on Art of MAT. And the folk heuristic everyone repeats —
+// pick the longest option — sits at 27% across all five papers, i.e. slightly
+// worse than guessing. Saying so stops him spending the technique.
+function GuessGuide({ paper }: { paper: ExamPaper }) {
+  const TF = new Set(['true', 'false']);
+  const ALL = /^(all (of )?the above|both a and b|all of these)\.?$/i;
+  const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\.$/, '');
+
+  let tf = 0, tfTrue = 0, mc = 0, allOpt = 0, allRight = 0, longN = 0, longRight = 0;
+  const letters: Record<string, number> = { a: 0, b: 0, c: 0, d: 0 };
+  for (const q of paper.questions) {
+    if (!q.answer) continue;
+    const vals = Object.values(q.options).filter(Boolean).map(norm);
+    if (vals.length && vals.every((v) => TF.has(v))) {
+      tf++;
+      if (norm(q.options[q.answer] || '') === 'true') tfTrue++;
+      continue;
+    }
+    mc++;
+    if (q.answer in letters) letters[q.answer]++;
+    const allKeys = Object.keys(q.options).filter((k) => q.options[k] && ALL.test(q.options[k]!.trim()));
+    if (allKeys.length) { allOpt++; if (allKeys.includes(q.answer)) allRight++; }
+    const opts = Object.entries(q.options).filter(([, v]) => v) as Array<[string, string]>;
+    if (opts.length >= 3) {
+      longN++;
+      const longest = opts.reduce((x, y) => (y[1].length > x[1].length ? y : x))[0];
+      if (longest === q.answer) longRight++;
+    }
+  }
+  if (mc + tf < 20) return null;
+  const pct = (a: number, b: number) => (b ? Math.round((100 * a) / b) : 0);
+  const official = paper.id === 'upper-body-2023';
+  const best = (['a', 'b', 'c', 'd'] as const).reduce((x, y) => (letters[y] > letters[x] ? y : x));
+
+  const rows: Array<[string, string]> = [];
+  if (tf >= 10) rows.push([`True/False (${tf} of them)`,
+    `“True” is the answer ${pct(tfTrue, tf)}% of the time — if it's a coin flip, say True.`]);
+  if (allOpt >= 6) rows.push([`“All / both the above” (${allOpt} questions)`,
+    pct(allRight, allOpt) >= 60
+      ? `correct ${pct(allRight, allOpt)}% of the time on this paper — lean toward it.`
+      : pct(allRight, allOpt) <= 30
+        ? `correct only ${pct(allRight, allOpt)}% of the time on this paper — it is usually a trap here.`
+        : `correct ${pct(allRight, allOpt)}% of the time here — no edge either way.`]);
+  if (mc >= 40) rows.push(['Letter to fall back on',
+    `${best}) is keyed most often (${pct(letters[best], mc)}% of ${mc} multiple-choice).`]);
+  if (longN >= 40) rows.push(['“Pick the longest option”',
+    `works ${pct(longRight, longN)}% of the time here — ${pct(longRight, longN) < 30
+      ? 'no better than guessing, so don’t spend thought on it' : 'a weak signal at best'}.`]);
+  if (!rows.length) return null;
+
+  return (
+    <details style={{ marginBottom: '14px' }}>
+      <summary style={{ cursor: 'pointer', fontSize: '11.5px', color: AMBER, fontWeight: 600 }}>
+        🎲 If you have to guess — what this paper’s answers actually do
+      </summary>
+      <div style={{ fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.65, marginTop: '7px' }}>
+        {rows.map(([k, v]) => (
+          <div key={k} style={{ marginBottom: '3px' }}>
+            <b style={{ color: 'var(--color-text)' }}>{k}:</b> {v}
+          </div>
+        ))}
+        <div style={{ marginTop: '6px', color: official ? ACCENT : RED }}>
+          {official
+            ? 'Measured against this paper’s real, human-checked answer key — these describe the actual exam.'
+            : 'Measured against the key worked out HERE, not an official one — so these partly describe our own reasoning, not Erik’s paper. Treat as a tiebreaker of last resort, never as a strategy.'}
+        </div>
+        <div style={{ marginTop: '4px', color: 'var(--color-text-faint)' }}>
+          Use these only on a question you genuinely cannot work out. Every mark you can reason for
+          is worth more than every mark you can guess.
+        </div>
+      </div>
+    </details>
+  );
+}
+
 // letting a confident badge imply an authority it doesn't have.
 function KeyProvenance({ paper }: { paper: ExamPaper }) {
   // Counted off the EXPLANATION each answer actually carries, not off the
@@ -485,6 +608,22 @@ function Tip({ q }: { q: ExamQuestion }) {
   return (
     <div style={{ marginTop: '8px', fontSize: '12px', color: AMBER, lineHeight: 1.5 }}>
       💡 <b>Erik's tip:</b> <span style={{ color: 'var(--color-text-muted)' }}>{q.hint}</span>
+    </div>
+  );
+}
+
+// Erik's booklet prints two of the options identically on a couple of questions.
+// It is his misprint, confirmed against the PDF, and the same two lines will be
+// on the paper in front of him. Saying so is worth real exam minutes: the
+// instinct on seeing two identical choices is to reread the whole question
+// assuming you've misread it. Neither key is one of the duplicates.
+function Misprint({ q }: { q: ExamQuestion }) {
+  const d = q.dupOptions;
+  if (!d || d.length < 2) return null;
+  return (
+    <div style={{ marginTop: '6px', fontSize: '11.5px', color: AMBER, lineHeight: 1.5 }}>
+      ⚠ <b>Booklet misprint:</b> options {d.map((x) => x + ')').join(' and ')} are printed
+      identically in Erik's own paper — you are not misreading it. The answer is neither of them.
     </div>
   );
 }
@@ -653,6 +792,57 @@ function Corroboration({ q }: { q: ExamQuestion }) {
       </div>;
 }
 
+// The Myoskeletal papers ask for origin, insertion and action constantly, and
+// the app already holds that table for 78 muscles — it was just only reachable
+// from the Explore tab. Explore already links the other way (a muscle lists the
+// exam questions about it), so this closes the loop.
+//
+// Matching is an EXACT name match against the stem and the KEYED answer only —
+// never the distractors. A first pass that searched all four options linked a
+// hip-hyperextension question to trapezius, because a distractor happened to
+// name it. Exact-name lookup also means this carries none of the false-authority
+// risk that killed the cross-course clip links: the plate for quadratus lumborum
+// is about quadratus lumborum, whatever else is going on.
+// Names the papers use that the atlas holds under a grouped plate. Aliased
+// rather than duplicated: muscleFacts.ts is the single source of truth for these
+// attachments, and a second copy of the common-extensor origin is a second thing
+// to keep right.
+const PLATE_ALIAS: Record<string, string> = {
+  'extensor carpi radialis': 'wrist-extensors',
+  'extensor carpi ulnaris': 'wrist-extensors',
+  'extensor digitorum': 'wrist-extensors',
+  'common extensor tendon': 'wrist-extensors',
+};
+
+function MusclePlate({ q }: { q: ExamQuestion }) {
+  const hay = (q.stem + ' ' + (q.answer ? q.options[q.answer] || '' : '')).toLowerCase();
+  const aliased = Object.entries(PLATE_ALIAS)
+    .filter(([name]) => hay.includes(name)).map(([, slug]) => slug);
+  const slugs = [...new Set([...Object.keys(MUSCLE_FACTS), ...aliased])]
+    .filter((s) => aliased.includes(s) || hay.includes(s.replace(/-/g, ' ')))
+    // "psoas" is inside "psoas major"; keep the most specific name only
+    .filter((s, _i, all) => !all.some((o) => o !== s && o.includes(s)))
+    .slice(0, 2);
+  if (!slugs.length) return null;
+  return (
+    <div style={{ marginTop: '7px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+      {slugs.map((s) => {
+        const f = MUSCLE_FACTS[s];
+        if (!f?.origin || !f?.insertion) return null;
+        return (
+          <div key={s} style={{ fontSize: '11.5px', lineHeight: 1.5, padding: '6px 9px', borderRadius: '7px', border: '1px solid var(--color-border)', background: 'var(--color-elevated)' }}>
+            <b style={{ color: ACCENT, textTransform: 'capitalize' }}>{s.replace(/-/g, ' ')}</b>
+            <div style={{ color: 'var(--color-text-muted)' }}>
+              <b>O:</b> {f.origin} · <b>I:</b> {f.insertion}
+              {f.action && <> · <b>A:</b> {f.action}</>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Reading why an answer is right is one pass; watching the hands that make it
 // true is what survives to exam day. Each link opens the technique player at the
 // exact second Erik covers it.
@@ -805,6 +995,7 @@ function StudyCard({ q, progress, onSearch, onLesson }: {
           );
         })}
       </div>
+      <Misprint q={q} />
       <Tip q={q} />
       <button type="button" onClick={() => setShow((s) => !s)}
         style={{ marginTop: '8px', padding: '4px 11px', borderRadius: '7px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: '1px solid var(--color-border)', background: 'transparent', color: ACCENT }}>
@@ -834,6 +1025,7 @@ function StudyCard({ q, progress, onSearch, onLesson }: {
               </div>
             </div>
           )}
+          <MusclePlate q={q} />
           <WatchLessons q={q} onLesson={onLesson} />
           {onSearch && (
             <button type="button" onClick={() => onSearch(q.stem.slice(0, 90))}
@@ -1003,7 +1195,7 @@ function DrillMode({ paper, progress, onProgress, count, instant, timed, onLesso
           {graded && <ConfBadge q={q} />}
         </div>
         <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--color-text)', lineHeight: 1.5 }}>{q.stem}</div>
-        <div style={{ marginBottom: '14px' }}><Tip q={q} /></div>
+        <div style={{ marginBottom: '14px' }}><Misprint q={q} /><Tip q={q} /></div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {Object.entries(q.options).sort().map(([k, v]) => {
@@ -1029,6 +1221,9 @@ function DrillMode({ paper, progress, onProgress, count, instant, timed, onLesso
               </b>{' '}{q.why}
               <Corroboration q={q} />
             </div>
+            {/* only when he got it wrong — after a correct answer the attachment
+                table is noise between him and the next question */}
+            {chosen !== q.answer && <MusclePlate q={q} />}
             {chosen !== q.answer && <WatchLessons q={q} onLesson={onLesson} />}
             {q.textbook && (
               <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.55, marginTop: '6px', fontStyle: 'italic' }}>

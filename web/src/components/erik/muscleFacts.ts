@@ -82,6 +82,39 @@ export const MUSCLE_FACTS: Record<string, MuscleFact> = {
     test: 'Chin-tuck / cranio-cervical flexion test: chin pokes instead of nodding',
     cue: 'Almost always INHIBITED, not tight — retrain it rather than release it.',
   },
+  // Added 2026-08-02 after auditing which muscles the five exam papers actually
+  // NAME against which ones had a plate: 40 of 47 were covered, these were the
+  // gaps. Every one appears in a real question — longus capitis is in the neck-
+  // flexion firing-order answer, the rectus capitis pair in the suboccipital
+  // questions, rotatores in the 4th-layer questions.
+  'longus-capitis': {
+    origin: 'Anterior tubercles of the transverse processes C3–C6',
+    insertion: 'Basilar part of the occiput',
+    action: 'Flexes the head on the neck — the upper half of the deep flexor pair',
+    test: 'Cranio-cervical flexion: the head juts forward instead of nodding',
+    cue: 'Trained with longus colli, not separately — the chin-tuck is the drill for both.',
+  },
+  'rectus-capitis-posterior-major': {
+    origin: 'Spinous process of C2 (axis)',
+    insertion: 'Lateral part of the inferior nuchal line of the occiput',
+    action: 'Extends the head and rotates it to the same side',
+    refers: 'Deep occipital ache that patients point to with one finger',
+    cue: 'One of the four suboccipitals. Its myodural bridge to the dura is why heavy work here provokes headache rather than easing it.',
+  },
+  'rectus-capitis-posterior-minor': {
+    origin: 'Posterior tubercle of C1 (atlas)',
+    insertion: 'Medial part of the inferior nuchal line of the occiput',
+    action: 'Extends the head at the atlanto-occipital joint',
+    refers: 'Occiput through to behind the eye',
+    cue: 'The smallest of the four and the one with the strongest dural attachment — Erik’s occiput-balancing pressure is aimed at exactly this.',
+  },
+  rotatores: {
+    origin: 'Transverse process of the vertebra below',
+    insertion: 'Lamina/spinous process of the vertebra one or two levels above',
+    action: 'Contralateral rotation, but overwhelmingly a proprioceptive segment monitor',
+    test: 'Segmental spring test reproducing a single tender level',
+    cue: 'Deepest layer with multifidus. Spindle-dense, so it is retrained and quietened, not stripped.',
+  },
   semispinalis: {
     origin: 'Transverse processes C4–T12', insertion: 'Occiput (capitis) and spinous processes above',
     action: 'Extends the head and spine; contralateral rotation',
