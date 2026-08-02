@@ -36,6 +36,15 @@ interface ExamQuestion {
   topic: string;
   confidence: string | null;
   textbook: string | null;
+  // The teaching moments in the video library that cover this question — built
+  // by erikdalton-kb/build_exam_bank.py. Empty for pure-theory questions, on
+  // purpose: the textbook passage teaches those, and inventing a clip would be
+  // the same inaccuracy this whole pass exists to remove.
+  lessons?: ExamLesson[];
+}
+interface ExamLesson {
+  videoId: string; title: string; course: string;
+  seg: number; t_mid: number; text: string;
 }
 interface ExamPaper {
   id: string; title: string; subtitle: string;
@@ -80,7 +89,10 @@ const fmtClock = (s: number) => {
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 };
 
-export function ErikExam({ onSearch }: { onSearch?: (q: string) => void }) {
+export function ErikExam({ onSearch, onLesson }: {
+  onSearch?: (q: string) => void;
+  onLesson?: (videoId: string, t: number) => void;
+}) {
   // The bank is bundled rather than fetched: the server's top-level static route
   // only allowlists binary extensions, so a .json dropped in web/public/ falls
   // through to the SPA. Bundling keeps this a build:web-only change, and the
@@ -145,13 +157,13 @@ export function ErikExam({ onSearch }: { onSearch?: (q: string) => void }) {
         {tab('mock', '⏱ Mock exam', 'All questions, timed, scored at the real 70% pass mark')}
       </div>
 
-      {mode === 'study' && <StudyMode paper={paper} progress={progress} onSearch={onSearch} />}
+      {mode === 'study' && <StudyMode paper={paper} progress={progress} onSearch={onSearch} onLesson={onLesson} />}
       {mode === 'practice' && (
-        <DrillMode key="practice" paper={paper} progress={progress}
+        <DrillMode key="practice" paper={paper} progress={progress} onLesson={onLesson}
           onProgress={(p) => { setProgress(p); saveProgress(p); }} count={20} instant />
       )}
       {mode === 'mock' && (
-        <DrillMode key="mock" paper={paper} progress={progress}
+        <DrillMode key="mock" paper={paper} progress={progress} onLesson={onLesson}
           onProgress={(p) => { setProgress(p); saveProgress(p); }} count={keyed.length} instant={false} timed />
       )}
     </div>
@@ -161,10 +173,16 @@ export function ErikExam({ onSearch }: { onSearch?: (q: string) => void }) {
 // ── Confidence badge ───────────────────────────────────────────────────────
 function ConfBadge({ q }: { q: ExamQuestion }) {
   if (!q.answer) {
+    // An opinion item isn't a gap in the data — the booklet genuinely has no
+    // single key — so it says so rather than reading like something we missed.
+    const op = q.confidence === 'opinion';
+    const c = op ? AMBER : RED;
     return (
-      <span title="No defensible key yet — this question is excluded from scoring."
-        style={{ fontSize: '10px', fontWeight: 700, color: RED, border: '1px solid ' + RED + '77', borderRadius: '5px', padding: '1px 5px', textTransform: 'uppercase' }}>
-        no key
+      <span title={op
+        ? 'Instructor-graded opinion item — no single correct answer exists. Excluded from scoring.'
+        : 'No defensible key yet — this question is excluded from scoring.'}
+        style={{ fontSize: '10px', fontWeight: 700, color: c, border: '1px solid ' + c + '77', borderRadius: '5px', padding: '1px 5px', textTransform: 'uppercase' }}>
+        {op ? 'your call' : 'no key'}
       </span>
     );
   }
@@ -180,9 +198,44 @@ function ConfBadge({ q }: { q: ExamQuestion }) {
   );
 }
 
+// ── "Watch Erik teach this" ────────────────────────────────────────────────
+// Reading why an answer is right is one pass; watching the hands that make it
+// true is what survives to exam day. Each link opens the technique player at the
+// exact second Erik covers it.
+function WatchLessons({ q, onLesson }: { q: ExamQuestion; onLesson?: (videoId: string, t: number) => void }) {
+  const ls = q.lessons ?? [];
+  if (!ls.length || !onLesson) return null;
+  const time = (s: number) => {
+    const t = Math.round(s || 0); const m = Math.floor(t / 60);
+    return (m > 0 ? m + 'm' : '') + (t % 60) + 's';
+  };
+  return (
+    <div style={{ marginTop: '10px' }}>
+      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '.8px', color: 'var(--color-text-faint)', textTransform: 'uppercase', marginBottom: '4px' }}>
+        Watch Erik teach this
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+        {ls.map((l) => (
+          <button key={l.videoId + l.seg} type="button" onClick={() => onLesson(l.videoId, l.t_mid)}
+            class="transition-colors hover:bg-[var(--color-elevated)]"
+            style={{ textAlign: 'left', padding: '7px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', background: 'transparent', cursor: 'pointer' }}>
+            <span style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: ACCENT }}>
+              ▶ {l.title} <span style={{ color: 'var(--color-text-faint)', fontWeight: 400 }}>· {l.course} · {time(l.t_mid)}</span>
+            </span>
+            <span style={{ display: 'block', fontSize: '11.5px', color: 'var(--color-text-muted)', lineHeight: 1.45, marginTop: '2px' }}>
+              “{l.text}”
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Study mode ─────────────────────────────────────────────────────────────
-function StudyMode({ paper, progress, onSearch }: {
+function StudyMode({ paper, progress, onSearch, onLesson }: {
   paper: ExamPaper; progress: Progress; onSearch?: (q: string) => void;
+  onLesson?: (videoId: string, t: number) => void;
 }) {
   const topics = useMemo(() => {
     const m: Record<string, ExamQuestion[]> = {};
@@ -231,7 +284,7 @@ function StudyMode({ paper, progress, onSearch }: {
               </button>
               {isOpen && (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  {shown.map((q) => <StudyCard key={q.id} q={q} progress={progress} onSearch={onSearch} />)}
+                  {shown.map((q) => <StudyCard key={q.id} q={q} progress={progress} onSearch={onSearch} onLesson={onLesson} />)}
                 </div>
               )}
             </div>
@@ -242,8 +295,9 @@ function StudyMode({ paper, progress, onSearch }: {
   );
 }
 
-function StudyCard({ q, progress, onSearch }: {
+function StudyCard({ q, progress, onSearch, onLesson }: {
   q: ExamQuestion; progress: Progress; onSearch?: (s: string) => void;
+  onLesson?: (videoId: string, t: number) => void;
 }) {
   const [show, setShow] = useState(false);
   const wrong = progress.wrong[q.id] || 0;
@@ -283,9 +337,10 @@ function StudyCard({ q, progress, onSearch }: {
           {q.answer
             ? <div style={{ fontSize: '13px', color: 'var(--color-text)', lineHeight: 1.5 }}><b style={{ color: ACCENT }}>{q.answer})</b> {q.why}</div>
             : <div style={{ fontSize: '13px', color: AMBER, lineHeight: 1.5 }}>
-                This one has no defensible key yet — either it asks for a personal opinion, or the booklet's wording
-                can't be resolved from the material we hold. It's shown for study but never scored. Guessing an answer
-                here would be worse than admitting the gap.
+                {q.confidence === 'opinion'
+                  ? 'This one is graded on your own judgement — the booklet asks what YOU consider worst, so there is no single key. It is shown for study but never scored.'
+                  : 'This one has no defensible key yet — the booklet\'s wording can\'t be resolved from the material we hold. Shown for study, never scored; guessing would be worse than admitting the gap.'}
+                {q.why && <div style={{ color: 'var(--color-text)', marginTop: '6px' }}>{q.why}</div>}
               </div>}
           {q.textbook && (
             <div style={{ marginTop: '8px' }}>
@@ -297,6 +352,7 @@ function StudyCard({ q, progress, onSearch }: {
               </div>
             </div>
           )}
+          <WatchLessons q={q} onLesson={onLesson} />
           {onSearch && (
             <button type="button" onClick={() => onSearch(q.stem.slice(0, 90))}
               style={{ marginTop: '8px', padding: '4px 11px', borderRadius: '7px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)' }}>
@@ -310,10 +366,11 @@ function StudyCard({ q, progress, onSearch }: {
 }
 
 // ── Practice / Mock ────────────────────────────────────────────────────────
-function DrillMode({ paper, progress, onProgress, count, instant, timed }: {
+function DrillMode({ paper, progress, onProgress, count, instant, timed, onLesson }: {
   paper: ExamPaper; progress: Progress;
   onProgress: (p: Progress) => void;
   count: number; instant: boolean; timed?: boolean;
+  onLesson?: (videoId: string, t: number) => void;
 }) {
   // Question set is chosen ONCE per mount so answering doesn't reshuffle it.
   const [set] = useState<ExamQuestion[]>(() => {
@@ -430,6 +487,7 @@ function DrillMode({ paper, progress, onProgress, count, instant, timed }: {
               </div>
               <div style={{ fontSize: '13px', color: ACCENT, fontWeight: 600 }}>Answer: {x.answer}) {x.options[x.answer!]}</div>
               {x.why && <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5, marginTop: '4px' }}>{x.why}</div>}
+              <WatchLessons q={x} onLesson={onLesson} />
             </div>
           ))}
         </div>
@@ -481,6 +539,7 @@ function DrillMode({ paper, progress, onProgress, count, instant, timed }: {
                 {chosen === q.answer ? '✓ Correct.' : `✗ The answer is ${q.answer}).`}
               </b>{' '}{q.why}
             </div>
+            {chosen !== q.answer && <WatchLessons q={q} onLesson={onLesson} />}
             {q.textbook && (
               <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.55, marginTop: '6px', fontStyle: 'italic' }}>
                 “…{q.textbook.slice(0, 420)}…”

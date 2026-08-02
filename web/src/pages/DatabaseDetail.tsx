@@ -816,7 +816,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
     try {
       const u = new URL(window.location.href);
       u.searchParams.set('tab', t);
-      ['region', 'muscle', 'condition', 'technique', 'quizmode', 'reading'].forEach((k) => u.searchParams.delete(k));
+      ['region', 'muscle', 'condition', 'technique', 'at', 'quizmode', 'reading'].forEach((k) => u.searchParams.delete(k));
       for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
       window.history.replaceState({}, '', u.toString());
     } catch { /* ignore */ }
@@ -951,7 +951,9 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
           {tab === 'exam' && isErikDalton && (
             <Suspense fallback={<div style={{ fontSize: '13px', color: 'var(--color-text-faint)' }}>Loading exam bank…</div>}>
-              <ErikExam onSearch={(q) => { setQuery(q); goTo('search'); }} />
+              <ErikExam
+                onSearch={(q) => { setQuery(q); goTo('search'); }}
+                onLesson={(videoId, t) => goTo('techniques', { technique: videoId, at: String(Math.round(t)) })} />
             </Suspense>
           )}
 

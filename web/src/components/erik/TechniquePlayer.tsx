@@ -119,7 +119,20 @@ export function TechniquePlayer({ itemId, videosMap }: {
     try {
       const sp = new URLSearchParams(window.location.search);
       const t = sp.get('technique');
-      if (t && videosMap[t]) { setVideoId(t); setStep(0); setReading(sp.get('reading') === '1'); }
+      if (t && videosMap[t]) {
+        setVideoId(t);
+        // ?at=<seconds> lands on the step covering that moment — this is how the
+        // Exam tab sends you from a missed question to the hands that teach it.
+        const at = Number(sp.get('at'));
+        const ord = [...videosMap[t].frames].sort((a, b) => a.t_mid - b.t_mid);
+        let step = 0;
+        if (Number.isFinite(at) && at > 0 && ord.length) {
+          step = ord.reduce((best, f, idx) =>
+            Math.abs(f.t_mid - at) < Math.abs(ord[best].t_mid - at) ? idx : best, 0);
+        }
+        setStep(step);
+        setReading(sp.get('reading') === '1');
+      }
     } catch { /* ignore */ }
   }, [videosMap]);
 
