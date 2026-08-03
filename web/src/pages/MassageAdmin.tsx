@@ -27,8 +27,9 @@ import {
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
-import { useFetch } from '@/lib/useFetch';
+import { useFetch, invalidateFetchCache } from '@/lib/useFetch';
 import { useSpin } from '@/lib/useSpin';
+import { ScheduleCalendar, isoLocalDate } from '@/components/massage/ScheduleCalendar';
 import { apiPatch, apiPost, apiGet, apiPut, apiDelete } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -289,7 +290,7 @@ export function MassageAdmin() {
   const overview = useFetch<Overview>('/api/massage-admin/clients', 30000);
   const session = useFetch<AdminSession>('/api/massage-admin/session', 30000);
   const { busy: refreshing, spin } = useSpin();
-  const [tab, setTab] = useState<'accounts' | 'intakes' | 'soap' | 'messaging' | 'promos' | 'availability'>('accounts');
+  const [tab, setTab] = useState<'profile' | 'accounts' | 'intakes' | 'soap' | 'messaging' | 'promos' | 'availability'>('profile');
   // Fetched here (not just in the tab) so the tab label can show a pending-request count badge.
   const pendingReqs = useFetch<PendingResp>('/api/massage-admin/availability/pending', 30000);
 
@@ -302,7 +303,8 @@ export function MassageAdmin() {
         title="Massage Admin"
         tabs={
           <>
-            <Tab label="Accounts" active={tab === 'accounts'} count={overview.data?.clients.length} onClick={() => setTab('accounts')} />
+            <Tab label="Client Profile" active={tab === 'profile'} count={overview.data?.clients.length} onClick={() => setTab('profile')} />
+            <Tab label="Accounts" active={tab === 'accounts'} onClick={() => setTab('accounts')} />
             <Tab label="Intake Forms" active={tab === 'intakes'} onClick={() => setTab('intakes')} />
             <Tab label="SOAP Notes" active={tab === 'soap'} onClick={() => setTab('soap')} />
             <Tab label="Messaging" active={tab === 'messaging'} onClick={() => setTab('messaging')} />
@@ -339,6 +341,7 @@ export function MassageAdmin() {
             </section>
           )}
 
+          {tab === 'profile' && <ClientProfileTab overview={overview} canEdit={canEdit} />}
           {tab === 'accounts' && <AccountsTab overview={overview} canEdit={canEdit} />}
           {tab === 'intakes' && <IntakesTab canEdit={canEdit} />}
           {tab === 'soap' && <SoapTab overview={overview} canEdit={canEdit} />}
@@ -889,11 +892,7 @@ interface AvailabilityResp {
   bookingsPaused?: boolean;
 }
 interface TimeBlock { id: string; day: string; start_hm: string; end_hm: string }
-interface ScheduleAppt { id: string; appt_date: string; appt_time: string; client_name: string; service_name: string; status: string; beyond_window: number; duration_min: number }
-interface ScheduleResp { ok: boolean; month: string; appts: ScheduleAppt[]; blackouts: string[]; timeBlocks: TimeBlock[] }
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-// Local YYYY-MM-DD (no UTC drift).
-function isoLocalDate(d: Date): string { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 type Week = Record<string, [string, string][]>;
 // Ensure every weekday key (0..6) exists as an array of [open,close] pairs.
 function normalizeWeek(h?: Record<string, [string, string][]>): Week {
@@ -991,11 +990,9 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
     finally { setBusy(false); }
   }
 
-  // Month/schedule view (navigable) — shows real bookings + off days + partial blocks.
-  const [ym, setYm] = useState(() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() }; });
-  const monthStr = `${ym.y}-${String(ym.m + 1).padStart(2, '0')}`;
-  const sched = useFetch<ScheduleResp>(`/api/massage-admin/availability/schedule?month=${monthStr}`, 30000);
-  function shiftMonth(delta: number) { setYm(({ y, m }) => { const t = m + delta; return { y: y + Math.floor(t / 12), m: ((t % 12) + 12) % 12 }; }); }
+  // The schedule calendar (Month / Week / 3-day / Day) owns its own fetching; any
+  // mutation here just drops its cached months so it repaints with the new truth.
+  const refreshSchedule = () => invalidateFetchCache('/api/massage-admin/availability/schedule');
 
   // Partial-day block inputs.
   const [tbDay, setTbDay] = useState('');
@@ -1017,7 +1014,7 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
       let end: string | undefined;
       if (range === 'week') { const s = new Date(today); s.setDate(s.getDate() + ((7 - s.getDay()) % 7)); end = isoLocalDate(s); } // through the coming Sunday
       await apiPost('/api/massage-admin/availability/blackout', { start, end });
-      avail.refresh(); sched.refresh();
+      avail.refresh(); refreshSchedule();
     } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
     finally { setBusy(false); }
   }
@@ -1027,13 +1024,13 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
     try {
       const r = await apiPost<{ ok?: boolean; error?: string }>('/api/massage-admin/availability/timeblock', { day: tbDay, start: tbStart, end: tbEnd });
       if (r.ok === false) { setErr(r.error || 'failed'); return; }
-      setTbDay(''); avail.refresh(); sched.refresh();
+      setTbDay(''); avail.refresh(); refreshSchedule();
     } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
     finally { setBusy(false); }
   }
   async function removeTimeBlock(id: string) {
     setBusy(true); setErr(null);
-    try { await apiDelete(`/api/massage-admin/availability/timeblock/${id}`); avail.refresh(); sched.refresh(); }
+    try { await apiDelete(`/api/massage-admin/availability/timeblock/${id}`); avail.refresh(); refreshSchedule(); }
     catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
     finally { setBusy(false); }
   }
@@ -1041,15 +1038,6 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
   const blackouts = cfg?.blackouts ?? [];
   const timeBlocks = cfg?.timeBlocks ?? [];
   const reqs = pending.data?.pending ?? [];
-
-  // Index this month's schedule by day for the calendar cells.
-  const apptsByDay: Record<string, ScheduleAppt[]> = {};
-  (sched.data?.appts ?? []).forEach((a) => { (apptsByDay[a.appt_date] ??= []).push(a); });
-  const offDays = new Set(sched.data?.blackouts ?? []);
-  const partialDays = new Set((sched.data?.timeBlocks ?? []).map((t) => t.day));
-  const firstDow = new Date(ym.y, ym.m, 1).getDay();
-  const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
-  const monthLabel = new Date(ym.y, ym.m, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
   return (
     <div class="space-y-4">
@@ -1064,43 +1052,8 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
         {paused && <div class="mt-2 text-[12px] font-semibold text-[var(--color-status-failed)]">Online booking is PAUSED — clients can’t submit new requests until you resume.</div>}
       </section>
 
-      {/* Month schedule view */}
-      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
-        <div class="mb-2 flex items-center justify-between">
-          <h3 class="flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> My schedule</h3>
-          <div class="flex items-center gap-2 text-[13px]">
-            <button type="button" class={btnGhost} onClick={() => shiftMonth(-1)}>‹</button>
-            <span class="min-w-[110px] text-center font-semibold text-[var(--color-text)]">{monthLabel}</span>
-            <button type="button" class={btnGhost} onClick={() => shiftMonth(1)}>›</button>
-          </div>
-        </div>
-        <div class="grid grid-cols-7 gap-1 text-center">
-          {DAY_NAMES.map((d) => <div key={d} class="text-[11px] font-semibold text-[var(--color-text-faint)]">{d}</div>)}
-          {Array.from({ length: firstDow }).map((_, i) => <div key={`e${i}`} />)}
-          {Array.from({ length: daysInMonth }).map((_, i) => {
-            const day = i + 1;
-            const iso = `${monthStr}-${String(day).padStart(2, '0')}`;
-            const appts = apptsByDay[iso] || [];
-            const off = offDays.has(iso);
-            const partial = partialDays.has(iso);
-            const cls = 'flex h-12 flex-col items-center justify-start rounded-md border border-[var(--color-border)] p-1 text-[12px] transition-colors '
-              + (off ? 'bg-[color-mix(in_srgb,var(--color-status-failed)_18%,transparent)] '
-                : appts.length ? 'bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] '
-                : 'hover:bg-[var(--color-elevated)] ')
-              + (tbDay === iso ? 'ring-1 ring-[var(--color-accent)] ' : '');
-            const title = off ? 'Day off' : appts.length ? appts.map((a) => `${a.appt_time} ${a.client_name} (${a.status})`).join('\n') : partial ? 'Partial block' : '';
-            return (
-              <button key={iso} type="button" class={cls} title={title} onClick={() => setTbDay(iso)}>
-                <span class="text-[var(--color-text)]">{day}</span>
-                {off ? <span class="text-[10px] font-semibold text-[var(--color-status-failed)]">OFF</span>
-                  : appts.length ? <span class="mt-0.5 text-[11px] font-semibold text-[var(--color-accent)]">●{appts.length}</span>
-                  : partial ? <span class="mt-0.5 text-[11px] text-[var(--color-text-muted)]">◐</span> : null}
-              </button>
-            );
-          })}
-        </div>
-        <div class="mt-2 text-[11px] text-[var(--color-text-faint)]">● booked · <span class="text-[var(--color-status-failed)]">OFF</span> day off · ◐ partial block · tap a day to target the partial-block form below</div>
-      </section>
+      {/* Schedule — Month / Week / 3-day / Day */}
+      <ScheduleCalendar selectedDay={tbDay} onPickDay={setTbDay} />
 
       {/* Booking window */}
       <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
@@ -1736,48 +1689,123 @@ const SOAP_REGION_ABBR: Record<string, string> = {
   'Back': 'Bk', 'Arms & Hands': 'Arm', 'Abdomen': 'Ab', 'Gluteal Region': 'Glt', 'Legs': 'Leg', 'Feet': 'Ft',
 };
 
+// Marker key for the body chart. Picking a marker makes the body figure a
+// stamp: tap a region and it records that finding at a sensible starting
+// severity, instead of "flag region, then type what you found". The finding
+// text is the same free-text field as before, so nothing new has to be stored.
+const BODY_MARKERS = [
+  { key: 'knot',    label: 'Knot',          glyph: '★', color: '#c026d3', finding: 'Knotted',      severity: 6 },
+  { key: 'tight',   label: 'Tight muscle',  glyph: '✕', color: '#2563eb', finding: 'Tight',        severity: 4 },
+  { key: 'trigger', label: 'Trigger point', glyph: '◍', color: '#ca8a04', finding: 'Trigger pt',   severity: 5 },
+  { key: 'pain1',   label: 'Pain — mild',   glyph: '●', color: '#fda4af', finding: 'Tender',       severity: 3 },
+  { key: 'pain2',   label: 'Pain — moderate', glyph: '●', color: '#f43f5e', finding: 'Painful',    severity: 6 },
+  { key: 'pain3',   label: 'Pain — severe', glyph: '●', color: '#be123c', finding: 'Severe pain',  severity: 9 },
+] as const;
+type BodyMarker = typeof BODY_MARKERS[number];
+
+// Which marker a flagged region is showing — inferred from its findings text so
+// an existing note (written before the key existed) still renders correctly.
+function markerFor(a: AreaConcern): BodyMarker | null {
+  const f = (a.findings || '').toLowerCase();
+  for (const m of [...BODY_MARKERS].reverse()) if (f.includes(m.finding.toLowerCase())) return m;
+  return null;
+}
+
 function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a: AreaConcern[]) => void }) {
   const used = new Set(areas.map((a) => a.region));
-  const addRegion = (region: string) => { if (region && !used.has(region)) onChange([...areas, { region, severity: DEFAULT_SEVERITY, findings: '', focus: false }]); };
+  const [marker, setMarker] = useState<BodyMarker | null>(null);
+  const [show, setShow] = useState<'both' | 'front' | 'back'>('both');
+  // Undo stack of prior `areas` snapshots — mis-taps on a body figure are easy.
+  const [history, setHistory] = useState<AreaConcern[][]>([]);
+  const commit = (next: AreaConcern[]) => { setHistory((h) => [...h.slice(-19), areas]); onChange(next); };
+  const undo = () => setHistory((h) => { if (!h.length) return h; onChange(h[h.length - 1]); return h.slice(0, -1); });
+
+  const addRegion = (region: string) => { if (region && !used.has(region)) commit([...areas, { region, severity: DEFAULT_SEVERITY, findings: '', focus: false }]); };
+  // With a marker armed, tapping stamps that finding (adding the region if new).
+  // With no marker armed this is the original add/remove toggle.
   const toggleRegion = (region: string) => {
-    if (used.has(region)) onChange(areas.filter((a) => a.region !== region));
-    else onChange([...areas, { region, severity: DEFAULT_SEVERITY, findings: '', focus: false }]);
+    if (marker) {
+      const at = areas.findIndex((a) => a.region === region);
+      if (at < 0) commit([...areas, { region, severity: marker.severity, findings: marker.finding, focus: false }]);
+      else commit(areas.map((a, i) => i === at
+        ? { ...a, severity: marker.severity, findings: (a.findings || '').toLowerCase().includes(marker.finding.toLowerCase()) ? a.findings : appendText(a.findings || '', marker.finding) }
+        : a));
+      return;
+    }
+    if (used.has(region)) commit(areas.filter((a) => a.region !== region));
+    else commit([...areas, { region, severity: DEFAULT_SEVERITY, findings: '', focus: false }]);
   };
   const update = (i: number, patch: Partial<AreaConcern>) => onChange(areas.map((a, idx) => idx === i ? { ...a, ...patch } : a));
-  const remove = (i: number) => onChange(areas.filter((_, idx) => idx !== i));
+  const remove = (i: number) => commit(areas.filter((_, idx) => idx !== i));
+
+  const countIn = (view: 'front' | 'back') =>
+    areas.filter((a) => SOAP_REGION_POS[a.region]?.[view]).length;
 
   const figure = (view: 'front' | 'back', label: string) => (
-    <figure class="relative w-[46%] max-w-[200px]">
+    <figure class={'relative ' + (show === 'both' ? 'w-[46%] max-w-[200px]' : 'w-full max-w-[290px]')}>
       <img src={`/bodymap-${view}.png`} width={848} height={1264} alt={`${label} of the body`} class="w-full rounded-md border border-[var(--color-border)] bg-white" />
       {SOAP_REGIONS.filter((r) => SOAP_REGION_POS[r]?.[view]).map((r) => {
         const pos = SOAP_REGION_POS[r]![view]!;
-        const on = used.has(r);
+        const area = areas.find((a) => a.region === r);
+        const on = !!area;
+        const m = area ? markerFor(area) : null;
+        const dot = m ? m.color : 'var(--color-accent)';
         return (
-          <button key={r} type="button" title={`${r}${on ? ' — tap to remove' : ''}`} aria-pressed={on} onClick={() => toggleRegion(r)}
+          <button key={r} type="button" title={`${r}${on ? ` — ${area!.findings || 'flagged'} (sev ${area!.severity})` : marker ? ` — tap to mark ${marker.label}` : ''}`}
+            aria-pressed={on} onClick={() => toggleRegion(r)}
             class="absolute flex items-center justify-center rounded-full border text-[10px] font-bold leading-none transition"
             style={`left:${pos[0]}%;top:${pos[1]}%;width:22px;height:22px;transform:translate(-50%,-50%);cursor:pointer;${on
-              ? 'background:var(--color-accent);color:#fff;border-color:var(--color-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-accent) 32%,transparent)'
+              ? `background:${dot};color:#fff;border-color:${dot};box-shadow:0 0 0 3px color-mix(in srgb, ${dot} 32%, transparent)`
               : 'background:color-mix(in srgb,#000 45%,transparent);color:#fff;border-color:rgba(255,255,255,.6)'}`}>
-            {SOAP_REGION_ABBR[r] || r.slice(0, 2)}
+            {on && m ? m.glyph : (SOAP_REGION_ABBR[r] || r.slice(0, 2))}
           </button>
         );
       })}
-      <figcaption class="mt-1 text-center text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</figcaption>
+      <figcaption class="mt-1 text-center text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">
+        {label}{countIn(view) > 0 && <span class="ml-1 text-[var(--color-accent)]">{countIn(view)}</span>}
+      </figcaption>
     </figure>
   );
 
   return (
     <div class="mt-4 rounded-lg border border-[var(--color-border)] p-3">
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Areas of concern — tap the body to flag a region</div>
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">
+          Body chart — {marker ? <span style={`color:${marker.color}`}>marking “{marker.label}” · tap a region</span> : 'tap the body to flag a region'}
+        </div>
         <select class={`${inputClass} w-auto py-1`} value="" onChange={(e) => { addRegion((e.currentTarget as HTMLSelectElement).value); (e.currentTarget as HTMLSelectElement).value = ''; }}>
           <option value="">+ add region…</option>
           {SOAP_REGIONS.filter((r) => !used.has(r)).map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
       </div>
+
+      {/* Marker key + view switch + undo */}
+      <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2">
+        <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Key</span>
+        {BODY_MARKERS.map((m) => (
+          <button key={m.key} type="button" onClick={() => setMarker(marker?.key === m.key ? null : m)} aria-pressed={marker?.key === m.key}
+            class={'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] leading-none transition '
+              + (marker?.key === m.key ? 'border-transparent text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}
+            style={marker?.key === m.key ? `background:color-mix(in srgb, ${m.color} 20%, transparent)` : ''}>
+            <span style={`color:${m.color}`}>{m.glyph}</span> {m.label}
+          </button>
+        ))}
+        <div class="ml-auto flex items-center gap-1.5">
+          {(['both', 'front', 'back'] as const).map((v) => (
+            <button key={v} type="button" onClick={() => setShow(v)} aria-pressed={show === v}
+              class={'rounded px-1.5 py-0.5 text-[11px] capitalize transition '
+                + (show === v ? 'bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-[var(--color-accent)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}>{v}</button>
+          ))}
+          <button type="button" onClick={undo} disabled={history.length === 0} title="Undo the last body-chart change"
+            class="inline-flex items-center gap-1 rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40">
+            ↺ Undo
+          </button>
+        </div>
+      </div>
+
       <div class="mb-3 flex justify-center gap-4">
-        {figure('front', 'Front')}
-        {figure('back', 'Back')}
+        {show !== 'back' && figure('front', 'Front')}
+        {show !== 'front' && figure('back', 'Back')}
       </div>
       {areas.length === 0 && <div class="py-2 text-center text-[12px] text-[var(--color-text-faint)]">No regions flagged. Tap a spot on the body (or use the dropdown) to record severity + findings.</div>}
       <div class="space-y-2">
@@ -1811,5 +1839,401 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
         ))}
       </div>
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────────── Client Profile tab ──
+// One place per client instead of hunting the same person across Accounts →
+// Intake Forms → SOAP Notes. Picks a client, then shows a clinical timeline
+// (intakes + SOAP notes + bookings merged, newest first), their editable
+// details, and their submitted forms — with the at-a-glance vitals on top.
+
+type TimelineKind = 'soap' | 'intake' | 'appt';
+interface TimelineEvent {
+  key: string;
+  kind: TimelineKind;
+  /** YYYY-MM-DD used for sorting + the rail label. */
+  date: string;
+  title: string;
+  subtitle?: string;
+  soap?: SoapNote;
+  intake?: IntakeRow;
+  appt?: Appointment;
+}
+
+const KIND_TONE: Record<TimelineKind, { label: string; color: string }> = {
+  intake: { label: 'Intake', color: 'var(--color-warn)' },
+  soap: { label: 'SOAP', color: 'var(--color-accent)' },
+  appt: { label: 'Booking', color: 'var(--color-text-muted)' },
+};
+
+function ProfileStat({ label, value, tone, hint }: { label: string; value: string | number; tone?: string; hint?: string }) {
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] px-3 py-2.5">
+      <div class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+      <div class="mt-0.5 truncate text-[15px] font-semibold" style={tone ? `color:${tone}` : 'color:var(--color-text)'} title={hint || String(value)}>{value}</div>
+    </div>
+  );
+}
+
+function ClientProfileTab({ overview, canEdit }: { overview: ReturnType<typeof useFetch<Overview>>; canEdit: boolean }) {
+  const clients = overview.data?.clients ?? [];
+  const [clientId, setClientId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+
+  const selected = clients.find((c) => c.id === clientId) ?? null;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const rows = q ? clients.filter((c) => `${c.name} ${c.email} ${c.phone}`.toLowerCase().includes(q)) : clients;
+    // Most recently seen first — the people you're actually working with float up.
+    return [...rows].sort((a, b) => (b.lastVisitMs ?? 0) - (a.lastVisitMs ?? 0));
+  }, [clients, query]);
+
+  if (selected) {
+    return <ClientProfile key={selected.id} client={selected} canEdit={canEdit} onBack={() => setClientId(null)} onChanged={() => overview.refresh()} />;
+  }
+
+  return (
+    <section>
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <input class={`${inputClass} max-w-[320px] py-1.5`} placeholder="Search name / email / phone" value={query}
+          onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
+        <span class="text-[12px] text-[var(--color-text-faint)]">{filtered.length} client{filtered.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {filtered.map((c) => (
+          <button key={c.id} type="button" onClick={() => setClientId(c.id)}
+            class="flex items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-3 text-left transition-colors hover:border-[var(--color-accent)] hover:bg-[var(--color-elevated)]">
+            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--color-elevated)]">
+              <UserRound size={16} class="text-[var(--color-accent)]" />
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-[14px] font-semibold text-[var(--color-text)]">{c.name || c.email}</span>
+              <span class="mt-0.5 block truncate text-[12px] text-[var(--color-text-muted)]">{c.email}</span>
+              <span class="mt-0.5 block text-[11px] text-[var(--color-text-faint)]">
+                last seen {agoFromMs(c.lastVisitMs)} · {c.appointmentCount} session{c.appointmentCount === 1 ? '' : 's'}
+                {c.upcomingAppointmentCount ? ` · ${c.upcomingAppointmentCount} upcoming` : ''}
+              </span>
+            </span>
+          </button>
+        ))}
+        {filtered.length === 0 && (
+          <div class="col-span-full rounded-lg border border-dashed border-[var(--color-border)] px-4 py-10 text-center text-[13px] text-[var(--color-text-faint)]">No matching clients.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ClientProfile({ client, canEdit, onBack, onChanged }: {
+  client: MassageClient; canEdit: boolean; onBack: () => void; onChanged: () => void;
+}) {
+  const soap = useFetch<SoapClientResp>(`/api/massage-admin/soap?client=${encodeURIComponent(client.id)}`, 0);
+  const appts = useFetch<{ appointments: Appointment[] }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/appointments`, 0);
+  const intakes = useFetch<{ intakes: IntakeRow[] }>('/api/massage-admin/intakes', 0);
+
+  const [pane, setPane] = useState<'timeline' | 'general' | 'forms'>('timeline');
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // null = viewing; otherwise the SOAP editor is open (new note, or editing one).
+  const [editing, setEditing] = useState<null | { note: SoapNote | null }>(null);
+
+  const notes = soap.data?.notes ?? [];
+  const cf = soap.data?.carry_forward;
+  const appointments = appts.data?.appointments ?? [];
+  const myIntakes = useMemo(
+    () => (intakes.data?.intakes ?? []).filter((i) => i.user_id === client.id || (client.email && i.client_email === client.email)),
+    [intakes.data, client.id, client.email],
+  );
+
+  // Merge everything clinical into one chronological rail.
+  const events = useMemo<TimelineEvent[]>(() => {
+    const out: TimelineEvent[] = [];
+    for (const n of notes) {
+      out.push({
+        key: `soap:${n.id}`, kind: 'soap',
+        date: n.session_date || (n.created_at || '').slice(0, 10),
+        title: 'SOAP note',
+        subtitle: [
+          n.pain_before != null || n.pain_after != null ? `pain ${n.pain_before ?? '—'} → ${n.pain_after ?? '—'}` : '',
+          n.areas_concern?.map((a) => a.region).join(', ') || '',
+        ].filter(Boolean).join(' · '),
+        soap: n,
+      });
+    }
+    for (const i of myIntakes) {
+      out.push({
+        key: `intake:${i.id}`, kind: 'intake',
+        date: (i.submitted_at || '').slice(0, 10),
+        title: 'Patient intake',
+        subtitle: [i.service_name || '', i.reviewed_at ? 'reviewed' : 'not reviewed'].filter(Boolean).join(' · '),
+        intake: i,
+      });
+    }
+    for (const a of appointments) {
+      out.push({
+        key: `appt:${a.id}`, kind: 'appt',
+        date: a.appt_date,
+        title: a.service_name || 'Session',
+        subtitle: `${a.appt_time} · ${a.status}`,
+        appt: a,
+      });
+    }
+    return out.sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+  }, [notes, myIntakes, appointments]);
+
+  useEffect(() => { if (!selectedKey && events[0]) setSelectedKey(events[0].key); }, [events, selectedKey]);
+  const selectedEvent = events.find((e) => e.key === selectedKey) ?? null;
+
+  const flags = Object.values(cf?.flags ?? {});
+  const focusNext = cf?.next_focus ?? [];
+  const lastNote = notes[0];
+
+  const refreshClinical = () => { soap.refresh(); setEditing(null); };
+
+  return (
+    <section class="space-y-4">
+      {/* Header */}
+      <div class="flex flex-wrap items-start gap-3">
+        <button type="button" onClick={onBack} title="Back to client list"
+          class="mt-1 rounded-md border border-[var(--color-border)] px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]">←</button>
+        <div class="min-w-0 flex-1">
+          <h2 class="truncate text-[19px] font-semibold text-[var(--color-text)]">{client.name || client.email}</h2>
+          <div class="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-[var(--color-text-muted)]">
+            <span class="inline-flex items-center gap-1.5"><Mail size={12} /> {client.email}</span>
+            {client.phone && <span class="inline-flex items-center gap-1.5">☎ {client.phone}</span>}
+            {client.accountStatus !== 'active' && (
+              <span class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--color-warn)]">{client.accountStatus}</span>
+            )}
+          </div>
+        </div>
+        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit}
+          onClick={() => { setPane('timeline'); setEditing({ note: null }); }}>
+          <Plus size={13} /> New session note
+        </button>
+      </div>
+
+      {/* Vitals */}
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+        <ProfileStat label="Last seen" value={agoFromMs(client.lastVisitMs)} />
+        <ProfileStat label="Sessions" value={client.appointmentCount} />
+        <ProfileStat label="Notes on file" value={notes.length} />
+        <ProfileStat label="Upcoming" value={client.upcomingAppointmentCount}
+          tone={client.upcomingAppointmentCount ? 'var(--color-accent)' : undefined} />
+        <ProfileStat label="Red flags" value={flags.length ? `${flags.length} flagged` : 'Clear'}
+          tone={flags.length ? 'var(--color-status-failed)' : 'var(--color-status-done)'}
+          hint={flags.map((f) => `${f.label}: ${f.value}`).join(' · ')} />
+        <ProfileStat label="Focus next" value={focusNext.length ? focusNext.map((f) => f.region).join(', ') : '—'}
+          tone={focusNext.length ? 'var(--color-accent)' : undefined}
+          hint={focusNext.map((f) => f.region + (f.note ? ` (${f.note})` : '')).join(' · ')} />
+      </div>
+
+      {flags.length > 0 && (
+        <div class="rounded-lg border border-[var(--color-warn)] px-3 py-2 text-[12px] text-[var(--color-warn)]">
+          <span class="font-semibold">⚠ Intake safety flags:</span> {flags.map((f) => `${f.label}: ${f.value}`).join(' · ')}
+        </div>
+      )}
+
+      {/* Panes */}
+      <div class="flex flex-wrap items-center gap-1 border-b border-[var(--color-border)]">
+        {([['timeline', 'Clinical Timeline'], ['general', 'General information'], ['forms', 'Forms']] as const).map(([k, label]) => (
+          <button key={k} type="button" onClick={() => setPane(k)} aria-pressed={pane === k}
+            class={'-mb-px border-b-2 px-3 py-1.5 text-[13px] font-medium transition-colors '
+              + (pane === k
+                ? 'border-[var(--color-accent)] text-[var(--color-text)]'
+                : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}>
+            {label}
+            {k === 'forms' && myIntakes.length > 0 && <span class="ml-1.5 text-[11px] text-[var(--color-text-faint)]">{myIntakes.length}</span>}
+          </button>
+        ))}
+      </div>
+
+      {pane === 'general' && <AccountDetail client={client} canEdit={canEdit} onChanged={onChanged} />}
+
+      {pane === 'forms' && (
+        <div class="space-y-3">
+          {myIntakes.length === 0
+            ? <div class="rounded-lg border border-dashed border-[var(--color-border)] px-4 py-8 text-center text-[13px] text-[var(--color-text-faint)]">No intake forms submitted by this client yet.</div>
+            : myIntakes.map((i) => <IntakeViewer key={i.id} id={i.id} canEdit={canEdit} onReviewed={() => intakes.refresh()} />)}
+        </div>
+      )}
+
+      {pane === 'timeline' && (editing
+        ? (
+          <SoapForm
+            client={client}
+            appointments={appointments}
+            existing={editing.note}
+            seed={null}
+            history={notes}
+            carryForward={editing.note ? null : (cf ?? null)}
+            canEdit={canEdit}
+            onCancel={() => setEditing(null)}
+            onSaved={refreshClinical}
+          />
+        )
+        : (
+          <div class="grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
+            {/* Event rail */}
+            <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+              <div class="border-b border-[var(--color-border)] px-3 py-2 text-[12px] font-semibold text-[var(--color-text)]">
+                {events.length} entr{events.length === 1 ? 'y' : 'ies'}
+              </div>
+              <div class="max-h-[620px] overflow-y-auto">
+                {events.map((e) => {
+                  const tone = KIND_TONE[e.kind];
+                  const on = e.key === selectedKey;
+                  return (
+                    <button key={e.key} type="button" onClick={() => setSelectedKey(e.key)}
+                      class={'flex w-full items-start gap-2.5 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 '
+                        + (on ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]')}>
+                      <span class="mt-1 h-2 w-2 shrink-0 rounded-full" style={`background:${tone.color}`} />
+                      <span class="min-w-0 flex-1">
+                        <span class="flex items-center justify-between gap-2">
+                          <span class="truncate text-[13px] font-semibold text-[var(--color-text)]">{e.date || '—'}</span>
+                          <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                            style={`color:${tone.color};background:color-mix(in srgb, ${tone.color} 14%, transparent)`}>{tone.label}</span>
+                        </span>
+                        <span class="mt-0.5 block truncate text-[12px] text-[var(--color-text-muted)]">{e.title}</span>
+                        {e.subtitle && <span class="mt-0.5 block truncate text-[11px] text-[var(--color-text-faint)]">{e.subtitle}</span>}
+                      </span>
+                    </button>
+                  );
+                })}
+                {events.length === 0 && (
+                  <div class="px-3 py-8 text-center text-[13px] text-[var(--color-text-faint)]">
+                    Nothing on file yet. Start with a session note.
+                  </div>
+                )}
+              </div>
+            </aside>
+
+            {/* Detail pane */}
+            <main class="space-y-4">
+              {selectedEvent?.kind === 'intake' && selectedEvent.intake && (
+                <IntakeViewer id={selectedEvent.intake.id} canEdit={canEdit} onReviewed={() => intakes.refresh()} />
+              )}
+              {selectedEvent?.kind === 'soap' && selectedEvent.soap && (
+                <SoapNoteDetail note={selectedEvent.soap} canEdit={canEdit} onEdit={() => setEditing({ note: selectedEvent.soap! })} />
+              )}
+              {selectedEvent?.kind === 'appt' && selectedEvent.appt && (
+                <AppointmentDetail appt={selectedEvent.appt} note={notes.find((n) => n.appointment_id === selectedEvent.appt!.id) ?? null}
+                  canEdit={canEdit} onWriteNote={() => setEditing({ note: null })} />
+              )}
+              {!selectedEvent && (
+                <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[13px] text-[var(--color-text-faint)]">
+                  Select an entry on the left.
+                </div>
+              )}
+              {soap.data && notes.length > 0 && <TissueTrend trend={soap.data.trend} />}
+              {lastNote?.home_care && (
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4 text-[13px]">
+                  <div class="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Latest home care</div>
+                  <div class="text-[var(--color-text-muted)]">{lastNote.home_care}</div>
+                </div>
+              )}
+            </main>
+          </div>
+        ))}
+    </section>
+  );
+}
+
+// Read-only view of one SOAP note — the clinical record as written, with an
+// Edit jump into the same form the SOAP Notes tab uses.
+function SoapNoteDetail({ note, canEdit, onEdit }: { note: SoapNote; canEdit: boolean; onEdit: () => void }) {
+  const row = (label: string, value: string | null | undefined) => value
+    ? (
+      <div>
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+        <div class="mt-0.5 whitespace-pre-wrap text-[13px] leading-relaxed text-[var(--color-text)]">{value}</div>
+      </div>
+    ) : null;
+
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 class="text-[15px] font-semibold text-[var(--color-text)]">Session {note.session_date || (note.created_at || '').slice(0, 10)}</h3>
+          <div class="mt-1 flex flex-wrap gap-x-3 text-[12px] text-[var(--color-text-faint)]">
+            {(note.pain_before != null || note.pain_after != null) && (
+              <span>pain {note.pain_before ?? '—'} → <span class="text-[var(--color-status-done)]">{note.pain_after ?? '—'}</span></span>
+            )}
+            {note.pressure && <span>· {note.pressure}</span>}
+            {note.position && <span>· {note.position}</span>}
+            {note.duration_min ? <span>· {note.duration_min} min</span> : null}
+            {note.author && <span>· {note.author}</span>}
+          </div>
+        </div>
+        <button type="button" class={btnGhost} disabled={!canEdit} onClick={onEdit}>Edit note</button>
+      </div>
+
+      {note.techniques?.length > 0 && (
+        <div class="mb-3 flex flex-wrap gap-1">
+          {note.techniques.map((t) => (
+            <span key={t} class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-muted)]">{t}</span>
+          ))}
+        </div>
+      )}
+
+      {note.areas_concern?.length > 0 && (
+        <div class="mb-3 space-y-1">
+          <div class="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Areas of concern</div>
+          {note.areas_concern.map((a, i) => (
+            <div key={i} class="flex flex-wrap items-baseline gap-2 text-[13px]">
+              <span class="font-semibold text-[var(--color-text)]">{a.region}</span>
+              <span class="rounded px-1.5 text-[11px] font-bold text-white"
+                style={`background:hsl(${Math.round(120 - ((a.severity || 1) - 1) * 12)} 68% 42%)`}>{a.severity}</span>
+              {a.focus && <span class="text-[11px] text-[var(--color-accent)]">★ focus next</span>}
+              {a.findings && <span class="text-[12px] text-[var(--color-text-muted)]">{a.findings}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div class="grid gap-3 md:grid-cols-2">
+        {row('Subjective', note.subjective)}
+        {row('Objective', note.objective)}
+        {row('Assessment', note.assessment)}
+        {row('Plan', note.plan)}
+        {row('Home care', note.home_care)}
+        {row('Referrals', note.referrals)}
+        {row('Adverse reactions', note.adverse_reactions)}
+      </div>
+    </section>
+  );
+}
+
+// A booking on the timeline — plus the "no note written" nudge that used to
+// require cross-checking the SOAP tab by hand.
+function AppointmentDetail({ appt, note, canEdit, onWriteNote }: {
+  appt: Appointment; note: SoapNote | null; canEdit: boolean; onWriteNote: () => void;
+}) {
+  const past = appt.start_ms ? appt.start_ms < Date.now() : false;
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 class="text-[15px] font-semibold text-[var(--color-text)]">{appt.service_name || 'Session'}</h3>
+          <div class="mt-1 flex flex-wrap gap-x-3 text-[12px] text-[var(--color-text-faint)]">
+            <span>{fmtDay(appt.appt_date)} · {appt.appt_time}</span>
+            <span>· {appt.status}</span>
+            {appt.enhancement_applied && <span class="text-[var(--color-accent)]">· 🎁 {appt.enhancement_applied}</span>}
+          </div>
+        </div>
+        {!note && past && (
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit} onClick={onWriteNote}>
+            <Plus size={13} /> Write the note
+          </button>
+        )}
+      </div>
+      <div class="mt-3 text-[13px]">
+        {note
+          ? <span class="text-[var(--color-status-done)]">✓ SOAP note on file for this session.</span>
+          : past
+            ? <span class="text-[var(--color-warn)]">No SOAP note written for this past session.</span>
+            : <span class="text-[var(--color-text-muted)]">Upcoming — the note can be written after the session.</span>}
+      </div>
+    </section>
   );
 }
