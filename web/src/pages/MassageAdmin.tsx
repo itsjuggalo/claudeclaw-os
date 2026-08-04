@@ -1505,6 +1505,16 @@ function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
   );
 }
 
+// The SOAP note is written as a 4-step wizard rather than one long scroll: the
+// order matches how the session actually runs (what they said → what you found →
+// where → what happens next), and on a phone one step fits the screen.
+const SOAP_STEPS = [
+  { label: 'Narrative' },
+  { label: 'Findings' },
+  { label: 'Body Chart' },
+  { label: 'Summary' },
+] as const;
+
 // The structured SOAP form (create or edit). Areas-of-concern body-map + carry-forward.
 function SoapForm({ client, appointments, existing, seed, history, carryForward, canEdit, onCancel, onSaved }: {
   client: MassageClient; appointments: Appointment[]; existing: SoapNote | null;
@@ -1552,6 +1562,10 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
   const [adverse, setAdverse] = useState(src?.adverse_reactions || '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Wizard step. Every field stays mounted in this component's state, so moving
+  // between steps never loses a keystroke and "Save & exit" works from any step —
+  // the steps are presentation only, not a multi-request form.
+  const [step, setStep] = useState(1);
 
   function toggleTechnique(t: string) {
     setTechniques((cur) => cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]);
@@ -1597,7 +1611,10 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
   return (
     <section class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-surface,var(--color-elevated))] p-4">
       <div class="mb-3 flex items-center justify-between">
-        <h3 class="text-[16px] font-semibold text-[var(--color-text)]">{existing ? 'Edit SOAP note' : seed ? 'Duplicate note' : 'New SOAP note'} · {client.name || client.email}</h3>
+        <h3 class="text-[16px] font-semibold text-[var(--color-text)]">
+          {existing ? 'Edit SOAP note' : seed ? 'Duplicate note' : 'New SOAP note'} · {client.name || client.email}
+          <span class="ml-2 rounded-md border border-[var(--color-accent)] px-1.5 py-0.5 text-[13px] font-normal text-[var(--color-accent)]">{SOAP_STEPS[step - 1].label} ({step}/{SOAP_STEPS.length})</span>
+        </h3>
         <button type="button" class={btnGhost} onClick={onCancel}><X size={15} /> Close</button>
       </div>
       <div class="mb-3 text-[14px] text-[var(--color-text-faint)]">Private clinical note — the client never sees this.</div>
@@ -1614,10 +1631,24 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
       )}
       {!existing && !seed && (carryForward?.next_focus?.length ?? 0) > 0 && (
         <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[14px] text-[var(--color-text-muted)]">
-          <span class="font-semibold text-[var(--color-accent)]">Carried forward:</span> {carryForward!.next_focus.map((n) => n.region + (n.note ? ` (${n.note})` : '')).join(' · ')} — pre-loaded into the body-map below.
+          <span class="font-semibold text-[var(--color-accent)]">Carried forward:</span> {carryForward!.next_focus.map((n) => n.region + (n.note ? ` (${n.note})` : '')).join(' · ')} — pre-loaded into the Body Chart step.
         </div>
       )}
 
+      {/* Step rail — every step is reachable directly; nothing here is required
+          to advance, so gating the jumps would only add friction. */}
+      <div class="mb-4 flex flex-wrap items-center gap-1">
+        {SOAP_STEPS.map((s, i) => (
+          <button key={s.label} type="button" onClick={() => setStep(i + 1)}
+            class={`rounded-md border px-2 py-1 text-[13px] ${step === i + 1
+              ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-[var(--color-text)]'
+              : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+            <span class="opacity-60">{i + 1}</span> {s.label}
+          </button>
+        ))}
+      </div>
+
+      {step === 1 && (<>
       <div class="grid gap-3 md:grid-cols-3">
         <Field label="Appointment (optional)">
           <select class={inputClass} value={apptId} onChange={(e) => pickAppt((e.currentTarget as HTMLSelectElement).value)}>
@@ -1642,6 +1673,12 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
       </div>
 
       <div class="mt-4">
+        <NoteField label="Subjective (client reports)" phraseKey="subjective" value={subjective} onChange={setSubjective} prior={priorVals((n) => n.subjective)} />
+      </div>
+      </>)}
+
+      {step === 2 && (<>
+      <div>
         <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Techniques</div>
         <div class="flex flex-wrap gap-1.5">
           {SOAP_TECHNIQUES.map((t) => (
@@ -1653,22 +1690,48 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
         </div>
       </div>
 
-      <BodyMapPicker areas={areas} onChange={setAreas} />
-
       <div class="mt-4 grid gap-3 md:grid-cols-2">
-        <NoteField label="Subjective (client reports)" phraseKey="subjective" value={subjective} onChange={setSubjective} prior={priorVals((n) => n.subjective)} />
         <NoteField label="Objective (findings)" phraseKey="objective" value={objective} onChange={setObjective} prior={priorVals((n) => n.objective)} />
         <NoteField label="Assessment" phraseKey="assessment" value={assessment} onChange={setAssessment} prior={priorVals((n) => n.assessment)} />
+      </div>
+      </>)}
+
+      {step === 3 && <BodyMapPicker areas={areas} onChange={setAreas} />}
+
+      {step === 4 && (<>
+      {/* Recap of what the earlier steps captured, so the plan is written with the
+          session in view instead of from memory. */}
+      <div class="mb-4 rounded-md border border-[var(--color-border)] px-3 py-2 text-[14px] text-[var(--color-text-muted)]">
+        <span class="font-semibold text-[var(--color-text)]">{sessionDate || today}</span>
+        {duration !== '' && <> · {duration} min</>}
+        {(painBefore !== '' || painAfter !== '') && <> · pain {painBefore || '—'} → {painAfter || '—'}</>}
+        {position && <> · {position}</>}
+        {pressure && <> · {pressure}</>}
+        {techniques.length > 0 && <> · {techniques.join(', ')}</>}
+        <div class="mt-1">
+          {areas.length > 0
+            ? <>{areas.length} area{areas.length === 1 ? '' : 's'} charted: {areas.map((a) => `${a.region}${a.severity ? ` (${a.severity})` : ''}`).join(' · ')}</>
+            : <span class="text-[var(--color-text-faint)]">No areas charted — go back to Body Chart if this session had findings.</span>}
+        </div>
+      </div>
+      <div class="grid gap-3 md:grid-cols-2">
         <NoteField label="Plan" phraseKey="plan" value={plan} onChange={setPlan} prior={priorVals((n) => n.plan)} />
         <NoteField label="Home care (self-care given)" phraseKey="home_care" value={homeCare} onChange={setHomeCare} prior={priorVals((n) => n.home_care)} />
         <NoteField label="Referrals" phraseKey="referrals" value={referrals} onChange={setReferrals} prior={priorVals((n) => n.referrals)} />
-        <div class="md:col-span-2"><NoteField label="Adverse reactions" phraseKey="adverse_reactions" value={adverse} onChange={setAdverse} prior={priorVals((n) => n.adverse_reactions)} /></div>
+        <NoteField label="Adverse reactions" phraseKey="adverse_reactions" value={adverse} onChange={setAdverse} prior={priorVals((n) => n.adverse_reactions)} />
       </div>
+      </>)}
 
       {err && <div class="mt-3 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
-      <div class="mt-4 flex items-center justify-end gap-2">
+      <div class="mt-4 flex flex-wrap items-center justify-end gap-2">
         <button type="button" class={btnGhost} onClick={onCancel}>Cancel</button>
-        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !canEdit} onClick={save}><Save size={15} /> {busy ? 'Saving…' : existing ? 'Save changes' : 'Save note'}</button>
+        <span class="flex-1" />
+        <button type="button" class={btnGhost} disabled={step === 1} onClick={() => setStep((s) => Math.max(1, s - 1))}>Back</button>
+        {/* Saving is allowed from any step — a half-written note beats a lost one. */}
+        <button type="button" class={btnGhost} disabled={busy || !canEdit} onClick={save}><Save size={15} /> {busy ? 'Saving…' : 'Save & exit'}</button>
+        {step < SOAP_STEPS.length
+          ? <button type="button" class={btnAccent} style="background:var(--color-accent)" onClick={() => setStep((s) => Math.min(SOAP_STEPS.length, s + 1))}>Continue</button>
+          : <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !canEdit} onClick={save}><Save size={15} /> {busy ? 'Saving…' : existing ? 'Save changes' : 'Save note'}</button>}
       </div>
     </section>
   );

@@ -75,7 +75,13 @@ function useSchedule(rangeStart: Date, rangeEnd: Date) {
   const b = useFetch<ScheduleResp>(keyB === keyA ? null : `/api/massage-admin/availability/schedule?month=${keyB}`, 30000);
 
   return useMemo(() => {
-    const appts = [...(a.data?.appts ?? []), ...(b.data?.appts ?? [])];
+    // De-dupe by id: the two month fetches are expected to be disjoint, but if
+    // they ever overlap (a server that ignores ?month, a booking that straddles
+    // a boundary) every duplicated appointment would be drawn — and counted —
+    // twice. Keyed by id, so the same booking can only appear once.
+    const byId = new Map<string, ScheduleAppt>();
+    for (const x of [...(a.data?.appts ?? []), ...(b.data?.appts ?? [])]) byId.set(x.id, x);
+    const appts = [...byId.values()];
     const blackouts = new Set([...(a.data?.blackouts ?? []), ...(b.data?.blackouts ?? [])]);
     const timeBlocks = [...(a.data?.timeBlocks ?? []), ...(b.data?.timeBlocks ?? [])];
     const byDay: Record<string, ScheduleAppt[]> = {};

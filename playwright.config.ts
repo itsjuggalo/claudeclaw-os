@@ -12,6 +12,10 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:5173',
     trace: 'on-first-retry',
+    // Playwright's bundled chromium is not downloaded on this box (`playwright
+    // install` pulls ~150MB per update), so every spec failed to launch. Use the
+    // system Chrome that's already here; override with PLAYWRIGHT_CHROME.
+    launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME || '/usr/bin/google-chrome' },
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
