@@ -284,8 +284,12 @@ RestrictSUIDSGID=yes
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now claudeclaw >/dev/null
-ok "Service enabled + started"
+systemctl enable claudeclaw >/dev/null
+# `enable --now` on an already-active service is a no-op for starting it —
+# it would NOT pick up a freshly rebuilt dist/ on a re-run/update. Restart
+# unconditionally; `restart` also starts a stopped/fresh service correctly.
+systemctl restart claudeclaw
+ok "Service enabled + restarted"
 
 # ── 9. firewall ───────────────────────────────────────────────────────────────
 step "Configuring firewall (ufw)"
