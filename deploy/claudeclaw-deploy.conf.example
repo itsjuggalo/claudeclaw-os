@@ -36,6 +36,11 @@ TS_HOSTNAME=claudeclaw
 
 # ── Optional (sensible defaults) ──────────────────────────────────────────────
 
+# How agents address you on shared surfaces such as the text War Room.
+# Defaults to "User" — set it unless you like being called that.
+# This file is sourced by bash, so QUOTE any name containing spaces.
+# CLAUDECLAW_OWNER_NAME="Ada Lovelace"
+
 # Dashboard port (loopback only; never exposed publicly).
 # DASHBOARD_PORT=3141
 
@@ -51,9 +56,16 @@ TS_HOSTNAME=claudeclaw
 # (your lockout recovery), and disable this node's key expiry in Tailscale.
 # SSH_HARDENING=public
 
-# Beta multi-provider (ACP) switcher in the dashboard (Claude/OpenCode/Gemini/
-# Codex/OpenRouter). Default false = Claude only, picker hidden. Set true to
-# unlock it — but each non-Claude provider still needs its CLI installed AND
+# Native OpenAI (Codex SDK) is a stable, ungated provider — no ENABLE_ACP needed.
+# Authenticate it either by setting a key here, or by running `codex login` on
+# this VPS once it's deployed (uses a ChatGPT subscription instead of per-token
+# billing). Leave blank if you only use Claude.
+# OPENAI_API_KEY=
+
+# Experimental provider tier (the ACP family: codex-acp, Gemini, OpenCode,
+# OpenRouter, custom). Default false = the experimental picker is hidden; the
+# stable tier (Claude and native OpenAI above) is always available. Set true to
+# unlock it — but each experimental provider still needs its CLI installed AND
 # authenticated on this VPS (e.g. `opencode auth login`), or its runs will fail.
 # ENABLE_ACP=false
 
