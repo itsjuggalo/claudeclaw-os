@@ -388,3 +388,19 @@ input, textarea, select {
   .nsq-spinner i { animation: nsq-fade 1s ease-in-out infinite alternate; }
   @keyframes nsq-fade { from { opacity: .3; } to { opacity: 1; } }
 }
+
+/* Massage console tab strip — a single horizontally-scrolling row on narrow
+   screens (it used to wrap onto three lines and eat a third of a phone). */
+.mc-tabstrip { scrollbar-width: none; -ms-overflow-style: none; }
+.mc-tabstrip::-webkit-scrollbar { display: none; }
+.mc-tabstrip > * { flex: 0 0 auto; }
+
+/* Rendered intake forms come from the massage server as raw HTML — clamp them
+   so a wide table or a long unbroken address can't push the console off a phone
+   (the wrapper scrolls horizontally instead). */
+.intake-review { max-width: 100%; }
+.intake-review * { max-width: 100%; }
+.intake-review table { display: block; overflow-x: auto; }
+.intake-review td, .intake-review th, .intake-review p, .intake-review div {
+  overflow-wrap: anywhere; word-break: break-word;
+}

@@ -5,6 +5,7 @@ import {
   Check,
   ClipboardList,
   Copy,
+  Download,
   Gift,
   History,
   Keyboard,
@@ -13,6 +14,7 @@ import {
   MessageSquareText,
   Mic,
   Plus,
+  Printer,
   RefreshCw,
   Save,
   Send,
@@ -302,7 +304,9 @@ export function MassageAdmin() {
       <PageHeader
         title="Massage Admin"
         tabs={
-          <>
+          // One scrolling row instead of three wrapped rows on a phone — the
+          // tab strip was eating a third of the screen before any content.
+          <div class="mc-tabstrip flex w-full flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
             <Tab label="Today" active={tab === 'today'} onClick={() => setTab('today')} />
             <Tab label="Client Profile" active={tab === 'profile'} count={overview.data?.clients.length} onClick={() => setTab('profile')} />
             <Tab label="Accounts" active={tab === 'accounts'} onClick={() => setTab('accounts')} />
@@ -311,7 +315,7 @@ export function MassageAdmin() {
             <Tab label="Messaging" active={tab === 'messaging'} onClick={() => setTab('messaging')} />
             <Tab label="Promos & Codes" active={tab === 'promos'} onClick={() => setTab('promos')} />
             <Tab label="Availability" active={tab === 'availability'} count={pendingReqs.data?.pending?.length || undefined} onClick={() => setTab('availability')} />
-          </>
+          </div>
         }
         actions={
           <button type="button" onClick={() => void spin(() => { overview.refresh(); session.refresh(); })} disabled={refreshing} aria-busy={refreshing} class={btnGhost}>
@@ -414,7 +418,7 @@ function AccountsTab({ overview, canEdit }: { overview: ReturnType<typeof useFet
   }, [filtered, selectedId]);
 
   return (
-    <div class="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+    <div class="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[320px_minmax(0,1fr)]">
       <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
         <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
           <input
@@ -1230,7 +1234,7 @@ function IntakesTab({ canEdit }: { canEdit: boolean }) {
   useEffect(() => { if (!selectedId && filtered[0]) setSelectedId(filtered[0].id); }, [filtered, selectedId]);
 
   return (
-    <div class="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+    <div class="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[340px_minmax(0,1fr)]">
       <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
         <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
           <input class={`${inputClass} py-1.5`} placeholder="Search client / email / service" value={query} onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
@@ -1348,7 +1352,7 @@ function SoapTab({ overview, canEdit }: { overview: ReturnType<typeof useFetch<O
   const selected = clients.find((c) => c.id === clientId) ?? null;
 
   return (
-    <div class="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+    <div class="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[320px_minmax(0,1fr)]">
       <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
         <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
           <input class={`${inputClass} py-1.5`} placeholder="Find client for notes" value={query} onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
@@ -1904,7 +1908,10 @@ function ClientProfileTab({ overview, canEdit }: { overview: ReturnType<typeof u
 
   const now = Date.now();
   const DAY = 86_400_000;
-  const newClients = clients.filter((c) => c.createdAt && now - Date.parse(c.createdAt) < 30 * DAY).length;
+  // Same date-string comparison as the weekly card — SQLite datetimes ("YYYY-MM-DD
+  // HH:MM:SS") don't parse reliably through Date, and would silently read as NaN.
+  const cutoff = isoLocalDate(new Date(now - 30 * DAY));
+  const newClients = clients.filter((c) => (c.createdAt || '').slice(0, 10) >= cutoff).length;
   const staleClients = clients.filter((c) => c.lastVisitMs && now - c.lastVisitMs > 30 * DAY).length;
   const todayCount = (todaySched.data?.appts ?? []).filter((a) => a.appt_date === todayIso).length;
 
@@ -1920,6 +1927,10 @@ function ClientProfileTab({ overview, canEdit }: { overview: ReturnType<typeof u
         <input class={`${inputClass} max-w-[320px] py-1.5`} placeholder="Search name / email / phone" value={query}
           onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
         <span class="text-[14px] text-[var(--color-text-faint)]">{filtered.length} client{filtered.length === 1 ? '' : 's'}</span>
+        <button type="button" class={`${btnGhost} ml-auto`} title="Download the whole client book as CSV"
+          onClick={() => exportClientsCsv(filtered)}>
+          <Download size={15} /> Export CSV
+        </button>
       </div>
       <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {filtered.map((c) => (
@@ -1975,7 +1986,7 @@ function ClientProfile({ client, canEdit, onBack, onChanged }: {
         date: n.session_date || (n.created_at || '').slice(0, 10),
         title: 'SOAP note',
         subtitle: [
-          n.pain_before != null || n.pain_after != null ? `pain ${n.pain_before ?? '—'} → ${n.pain_after ?? '—'}` : '',
+          n.pain_before != null || n.pain_after != null ? `pain ${escHtml(String(n.pain_before ?? '—'))} → ${escHtml(String(n.pain_after ?? '—'))}` : '',
           n.areas_concern?.map((a) => a.region).join(', ') || '',
         ].filter(Boolean).join(' · '),
         soap: n,
@@ -2029,10 +2040,16 @@ function ClientProfile({ client, canEdit, onBack, onChanged }: {
             )}
           </div>
         </div>
-        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit}
-          onClick={() => { setPane('timeline'); setEditing({ note: null }); }}>
-          <Plus size={15} /> New session note
-        </button>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" class={btnGhost} title="Open a printable record — use the browser's Save as PDF"
+            onClick={() => printClientRecord(client, notes, myIntakes, flags)}>
+            <Printer size={15} /> PDF
+          </button>
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit}
+            onClick={() => { setPane('timeline'); setEditing({ note: null }); }}>
+            <Plus size={15} /> New session note
+          </button>
+        </div>
       </div>
 
       {/* Vitals */}
@@ -2095,7 +2112,7 @@ function ClientProfile({ client, canEdit, onBack, onChanged }: {
           />
         )
         : (
-          <div class="grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
+          <div class="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[300px_minmax(0,1fr)]">
             {/* Event rail */}
             <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
               <div class="border-b border-[var(--color-border)] px-3 py-2 text-[14px] font-semibold text-[var(--color-text)]">
@@ -2300,11 +2317,32 @@ function TodayTab({ overview, pending, onGoTo }: {
   const stale = clients.filter((c) => c.lastVisitMs && now.getTime() - c.lastVisitMs > 30 * DAY);
   const paymentsPending = monitor.data?.payments?.pending ?? 0;
 
+  // Sun→Sat window around today, scored off the same schedule feed.
+  const week = useMemo(() => {
+    const start = new Date(now); start.setDate(start.getDate() - start.getDay());
+    const end = new Date(start); end.setDate(end.getDate() + 6);
+    const lo = isoLocalDate(start), hi = isoLocalDate(end);
+    const inWeek = (sched.data?.appts ?? []).filter((a) => a.appt_date >= lo && a.appt_date <= hi);
+    const cancelled = inWeek.filter((a) => /cancel|declin/i.test(a.status)).length;
+    const live = inWeek.filter((a) => !/cancel|declin/i.test(a.status));
+    const done = live.filter((a) => a.appt_date < todayIso).length;
+    const upcoming = live.length - done;
+    // createdAt arrives as either ISO or SQLite "YYYY-MM-DD HH:MM:SS" — compare
+    // on the leading date string so no Date parsing (or TZ shift) is involved.
+    const newClients = clients.filter((c) => (c.createdAt || '').slice(0, 10) >= lo).length;
+    const line = live.length === 0
+      ? 'No sessions on the book this week — a good week to chase the clients who have gone quiet.'
+      : `${done} done, ${upcoming} to come${cancelled ? `, ${cancelled} cancelled` : ''}${newClients ? ` · ${newClients} new client${newClients === 1 ? '' : 's'} signed up` : ''}.`;
+    return { done, upcoming, cancelled, newClients, line };
+  }, [sched.data, clients, todayIso]);
+
   // Everything genuinely waiting on Mike, most-blocking first.
-  const todo: Array<{ label: string; count: number; tone: string; go: () => void }> = [
+  // `go` is optional on purpose: payments have no view in this console, so that
+  // row states the fact without promising a jump it can't make.
+  const todo: Array<{ label: string; count: number; tone: string; go?: () => void; note?: string }> = [
     { label: 'booking request' + (reqs.length === 1 ? '' : 's') + ' awaiting approval', count: reqs.length, tone: 'var(--color-warn)', go: () => onGoTo('availability') },
     { label: 'intake form' + (unreviewed.length === 1 ? '' : 's') + ' not reviewed', count: unreviewed.length, tone: 'var(--color-warn)', go: () => onGoTo('intakes') },
-    { label: 'payment' + (paymentsPending === 1 ? '' : 's') + ' pending', count: paymentsPending, tone: 'var(--color-status-failed)', go: () => onGoTo('profile') },
+    { label: 'payment' + (paymentsPending === 1 ? '' : 's') + ' pending', count: paymentsPending, tone: 'var(--color-status-failed)', note: 'settle on the massage site' },
     { label: 'client' + (stale.length === 1 ? '' : 's') + ' not seen in 30+ days', count: stale.length, tone: 'var(--color-text-muted)', go: () => onGoTo('profile') },
   ].filter((t) => t.count > 0);
 
@@ -2354,15 +2392,37 @@ function TodayTab({ overview, pending, onGoTo }: {
         ) : (
           <div class="space-y-1.5">
             {todo.map((t) => (
-              <button key={t.label} type="button" onClick={t.go}
-                class="flex w-full items-center gap-3 rounded-md border border-[var(--color-border)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--color-elevated)]">
+              <button key={t.label} type="button" onClick={t.go} disabled={!t.go}
+                class={'flex w-full items-center gap-3 rounded-md border border-[var(--color-border)] px-3 py-2.5 text-left transition-colors '
+                  + (t.go ? 'hover:bg-[var(--color-elevated)]' : 'cursor-default')}>
                 <span class="min-w-[34px] text-[20px] font-semibold tabular-nums" style={`color:${t.tone}`}>{t.count}</span>
                 <span class="flex-1 text-[17px] text-[var(--color-text)]">{t.label}</span>
-                <span class="text-[16px] text-[var(--color-text-faint)]">open →</span>
+                <span class="text-[16px] text-[var(--color-text-faint)]">{t.go ? 'open →' : t.note}</span>
               </button>
             ))}
           </div>
         )}
+      </section>
+
+      {/* Weekly reflection — how the week actually went, not just what's next. */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text)]">
+          <Activity size={16} class="text-[var(--color-accent)]" /> This week
+        </h3>
+        <div class="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
+          {[
+            ['Sessions done', week.done, 'var(--color-status-done)'],
+            ['Still to come', week.upcoming, 'var(--color-accent)'],
+            ['Cancelled', week.cancelled, week.cancelled ? 'var(--color-status-failed)' : undefined],
+            ['New clients', week.newClients, week.newClients ? 'var(--color-status-done)' : undefined],
+          ].map(([label, value, tone]) => (
+            <div key={String(label)}>
+              <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+              <div class="text-[24px] font-semibold tabular-nums" style={tone ? `color:${tone}` : 'color:var(--color-text)'}>{value}</div>
+            </div>
+          ))}
+        </div>
+        <p class="mt-2 text-[14px] text-[var(--color-text-muted)]">{week.line}</p>
       </section>
 
       {/* Practice at a glance */}
@@ -2379,4 +2439,97 @@ function TodayTab({ overview, pending, onGoTo }: {
 interface ScheduleApptLite {
   id: string; appt_date: string; appt_time: string; client_name: string;
   service_name: string; status: string; duration_min: number;
+}
+
+// ── Client record export ───────────────────────────────────────────────────
+// Grafo's per-record PDF button. Same idiom the Erik cheat-sheet uses: build a
+// clean print document in a new window and let the browser's own "Save as PDF"
+// do the work — no dependency, no server round-trip, and it prints legibly on
+// paper for a physical client file.
+const escHtml = (s: string) => (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+
+function printClientRecord(client: MassageClient, notes: SoapNote[], intakes: IntakeRow[], flags: IntakeFlag[]): void {
+  const noteBlocks = notes.map((n) => {
+    const areas = (n.areas_concern || [])
+      .map((a) => `<span class="chip">${escHtml(a.region)} <b>${escHtml(String(a.severity))}</b>${a.focus ? ' ★' : ''}${a.findings ? ` — ${escHtml(a.findings)}` : ''}</span>`)
+      .join('');
+    const field = (label: string, v?: string | null) => (v ? `<div class="f"><span>${label}</span>${escHtml(v)}</div>` : '');
+    return `<div class="note">
+      <div class="nh"><b>${escHtml(n.session_date || (n.created_at || '').slice(0, 10))}</b>
+        <span class="meta">${[
+          n.pain_before != null || n.pain_after != null ? `pain ${escHtml(String(n.pain_before ?? '—'))} → ${escHtml(String(n.pain_after ?? '—'))}` : '',
+          n.pressure || '', n.position || '', n.duration_min ? `${escHtml(String(n.duration_min))} min` : '', n.author || '',
+        ].filter(Boolean).map(escHtml).join(' · ')}</span></div>
+      ${n.techniques?.length ? `<div class="tech">${n.techniques.map(escHtml).join(' · ')}</div>` : ''}
+      ${areas ? `<div class="chips">${areas}</div>` : ''}
+      ${field('S', n.subjective)}${field('O', n.objective)}${field('A', n.assessment)}${field('P', n.plan)}
+      ${field('Home care', n.home_care)}${field('Referrals', n.referrals)}${field('Adverse', n.adverse_reactions)}
+    </div>`;
+  }).join('');
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(client.name || client.email)} — client record</title>
+    <style>*{box-sizing:border-box}body{font:13px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:28px;max-width:800px}
+    h1{font-size:23px;margin:0 0 2px}.sub{color:#555;font-size:12px;margin-bottom:14px}
+    h2{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#4338ca;border-bottom:1px solid #ddd;padding-bottom:3px;margin:18px 0 8px}
+    .vitals{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px}
+    .v{border:1px solid #ddd;border-radius:6px;padding:6px 10px;min-width:120px}
+    .v span{display:block;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#777}
+    .v b{font-size:15px}
+    .flags{background:#fff5e6;border:1px solid #f0c074;border-radius:6px;padding:8px 10px;color:#7a4a00;margin-bottom:6px}
+    .note{border:1px solid #e2e2e2;border-radius:6px;padding:10px 12px;margin-bottom:10px;page-break-inside:avoid}
+    .nh{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:4px}
+    .nh b{font-size:15px}.meta{color:#666;font-size:11px}
+    .tech{color:#444;font-size:11px;margin-bottom:4px}
+    .chips{margin-bottom:6px}.chip{display:inline-block;border:1px solid #ddd;border-radius:10px;padding:1px 7px;font-size:11px;margin:0 4px 4px 0}
+    .f{margin:3px 0}.f span{display:inline-block;min-width:74px;font-weight:600;color:#4338ca;font-size:11px}
+    .foot{margin-top:20px;font-size:10px;color:#888;border-top:1px solid #eee;padding-top:8px}
+    @media print{body{margin:12mm}}</style></head><body>
+    <h1>${escHtml(client.name || client.email)}</h1>
+    <div class="sub">${escHtml(client.email)}${client.phone ? ` · ${escHtml(client.phone)}` : ''} · Massage By Mike clinical record</div>
+    <div class="vitals">
+      <div class="v"><span>Last seen</span><b>${escHtml(agoFromMs(client.lastVisitMs))}</b></div>
+      <div class="v"><span>Sessions</span><b>${client.appointmentCount}</b></div>
+      <div class="v"><span>Notes on file</span><b>${notes.length}</b></div>
+      <div class="v"><span>Intake forms</span><b>${intakes.length}</b></div>
+      <div class="v"><span>Upcoming</span><b>${client.upcomingAppointmentCount}</b></div>
+    </div>
+    ${flags.length ? `<div class="flags"><b>&#9888; Intake safety flags:</b> ${flags.map((f) => escHtml(`${f.label}: ${f.value}`)).join(' · ')}</div>` : ''}
+    ${client.notes ? `<h2>Admin notes</h2><div>${escHtml(client.notes)}</div>` : ''}
+    <h2>SOAP notes (${notes.length})</h2>
+    ${noteBlocks || '<i>No notes on file.</i>'}
+    <div class="foot">Private clinical record — printed ${escHtml(new Date().toLocaleString())}. Not for client distribution.</div>
+    <script>window.onload=function(){setTimeout(function(){window.print()},500)}</script></body></html>`;
+
+  const wnd = window.open('', '_blank');
+  if (wnd) { wnd.document.write(html); wnd.document.close(); return; }
+  // Popup blocked — fall back to a downloadable HTML file rather than doing
+  // nothing, so the click always produces the record one way or another.
+  const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `client-record-${(client.name || client.email).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.html`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Grafo's client-list export button. Plain CSV so it opens anywhere — a real
+// backup of the book that doesn't depend on this console being up.
+function exportClientsCsv(clients: MassageClient[]): void {
+  const cell = (v: unknown) => {
+    const s = v == null ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const head = ['Name', 'Email', 'Phone', 'Status', 'Sessions', 'Upcoming', 'Reward balance', 'Last visit', 'Created', 'Email opt-in', 'SMS opt-in', 'Admin notes'];
+  const rows = clients.map((c) => [
+    c.name, c.email, c.phone, c.accountStatus, c.appointmentCount, c.upcomingAppointmentCount, c.rewardBalance,
+    c.lastVisitMs ? new Date(c.lastVisitMs).toISOString().slice(0, 10) : '',
+    (c.createdAt || '').slice(0, 10), c.emailOptIn ? 'yes' : 'no', c.smsOptIn ? 'yes' : 'no', c.notes,
+  ].map(cell).join(','));
+  const blob = new Blob([[head.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `massage-clients-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
