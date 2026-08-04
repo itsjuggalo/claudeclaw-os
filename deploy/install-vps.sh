@@ -154,8 +154,24 @@ else
 fi
 run_as bash -lc "cd '$APP_DIR' && npm install --no-audit --no-fund"
 run_as bash -lc "cd '$APP_DIR' && npm run build"
-run_as mkdir -p "$APP_DIR/store"
 ok "Build complete"
+
+# Deliberately do NOT pre-create store/ here. src/migrations.ts treats
+# "store/ exists but migrations/.applied.json does not" as a pre-migration
+# install with pending migrations and refuses to start — so creating the
+# directory early makes a brand-new install look like a stale one and the
+# service crash-loops on exit 1. db.ts creates store/ itself on first run.
+step "Applying database migrations"
+# Fresh install: migrate sees no store/ and stamps .applied.json at the latest
+# version. Existing install: it applies what is pending, taking its own
+# pre-migration backup first. Already current: it is a no-op.
+#
+# `printf 'y\n'` answers the "apply N migrations?" prompt. The only other
+# prompt ("Proceed without backup?") is reached solely when that backup FAILED
+# — it then reads EOF, which migrate treats as "no" and aborts. That is the
+# outcome we want: never migrate unbacked-up data unattended.
+run_as bash -lc "cd '$APP_DIR' && printf 'y\n' | npx tsx scripts/migrate.ts"
+ok "Migrations up to date"
 
 # ── 5. Tailscale install + join ───────────────────────────────────────────────
 step "Installing + joining Tailscale"
