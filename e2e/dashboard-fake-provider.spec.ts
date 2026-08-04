@@ -47,6 +47,10 @@ async function installFakeDashboard(page: Page) {
 
     if (path === '/api/health') {
       return json({
+        // Both the Settings "Agent provider (beta)" section and the sidebar's
+        // provider switcher are gated on acpEnabled. Without it the fixture
+        // renders a dashboard that has no provider UI at all.
+        acpEnabled: true,
         contextPct: 12,
         turns: 4,
         model: provider.model || (provider.type === 'claude' ? 'claude-opus-4-6' : provider.type === 'codex' ? 'gpt-5.5' : provider.type),
@@ -66,6 +70,7 @@ async function installFakeDashboard(page: Page) {
     }
     if (path === '/api/provider/status') {
       return json({
+        acpEnabled: true,
         provider,
         providerType: provider.type,
         label: provider.type === 'claude' ? 'Claude' : provider.type === 'opencode' ? 'OpenCode' : provider.type === 'gemini' ? 'Gemini' : provider.type === 'codex' ? 'Codex' : 'ACP',
@@ -172,9 +177,13 @@ test('dashboard status shows active provider and model in chat', async ({ page }
   await expect(page.getByRole('main').getByText('Model')).toBeVisible();
   await expect(page.getByRole('main').getByText('opencode')).toBeVisible();
 
+  // The switcher lives in the sidebar's "Runtime" footer panel, which is
+  // collapsed by default (persisted in localStorage) — expand it first.
+  await page.getByRole('button', { name: /^Runtime/ }).click();
+  const runtimePanel = page.getByLabel('Switch main provider').locator('xpath=ancestor::div[1]');
   await page.getByLabel('Switch main provider').selectOption('codex');
   await expect(page.getByText('Provider set to Codex')).toBeVisible();
-  await expect(page.getByText('Runtime').locator('..').getByText('Codex')).toBeVisible();
+  await expect(runtimePanel).toContainText('Codex');
   await expect(page.getByRole('main').getByText('gpt-5.5')).toBeVisible();
 });
 
@@ -254,9 +263,16 @@ test('provider tool progress renders once per tool id', async ({ page }) => {
 test('stop button aborts an active fake-provider turn', async ({ page }) => {
   await page.goto('/chat?token=test&chatId=e2e');
 
-  await page.evaluate(() => {
-    (window as any).__emitSse('processing', { processing: true });
-  });
+  // Wait for the composer before emitting: the chat SSE subscription is set up
+  // in an effect, so firing the event on a bare page load races the listener.
+  await expect(page.getByPlaceholder('Type a message. Shift+Enter for newline.')).toBeVisible();
+  // The chat SSE subscription is attached in an effect and the stream is shared
+  // app-wide, so a single fire-and-forget emit races the listener. Re-emit until
+  // the UI actually flips to the processing state.
+  await expect.poll(async () => {
+    await page.evaluate(() => { (window as any).__emitSse('processing', { processing: true }); });
+    return page.getByRole('button', { name: /stop/i }).count();
+  }, { timeout: 10_000 }).toBeGreaterThan(0);
   await page.getByRole('button', { name: /stop/i }).click();
   await expect(page.getByRole('button', { name: /send/i })).toBeVisible();
 });

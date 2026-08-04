@@ -32,6 +32,7 @@ import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch, invalidateFetchCache } from '@/lib/useFetch';
 import { useSpin } from '@/lib/useSpin';
 import { ScheduleCalendar, isoLocalDate } from '@/components/massage/ScheduleCalendar';
+import { FormBuilder } from '@/components/massage/FormBuilder';
 import { apiPatch, apiPost, apiGet, apiPut, apiDelete } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -292,7 +293,7 @@ export function MassageAdmin() {
   const overview = useFetch<Overview>('/api/massage-admin/clients', 30000);
   const session = useFetch<AdminSession>('/api/massage-admin/session', 30000);
   const { busy: refreshing, spin } = useSpin();
-  const [tab, setTab] = useState<'today' | 'profile' | 'accounts' | 'intakes' | 'soap' | 'messaging' | 'promos' | 'availability'>('today');
+  const [tab, setTab] = useState<'today' | 'profile' | 'accounts' | 'intakes' | 'formbuilder' | 'soap' | 'messaging' | 'promos' | 'availability'>('today');
   // Fetched here (not just in the tab) so the tab label can show a pending-request count badge.
   const pendingReqs = useFetch<PendingResp>('/api/massage-admin/availability/pending', 30000);
 
@@ -311,6 +312,7 @@ export function MassageAdmin() {
             <Tab label="Client Profile" active={tab === 'profile'} count={overview.data?.clients.length} onClick={() => setTab('profile')} />
             <Tab label="Accounts" active={tab === 'accounts'} onClick={() => setTab('accounts')} />
             <Tab label="Intake Forms" active={tab === 'intakes'} onClick={() => setTab('intakes')} />
+            <Tab label="Form Builder" active={tab === 'formbuilder'} onClick={() => setTab('formbuilder')} />
             <Tab label="SOAP Notes" active={tab === 'soap'} onClick={() => setTab('soap')} />
             <Tab label="Messaging" active={tab === 'messaging'} onClick={() => setTab('messaging')} />
             <Tab label="Promos & Codes" active={tab === 'promos'} onClick={() => setTab('promos')} />
@@ -350,6 +352,7 @@ export function MassageAdmin() {
           {tab === 'profile' && <ClientProfileTab overview={overview} canEdit={canEdit} />}
           {tab === 'accounts' && <AccountsTab overview={overview} canEdit={canEdit} />}
           {tab === 'intakes' && <IntakesTab canEdit={canEdit} />}
+          {tab === 'formbuilder' && <FormBuilder canEdit={canEdit} />}
           {tab === 'soap' && <SoapTab overview={overview} canEdit={canEdit} />}
           {tab === 'messaging' && <MessagingTab />}
           {tab === 'promos' && <PromosTab canEdit={canEdit} />}

@@ -101,3 +101,22 @@ export async function massageAdmin<T = unknown>(
   _cache = null; // any mutation may change account/lifecycle state
   return r;
 }
+
+/**
+ * Same as massageAdmin, but a 4xx carrying a `{ ok:false, error }` body is
+ * returned as data instead of thrown. Validation endpoints answer "this edit is
+ * not allowed, here's why" with a 400 — that's a result the UI must show
+ * verbatim, not a transport failure to wrap in a stack-trace-ish string.
+ */
+export async function massageAdminSoft<T = unknown>(
+  pathname: string,
+  opts: { method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; body?: unknown; adminUser: string },
+): Promise<T> {
+  try {
+    return await massageAdmin<T>(pathname, opts);
+  } catch (e) {
+    const m = String(e instanceof Error ? e.message : e).match(/HTTP 4\d\d (\{.*)$/s);
+    if (m) { try { return JSON.parse(m[1]) as T; } catch { /* not JSON after all */ } }
+    throw e;
+  }
+}

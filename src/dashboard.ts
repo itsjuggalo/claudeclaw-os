@@ -14,7 +14,7 @@ import { MC_COOKIE, MASTER_TTL_SEC, verifyToken, masterToken, signToken, isLoopb
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
-import { getMassageMonitor, keepAccount, deleteAccount, setReaper, massageAdmin } from './massage.js';
+import { getMassageMonitor, keepAccount, deleteAccount, setReaper, massageAdmin, massageAdminSoft } from './massage.js';
 import { getMassageAdminOverview, updateMassageAdminClient } from './massage-admin.js';
 import { massageAdminLoginStart, massageAdminOauthCallback, isAllowlistedAdmin } from './massage-oauth.js';
 import { getSqlCatalog, getSqlTables, runSqlSelect, getModerationRows, updateRow, deleteRow, insertRow, getAuditLog as getSqlAuditLog, undoMutation } from './sqlmonitor.js';
@@ -2790,6 +2790,22 @@ init();
     c.json(await massageAdmin(`/api/admin/soap`, { method: 'POST', body: await body(c), adminUser: u }))));
   app.patch('/api/massage-admin/soap/:id', withAdmin(async (c, u) =>
     c.json(await massageAdmin(`/api/admin/soap/${enc(c.req.param('id'))}`, { method: 'PATCH', body: await body(c), adminUser: u }))));
+
+  // intake form builder — edits the QUESTIONS clients are asked (config/intake.json
+  // on the massage side). Saves are live immediately there; every save snapshots
+  // the previous schema so a bad edit is one restore away.
+  app.get('/api/massage-admin/intake-schema', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/intake-schema`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  // Soft: a rejected edit comes back as a 400 { ok:false, error } that the builder
+  // shows verbatim — that's an answer, not a transport failure.
+  app.put('/api/massage-admin/intake-schema', withAdmin(async (c, u) =>
+    c.json(await massageAdminSoft(`/api/admin/intake-schema`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/intake-schema/validate', withAdmin(async (c, u) =>
+    c.json(await massageAdminSoft(`/api/admin/intake-schema/validate`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/intake-schema/restore', withAdmin(async (c, u) =>
+    c.json(await massageAdminSoft(`/api/admin/intake-schema/restore`, { method: 'POST', body: await body(c), adminUser: u }))));
 
   // availability — days off, booking window, beyond-window approval queue (reads loopback-safe; writes require admin)
   app.get('/api/massage-admin/availability', async (c) => {
