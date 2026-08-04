@@ -4,7 +4,7 @@
 // time-grid views lay real bookings out against the clock so a working day reads
 // at a glance instead of as a "●3" dot.
 import { useMemo, useState } from 'preact/hooks';
-import { CalendarClock, CalendarDays, CalendarRange, Columns3, Square } from 'lucide-preact';
+import { CalendarClock, CalendarDays, CalendarRange, Columns3, List, Square } from 'lucide-preact';
 import { useFetch } from '@/lib/useFetch';
 
 export interface ScheduleAppt {
@@ -26,10 +26,10 @@ export interface ScheduleResp {
   timeBlocks: ScheduleTimeBlock[];
 }
 
-export type CalendarView = 'month' | 'week' | '3day' | 'day';
+export type CalendarView = 'month' | 'week' | '3day' | 'day' | 'list';
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const HOUR_PX = 52;          // one hour of the time grid
+const HOUR_PX = 62;          // one hour of the time grid (sized to fit the bumped label scale)
 const DEFAULT_START_HOUR = 7;
 const DEFAULT_END_HOUR = 20;
 
@@ -132,6 +132,15 @@ export function ScheduleCalendar({ selectedDay, onPickDay }: Props) {
 
   // Visible range for the current view.
   const { days, rangeStart, rangeEnd, title } = useMemo(() => {
+    if (view === 'list') {
+      // Two months at a time — the widest window the two schedule fetches cover.
+      const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+      const last = new Date(anchor.getFullYear(), anchor.getMonth() + 2, 0);
+      return {
+        days: [] as Date[], rangeStart: first, rangeEnd: last,
+        title: `${first.toLocaleDateString(undefined, { month: 'short' })} – ${last.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`,
+      };
+    }
     if (view === 'month') {
       const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
       const last = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
@@ -154,6 +163,7 @@ export function ScheduleCalendar({ selectedDay, onPickDay }: Props) {
 
   // Bookings inside the visible range (drives the "N bookings in view" counter).
   const visibleAppts = useMemo(() => {
+    if (view === 'list') return sched.appts;
     if (view === 'month') {
       const mk = monthKey(rangeStart);
       return sched.appts.filter((a) => a.appt_date.startsWith(mk));
@@ -176,7 +186,7 @@ export function ScheduleCalendar({ selectedDay, onPickDay }: Props) {
 
   function shift(delta: number) {
     setAnchor((d) => {
-      if (view === 'month') return new Date(d.getFullYear(), d.getMonth() + delta, 1);
+      if (view === 'month' || view === 'list') return new Date(d.getFullYear(), d.getMonth() + delta, 1);
       const step = view === 'week' ? 7 : view === '3day' ? 3 : 1;
       return addDays(d, delta * step);
     });
@@ -187,12 +197,12 @@ export function ScheduleCalendar({ selectedDay, onPickDay }: Props) {
       type="button"
       onClick={() => setView(v)}
       aria-pressed={view === v}
-      class={'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors '
+      class={'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[14px] font-medium transition-colors '
         + (view === v
           ? 'bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-[var(--color-accent)]'
           : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]')}
     >
-      <Icon size={12} /> {label}
+      <Icon size={14} /> {label}
     </button>
   );
 
@@ -202,8 +212,8 @@ export function ScheduleCalendar({ selectedDay, onPickDay }: Props) {
         <div class="flex items-center gap-2">
           <CalendarClock size={16} class="text-[var(--color-accent)]" />
           <div>
-            <h3 class="text-[14px] font-semibold text-[var(--color-text)]">{title}</h3>
-            <div class="text-[11px] text-[var(--color-text-faint)]">
+            <h3 class="text-[16px] font-semibold text-[var(--color-text)]">{title}</h3>
+            <div class="text-[13px] text-[var(--color-text-faint)]">
               {visibleAppts.length} booking{visibleAppts.length === 1 ? '' : 's'} in view
             </div>
           </div>
@@ -214,27 +224,32 @@ export function ScheduleCalendar({ selectedDay, onPickDay }: Props) {
           {viewBtn('week', 'Week', CalendarRange)}
           {viewBtn('3day', '3 days', Columns3)}
           {viewBtn('day', 'Day', Square)}
+          {viewBtn('list', 'List', List)}
           <div class="ml-2 flex items-center gap-1">
             <button type="button" title="Previous" onClick={() => shift(-1)}
-              class="rounded-md border border-[var(--color-border)] px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]">‹</button>
+              class="rounded-md border border-[var(--color-border)] px-2 py-1 text-[15px] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]">‹</button>
             <button type="button" onClick={() => setAnchor(new Date())}
-              class="rounded-md border border-[var(--color-border)] px-2.5 py-1 text-[12px] font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]">Today</button>
+              class="rounded-md border border-[var(--color-border)] px-2.5 py-1 text-[14px] font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]">Today</button>
             <button type="button" title="Next" onClick={() => shift(1)}
-              class="rounded-md border border-[var(--color-border)] px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]">›</button>
+              class="rounded-md border border-[var(--color-border)] px-2 py-1 text-[15px] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]">›</button>
           </div>
         </div>
       </div>
 
-      {view === 'month'
-        ? <MonthGrid anchor={anchor} sched={sched} selectedDay={selectedDay} onPickDay={onPickDay} today={today} />
-        : <TimeGrid days={days} sched={sched} startHour={startHour} endHour={endHour} selectedDay={selectedDay} onPickDay={onPickDay} today={today} />}
+      {view === 'list'
+        ? <BookingList appts={visibleAppts} today={today} onPickDay={onPickDay} />
+        : view === 'month'
+          ? <MonthGrid anchor={anchor} sched={sched} selectedDay={selectedDay} onPickDay={onPickDay} today={today} />
+          : <TimeGrid days={days} sched={sched} startHour={startHour} endHour={endHour} selectedDay={selectedDay} onPickDay={onPickDay} today={today} />}
 
-      <div class="mt-2 text-[11px] text-[var(--color-text-faint)]">
-        <span style="color:var(--color-accent)">▌</span> confirmed ·
-        <span style="color:var(--color-warn)"> ▌</span> requested ·
-        <span style="color:var(--color-status-failed)"> OFF</span> day off · ◐ partial block ·
-        tap a day to target the partial-block form below
-      </div>
+      {view !== 'list' && (
+        <div class="mt-2 text-[13px] text-[var(--color-text-faint)]">
+          <span style="color:var(--color-accent)">▌</span> confirmed ·
+          <span style="color:var(--color-warn)"> ▌</span> requested ·
+          <span style="color:var(--color-status-failed)"> OFF</span> day off · ◐ partial block ·
+          tap a day to target the partial-block form below
+        </div>
+      )}
     </section>
   );
 }
@@ -252,7 +267,7 @@ function MonthGrid({ anchor, sched, selectedDay, onPickDay, today }: {
 
   return (
     <div class="grid grid-cols-7 gap-1 text-center">
-      {DAY_NAMES.map((d) => <div key={d} class="text-[11px] font-semibold text-[var(--color-text-faint)]">{d}</div>)}
+      {DAY_NAMES.map((d) => <div key={d} class="text-[13px] font-semibold text-[var(--color-text-faint)]">{d}</div>)}
       {Array.from({ length: firstDow }).map((_, i) => <div key={`e${i}`} />)}
       {Array.from({ length: daysInMonth }).map((_, i) => {
         const day = i + 1;
@@ -260,7 +275,7 @@ function MonthGrid({ anchor, sched, selectedDay, onPickDay, today }: {
         const appts = sched.byDay[iso] || [];
         const off = sched.blackouts.has(iso);
         const partial = partialDays.has(iso);
-        const cls = 'flex h-12 flex-col items-center justify-start rounded-md border p-1 text-[12px] transition-colors '
+        const cls = 'flex h-14 flex-col items-center justify-start rounded-md border p-1 text-[14px] transition-colors '
           + (off ? 'bg-[color-mix(in_srgb,var(--color-status-failed)_18%,transparent)] '
             : appts.length ? 'bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] '
             : 'hover:bg-[var(--color-elevated)] ')
@@ -271,9 +286,9 @@ function MonthGrid({ anchor, sched, selectedDay, onPickDay, today }: {
         return (
           <button key={iso} type="button" class={cls} title={title} onClick={() => onPickDay(iso)}>
             <span class={iso === today ? 'font-bold text-[var(--color-accent)]' : 'text-[var(--color-text)]'}>{day}</span>
-            {off ? <span class="text-[10px] font-semibold text-[var(--color-status-failed)]">OFF</span>
-              : appts.length ? <span class="mt-0.5 text-[11px] font-semibold text-[var(--color-accent)]">●{appts.length}</span>
-              : partial ? <span class="mt-0.5 text-[11px] text-[var(--color-text-muted)]">◐</span> : null}
+            {off ? <span class="text-[12px] font-semibold text-[var(--color-status-failed)]">OFF</span>
+              : appts.length ? <span class="mt-0.5 text-[13px] font-semibold text-[var(--color-accent)]">●{appts.length}</span>
+              : partial ? <span class="mt-0.5 text-[13px] text-[var(--color-text-muted)]">◐</span> : null}
           </button>
         );
       })}
@@ -302,7 +317,7 @@ function TimeGrid({ days, sched, startHour, endHour, selectedDay, onPickDay, tod
       <div class="min-w-[560px]">
         {/* Day headers */}
         <div class="flex border-b border-[var(--color-border)]">
-          <div class="w-14 shrink-0 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Time</div>
+          <div class="w-16 shrink-0 py-1.5 text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Time</div>
           {days.map((d) => {
             const iso = isoLocalDate(d);
             const off = sched.blackouts.has(iso);
@@ -312,16 +327,16 @@ function TimeGrid({ days, sched, startHour, endHour, selectedDay, onPickDay, tod
                 class={'flex-1 border-l border-[var(--color-border)] px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-elevated)] '
                   + (selectedDay === iso ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : '')}>
                 <div class="flex items-baseline gap-1.5">
-                  <span class={'text-[12px] font-medium ' + (isToday ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-muted)]')}>
+                  <span class={'text-[14px] font-medium ' + (isToday ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-muted)]')}>
                     {DAY_NAMES[d.getDay()]}
                   </span>
-                  <span class={'text-[13px] font-semibold tabular-nums ' + (isToday
+                  <span class={'text-[15px] font-semibold tabular-nums ' + (isToday
                     ? 'flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-white'
                     : 'text-[var(--color-text)]')}
                     style={isToday ? 'background:var(--color-accent)' : ''}>
                     {d.getDate()}
                   </span>
-                  {off && <span class="text-[10px] font-semibold text-[var(--color-status-failed)]">OFF</span>}
+                  {off && <span class="text-[12px] font-semibold text-[var(--color-status-failed)]">OFF</span>}
                 </div>
               </button>
             );
@@ -330,10 +345,10 @@ function TimeGrid({ days, sched, startHour, endHour, selectedDay, onPickDay, tod
 
         {/* Hour rows + positioned bookings */}
         <div class="relative flex" style={`height:${gridHeight}px`}>
-          <div class="w-14 shrink-0">
+          <div class="w-16 shrink-0">
             {hours.map((h) => (
               <div key={h} class="relative" style={`height:${HOUR_PX}px`}>
-                <span class="absolute -top-1.5 right-2 text-[10px] tabular-nums text-[var(--color-text-faint)]">{minToLabel(h * 60)}</span>
+                <span class="absolute -top-1.5 right-2 text-[12px] tabular-nums text-[var(--color-text-faint)]">{minToLabel(h * 60)}</span>
               </div>
             ))}
           </div>
@@ -364,16 +379,16 @@ function TimeGrid({ days, sched, startHour, endHour, selectedDay, onPickDay, tod
                 {placed.map(({ appt, col, cols, start, end }) => {
                   const tone = statusTone(appt.status);
                   const w = 100 / cols;
-                  const height = Math.max(22, ((end - start) / 60) * HOUR_PX - 3);
+                  const height = Math.max(26, ((end - start) / 60) * HOUR_PX - 3);
                   return (
                     <div key={appt.id}
                       title={`${prettyTime(appt.appt_time)} · ${appt.client_name} · ${appt.service_name} (${tone.label})`}
                       class="absolute overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-left shadow-sm"
                       style={`top:${topFor(start)}px;height:${height}px;left:calc(${col * w}% + 2px);width:calc(${w}% - 4px);border-left:3px solid ${tone.bar}`}>
-                      <div class="truncate text-[11px] font-semibold leading-tight text-[var(--color-text)]">{appt.client_name}</div>
-                      {height > 34 && <div class="truncate text-[10px] leading-tight text-[var(--color-text-muted)]">{appt.service_name}</div>}
-                      {height > 48 && (
-                        <div class="truncate text-[10px] leading-tight tabular-nums" style={`color:${tone.text}`}>
+                      <div class="truncate text-[13px] font-semibold leading-tight text-[var(--color-text)]">{appt.client_name}</div>
+                      {height > 40 && <div class="truncate text-[12px] leading-tight text-[var(--color-text-muted)]">{appt.service_name}</div>}
+                      {height > 58 && (
+                        <div class="truncate text-[12px] leading-tight tabular-nums" style={`color:${tone.text}`}>
                           {prettyTime(appt.appt_time)}–{prettyTime(minToLabel(end))}
                         </div>
                       )}
@@ -393,6 +408,99 @@ function TimeGrid({ days, sched, startHour, endHour, selectedDay, onPickDay, tod
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── List view — the "find that booking" surface. Filters by name/service, a
+//    date window, service and status, so a specific appointment is one search
+//    away instead of a hunt across month grids.
+function BookingList({ appts, today, onPickDay }: {
+  appts: ScheduleAppt[]; today: string; onPickDay: (iso: string) => void;
+}) {
+  const [q, setQ] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [service, setService] = useState('');
+  const [status, setStatus] = useState('');
+  const [futureOnly, setFutureOnly] = useState(true);
+
+  const services = useMemo(
+    () => Array.from(new Set(appts.map((a) => a.service_name).filter(Boolean))).sort(),
+    [appts],
+  );
+  const statuses = useMemo(
+    () => Array.from(new Set(appts.map((a) => a.status).filter(Boolean))).sort(),
+    [appts],
+  );
+
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return appts
+      .filter((a) => (!needle || `${a.client_name} ${a.service_name}`.toLowerCase().includes(needle))
+        && (!from || a.appt_date >= from)
+        && (!to || a.appt_date <= to)
+        && (!service || a.service_name === service)
+        && (!status || a.status === status)
+        && (!futureOnly || a.appt_date >= today))
+      .sort((x, y) => (x.appt_date + x.appt_time).localeCompare(y.appt_date + y.appt_time));
+  }, [appts, q, from, to, service, status, futureOnly, today]);
+
+  const field = 'rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[16px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]';
+
+  return (
+    <div>
+      <div class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5">
+        <input class={`${field} min-w-[190px] flex-1`} placeholder="Search name or service…" value={q}
+          onInput={(e) => setQ((e.currentTarget as HTMLInputElement).value)} />
+        <label class="flex items-center gap-1.5 text-[15px] text-[var(--color-text-muted)]">
+          From <input type="date" class={field} value={from} onInput={(e) => setFrom((e.currentTarget as HTMLInputElement).value)} />
+        </label>
+        <label class="flex items-center gap-1.5 text-[15px] text-[var(--color-text-muted)]">
+          To <input type="date" class={field} value={to} onInput={(e) => setTo((e.currentTarget as HTMLInputElement).value)} />
+        </label>
+        <select class={field} value={service} onChange={(e) => setService((e.currentTarget as HTMLSelectElement).value)}>
+          <option value="">All services</option>
+          {services.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select class={field} value={status} onChange={(e) => setStatus((e.currentTarget as HTMLSelectElement).value)}>
+          <option value="">All statuses</option>
+          {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <label class="flex items-center gap-1.5 text-[15px] text-[var(--color-text-muted)]">
+          <input type="checkbox" checked={futureOnly} onChange={(e) => setFutureOnly((e.currentTarget as HTMLInputElement).checked)} /> upcoming only
+        </label>
+        <span class="ml-auto text-[15px] font-medium text-[var(--color-text-muted)]">{rows.length} booking{rows.length === 1 ? '' : 's'}</span>
+      </div>
+
+      {rows.length === 0 ? (
+        <div class="rounded-lg border border-dashed border-[var(--color-border)] px-4 py-10 text-center text-[16px] text-[var(--color-text-faint)]">
+          No bookings match your filters.
+        </div>
+      ) : (
+        <div class="overflow-hidden rounded-lg border border-[var(--color-border)]">
+          {rows.map((a) => {
+            const tone = statusTone(a.status);
+            const end = hmToMin(a.appt_time) + (Number(a.duration_min) || 60);
+            return (
+              <button key={a.id} type="button" onClick={() => onPickDay(a.appt_date)}
+                class="flex w-full flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 hover:bg-[var(--color-elevated)]">
+                <span class="w-[112px] shrink-0 text-[16px] font-semibold tabular-nums"
+                  style={a.appt_date === today ? 'color:var(--color-accent)' : 'color:var(--color-text)'}>
+                  {new Date(a.appt_date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+                </span>
+                <span class="w-[130px] shrink-0 text-[16px] tabular-nums text-[var(--color-text-muted)]">
+                  {prettyTime(a.appt_time)}–{prettyTime(minToLabel(end))}
+                </span>
+                <span class="min-w-0 flex-1 truncate text-[17px] font-semibold text-[var(--color-text)]">{a.client_name}</span>
+                <span class="min-w-0 flex-1 truncate text-[16px] text-[var(--color-text-muted)]">{a.service_name}</span>
+                <span class="shrink-0 rounded px-2 py-0.5 text-[14px] font-medium"
+                  style={`color:${tone.text};background:color-mix(in srgb, ${tone.bar} 14%, transparent)`}>{tone.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
