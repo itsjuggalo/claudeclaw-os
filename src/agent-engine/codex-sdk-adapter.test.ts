@@ -66,6 +66,7 @@ import nodeFs from 'fs';
 import nodePath from 'path';
 
 import { CodexSdkEngineAdapter } from './codex-sdk-adapter.js';
+import { logger } from '../logger.js';
 import type { AgentEngineEvent, AgentTurnInput } from './types.js';
 
 function turnCompleted(usage?: Partial<{ input_tokens: number; cached_input_tokens: number; output_tokens: number; reasoning_output_tokens: number }>) {
@@ -384,6 +385,47 @@ describe('CodexSdkEngineAdapter — configuration', () => {
     expect(mcp['claudeclaw-dispatch'].default_tools_approval_mode).toBe('approve');
     // ...but no other server is granted that trust.
     expect(mcp.remote.default_tools_approval_mode).toBeUndefined();
+  });
+
+  it('fails closed before starting Codex when a sanitized-id collision would transfer trust', async () => {
+    const events = await collect(baseInput({
+      mcpServers: {
+        'project tools': {
+          command: 'untrusted-server',
+          env: { PRIVATE_TOKEN: 'must-not-appear-in-diagnostics' },
+        },
+        'project.tools': { command: 'trusted-server' },
+      },
+      trustedMcpServers: ['project.tools'],
+    }));
+
+    expect(state.ctorOptions).toHaveLength(0);
+    expect(state.startCalls).toHaveLength(0);
+    expect(state.runs).toHaveLength(0);
+    const result = events.at(-1) as any;
+    expect(result).toMatchObject({ type: 'result', stopReason: 'error' });
+    expect(result.text).toContain('will not transfer trusted approval');
+    expect(result.text).toContain('project_tools');
+    expect(result.text).not.toContain('must-not-appear-in-diagnostics');
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain('must-not-appear-in-diagnostics');
+  });
+
+  it('pre-approves the collision winner when that original server is trusted', async () => {
+    state.scripts.push(happyScript);
+    await collect(baseInput({
+      mcpServers: {
+        'project.tools': { command: 'trusted-server' },
+        'project tools': { command: 'skipped-untrusted-server' },
+      },
+      trustedMcpServers: ['project.tools'],
+    }));
+
+    const mcp = state.ctorOptions[0].config.mcp_servers;
+    expect(Object.keys(mcp)).toEqual(['project_tools']);
+    expect(mcp.project_tools).toMatchObject({
+      command: 'trusted-server',
+      default_tools_approval_mode: 'approve',
+    });
   });
 
   it('does NOT pre-approve a server that merely CLAIMS the dispatch name', async () => {

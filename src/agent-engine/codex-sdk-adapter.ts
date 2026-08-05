@@ -68,18 +68,33 @@ function sanitizeMcpServerName(name: string): string {
  *  - `sse` transports (Codex speaks streamable HTTP, not legacy SSE)
  *  - HTTP servers requiring custom headers (Codex has no per-header config)
  */
+interface McpMapping {
+  /** The `mcp_servers` table, keyed by the sanitized Codex id. */
+  servers: CodexConfigObject;
+  /** Sanitized id to the original authorized name that produced it. */
+  origin: Map<string, string>;
+}
+
 function toCodexMcpServers(
   servers: Record<string, McpServerConfig> | undefined,
-): CodexConfigObject | undefined {
+): McpMapping | undefined {
   if (!servers) return undefined;
   const out: CodexConfigObject = {};
+  const origin = new Map<string, string>();
   for (const [name, cfg] of Object.entries(servers)) {
     const id = sanitizeMcpServerName(name);
     // Distinct source names can sanitize to the same id (e.g. "files.local"
     // and "files_local"). Warn rather than silently drop the earlier server —
     // the tools would just be missing on OpenAI turns with no explanation.
     if (Object.prototype.hasOwnProperty.call(out, id)) {
-      logger.warn({ server: name, sanitizedId: id }, 'Skipping MCP server for Codex: sanitized id collides with an earlier server');
+      logger.warn(
+        {
+          server: truncate(name, 120),
+          sanitizedId: truncate(id, 120),
+          heldBy: truncate(origin.get(id) ?? '', 120),
+        },
+        'Skipping MCP server for Codex: sanitized id collides with an earlier server',
+      );
       continue;
     }
     if ('command' in cfg) {
@@ -87,6 +102,7 @@ function toCodexMcpServers(
       if (cfg.args?.length) entry.args = cfg.args;
       if (cfg.env && Object.keys(cfg.env).length > 0) entry.env = { ...cfg.env };
       out[id] = entry;
+      origin.set(id, name);
       continue;
     }
     if (cfg.type === 'sdk') {
@@ -106,8 +122,9 @@ function toCodexMcpServers(
       continue;
     }
     out[id] = { url: cfg.url };
+    origin.set(id, name);
   }
-  return Object.keys(out).length > 0 ? out : undefined;
+  return Object.keys(out).length > 0 ? { servers: out, origin } : undefined;
 }
 
 /** Server name of the stdio dispatch bridge; kept as a literal so the adapter
@@ -394,7 +411,8 @@ export class CodexSdkEngineAdapter implements AgentEngine {
     // NARROW that set — it must never add a server (a tool-less profile narrows
     // it to nothing). Adding one here would hand trusted, state-changing tools
     // to callers that explicitly requested none.
-    const mcpServers = toCodexMcpServers(profile.mcpServers);
+    const mcpMapping = toCodexMcpServers(profile.mcpServers);
+    const mcpServers = mcpMapping?.servers;
     // Pre-approve only servers ClaudeClaw itself materialized this turn, so Codex
     // does not classify their tools as approval-required. In `codex exec` there is
     // no interactive approval responder, so an approval-required tool call
@@ -412,7 +430,25 @@ export class CodexSdkEngineAdapter implements AgentEngine {
       for (const trusted of input.trustedMcpServers ?? []) {
         // Only if the profile actually kept it (a tool-less profile keeps none).
         if (!(trusted in profile.mcpServers)) continue;
-        const entry = mcpServers[sanitizeMcpServerName(trusted)];
+        const id = sanitizeMcpServerName(trusted);
+        const owner = mcpMapping?.origin.get(id);
+        if (owner !== undefined && owner !== trusted) {
+          // Sanitizing is lossy. If an untrusted server won the mapped id, stamping
+          // approval on that entry would transfer the trusted server's standing.
+          // Refuse the turn before constructing Codex or sending the prompt.
+          const safeTrusted = truncate(trusted, 120);
+          const safeId = truncate(id, 120);
+          const safeOwner = truncate(owner, 120);
+          logger.error(
+            { trustedServer: safeTrusted, sanitizedId: safeId, heldBy: safeOwner },
+            'codex_trusted_mcp_collision',
+          );
+          const friendly = `OpenAI (Codex) turn aborted: MCP server "${safeTrusted}" is trusted for this turn, but its Codex id "${safeId}" is already held by "${safeOwner}". Rename one of them; ClaudeClaw will not transfer trusted approval to a different server.`;
+          yield { type: 'text_delta', delta: friendly, accumulatedText: friendly };
+          yield { type: 'result', text: friendly, usage: emptyUsage(), stopReason: 'error' };
+          return;
+        }
+        const entry = mcpServers[id];
         if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
           (entry as Record<string, unknown>).default_tools_approval_mode = 'approve';
         }
