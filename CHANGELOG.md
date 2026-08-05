@@ -5,6 +5,29 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.8.3] - 2026-08-04
+
+### Features
+
+- **deploy:** Set CLAUDECLAW_OWNER_NAME, and document OPENAI_API_KEY
+
+### Bug Fixes
+
+- **health:** Ignore supabase link artifacts under agents/health/supabase ([#199](https://github.com/earlyaidopters/claudeclaw-os/pull/199))
+- **docs:** Correct App Server reasoning config path ([#202](https://github.com/earlyaidopters/claudeclaw-os/pull/202))
+- **codex:** Fail closed on trusted MCP collisions ([#201](https://github.com/earlyaidopters/claudeclaw-os/pull/201))
+- **deps:** Declare @modelcontextprotocol/sdk as a direct dependency ([#184](https://github.com/earlyaidopters/claudeclaw-os/pull/184))
+- **deploy:** Re-own install dir on RUN_USER change, report real clone errors
+- **deploy:** Make migrations safe to run unattended
+- **deploy:** Restart the service so re-running actually deploys the rebuild
+- **deploy:** Apply migrations so a fresh v1.8 install can start
+
+### Documentation
+
+- **security:** Draft untrusted content provenance RFC ([#203](https://github.com/earlyaidopters/claudeclaw-os/pull/203))
+- **deploy:** Rename Day-2 section and fix stale branch guidance
+- Organize RFC lifecycle and documentation ([#183](https://github.com/earlyaidopters/claudeclaw-os/pull/183))
+
 ## [1.8.2] - 2026-08-01
 
 ### Bug Fixes
