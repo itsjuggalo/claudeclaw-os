@@ -36,10 +36,24 @@ TS_HOSTNAME=claudeclaw
 
 # ── Optional (sensible defaults) ──────────────────────────────────────────────
 
+# Your DISPLAY name — how agents address you on shared surfaces such as the text
+# War Room. Cosmetic only; it is not a Linux account. (For the account the service
+# runs as, see RUN_USER below — the two are unrelated, so setting your own name
+# here does NOT change who owns the install.)
+# Defaults to "User" — set it unless you like being called that.
+# This file is sourced by bash, so QUOTE any name containing spaces.
+# CLAUDECLAW_OWNER_NAME="Ada Lovelace"
+
 # Dashboard port (loopback only; never exposed publicly).
 # DASHBOARD_PORT=3141
 
-# Where everything is installed and which user runs the service.
+# Where everything is installed, and the unprivileged SYSTEM ACCOUNT the service
+# runs under. RUN_USER is a Linux user (created with --system and a nologin shell),
+# NOT your display name — for that, see CLAUDECLAW_OWNER_NAME above. Most people
+# should leave RUN_USER alone.
+# Changing it after the first install is supported — the installer re-owns
+# INSTALL_DIR to the new user — but it rewrites ownership of the whole tree,
+# including store/ and .env, so stop the service before re-running.
 # INSTALL_DIR=/opt/claudeclaw
 # RUN_USER=claudeclaw
 
@@ -51,9 +65,26 @@ TS_HOSTNAME=claudeclaw
 # (your lockout recovery), and disable this node's key expiry in Tailscale.
 # SSH_HARDENING=public
 
-# Beta multi-provider (ACP) switcher in the dashboard (Claude/OpenCode/Gemini/
-# Codex/OpenRouter). Default false = Claude only, picker hidden. Set true to
-# unlock it — but each non-Claude provider still needs its CLI installed AND
+# Native OpenAI (Codex SDK) is a stable, ungated provider — no ENABLE_ACP needed.
+# Authenticate it either by setting a key here, or by running `codex login` on
+# this VPS once it's deployed (uses a ChatGPT subscription instead of per-token
+# billing). Leave blank if you only use Claude.
+# OPENAI_API_KEY=
+
+# Transport used by the native OpenAI provider above.
+#   app-server - preferred. One warm `codex app-server` process: incremental
+#                text streaming, turn-scoped cancellation, effective-policy
+#                verification.
+#   sdk        - (default when unset) the rollback path. Use this if app-server
+#                misbehaves after an upgrade.
+# Set it here rather than in .env: the installer rewrites .env on every run, so
+# a hand-edited value there is lost on the next deploy.
+# CODEX_TRANSPORT=sdk
+
+# Experimental provider tier (the ACP family: codex-acp, Gemini, OpenCode,
+# OpenRouter, custom). Default false = the experimental picker is hidden; the
+# stable tier (Claude and native OpenAI above) is always available. Set true to
+# unlock it — but each experimental provider still needs its CLI installed AND
 # authenticated on this VPS (e.g. `opencode auth login`), or its runs will fail.
 # ENABLE_ACP=false
 
