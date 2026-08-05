@@ -766,7 +766,6 @@ async function main() {
 
   const ownerName = await ask('Your name (so the bot knows who it\'s talking to)') || '';
   const ownerWork = await ask('One line: what you do / your main work (Enter to skip)') || '';
-  env.CLAUDECLAW_OWNER_NAME = ownerName || env.CLAUDECLAW_OWNER_NAME || 'User';
 
   // Replace placeholders in CLAUDE.md and ENFORCE that none survive. A generated
   // runtime config with leftover bracket tokens (e.g. "[YOUR NAME]", "Michael
@@ -859,6 +858,11 @@ async function main() {
 
   // Persist CLAUDECLAW_CONFIG determined in section 6
   env.CLAUDECLAW_CONFIG = claudeclawConfigDir;
+
+  // Persist the owner name collected in section 6. Assigned here (not at the
+  // prompt) because `env` is only declared above — writing it earlier hits the
+  // temporal dead zone and aborts setup.
+  env.CLAUDECLAW_OWNER_NAME = ownerName || env.CLAUDECLAW_OWNER_NAME || 'User';
 
   let botUsername = '';
   if (env.TELEGRAM_BOT_TOKEN) {
