@@ -36,7 +36,10 @@ TS_HOSTNAME=claudeclaw
 
 # ── Optional (sensible defaults) ──────────────────────────────────────────────
 
-# How agents address you on shared surfaces such as the text War Room.
+# Your DISPLAY name — how agents address you on shared surfaces such as the text
+# War Room. Cosmetic only; it is not a Linux account. (For the account the service
+# runs as, see RUN_USER below — the two are unrelated, so setting your own name
+# here does NOT change who owns the install.)
 # Defaults to "User" — set it unless you like being called that.
 # This file is sourced by bash, so QUOTE any name containing spaces.
 # CLAUDECLAW_OWNER_NAME="Ada Lovelace"
@@ -44,7 +47,13 @@ TS_HOSTNAME=claudeclaw
 # Dashboard port (loopback only; never exposed publicly).
 # DASHBOARD_PORT=3141
 
-# Where everything is installed and which user runs the service.
+# Where everything is installed, and the unprivileged SYSTEM ACCOUNT the service
+# runs under. RUN_USER is a Linux user (created with --system and a nologin shell),
+# NOT your display name — for that, see CLAUDECLAW_OWNER_NAME above. Most people
+# should leave RUN_USER alone.
+# Changing it after the first install is supported — the installer re-owns
+# INSTALL_DIR to the new user — but it rewrites ownership of the whole tree,
+# including store/ and .env, so stop the service before re-running.
 # INSTALL_DIR=/opt/claudeclaw
 # RUN_USER=claudeclaw
 

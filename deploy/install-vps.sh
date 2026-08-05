@@ -138,15 +138,40 @@ fi
 mkdir -p "$INSTALL_DIR"
 chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
 
+# Changing RUN_USER between runs used to strand the install: the chown above moves
+# only $INSTALL_DIR itself, so the checkout beneath it keeps the previous owner.
+# git, running as the new RUN_USER, then refuses with "detected dubious ownership"
+# and the clone step below dies pointing at the clone token — which is not the
+# problem. Re-home the tree when the owners actually disagree. Guarded rather than
+# unconditional because a blanket `chown -R` over node_modules is slow on every run.
+if [[ -e "$APP_DIR" ]]; then
+  app_owner="$(stat -c '%U' "$APP_DIR" 2>/dev/null || echo '?')"
+  if [[ "$app_owner" != "$RUN_USER" ]]; then
+    warn "$APP_DIR is owned by '$app_owner' but RUN_USER is '$RUN_USER' — re-owning (may take a moment)"
+    chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
+    ok "Re-owned $INSTALL_DIR to $RUN_USER"
+  fi
+fi
+
 # Run a command as the service user with HOME pointed at its install dir, so
 # npm/git write caches/config there rather than into root's home.
 # GIT_TERMINAL_PROMPT=0 makes git fail fast on a private repo instead of hanging
 # on an interactive username/password prompt.
 run_as() { runuser -u "$RUN_USER" -- env "HOME=$INSTALL_DIR" GIT_TERMINAL_PROMPT=0 "$@"; }
 
-clone_help="Clone failed. If this is the private earlyaidopters repo, open the members
-  token site, copy the ghs_... token from its clone command, set
-  REPO_CLONE_TOKEN=ghs_... in $CONF, then re-run (tokens expire ~1h)."
+# This fires on ANY clone/fetch failure, so it must not assert a single cause.
+# git's own stderr is printed directly above it — that line is the real diagnosis,
+# and these are only the causes we've actually hit.
+clone_help="Clone/fetch failed — see git's error above, which gives the real reason.
+  Common causes:
+    • 'could not read Username' / 403 / 401 — the clone token expired or is unset.
+      The members token site shows a clone command containing a ghs_... token;
+      copy that token into REPO_CLONE_TOKEN in $CONF and re-run (they last ~1h).
+    • 'detected dubious ownership' — the checkout belongs to a different user than
+      RUN_USER ($RUN_USER). Fix with:
+          chown -R $RUN_USER:$RUN_USER $INSTALL_DIR
+    • 'couldn't find remote ref' — REPO_BRANCH ($REPO_BRANCH) does not exist on the
+      remote. Push the branch first, or correct REPO_BRANCH in $CONF."
 
 # ── 4. clone + build ──────────────────────────────────────────────────────────
 step "Cloning + building ClaudeClaw OS"
