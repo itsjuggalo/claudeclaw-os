@@ -772,9 +772,12 @@ Preserve the current reasoning mapping:
 An explicit `thinkingMode` remains authoritative. An unsupported explicit value
 must not fall through to `effort`.
 
-Set the model and reasoning effort on `thread/start` or `thread/resume`. Do not
-override them again on `turn/start`; the adapter verifies the effective thread
-response first and then starts the turn under that verified configuration.
+Set the model on `thread/start` or `thread/resume`. Reasoning effort has no
+direct thread parameter in the pinned protocol; send it as
+`config.model_reasoning_effort` in the thread request configuration. Do not
+override either value on `turn/start`. The adapter first verifies the effective
+thread response, including its returned `reasoningEffort`, and only then starts
+the turn under that verified configuration.
 
 ### Sandbox and approval policy
 
