@@ -63,6 +63,7 @@ RUN_USER="${RUN_USER:-claudeclaw}"
 SSH_HARDENING="${SSH_HARDENING:-public}"   # off | public | tailscale-only
 ENABLE_ACP="${ENABLE_ACP:-false}"          # true unlocks the experimental ACP provider tier
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"       # optional — native OpenAI also works via `codex login` on the host
+CODEX_TRANSPORT="${CODEX_TRANSPORT:-sdk}"  # sdk | app-server — native OpenAI transport
 REPO_URL="${REPO_URL:-https://github.com/earlyaidopters/claudeclaw-os.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 REPO_CLONE_TOKEN="${REPO_CLONE_TOKEN:-}"   # temp GitHub token (ghs_/gho_/ghp_) for private clone
@@ -93,6 +94,12 @@ esac
 ENABLE_ACP="$(echo "$ENABLE_ACP" | tr '[:upper:]' '[:lower:]')"
 case "$ENABLE_ACP" in true|false) ;; *)
   die "ENABLE_ACP must be true or false (got: $ENABLE_ACP)." ;;
+esac
+# config.ts treats anything that is not exactly "app-server" as "sdk", so an
+# unvalidated typo here would silently downgrade the transport. Reject it instead.
+CODEX_TRANSPORT="$(echo "$CODEX_TRANSPORT" | tr '[:upper:]' '[:lower:]')"
+case "$CODEX_TRANSPORT" in sdk|app-server) ;; *)
+  die "CODEX_TRANSPORT must be sdk or app-server (got: $CODEX_TRANSPORT)." ;;
 esac
 ok "Config validated (install dir: $INSTALL_DIR, user: $RUN_USER, port: $DASHBOARD_PORT)"
 
@@ -167,11 +174,14 @@ step "Applying database migrations"
 # version. Existing install: it applies what is pending, taking its own
 # pre-migration backup first. Already current: it is a no-op.
 #
-# `printf 'y\n'` answers the "apply N migrations?" prompt. The only other
-# prompt ("Proceed without backup?") is reached solely when that backup FAILED
-# — it then reads EOF, which migrate treats as "no" and aborts. That is the
-# outcome we want: never migrate unbacked-up data unattended.
-run_as bash -lc "cd '$APP_DIR' && printf 'y\n' | npx tsx scripts/migrate.ts"
+# `--yes` approves the "apply N migrations?" prompt without touching stdin, and
+# makes a failed pre-migration backup exit 1 instead of asking. Do NOT go back to
+# piping `printf 'y\n'`: readline answers only the FIRST prompt from a pipe, and
+# a second prompt then sees EOF, never fires its callback, and lets node exit 0
+# having migrated nothing — a silent success this step would report as real.
+# migrate.ts also verifies .applied.json records the expected version before
+# exiting 0, so this `ok` cannot fire on an unmigrated database.
+run_as bash -lc "cd '$APP_DIR' && npx tsx scripts/migrate.ts --yes"
 ok "Migrations up to date"
 
 # ── 5. Tailscale install + join ───────────────────────────────────────────────
@@ -243,9 +253,16 @@ DB_ENCRYPTION_KEY=$DB_ENCRYPTION_KEY
 # providers additionally require their CLI installed + authenticated here.
 ENABLE_ACP=$ENABLE_ACP
 
-# Native OpenAI (Codex SDK) is a stable, ungated provider — auth via
+# Native OpenAI (Codex) is a stable, ungated provider — auth via
 # \`codex login\` on this host (ChatGPT subscription) or OPENAI_API_KEY.
 ${OPENAI_API_KEY:+OPENAI_API_KEY=$OPENAI_API_KEY}
+
+# Transport for native OpenAI. \`app-server\` is the preferred path: one warm
+# App Server process, incremental streaming, turn-scoped cancellation and
+# effective-policy verification. \`sdk\` is the rollback and remains the default
+# when unset. Set CODEX_TRANSPORT in claudeclaw-deploy.conf — editing it here by
+# hand does not survive the next installer run, which rewrites this file.
+CODEX_TRANSPORT=$CODEX_TRANSPORT
 EOF
 chown "$RUN_USER:$RUN_USER" "$ENV_FILE"
 chmod 600 "$ENV_FILE"

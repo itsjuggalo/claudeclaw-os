@@ -72,12 +72,33 @@ function scanForPathWarnings(filePath: string): PathWarning[] {
   return warnings;
 }
 
+// Non-interactive mode for installers and CI. Approves the apply prompt without
+// reading stdin at all; every other decision point that would have asked a human
+// becomes a hard failure rather than a silent assumption.
+const ASSUME_YES = process.argv.slice(2).some((a) => a === '--yes' || a === '-y');
+
+function isAffirmative(answer: string): boolean {
+  const a = answer.trim().toLowerCase();
+  return a === 'y' || a === 'yes';
+}
+
 function prompt(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
+    let answered = false;
     rl.question(question, (answer) => {
+      answered = true;
       rl.close();
       resolve(answer);
+    });
+    // Guard against stdin already being at EOF — the case a piped `printf 'y\n'`
+    // creates for every prompt after the first. readline never invokes the
+    // question callback then, so without this the promise never settles, the
+    // event loop drains, and node exits 0. That reads to the caller as a
+    // successful migration when nothing ran at all. Resolving empty routes EOF
+    // into the same branch as an explicit "no": abort rather than assume.
+    rl.on('close', () => {
+      if (!answered) resolve('');
     });
   });
 }
@@ -184,13 +205,16 @@ async function main(): Promise<void> {
 
   const versionWord = pendingVersions.length === 1 ? 'version' : 'versions';
   const migrationWord = totalMigrations === 1 ? 'migration' : 'migrations';
-  const answer = await prompt(
-    `Apply ${pendingVersions.length} ${versionWord} (${totalMigrations} ${migrationWord})? [y/N] `,
-  );
+  const applyQuestion = `Apply ${pendingVersions.length} ${versionWord} (${totalMigrations} ${migrationWord})? [y/N] `;
 
-  if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
-    console.log('Migration cancelled.');
-    process.exit(0);
+  if (ASSUME_YES) {
+    console.log(`${applyQuestion}y  (--yes)`);
+  } else {
+    const answer = await prompt(applyQuestion);
+    if (!isAffirmative(answer)) {
+      console.log('Migration cancelled.');
+      process.exit(0);
+    }
   }
 
   // Pre-migration backup. A migration that crashes mid-run leaves a
@@ -217,8 +241,17 @@ async function main(): Promise<void> {
       console.log(`Pre-migration backup → ${path.relative(PROJECT_ROOT, backupPath)} (chmod 0600)`);
     } catch (e) {
       console.log(`⚠️  Could not create pre-migration backup: ${e instanceof Error ? e.message : e}`);
+      // Unattended runs must never migrate data they could not snapshot first:
+      // there would be no recovery path if a migration then failed half-way.
+      // Fail loudly so the installer stops here instead of reporting success and
+      // starting a service that trips the pending-migration guard.
+      if (ASSUME_YES) {
+        console.error('Refusing to migrate without a backup in --yes mode. Aborting.');
+        console.error('Free up disk space or fix store/ permissions, then re-run.');
+        process.exit(1);
+      }
       const ok = await prompt('Proceed without backup? [y/N] ');
-      if (ok.toLowerCase() !== 'y' && ok.toLowerCase() !== 'yes') {
+      if (!isAffirmative(ok)) {
         console.log('Aborting.');
         process.exit(1);
       }
@@ -267,6 +300,28 @@ async function main(): Promise<void> {
   }
 
   const finalVersion = pendingVersions[pendingVersions.length - 1];
+
+  // Postcondition: re-read the state we just wrote and confirm it actually
+  // records the version we believe we applied. Any future path that exits this
+  // function without migrating — or that fails to persist .applied.json — turns
+  // into a non-zero exit here rather than a false "success" the installer
+  // faithfully reports before starting a service that cannot boot.
+  let recorded: string | null = null;
+  try {
+    const state: AppliedState = JSON.parse(fs.readFileSync(APPLIED_FILE, 'utf-8'));
+    recorded = state.lastApplied;
+  } catch (e) {
+    console.error(`\nPostcondition failed: could not read ${APPLIED_FILE}: ${e instanceof Error ? e.message : e}`);
+    process.exit(1);
+  }
+  if (recorded !== finalVersion) {
+    console.error(
+      `\nPostcondition failed: expected migrations recorded at ${finalVersion}, found ${recorded ?? 'none'}.`,
+    );
+    console.error('The database may be partially migrated. Do not start the service; investigate first.');
+    process.exit(1);
+  }
+
   console.log(`\nMigration complete. Applied: ${lastApplied ?? 'none'} → ${finalVersion}`);
 }
 

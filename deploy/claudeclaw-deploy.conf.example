@@ -62,6 +62,16 @@ TS_HOSTNAME=claudeclaw
 # billing). Leave blank if you only use Claude.
 # OPENAI_API_KEY=
 
+# Transport used by the native OpenAI provider above.
+#   app-server - preferred. One warm `codex app-server` process: incremental
+#                text streaming, turn-scoped cancellation, effective-policy
+#                verification.
+#   sdk        - (default when unset) the rollback path. Use this if app-server
+#                misbehaves after an upgrade.
+# Set it here rather than in .env: the installer rewrites .env on every run, so
+# a hand-edited value there is lost on the next deploy.
+# CODEX_TRANSPORT=sdk
+
 # Experimental provider tier (the ACP family: codex-acp, Gemini, OpenCode,
 # OpenRouter, custom). Default false = the experimental picker is hidden; the
 # stable tier (Claude and native OpenAI above) is always available. Set true to
