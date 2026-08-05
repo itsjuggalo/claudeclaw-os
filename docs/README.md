@@ -29,6 +29,7 @@ original rationale to match later code. Record what actually shipped in an
 | [Agent Identity Reconciliation](rfcs/agent-identity-reconciliation.md) | Accepted | Complete | v1.6.0, PR #154 |
 | [In-Process Dispatch API](rfcs/in-process-dispatch.md) | Accepted | Complete | v1.8.0, PR #174 |
 | [Native OpenAI Provider via Codex App Server](rfcs/codex-app-server-provider.md) | Accepted | Complete | Initial scope in v1.8.0, PR #174 |
+| [Untrusted Content Provenance](rfcs/untrusted-content-provenance.md) | Draft | Not started | Issue #185 |
 
 ## Concepts and guides
 
