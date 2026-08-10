@@ -228,6 +228,13 @@ interface AnatomyMuscle {
 }
 
 // One muscle: front render, hover-swaps to back, links out to the full 3D view.
+// Deep link into the Erik Dalton video library (/dalton/, served by src/dalton.ts),
+// pre-searched. The library resolves muscle synonyms off the same anatomy index
+// this page uses, so any name here lands on real clips.
+export function daltonSearchUrl(term: string) {
+  return `/dalton/?q=${encodeURIComponent(term)}`;
+}
+
 function MuscleCard({ m, itemId }: { m: AnatomyMuscle; itemId: string }) {
   const [back, setBack] = useState(false);
   const imgUrl = (rel?: string) =>
@@ -265,11 +272,19 @@ function MuscleCard({ m, itemId }: { m: AnatomyMuscle; itemId: string }) {
       <div style={{ fontSize: '12px', color: 'var(--color-text)', marginTop: '4px', lineHeight: 1.2, textTransform: 'capitalize' }}>
         {m.name}
       </div>
-      {m.viewer_url && (
-        <a href={m.viewer_url} target="_blank" rel="noopener noreferrer"
+      <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '2px' }}>
+        {m.viewer_url && (
+          <a href={m.viewer_url} target="_blank" rel="noopener noreferrer"
+            style={{ fontSize: '11px', color: 'var(--color-accent)' }}
+            class="hover:underline">3D ↗</a>
+        )}
+        {/* Straight into the video library, pre-searched for this muscle. The
+            library expands the name through the same anatomy aliases, and falls
+            back to the group Erik teaches it in, so this never dead-ends. */}
+        <a href={daltonSearchUrl(m.name)} target="_blank" rel="noopener noreferrer"
           style={{ fontSize: '11px', color: 'var(--color-accent)' }}
-          class="hover:underline">view 3D ↗</a>
-      )}
+          class="hover:underline">videos ↗</a>
+      </div>
     </div>
   );
 }
@@ -531,6 +546,71 @@ function matchFrames(
   return result;
 }
 
+// Launcher for the full Erik Dalton source-video library (510 videos / ~58 hrs),
+// served same-origin at /dalton/. New tab, because X-Frame-Options: DENY is global.
+// The ?q= deep link lands the library pre-searched across every spoken word.
+const DALTON_SHORTCUTS = [
+  'ischial tuberosity', 'psoas', 'sacroiliac', 'piriformis',
+  'thoracic outlet', 'scoliosis', 'frozen shoulder', 'quadratus lumborum',
+];
+
+function VideoLibraryLauncher() {
+  const open = (q?: string) =>
+    window.open(q ? `/dalton/?q=${encodeURIComponent(q)}` : '/dalton/', '_blank', 'noopener');
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+      <div style={{
+        padding: '20px', border: '1px solid var(--color-border)', borderRadius: '12px',
+        background: 'color-mix(in srgb, var(--color-accent) 6%, transparent)',
+      }}>
+        <div style={{ fontSize: '15px', fontWeight: 800, color: 'var(--color-text)', marginBottom: '6px' }}>
+          🎬 Full video library — 510 videos, ~58 hours
+        </div>
+        <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: '16px' }}>
+          Every Dalton DVD and USB course on the box, grouped by course. 408 have
+          transcripts, so you can search <b style={{ color: 'var(--color-text)' }}>the words Erik
+          actually says</b> — not just lesson titles — and tap any timestamp to jump straight
+          to that moment.
+        </div>
+        <button
+          type="button"
+          onClick={() => open()}
+          style={{
+            padding: '10px 18px', borderRadius: '10px', border: 'none', cursor: 'pointer',
+            background: 'var(--color-accent)', color: 'var(--color-bg)',
+            fontSize: '14px', fontWeight: 700,
+          }}
+        >
+          Open video library ↗
+        </button>
+      </div>
+
+      <div>
+        <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--color-text-faint)', marginBottom: '10px' }}>
+          Jump straight to
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          {DALTON_SHORTCUTS.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => open(s)}
+              style={{
+                padding: '7px 13px', borderRadius: '999px', cursor: 'pointer',
+                border: '1px solid var(--color-border)', background: 'var(--color-bg-alt)',
+                color: 'var(--color-text-muted)', fontSize: '13px',
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // A horizontal strip of frame thumbnails for an Erik Dalton Ask/Search result.
 function TechniqueStrip({ text, videosMap, itemId }: {
   text: string;
@@ -736,11 +816,11 @@ function tagMuscles(text: string, aliasPairs: [string, string][]): string[] {
 }
 
 function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
-  type KbTab = 'explore' | 'conditions' | 'techniques' | 'quiz' | 'exam' | 'examples' | 'ask' | 'search' | 'sources';
+  type KbTab = 'explore' | 'conditions' | 'techniques' | 'videos' | 'quiz' | 'exam' | 'examples' | 'ask' | 'search' | 'sources';
   const urlTab = (() => {
     try {
       const t = new URLSearchParams(window.location.search).get('tab');
-      return (['explore', 'conditions', 'techniques', 'quiz', 'exam', 'examples', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
+      return (['explore', 'conditions', 'techniques', 'videos', 'quiz', 'exam', 'examples', 'ask', 'search', 'sources'] as string[]).includes(t || '') ? (t as KbTab) : null;
     } catch { return null; }
   })();
   const [tab, setTab] = useState<KbTab>(
@@ -912,6 +992,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
             {isErikDalton && <Tab label="Explore" active={tab === 'explore'} onClick={() => setTab('explore')} />}
             {isErikDalton && <Tab label="Conditions" active={tab === 'conditions'} onClick={() => setTab('conditions')} />}
             {isErikDalton && <Tab label="Techniques" active={tab === 'techniques'} onClick={() => setTab('techniques')} />}
+            {isErikDalton && <Tab label="Videos" active={tab === 'videos'} onClick={() => setTab('videos')} />}
             {isErikDalton && <Tab label="Quiz" active={tab === 'quiz'} onClick={() => setTab('quiz')} />}
             {isErikDalton && <Tab label="Exam" active={tab === 'exam'} onClick={() => setTab('exam')} />}
             {isClayTrader && <Tab label="Examples" active={tab === 'examples'} onClick={() => setTab('examples')} />}
@@ -934,6 +1015,7 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 <div><b style={{ color: 'var(--color-text)' }}>Explore</b> — tap a body region to see its muscles & techniques.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Conditions</b> — start from a client complaint (sciatica, frozen shoulder…).</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Techniques</b> — step through each lesson frame-by-frame with Erik's voice.</div>
+                <div><b style={{ color: 'var(--color-text)' }}>Videos</b> — all 510 source videos, searchable by the words Erik actually says.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Quiz</b> — test yourself: watch a clip, name the body area worked.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Exam</b> — all 5 real Myoskeletal certification papers: study, drill, or sit a timed mock. Each paper shows its own question and answer-key count.</div>
                 <div><b style={{ color: 'var(--color-text)' }}>Library</b> — browse every course & lesson.</div>
@@ -952,6 +1034,15 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
 
           {tab === 'techniques' && (
             <TechniquePlayer itemId={item.id} videosMap={videosMap} />
+          )}
+
+          {/* Full source-video library. Served same-origin by the /dalton route
+              (src/dalton.ts) from the generated index at /var/www/dalton/index.html,
+              so it stays in sync with the nginx copy and needs no second build.
+              Opened in a NEW TAB — the global X-Frame-Options: DENY makes inline
+              framing impossible (same call as the bunker-files route). */}
+          {tab === 'videos' && isErikDalton && (
+            <VideoLibraryLauncher />
           )}
 
           {tab === 'exam' && isErikDalton && (
@@ -1106,6 +1197,27 @@ function KbDetail({ item, back }: { item: DbItem; back: ComponentChildren }) {
                 <DidYouMean query={dq} anatomy={anatomy} itemId={item.id}
                   onRegion={(r) => goTo('explore', { region: r })}
                   onRefine={(t) => setQuery(t)} />
+              )}
+              {/* Searching a muscle here should also get you to the footage of it.
+                  Always offered (not conditional on KB hits) — the library resolves
+                  synonyms + group fallbacks, so it lands on clips either way. */}
+              {isErikDalton && dq.trim().length > 1 && (
+                <a
+                  href={daltonSearchUrl(dq.trim())}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px',
+                    padding: '10px 12px', borderRadius: '10px', textDecoration: 'none',
+                    border: '1px solid var(--color-accent)',
+                    background: 'color-mix(in srgb, var(--color-accent) 10%, transparent)',
+                    color: 'var(--color-text)', fontSize: '13px',
+                  }}
+                >
+                  <span style={{ fontSize: '15px' }}>▶</span>
+                  <span>Watch the videos for <b>{dq.trim()}</b></span>
+                  <span style={{ marginLeft: 'auto', color: 'var(--color-accent)', fontWeight: 700 }}>↗</span>
+                </a>
               )}
               {searchErr && <div style={{ marginTop: '16px' }}><PageState error={searchErr} /></div>}
               {searching && <div class="text-[13px] text-[var(--color-text-muted)]" style={{ marginTop: '14px' }}>Searching…</div>}

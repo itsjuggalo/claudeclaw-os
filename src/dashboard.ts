@@ -5,6 +5,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { serve } from '@hono/node-server';
 
 import fs from 'fs';
+import { Readable } from 'node:stream';
 import os from 'os';
 import path from 'path';
 import zlib from 'zlib';
@@ -24,6 +25,7 @@ import { getDailyPsychCard, getWeeklyReviews, getWeeklyReview, getDailyDrill, an
 import { getTradeHistory } from './tradehistory.js';
 import { getTokenBurn } from './tokenburn.js';
 import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbExamBank, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
+import { daltonIndex, daltonMedia, daltonStream, parseRange } from './dalton.js';
 import { registerAccounts } from './accounts.js';
 import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
 import { getSignalMonitor } from './signal-monitor.js';
@@ -5961,6 +5963,45 @@ init();
     if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
     const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
     return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  // ── Erik Dalton video library ────────────────────────────────────────────
+  // Serves the same generated index nginx serves, plus range-streamed playback
+  // of the full 510-video library. The page reads its media base off
+  // location.origin, so one build works here and on the nginx route.
+  app.get('/dalton', (c) => c.redirect('/dalton/'));
+  app.get('/dalton/', (c) => {
+    const res = daltonIndex();
+    if ('error' in res) return c.text(res.error, 503);
+    return c.html(res.html);
+  });
+
+  app.get('/dalton/media/*', (c) => {
+    const rel = c.req.path.replace(/^\/dalton\/media\//, '');
+    const f = daltonMedia(rel);
+    if ('error' in f) return c.json(f, f.error === 'not found' ? 404 : 403);
+
+    const head = {
+      'Content-Type': f.mime,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'private, max-age=3600',
+    };
+    const range = parseRange(c.req.header('range'), f.size);
+    if (!range) {
+      // Unsatisfiable range (vs. absent) still deserves a 416, not a full body.
+      if (c.req.header('range')) {
+        return c.body(null, 416, { ...head, 'Content-Range': `bytes */${f.size}` });
+      }
+      const s = Readable.toWeb(daltonStream(f.path)) as unknown as ReadableStream;
+      return c.body(s, 200, { ...head, 'Content-Length': String(f.size) });
+    }
+    const { start, end } = range;
+    const s = Readable.toWeb(daltonStream(f.path, start, end)) as unknown as ReadableStream;
+    return c.body(s, 206, {
+      ...head,
+      'Content-Range': `bytes ${start}-${end}/${f.size}`,
+      'Content-Length': String(end - start + 1),
+    });
   });
 
   // Curated quiz bank (vision-filtered hands-on moments) with media URLs rewritten.
