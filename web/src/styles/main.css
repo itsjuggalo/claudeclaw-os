@@ -404,3 +404,14 @@ input, textarea, select {
 .intake-review td, .intake-review th, .intake-review p, .intake-review div {
   overflow-wrap: anywhere; word-break: break-word;
 }
+
+/* Erik Explore: the body map pins beside the detail panel on a wide screen, but
+   on a phone the flex row WRAPS and the two stack — a sticky map then stays
+   nailed to the top while the muscle plates scroll underneath it, showing the
+   skeleton through the content. Only pin it once there's a second column to
+   pin beside. Also let it shrink: at 440px fixed it pushed a horizontal
+   scrollbar onto a 390px phone and clipped the BACK figure. */
+.erik-bodymap-col { max-width: 100%; min-width: 0; }
+@media (min-width: 900px) {
+  .erik-bodymap-col { position: sticky; top: 0; }
+}

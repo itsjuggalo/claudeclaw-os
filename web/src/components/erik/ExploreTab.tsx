@@ -358,7 +358,7 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
 
       <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* Body map */}
-        <div style={{ flex: '0 0 auto', position: 'sticky', top: 0 }}>
+        <div class="erik-bodymap-col" style={{ flex: '0 1 auto' }}>
           <BodyMap selected={selected} onSelect={(k) => setSelected((cur) => (cur === k ? null : k))} />
         </div>
 
