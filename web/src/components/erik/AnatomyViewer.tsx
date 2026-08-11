@@ -273,6 +273,13 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
     controls.minDistance = 2.2;
     controls.maxDistance = 6;
     controls.enablePan = false;
+    // One finger rotates (only sideways gestures reach us — see touchAction:'pan-y'
+    // on the wrapper), two fingers zoom. Never claim the vertical page scroll.
+    controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_ROTATE };
+    // OrbitControls' constructor force-sets touchAction:'none' on the canvas, which
+    // beats the wrapper's pan-y — the canvas is the real touch target, so vertical
+    // swipes were still being eaten. Put it back AFTER construction.
+    renderer.domElement.style.touchAction = 'pan-y';
     controls.target.set(0, -0.1, 0);
     controls.update();
     const homePos = camera.position.clone();
@@ -516,12 +523,16 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
           width: '100%', height: '420px', borderRadius: '12px',
           border: '1px solid var(--color-border)',
           background: 'radial-gradient(ellipse at 50% 35%, rgba(16,185,129,0.06), var(--color-card) 70%)',
-          touchAction: 'none', cursor: 'grab',
+          // 'none' meant the canvas swallowed EVERY touch — a vertical swipe that
+          // started on the 420px-tall model rotated it instead of scrolling the page.
+          // 'pan-y' hands vertical swipes back to the scroller; sideways drags still
+          // reach OrbitControls, and two-finger pinch still dollies.
+          touchAction: 'pan-y', cursor: 'grab',
         }}
       />
       {/* hint — sits below the layer toggles when the real atlas is loaded so the two never overlap on a narrow phone canvas */}
       <div style={{ position: 'absolute', top: (hasBone || hasMuscle) ? '44px' : '10px', left: '12px', maxWidth: '60%', lineHeight: 1.3, fontSize: '12px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
-        Drag to rotate · scroll to zoom · tap a region
+        Drag sideways to rotate · pinch/scroll to zoom · tap a region
       </div>
       {/* first-load indicator (the real atlas is ~14MB) */}
       {loading && (
