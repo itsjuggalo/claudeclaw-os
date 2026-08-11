@@ -32,6 +32,15 @@ import { ERIK_REGIONS, REGION_BY_KEY } from './regions';
 const ACCENT = '#10b981';
 // Preferred first. HEAD-checked in order; first hit wins.
 const ATLAS_URLS = ['/anatomy-seg.glb', '/anatomy.glb'];
+// The atlases above ship NO muscle above the shoulders — their head/neck section
+// is bones, cartilages, arteries and nerves only, which is why the figure's head
+// used to render as a bare skull. This companion file (built by
+// ~/restructure/dalton/build_head_muscles.py from Z-Anatomy's own MuscularSystem
+// FBX, CC BY-SA, same coordinate frame) adds the 124 missing structures:
+// masseter/temporalis/pterygoids, the facial-expression sheet, SCM, scalenes,
+// splenius, the suboccipitals and the hyoid straps. Optional — if it 404s the
+// viewer just renders the atlas as before.
+const HEAD_GLB_URL = '/anatomy-head.glb';
 const INFO_URL = '/anatomy-info.json';
 // On-screen credit for the loaded atlas (CC/public-domain attribution).
 const ANATOMY_CREDIT = '3D atlas: BodyParts3D / Z-Anatomy / AnatomyTOOL · CC BY-SA';
@@ -60,7 +69,12 @@ function videoQuery(name: string): string {
 // they never count as a region needle on their own.
 const AMBIGUOUS_NEEDLE = new Set(['head', 'face', 'spine', 'neck', 'body', 'general', 'low', 'back', 'core']);
 
+// The chewing muscles resolve to Head / Face on muscle-slug order alone, but a
+// bodyworker looking for the masseter wants the Jaw / TMJ lessons.
+const JAW_STRUCTURE = /(masseter|pterygoid|temporalis|temporomandibular)/i;
+
 function meshRegion(rawName: string): string | null {
+  if (JAW_STRUCTURE.test(rawName)) return 'jaw/TMJ';
   const n = rawName.toLowerCase().replace(/[_\-.]/g, ' ');
   // Specific first: a named muscle beats any label word, whichever region it's in.
   for (const r of ERIK_REGIONS) {
@@ -90,7 +104,7 @@ function classifyTissue(path: string): Tissue {
 
 // Depth layer for the "peel" control (outer → inner). Vessels + nerves get
 // their own toggles since they weave through every depth.
-const SUPERFICIAL = /(trapezius|latissimus|deltoid|pectoralis major|gluteus maximus|rectus abdom|external (abdominal )?oblique|sternocleidomastoid|biceps brach|triceps|brachioradialis|gastrocnemius|sartorius|rectus femoris)/;
+const SUPERFICIAL = /(trapezius|latissimus|deltoid|pectoralis major|gluteus maximus|rectus abdom|external (abdominal )?oblique|sternocleidomastoid|biceps brach|triceps|brachioradialis|gastrocnemius|sartorius|rectus femoris|platysma|masseter|temporalis|frontalis|occipitalis|epicranial|orbicularis|zygomaticus|risorius|mentalis|procerus|corrugator|nasalis|depressor (anguli|labii|septi)|levator (labii|anguli oris|nasolabialis))/;
 function depthLayer(path: string, tissue: Tissue): Layer {
   const n = path.toLowerCase();
   if (tissue === 'nerve') return 'nerves';
@@ -298,7 +312,9 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
   // Refs so the once-only init effect's event handlers read latest values.
   const selectedRef = useRef<string | null>(selected);
   const onSelectRef = useRef(onSelect);
+  const layerOnRef = useRef(layerOn);
   useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
+  useEffect(() => { layerOnRef.current = layerOn; }, [layerOn]);
 
   useEffect(() => {
     if (!wrapRef.current) return;
@@ -555,6 +571,41 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       setPct(null);
     };
 
+    // Companion head/face/neck muscle file. Everything in it is muscle unless the
+    // name says fascia — the classifier's keyword list would otherwise drop
+    // platysma, buccinator, corrugator and the depressors into 'other'.
+    const loadHead = (loader: { load: Function }, parent: THREE.Object3D) => {
+      loader.load(
+        HEAD_GLB_URL,
+        (g: { scene: THREE.Object3D }) => {
+          if (disposed) return;
+          const added: THREE.Mesh[] = [];
+          g.scene.traverse((o: THREE.Object3D) => {
+            if (!(o instanceof THREE.Mesh)) return;
+            const path = namePath(o);
+            const soft = /fascia|aponeurosis/i.test(path);
+            const tissue: Tissue = soft ? 'other' : 'muscle';
+            o.userData.tissue = tissue;
+            o.userData.lookup = path;
+            o.userData.pretty = prettyName(o);
+            o.userData.layer = depthLayer(path, tissue);
+            o.material = tissueMat(tissue);
+            const r = meshRegion(path);
+            if (r) o.userData.region = r;
+            added.push(o);
+          });
+          if (!added.length) return;
+          parent.add(g.scene);
+          indexMeshes(added);
+          setLayersPresent(LAYER_DEFS.map((d) => d.key).filter((k) => (meshesByLayer.get(k) || []).length > 0));
+          setLayerVisible(layerOnRef.current);   // respect pills toggled while it loaded
+          applyHighlight();
+        },
+        undefined,
+        () => { /* optional asset — atlas alone is still a working viewer */ },
+      );
+    };
+
     // ── Atlas load ──
     const buildProcedural = () => finish(buildMannequin(figure));
 
@@ -648,6 +699,13 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
           gltf.scene.position.copy(center).multiplyScalar(-scale);
           figure.add(gltf.scene);
           finish(tagged);
+          // Head/face/neck muscles ride in a companion file — same raw coordinate
+          // frame, so parenting them to the (already centred + scaled) atlas scene
+          // lands them exactly on the skull. Loaded AFTER the atlas is on screen so
+          // the 2.6 MB never delays first paint, and OUTSIDE the mirroring pass:
+          // this file is already bilateral, and letting the half-body heuristic see
+          // it would delete one side and mirror the other.
+          loadHead(loader, gltf.scene);
         },
         (ev) => {
           if (disposed || !ev.lengthComputable || !ev.total) return;
