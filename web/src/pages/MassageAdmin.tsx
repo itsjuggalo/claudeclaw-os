@@ -252,7 +252,9 @@ function MicButton({ onText }: { onText: (t: string) => void }) {
 function NoteField({ label, value, onChange, phraseKey, prior }: {
   label: string; value: string; onChange: (v: string) => void; phraseKey?: string; prior?: string[];
 }) {
-  const [typing, setTyping] = useState<boolean>(!!value);
+  // Open for writing by default — hiding the textarea behind a "type" tap made
+  // note-writing feel cramped; the toggle now just collapses it when not needed.
+  const [typing, setTyping] = useState<boolean>(true);
   const phrases = (phraseKey && SOAP_PHRASES[phraseKey]) || [];
   return (
     <div class="block">
@@ -282,7 +284,8 @@ function NoteField({ label, value, onChange, phraseKey, prior }: {
         </div>
       )}
       {(typing || !!value) && (
-        <textarea class={`${inputClass} min-h-[52px] resize-y`} value={value} onInput={(e) => onChange((e.currentTarget as HTMLTextAreaElement).value)} />
+        <textarea class={`${inputClass} min-h-[130px] resize-y leading-relaxed`} placeholder="Tap a chip above, dictate, or just start typing…"
+          value={value} onInput={(e) => onChange((e.currentTarget as HTMLTextAreaElement).value)} />
       )}
     </div>
   );
