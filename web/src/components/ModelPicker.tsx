@@ -1,24 +1,22 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ChevronDown, Check } from 'lucide-preact';
 import { useFetch } from '@/lib/useFetch';
+import { modelLabel, CLAUDE_MODEL_IDS } from '@/lib/modelLabels';
 
-const CLAUDE_MODELS = [
-  { id: 'claude-opus-4-8', label: 'Opus 4.8' },
-  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-  { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
-];
+// Derived, not hardcoded — this was a third copy of the label map and had
+// already drifted from src/model-catalog.ts.
+const CLAUDE_MODELS = CLAUDE_MODEL_IDS.map((id) => ({ id, label: modelLabel(id) }));
 
 const PROVIDER_LABELS: Record<string, string> = {
   opencode: 'OpenCode default',
   gemini: 'Gemini CLI default',
-  codex: 'Codex default',
+  'acp-codex': 'Codex default',
+  openai: 'OpenAI default',
   acp: 'ACP default',
 };
 
 interface ProviderStatus {
-  providerType: 'claude' | 'opencode' | 'gemini' | 'codex' | 'acp';
+  providerType: 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'openai' | 'acp';
   label: string;
   model: string;
 }
@@ -40,7 +38,12 @@ export function ModelPicker({ value, onSelect, disabled, size = 'sm' }: Props) {
   const current = isClaude ? CLAUDE_MODELS.find((m) => m.id === value) : null;
   const displayLabel = isClaude
     ? (current?.label || value || 'default')
-    : (PROVIDER_LABELS[providerType] || provider.data?.label || providerType);
+    // The native OpenAI provider has a real selected model — show it instead
+    // of a generic provider label. Other non-Claude providers manage the
+    // model in their own CLI config.
+    : (providerType === 'openai' && provider.data?.model)
+      ? modelLabel(provider.data.model)
+      : (PROVIDER_LABELS[providerType] || provider.data?.label || providerType);
 
   useEffect(() => {
     if (!open) return;

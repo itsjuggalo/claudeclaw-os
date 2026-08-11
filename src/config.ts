@@ -17,7 +17,11 @@ import type { ProviderConfig } from './provider.js';
  */
 function withCliIndex(persona: string | undefined): string | undefined {
   if (!persona) return persona;
-  return persona + '\n\n' + renderCliIndex(allDescriptors);
+  // Stamp the known-absolute PROJECT_ROOT into the injected index so agents
+  // never rediscover the root via `git rev-parse` — scheduled/automation turns
+  // run from the agent config dir (a non-repo cwd) and would otherwise anchor
+  // to a sibling checkout. See issue #157.
+  return persona + '\n\n' + renderCliIndex(allDescriptors, PROJECT_ROOT);
 }
 
 const envConfig = readEnvFile([
@@ -36,6 +40,7 @@ const envConfig = readEnvFile([
   'DASHBOARD_BIND',
   'DASHBOARD_AUTH_DISABLED',
   'CLAUDECLAW_CONFIG',
+  'CLAUDECLAW_OWNER_NAME',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
   'DEEPSEEK_API_KEY',
@@ -68,7 +73,13 @@ const envConfig = readEnvFile([
   'OPENROUTER_API_KEY',
   'OPENROUTER_MODEL',
   'RAPIDAPI_KEY',
+  'OPENAI_API_KEY',
+  'OPENAI_MODEL',
   'CLAUDECLAW_STORE_DIR',
+  'DISPATCH_ALLOW_HIVE_READ',
+  'CODEX_DANGER_WRITE',
+  'CODEX_TRANSPORT',
+  'CODEX_APP_SERVER_MAX_CONCURRENT_TURNS',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -180,14 +191,32 @@ export function expandHome(p: string): string {
   return p;
 }
 
-const rawConfigDir =
-  process.env.CLAUDECLAW_CONFIG || envConfig.CLAUDECLAW_CONFIG || '~/.claudeclaw';
+/**
+ * Resolve the external config directory *at call time*.
+ *
+ * Reads process.env.CLAUDECLAW_CONFIG freshly on each call so a caller that
+ * chooses a config dir mid-run (e.g. the setup wizard's prompt) can set the
+ * env var and have subsequent writes honor it. The exported CLAUDECLAW_CONFIG
+ * const below snapshots this at import for the long-running runtime, where the
+ * path is fixed before any module loads. Persistence code (see provider.ts)
+ * must call this function, not the const, so it never writes to a stale default.
+ */
+export function getClaudeclawConfig(): string {
+  const raw =
+    process.env.CLAUDECLAW_CONFIG || envConfig.CLAUDECLAW_CONFIG || '~/.claudeclaw';
+  return expandHome(raw);
+}
 
 /**
- * Absolute path to the external config directory.
+ * Absolute path to the external config directory, snapshotted at import.
  * Defaults to ~/.claudeclaw. Set CLAUDECLAW_CONFIG in .env or environment to override.
+ * For writes that may run before the path is finalized, use getClaudeclawConfig().
  */
-export const CLAUDECLAW_CONFIG = expandHome(rawConfigDir);
+export const CLAUDECLAW_CONFIG = getClaudeclawConfig();
+
+/** Deterministic owner label for shared surfaces such as War Room transcripts. */
+export const CLAUDECLAW_OWNER_NAME =
+  (process.env.CLAUDECLAW_OWNER_NAME || envConfig.CLAUDECLAW_OWNER_NAME || 'User').trim() || 'User';
 
 // Telegram limits
 export const MAX_MESSAGE_LENGTH = 4096;
@@ -287,14 +316,40 @@ export const OPENROUTER_API_KEY =
 export const DEFAULT_OPENROUTER_MODEL =
   process.env.OPENROUTER_MODEL || envConfig.OPENROUTER_MODEL || 'z-ai/glm-4.5-air:free';
 
-// Streaming strategy for progressive Telegram updates.
-// 'global-throttle' (default): edits a placeholder message with streamed text,
-//   rate-limited to ~24 edits/min per chat to respect Telegram limits.
-// 'single-agent-only': streaming disabled when multiple agents are active on same chat.
-// 'off': no streaming, wait for full response.
-export type StreamStrategy = 'global-throttle' | 'single-agent-only' | 'off';
+// OpenAI API key — for the native OpenAI (Codex SDK) provider engine.
+// OPTIONAL: the Codex runtime prefers ChatGPT-subscription auth from
+// `codex login` (~/.codex/auth.json); set this only for API-key billing.
+export const OPENAI_API_KEY =
+  process.env.OPENAI_API_KEY || envConfig.OPENAI_API_KEY || '';
+
+// Default OpenAI model for the native Codex SDK engine when none is
+// configured/selected. Override via OPENAI_MODEL in .env so a new default
+// lands on restart without a code change.
+export const DEFAULT_OPENAI_MODEL =
+  process.env.OPENAI_MODEL || envConfig.OPENAI_MODEL || 'gpt-5.5';
+
+// Streaming strategy for progressive Telegram updates. Provider-agnostic: this
+// governs streaming for every adapter (Claude, Codex, Gemini, ...), not just one.
+//
+// 'global-throttle' (default): edits a placeholder message with streamed text and
+//   in-progress status, rate-limited to ~24 edits/min per chat to respect Telegram
+//   limits. The budget is shared per chat, so text and progress never compete.
+// 'off': no streaming, wait for the full response.
+//
+// A third option, 'single-agent-only', used to be advertised here. It was never
+// implemented — the only check anywhere is `!== 'off'`, and no multi-agent
+// detection exists in the streaming path — so it behaved identically to
+// 'global-throttle'. It is removed rather than left as a promise the code does not
+// keep; an existing `.env` still carrying it keeps working (see the normalization
+// below) and simply gets the behaviour it always had.
+export type StreamStrategy = 'global-throttle' | 'off';
+// Normalized rather than cast: the only real axis is on/off, so anything that is
+// not an explicit 'off' means on. A cast would let a typo ('of', 'false') silently
+// pick a value outside the union and read as valid downstream.
 export const STREAM_STRATEGY: StreamStrategy =
-  (process.env.STREAM_STRATEGY || envConfig.STREAM_STRATEGY || 'off') as StreamStrategy;
+  (process.env.STREAM_STRATEGY || envConfig.STREAM_STRATEGY || 'global-throttle').trim() === 'off'
+    ? 'off'
+    : 'global-throttle';
 
 // ── Security ─────────────────────────────────────────────────────────
 // PIN lock: SHA-256 hash of your PIN. Generate: node -e "console.log(require('crypto').createHash('sha256').update('YOUR_PIN').digest('hex'))"
@@ -396,7 +451,7 @@ export const EXFILTRATION_GUARD_ENABLED =
   (process.env.EXFILTRATION_GUARD_ENABLED || envConfig.EXFILTRATION_GUARD_ENABLED || 'true').toLowerCase() === 'true';
 export const PROTECTED_ENV_VARS = (
   process.env.PROTECTED_ENV_VARS || envConfig.PROTECTED_ENV_VARS ||
-  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY,DEEPSEEK_API_KEY'
+  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY,DEEPSEEK_API_KEY,OPENAI_API_KEY'
 ).split(',').map((s) => s.trim()).filter(Boolean);
 
 // ── Provider Selection (BETA) ───────────────────────────────────────
@@ -404,8 +459,56 @@ export const PROTECTED_ENV_VARS = (
 // runtime. When false, the dashboard hides the provider picker and the
 // engine forces Claude regardless of what's saved in agent.yaml or
 // main-config.json. Existing installs without this var see no change.
+// Opt-in for the EXPERIMENTAL provider tier only (the ACP family: acp-codex,
+// Gemini, OpenCode, OpenRouter, custom ACP). The STABLE tier — Claude and
+// native OpenAI (Codex SDK) — is not gated by this and is always available.
+// See src/provider-registry.ts for the single enablement source of truth.
 export const ENABLE_ACP =
   (process.env.ENABLE_ACP || envConfig.ENABLE_ACP || 'false').toLowerCase() === 'true';
+
+// ── Dispatch bridge (out-of-process / non-Claude providers) ─────────
+// hive_read returns SHARED cross-agent memory; on a non-Claude provider that
+// content egresses to the vendor. The out-of-process dispatch bridge
+// (dispatch-mcp-server.ts) therefore WITHHOLDS hive_read by default. This is a
+// per-deployment data-governance decision, independent of model behavior — flip
+// it on to let non-Claude agents read the hive. hive_log and the
+// mission/schedule verbs are unaffected (always available on the bridge).
+export const DISPATCH_ALLOW_HIVE_READ =
+  (process.env.DISPATCH_ALLOW_HIVE_READ || envConfig.DISPATCH_ALLOW_HIVE_READ || 'false').toLowerCase() === 'true';
+
+// ── Codex write access (danger-full-access opt-in) ──────────────────
+// On the current native Windows host, Codex exec applies read-only instead of the
+// requested `-s workspace-write` ("rejected by user approval settings"), so the
+// safe middle sandbox is effectively unavailable there — only read-only or
+// danger-full-access are honored. When this is set, a Codex/openai turn that would
+// otherwise resolve to workspace-write instead resolves to 'danger-full-access',
+// which `-s danger-full-access` DOES honor (verified writing on this host).
+// Default OFF: this drops the OS sandbox + network confinement (parity with
+// Claude's bypassPermissions posture), so enable ONLY for trusted-operator
+// agents, never for untrusted-input/public bots.
+export const CODEX_DANGER_WRITE =
+  (process.env.CODEX_DANGER_WRITE || envConfig.CODEX_DANGER_WRITE || 'false').toLowerCase() === 'true';
+
+// ── Codex runtime transport (Codex SDK vs App Server) ───────────────
+// How the STABLE native `openai` provider reaches the Codex runtime.
+// 'sdk' (default) drives `codex exec` once per turn via @openai/codex-sdk.
+// 'app-server' keeps ONE warm `codex app-server` child per agent process and
+// verifies the effective sandbox/approval policy before every turn — the
+// visibility the SDK path cannot provide. The SDK stays the default until the
+// App Server path has soaked; it remains the documented rollback after that.
+// Unrelated to the experimental `acp-codex` provider, which reaches Codex
+// through the codex-acp ACP adapter instead.
+export const CODEX_TRANSPORT =
+  (process.env.CODEX_TRANSPORT || envConfig.CODEX_TRANSPORT || 'sdk').toLowerCase() === 'app-server'
+    ? 'app-server'
+    : 'sdk';
+
+// Maximum concurrent native OpenAI turns per agent process. Turns on the SAME
+// thread always serialize regardless; this bounds unrelated threads.
+export const CODEX_APP_SERVER_MAX_CONCURRENT_TURNS = Math.max(
+  1,
+  parseInt(process.env.CODEX_APP_SERVER_MAX_CONCURRENT_TURNS || envConfig.CODEX_APP_SERVER_MAX_CONCURRENT_TURNS || '8', 10) || 8,
+);
 
 // ── War Room (voice meeting via Pipecat WebSocket) ──────────────────
 export const WARROOM_ENABLED =

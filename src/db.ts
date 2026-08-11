@@ -450,6 +450,19 @@ export function initDatabase(): void {
 }
 
 /**
+ * Open the database exactly once per process. In-process callers (e.g. the
+ * dispatch-tool handlers in `dispatch-tools.ts`, which run inside the already-
+ * booted agent runtime) need a guaranteed-open connection without paying for a
+ * redundant `initDatabase()` (which re-opens a fresh better-sqlite3 handle and
+ * re-runs migrations). The CLI entrypoints keep calling `initDatabase()`
+ * directly since each is a short-lived one-shot process.
+ */
+export function ensureDatabase(): void {
+  if (db) return;
+  initDatabase();
+}
+
+/**
  * Add a column to a table if it doesn't already exist. Tolerates the
  * concurrent-startup race where two agent processes both observe the column
  * as missing and both attempt the ALTER; whichever loses sees "duplicate
@@ -848,6 +861,17 @@ export function setSession(chatId: string, sessionId: string, agentId = 'main'):
 
 export function clearSession(chatId: string, agentId = 'main'): void {
   db.prepare('DELETE FROM sessions WHERE chat_id = ? AND agent_id = ?').run(chatId, agentId);
+}
+
+/**
+ * Clear every persisted conversation session owned by an agent.
+ *
+ * Provider/model changes can originate in the dashboard process while the
+ * target Telegram bot is a different process. Clearing by agent makes every
+ * transport/chat start its next turn against the newly persisted config.
+ */
+export function clearAgentSessions(agentId: string): number {
+  return db.prepare('DELETE FROM sessions WHERE agent_id = ?').run(agentId).changes;
 }
 
 // ── Memory (V2: structured with LLM extraction) ────────────────────

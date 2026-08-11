@@ -64,8 +64,9 @@ https://claudeclaw.tailXXXX.ts.net/?token=...&chatId=...
 Open it on any device that's signed in to your tailnet. Then send a message from your
 allowed Telegram chat to confirm the bot replies.
 
-> Testing the feature branch before it's merged? Set `REPO_BRANCH=feat/vps-deploy-tailscale`
-> in your conf so the VPS clones the same branch.
+> Testing a feature branch before it's merged? Set `REPO_BRANCH=<your-branch>` in your conf so
+> the VPS clones the same branch you're testing. Push the branch first — the installer clones
+> from the remote, so uncommitted local work won't be deployed.
 
 ## Security model
 
@@ -91,7 +92,10 @@ Strongest, but only enable it once you've:
 - **Confirmed Hostinger's browser/VNC console** (hPanel → your VPS) works — it bypasses
   `ufw`/Tailscale entirely, so you can always recover with `ufw allow OpenSSH`.
 
-## Day-2 operations
+## Running it day to day
+
+Your install is finished — these are the commands you'll use from now on. Re-running the
+installer is only for upgrading to newer code; it is never a required second step.
 
 ```bash
 systemctl status claudeclaw          # service state

@@ -93,15 +93,30 @@ export const hiveDescriptor: CliDescriptor = {
       usage: 'path',
       description:
         'Print the resolved hive-mind DB absolute path. Does NOT open the DB (works without DB_ENCRYPTION_KEY) — answers "where is my store?".',
+      tool: { name: 'hive_path', params: [] },
     },
     {
       usage: 'read [--limit N]',
       description: 'Print the most recent hive_mind entries (default 10).',
+      tool: {
+        name: 'hive_read',
+        params: [
+          { name: 'limit', type: 'number', required: false, description: 'Max entries to return (default 10).' },
+        ],
+      },
     },
     {
       usage: 'log --action <action> --summary <summary> [--agent <id>]',
       description:
         'Append a hive_mind entry. --agent defaults to CLAUDECLAW_AGENT_ID (or "main"). Log after any meaningful action so the fleet can see it.',
+      tool: {
+        name: 'hive_log',
+        params: [
+          { name: 'action', type: 'string', required: true, description: 'Short action label for the entry.' },
+          { name: 'summary', type: 'string', required: true, description: 'One-line summary of what happened.' },
+          { name: 'agent', type: 'string', required: false, description: 'Agent id to attribute (defaults to CLAUDECLAW_AGENT_ID or "main").' },
+        ],
+      },
     },
   ],
   notes: [
@@ -120,29 +135,74 @@ export const missionDescriptor: CliDescriptor = {
       usage: 'create [--agent <id>] [--title "Label"] [--priority N] "Full prompt text"',
       description:
         'Queue a one-shot mission task. --agent assigns it (omit to leave unassigned for dashboard auto-assign); --title defaults to the first 60 chars of the prompt; --priority defaults to 5.',
+      tool: {
+        name: 'mission_create',
+        params: [
+          { name: 'prompt', type: 'string', required: true, description: 'Full prompt text for the mission.' },
+          { name: 'agent', type: 'string', required: false, description: 'Target agent id/name/alias; omit to leave unassigned for dashboard auto-assign.' },
+          { name: 'title', type: 'string', required: false, description: 'Short label (defaults to the first 60 chars of the prompt).' },
+          { name: 'priority', type: 'number', required: false, description: 'Priority (default 5).' },
+        ],
+      },
     },
     {
       usage: 'handback <task-id> "Report text"',
       description:
         'Report back on a task you were assigned. Routes deterministically to the task\'s originator (created_by) — another agent, or the human via the primary agent. Use this to close the loop; never guess the recipient.',
+      tool: {
+        name: 'mission_handback',
+        params: [
+          { name: 'task_id', type: 'string', required: true, description: 'Id of the task you were assigned.' },
+          { name: 'report', type: 'string', required: true, description: 'Report text to hand back to the originator.' },
+          { name: 'priority', type: 'number', required: false, description: 'Priority of the handback mission (default 5).' },
+        ],
+      },
     },
     {
       usage:
         'gather --summary-agent <id> --title "Label" --task "agent:prompt" [--task "agent:prompt" ...] "join/summary prompt"',
       description:
         'Non-blocking fan-out: queue one child task per --task, then a parked join task for --summary-agent. The scheduler releases the join with all child results once the last child finishes, producing ONE consolidated summary. Children finish with their findings as output — they do NOT handback.',
+      tool: {
+        name: 'mission_gather',
+        params: [
+          { name: 'summary_agent', type: 'string', required: true, description: 'Agent assigned the parked join/summary task.' },
+          { name: 'tasks', type: 'string[]', required: true, description: 'Child tasks, each as "agent:prompt".' },
+          { name: 'join_prompt', type: 'string', required: false, description: 'Prompt for the join/summary task.' },
+          { name: 'title', type: 'string', required: false, description: 'Group label (default "Gather").' },
+          { name: 'priority', type: 'number', required: false, description: 'Priority for all tasks (default 5).' },
+        ],
+      },
     },
     {
       usage: 'list [--status <status>]',
       description: 'List mission tasks, optionally filtered by status (e.g. queued).',
+      tool: {
+        name: 'mission_list',
+        params: [
+          { name: 'status', type: 'string', required: false, description: 'Filter by status (e.g. "queued").' },
+        ],
+      },
     },
     {
       usage: 'result <id>',
       description: 'Show a task with its status and result (or error) once it has run.',
+      tool: {
+        name: 'mission_result',
+        params: [
+          { name: 'id', type: 'string', required: true, description: 'Mission task id.' },
+        ],
+      },
     },
     {
       usage: 'cancel <id>',
       description: 'Cancel a queued task (no-op if it already completed).',
+      tool: {
+        name: 'mission_cancel',
+        params: [
+          { name: 'id', type: 'string', required: true, description: 'Mission task id to cancel.' },
+        ],
+      },
     },
   ],
   notes: [
@@ -162,15 +222,41 @@ export const scheduleDescriptor: CliDescriptor = {
       usage: 'create "prompt text" "cron expression" [--agent <id>]',
       description:
         'Create a recurring task from a prompt and a cron expression. Rejects invalid cron. --agent defaults to CLAUDECLAW_AGENT_ID or "main".',
+      tool: {
+        name: 'schedule_create',
+        params: [
+          { name: 'prompt', type: 'string', required: true, description: 'Prompt text the scheduled turn runs.' },
+          { name: 'cron', type: 'string', required: true, description: 'Cron expression, e.g. "0 9 * * 1".' },
+          { name: 'agent', type: 'string', required: false, description: 'Agent id/name/alias (defaults to CLAUDECLAW_AGENT_ID or "main").' },
+        ],
+      },
     },
     {
       usage: 'list [--agent <id>]',
       description:
         'List scheduled tasks with next/last run times. "main" lists all agents; any other --agent scopes to that agent.',
+      tool: {
+        name: 'schedule_list',
+        params: [
+          { name: 'agent', type: 'string', required: false, description: 'Scope to an agent; "main" (default) lists all.' },
+        ],
+      },
     },
-    { usage: 'delete <id>', description: 'Delete a scheduled task.' },
-    { usage: 'pause <id>', description: 'Pause a scheduled task without deleting it.' },
-    { usage: 'resume <id>', description: 'Resume a paused scheduled task.' },
+    {
+      usage: 'delete <id>',
+      description: 'Delete a scheduled task.',
+      tool: { name: 'schedule_delete', params: [{ name: 'id', type: 'string', required: true, description: 'Scheduled task id to delete.' }] },
+    },
+    {
+      usage: 'pause <id>',
+      description: 'Pause a scheduled task without deleting it.',
+      tool: { name: 'schedule_pause', params: [{ name: 'id', type: 'string', required: true, description: 'Scheduled task id to pause.' }] },
+    },
+    {
+      usage: 'resume <id>',
+      description: 'Resume a paused scheduled task.',
+      tool: { name: 'schedule_resume', params: [{ name: 'id', type: 'string', required: true, description: 'Scheduled task id to resume.' }] },
+    },
   ],
   notes: [
     'For RECURRING jobs (cron). For one-shot tasks, use mission-cli instead.',
@@ -204,8 +290,33 @@ export const slackDescriptor: CliDescriptor = {
   ],
 };
 
+export const dispatchMcpServerDescriptor: CliDescriptor = {
+  name: 'dispatch-mcp-server',
+  binary: 'dist/dispatch-mcp-server.js',
+  summary:
+    'Standalone stdio MCP server exposing the mission/schedule/hive dispatch tools to out-of-process (non-Claude) providers.',
+  // ship=false: NOT an agent-facing CLI. Agents never run this — a provider
+  // adapter spawns it over stdio and the model reaches its tools via MCP. It is
+  // excluded from the generated reference and the injected CLI index, but the
+  // coverage guard still requires this descriptor so the entrypoint cannot ship
+  // undocumented.
+  ship: false,
+  commands: [
+    {
+      usage: '(stdio, spawned by a provider adapter)',
+      description:
+        'Serve the mission/schedule/hive dispatch tools over an MCP stdio transport, backed by the same cli-actions handlers as the CLIs and the in-process tools. Tool names/schemas derive from the mission/schedule/hive descriptors. Acting agent comes from CLAUDECLAW_DISPATCH_AGENT (falling back to CLAUDECLAW_AGENT_ID, then "main"). hive_read is withheld unless DISPATCH_ALLOW_HIVE_READ is set.',
+    },
+  ],
+  notes: [
+    'Claude keeps the faster in-process createSdkMcpServer path; this bridge is purely for providers that consume MCP over a real transport.',
+    'hive_read egresses shared cross-agent memory to the provider vendor, so it is gated behind DISPATCH_ALLOW_HIVE_READ (default off).',
+  ],
+};
+
 export const allDescriptors: CliDescriptor[] = [
   agentCreateDescriptor,
+  dispatchMcpServerDescriptor,
   hiveDescriptor,
   meetDescriptor,
   missionDescriptor,

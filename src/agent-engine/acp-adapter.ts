@@ -347,7 +347,7 @@ function aliasesForThinking(pref: ThinkingPreference): string[] {
 export function getAcpCommand(provider: ProviderConfig): { command: string; args: string[] } {
   if (provider.type === 'opencode') return { command: 'opencode', args: ['acp'] };
   if (provider.type === 'gemini') return { command: 'gemini', args: ['--acp'] };
-  if (provider.type === 'codex') return { command: 'codex-acp', args: [] };
+  if (provider.type === 'acp-codex') return { command: 'codex-acp', args: [] };
   if (!provider.command) throw new Error('ACP provider requires a command');
   return { command: provider.command, args: provider.args ?? [] };
 }
@@ -765,10 +765,13 @@ export class AcpEngineAdapter implements AgentEngine {
       };
 
       let promptResult: acp.PromptResponse;
+      const turnPrompt = input.runtimeIdentity
+        ? `${input.runtimeIdentity}\n\n${input.prompt}`
+        : input.prompt;
       try {
         promptResult = await withSpawnError(connection.prompt({
           sessionId: activeSessionId,
-          prompt: [{ type: 'text', text: input.prompt }],
+          prompt: [{ type: 'text', text: turnPrompt }],
         }));
       } catch (err) {
         if (!isSessionNotFoundError(err)) throw err;
@@ -780,7 +783,7 @@ export class AcpEngineAdapter implements AgentEngine {
         yield { type: 'session', sessionId: activeSessionId };
         promptResult = await withSpawnError(connection.prompt({
           sessionId: activeSessionId,
-          prompt: [{ type: 'text', text: input.prompt }],
+          prompt: [{ type: 'text', text: turnPrompt }],
         }));
       }
 

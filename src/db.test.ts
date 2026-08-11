@@ -9,6 +9,7 @@ import {
   setSession,
   getSession,
   clearSession,
+  clearAgentSessions,
   saveStructuredMemory,
   searchMemories,
   setMemoryShared,
@@ -69,6 +70,17 @@ describe('database', () => {
 
     it('clearSession on missing session does not throw', () => {
       expect(() => clearSession('nonexistent')).not.toThrow();
+    });
+
+    it('clearAgentSessions removes every chat for only the selected agent', () => {
+      setSession('chat1', 'main-1', 'main');
+      setSession('chat2', 'main-2', 'main');
+      setSession('chat1', 'naomi-1', 'naomi');
+
+      expect(clearAgentSessions('main')).toBe(2);
+      expect(getSession('chat1', 'main')).toBeUndefined();
+      expect(getSession('chat2', 'main')).toBeUndefined();
+      expect(getSession('chat1', 'naomi')).toBe('naomi-1');
     });
   });
 
@@ -558,7 +570,11 @@ describe('mission task claim/complete', () => {
   it('respects priority then FIFO order', () => {
     createMissionTask('lo', 'lo', 'low', 'amos', 'dashboard', 1);
     createMissionTask('hi', 'hi', 'high', 'amos', 'dashboard', 9);
+    // Higher priority is claimed first. The one-running-per-agent guard (#155)
+    // means the first must complete before the next is claimable, so release it
+    // before asserting the FIFO ordering of the remainder.
     expect(claimNextMissionTask('amos')?.id).toBe('hi');
+    completeMissionTask('hi', 'ok', 'completed');
     expect(claimNextMissionTask('amos')?.id).toBe('lo');
   });
 
@@ -684,5 +700,29 @@ describe('migrateDbFile', () => {
     expect(names).toContain('memories');
     expect(names).toContain('dashboard_settings');
     db.close();
+  });
+});
+
+describe('mission task poller matches canonical id only', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+  });
+
+  it('claims a row stored with the canonical id', () => {
+    // The resolver runs upstream (CLI/dashboard); by the time a row hits the DB
+    // its assigned_agent is a canonical id, so the poller claims it.
+    createMissionTask('t-main', 'title', 'prompt', 'main', 'dashboard', 5);
+    const claimed = claimNextMissionTask('main');
+    expect(claimed?.id).toBe('t-main');
+    expect(claimed?.status).toBe('running');
+  });
+
+  it('does NOT claim a row whose assigned_agent is an unresolved display name', () => {
+    // This is exactly the fdfec14a dead-letter: a row stored as 'holden' never
+    // matches the poller's WHERE assigned_agent = 'main'. The fix is storing the
+    // canonical id upstream — the poller itself is deliberately left unchanged.
+    createMissionTask('t-holden', 'title', 'prompt', 'holden', 'dashboard', 5);
+    expect(claimNextMissionTask('main')).toBeNull();
+    expect(claimNextMissionTask('holden')?.id).toBe('t-holden');
   });
 });

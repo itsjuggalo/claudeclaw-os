@@ -135,8 +135,11 @@ def make_transport(port: int, audio_in_sr: int = 16000, audio_out_sr: int = 2400
     # first ("Sample rate changed from previously X to Y, which is not
     # supported"). Output stays at 24 kHz — Gemini Live emits 24 kHz audio
     # and Pipecat passes it through unchanged.
+    # Loopback by default: the websocket has no connection-level auth (the
+    # dashboard token only gates the Hono proxy, which a direct connection to
+    # this port bypasses entirely). Opt in to LAN exposure via WARROOM_BIND.
     return WebsocketServerTransport(
-        host="0.0.0.0",
+        host=os.environ.get("WARROOM_BIND", "127.0.0.1"),
         port=port,
         params=WebsocketServerParams(
             audio_in_enabled=True,
@@ -760,7 +763,8 @@ async def run_live_mode():
     print_ready(port, "live")
     runner = PipelineRunner(handle_sigterm=True)
     logger.info(
-        "War Room LIVE mode on ws://0.0.0.0:%d (agent=%s mode=%s voice=%s model=%s tools=%d)",
+        "War Room LIVE mode on ws://%s:%d (agent=%s mode=%s voice=%s model=%s tools=%d)",
+        os.environ.get("WARROOM_BIND", "127.0.0.1"),
         port, active_agent, active_mode, voice, model or "pipecat-default", len(standard_tools),
     )
     await runner.run(task)
@@ -821,7 +825,7 @@ async def run_legacy_mode():
 
     print_ready(port, "legacy")
     runner = PipelineRunner(handle_sigterm=True)
-    logger.info("War Room LEGACY mode on ws://0.0.0.0:%d", port)
+    logger.info("War Room LEGACY mode on ws://%s:%d", os.environ.get("WARROOM_BIND", "127.0.0.1"), port)
     await runner.run(task)
     logger.info("War Room session ended.")
 

@@ -9,6 +9,7 @@ import { formatRelativeTime, formatCost } from '@/lib/format';
 import { chatId, dashboardToken } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { showCosts } from '@/lib/theme';
+import { modelLabel } from '@/lib/modelLabels';
 
 interface Agent {
   id: string;
@@ -209,7 +210,7 @@ function OverviewTab({ agent }: { agent: Agent }) {
         {costsOn && <Kpi label="Lifetime cost" value={formatCost(tokens.data?.allTimeCost || 0)} />}
       </div>
       <Section label="Configuration">
-        <Row label="Model"><Pill tone="neutral">{agent.model || 'default'}</Pill></Row>
+        <Row label="Model"><Pill tone="neutral">{modelLabel(agent.model)}</Pill></Row>
         <Row label="Status">{agent.running
           ? <Pill tone="done">running</Pill>
           : <Pill tone="cancelled">offline</Pill>}</Row>

@@ -22,7 +22,7 @@ export async function runAcpAgent(
   let newSessionId = sessionId;
   let usage = null;
   let aborted = false;
-  const effectiveModel = provider.model ?? (provider.type === 'codex' ? DEFAULT_CODEX_MODEL : undefined);
+  const effectiveModel = provider.model ?? (provider.type === 'acp-codex' ? DEFAULT_CODEX_MODEL : undefined);
 
   for await (const event of engine.invoke({
     prompt: message,

@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getMainProviderConfig, getProviderDisplay } from '../src/provider.js';
+import { getMainProviderConfig, getProviderDisplay, checkProviderAvailability } from '../src/provider.js';
 
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 const c = {
@@ -111,9 +111,16 @@ async function main() {
   } else if (provider.type === 'gemini') {
     if (commandExists('gemini')) ok(`Agent provider: ${providerLabel}`);
     else fail('Agent provider: Gemini CLI not found');
-  } else if (provider.type === 'codex') {
+  } else if (provider.type === 'acp-codex') {
     if (commandExists('codex-acp')) ok(`Agent provider: ${providerLabel}`);
     else fail('Agent provider: codex-acp adapter not found');
+  } else if (provider.type === 'openai') {
+    // Native Codex SDK provider — no PATH command. Use the shared availability
+    // check (bundled SDK + platform binary + auth) rather than the ACP
+    // command-exists path, which would always report "not found".
+    const availability = checkProviderAvailability(provider);
+    if (availability.ok) ok(`Agent provider: ${providerLabel}`);
+    else fail(`Agent provider: ${availability.error ?? 'OpenAI not available'}`);
   } else if (provider.command && commandExists(provider.command)) {
     ok(`Agent provider: ${providerLabel}`);
   } else {
@@ -243,9 +250,11 @@ async function main() {
       ? commandExists('opencode')
       : provider.type === 'gemini'
         ? commandExists('gemini')
-        : provider.type === 'codex'
+        : provider.type === 'acp-codex'
           ? commandExists('codex-acp')
-          : !!provider.command && commandExists(provider.command);
+          : provider.type === 'openai'
+            ? checkProviderAvailability(provider).ok
+            : !!provider.command && commandExists(provider.command);
 
   if (hasToken && hasProvider && nodeMajor >= 20) {
     console.log(`  ${c.green}${c.bold}All systems go.${c.reset}`);

@@ -49,6 +49,10 @@ export async function extractViaProvider(prompt: string, timeoutMs = 15_000): Pr
       provider,
       cwd: process.cwd(),
       model: defaultModelForProvider(provider, 'claude-haiku-4-5-20251001'),
+      // Deny-all IS the explicit tool-less request: it selects the 'tool-less'
+      // Codex capability profile (no shell, no web search, no MCP, read-only, no
+      // network) and is what keeps this extraction turn from receiving dispatch.
+      // Do not loosen without reading codex-capability-policy.ts.
       allowedTools: [],
       disallowedTools: ['*'],
       settingSources: [],

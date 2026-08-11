@@ -1,12 +1,24 @@
 ---
+Type: RFC
 Author: Michael Kidder
 Title: Token / Cost Observability (metered-billing readiness)
-Status: Foundation SHIPPED (per-turn capture + `/savings` + dashboard panel, live under overlay test on `feat/cache-savings-metrics`, no PR yet); suite features #1–#3 designed, not yet built
+Decision: Accepted
+Decision date: 2026-07-17
+Implementation: Partial
+Implemented in: v1.5.0 (foundation, PR #143)
 Created: 2026-07-09
 Component: token/cost telemetry / metered-billing observability
+Last reviewed: 2026-08-01
 ---
 
 # Token / Cost Observability (metered-billing readiness)
+
+## Outcome
+
+The foundation shipped in v1.5.0 through PR #143: per-turn telemetry,
+cache-hit-rate reporting, `/savings`, and the dashboard usage panel. The
+burn-rate, budget alerting, forecasting, and provider-comparison features below
+remain follow-up work, so implementation is intentionally marked partial.
 
 ## Why
 
@@ -16,7 +28,7 @@ need to *see* and *forecast* it. Everything here is read-side observability over
 the SDK result object already carries — near-zero per-turn overhead (no extra API
 calls, no extra tokens; we read exhaust that's already parsed).
 
-## Shipped foundation (on `feat/cache-savings-metrics`)
+## Shipped foundation (v1.5.0, PR #143)
 
 Per-turn row in `token_usage` now carries:
 `input_tokens, output_tokens, cache_read, cache_creation, context_tokens,

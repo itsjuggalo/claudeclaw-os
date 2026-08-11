@@ -1,3 +1,4 @@
+import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import type { ProviderConfig } from '../provider.js';
 
 export interface McpStdioConfig {
@@ -12,8 +13,13 @@ export interface McpHttpConfig {
   headers?: Record<string, string>;
 }
 
-/** A configured MCP server: stdio (command-based) or HTTP/SSE (url-based). */
-export type McpServerConfig = McpStdioConfig | McpHttpConfig;
+/**
+ * A configured MCP server: stdio (command-based), HTTP/SSE (url-based), or an
+ * in-process SDK server (a live McpServer instance, e.g. the dispatch tools).
+ * The in-process variant is only meaningful to the Claude SDK engine; the ACP
+ * adapter filters it out (it can only spawn stdio subprocess servers).
+ */
+export type McpServerConfig = McpStdioConfig | McpHttpConfig | McpSdkServerConfigWithInstance;
 
 export interface AgentEngineUsage {
   inputTokens: number;
@@ -111,7 +117,7 @@ export interface AgentTurnInput {
   runtimeMode?: string;
   /** Raw provider-specific thinking/thought-level value selected in the dashboard. */
   thinkingMode?: string;
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens?: number } | { type: 'disabled' };
   /** Claude SDK turn cap. ACP has no portable max-turns request field; ACP callers must also pass an abort timeout. */
   maxTurns?: number;
@@ -120,6 +126,18 @@ export interface AgentTurnInput {
   allowedTools?: string[];
   disallowedTools?: string[];
   mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * Names within `mcpServers` that ClaudeClaw itself materialized and vouches
+   * for this turn — currently only the dispatch bridge, added by the dispatch
+   * authorization layer. An engine may pre-approve these (skip its runtime's
+   * approval gating) and must apply default gating to every other server.
+   *
+   * This carries PROVENANCE, not a name convention: trust must not be inferred
+   * from a server's name, because a project/user-configured `.mcp.json` entry
+   * could claim the same name and inherit the pre-approval. Only the
+   * authorization layer that constructed the entry may list it here.
+   */
+  trustedMcpServers?: string[];
   abortController?: AbortController;
   env?: Record<string, string | undefined>;
   settingSources?: string[];
@@ -137,6 +155,8 @@ export interface AgentTurnInput {
    * in-band instead.
    */
   systemPrompt?: string;
+  /** Resolved provider/model identity for this specific turn. */
+  runtimeIdentity?: string;
   /**
    * Interactive AskUserQuestion resolver. When supplied, the Claude SDK engine
    * intercepts AskUserQuestion tool calls and routes them through this resolver
@@ -159,6 +179,32 @@ export type AgentEngineEvent =
 
 export interface AgentEngine {
   invoke(input: AgentTurnInput): AsyncIterable<AgentEngineEvent>;
+}
+
+/**
+ * The caller's tool authorization, as carried on the engine seam. Narrower than
+ * `AgentTurnInput` so policy layers above the engine (dispatch authorization,
+ * the Codex capability profile) can share one predicate without depending on a
+ * whole turn input.
+ */
+export interface TurnToolPolicy {
+  allowedTools?: string[];
+  disallowedTools?: string[];
+}
+
+/**
+ * True when the caller granted NO tools at all — a '*' deny or an explicitly
+ * empty allow-list. Provider-neutral and deliberately conservative: this is the
+ * gate that keeps restricted turns (memory ingestion, routing/warmup, untrusted
+ * voice, default-deny war-room) from being handed trusted MCP servers or a
+ * capability profile they never asked for.
+ *
+ * An `undefined` allow-list is NOT deny-all — it means "no restriction stated".
+ * Only an explicitly empty array expresses "nothing".
+ */
+export function turnDeniesAllTools(policy: TurnToolPolicy): boolean {
+  if (policy.disallowedTools?.includes('*')) return true;
+  return policy.allowedTools?.length === 0;
 }
 
 export function emptyUsage(): AgentEngineUsage {

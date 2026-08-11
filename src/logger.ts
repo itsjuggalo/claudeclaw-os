@@ -1,41 +1,39 @@
 import pino from 'pino';
 
-// Mask Telegram bot tokens anywhere they appear in a serialized string. grammy's
-// FetchError carries the full request URL (https://api.telegram.org/bot<TOKEN>/…)
-// and pino logged the whole error object, which leaked the token into PM2 logs.
-const TG_TOKEN_RE = /(api\.telegram\.org\/bot)\d{6,12}:[A-Za-z0-9_-]{30,}/g;
-// Catch-all for a bare "<digits>:<30+ token chars>" too (e.g. logged separately).
-const BARE_TOKEN_RE = /\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/g;
-function redact(s: string): string {
-  return s.replace(TG_TOKEN_RE, '$1<REDACTED>').replace(BARE_TOKEN_RE, '<REDACTED_TOKEN>');
-}
+import { redactValue } from './log-redact.js';
 
-// Redact an error WITHOUT losing its diagnostics: serialize to pino's standard
-// shape (type/message/stack) first, then scrub the token out of message + stack.
-function redactErr(e: unknown): unknown {
-  const base = pino.stdSerializers.err(e as Error) as Record<string, unknown> | undefined;
-  if (base && typeof base === 'object') {
-    if (typeof base.message === 'string') base.message = redact(base.message);
-    if (typeof base.stack === 'string') base.stack = redact(base.stack);
-  }
-  return base;
+/**
+ * Pretty output is for a human watching a terminal. Under launchd both stdout
+ * and stderr are redirected to a file, so colorize:true wrote ANSI escapes into
+ * every production log line — which broke grep and made the logs harder to read
+ * than the JSON they replaced.
+ *
+ * NODE_ENV stays the default signal (agent-create.ts already sets
+ * NODE_ENV=production in the units it generates), but LOG_PRETTY now overrides
+ * it in both directions so an operator can force one or the other without
+ * touching NODE_ENV, which other code branches on.
+ */
+function wantsPretty(): boolean {
+  const explicit = process.env.LOG_PRETTY?.trim().toLowerCase();
+  if (explicit === 'true' || explicit === '1') return true;
+  if (explicit === 'false' || explicit === '0') return false;
+  return process.env.NODE_ENV !== 'production';
 }
-
-// Applied to the common error-carrying fields. Strings get scrubbed; Error
-// objects get serialized-then-scrubbed (keeping message/stack, minus the token).
-// Anything else passes through untouched, so a non-error value logged under one
-// of these field names is never mangled.
-const errSerializer = (v: unknown) => {
-  if (typeof v === 'string') return redact(v);
-  if (v instanceof Error) return redactErr(v);
-  return v;
-};
 
 export const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
-  serializers: { err: errSerializer, error: errSerializer, e: errSerializer },
-  transport:
-    process.env.NODE_ENV !== 'production'
-      ? { target: 'pino-pretty', options: { colorize: true } }
-      : undefined,
+  hooks: {
+    /**
+     * Single chokepoint for secret redaction. Every log call — message,
+     * merging object, interpolation args — passes through here before it can
+     * reach a sink. See log-redact.ts for why this is not done at call sites.
+     *
+     * Cost: a handful of regex passes per log line. Acceptable because the
+     * high-volume caller (dashboard request logging) now logs at debug.
+     */
+    logMethod(args, method) {
+      return method.apply(this, args.map((a) => redactValue(a)) as Parameters<typeof method>);
+    },
+  },
+  transport: wantsPretty() ? { target: 'pino-pretty', options: { colorize: true } } : undefined,
 });

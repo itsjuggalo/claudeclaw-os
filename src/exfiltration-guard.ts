@@ -22,6 +22,18 @@ const PATTERNS: Array<{ type: string; regex: RegExp }> = [
   // (must not start with sk-ant- to avoid double-matching Anthropic keys)
   { type: 'generic_sk_key', regex: /sk-(?!ant-)[A-Za-z0-9_-]{20,}/g },
 
+  // JWTs: three base64url segments separated by dots, header starting `eyJ`
+  // (base64 of `{"`). Catches ChatGPT/Codex OAuth access_token and id_token
+  // values from ~/.codex/auth.json — a credential a Codex turn can read off
+  // disk and echo back. Min segment lengths avoid matching short
+  // `eyJ.a.b`-shaped noise.
+  { type: 'jwt', regex: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g },
+
+  // Codex/ChatGPT OPAQUE refresh tokens: `rt.<version>.<long-url-safe-value>`.
+  // These are NOT JWTs, so the pattern above misses them, yet they are the most
+  // durable credential in auth.json.
+  { type: 'refresh_token', regex: /\brt\.\d+\.[A-Za-z0-9_-]{20,}/g },
+
   // Slack tokens: xoxb- or xoxp- followed by alphanumeric/dash chars
   { type: 'slack_token', regex: /xox[bp]-[A-Za-z0-9-]+/g },
 
@@ -99,6 +111,10 @@ export function scanForSecrets(text: string, protectedValues?: string[]): Secret
       if (value.length <= 8) continue;
 
       const variants: Array<{ encoded: string; label: string }> = [
+        // Valeur BRUTE d'abord : un secret qui fuit en clair (ex : token Telegram
+        // "12345:AA...") ne correspond a aucune variante encodee ni forcement a un
+        // pattern generique, il faut donc chercher la valeur telle quelle.
+        { encoded: value, label: 'raw' },
         { encoded: Buffer.from(value).toString('base64'), label: 'base64' },
         { encoded: encodeURIComponent(value), label: 'url_encoded' },
       ];

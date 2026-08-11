@@ -56,11 +56,14 @@ CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 TS_AUTHKEY="${TS_AUTHKEY:-}"
 TS_HOSTNAME="${TS_HOSTNAME:-claudeclaw}"
+CLAUDECLAW_OWNER_NAME="${CLAUDECLAW_OWNER_NAME:-User}"   # how agents address you
 DASHBOARD_PORT="${DASHBOARD_PORT:-3141}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/claudeclaw}"
 RUN_USER="${RUN_USER:-claudeclaw}"
 SSH_HARDENING="${SSH_HARDENING:-public}"   # off | public | tailscale-only
-ENABLE_ACP="${ENABLE_ACP:-false}"          # true unlocks the beta provider switcher
+ENABLE_ACP="${ENABLE_ACP:-false}"          # true unlocks the experimental ACP provider tier
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"       # optional — native OpenAI also works via `codex login` on the host
+CODEX_TRANSPORT="${CODEX_TRANSPORT:-sdk}"  # sdk | app-server — native OpenAI transport
 REPO_URL="${REPO_URL:-https://github.com/earlyaidopters/claudeclaw-os.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 REPO_CLONE_TOKEN="${REPO_CLONE_TOKEN:-}"   # temp GitHub token (ghs_/gho_/ghp_) for private clone
@@ -91,6 +94,12 @@ esac
 ENABLE_ACP="$(echo "$ENABLE_ACP" | tr '[:upper:]' '[:lower:]')"
 case "$ENABLE_ACP" in true|false) ;; *)
   die "ENABLE_ACP must be true or false (got: $ENABLE_ACP)." ;;
+esac
+# config.ts treats anything that is not exactly "app-server" as "sdk", so an
+# unvalidated typo here would silently downgrade the transport. Reject it instead.
+CODEX_TRANSPORT="$(echo "$CODEX_TRANSPORT" | tr '[:upper:]' '[:lower:]')"
+case "$CODEX_TRANSPORT" in sdk|app-server) ;; *)
+  die "CODEX_TRANSPORT must be sdk or app-server (got: $CODEX_TRANSPORT)." ;;
 esac
 ok "Config validated (install dir: $INSTALL_DIR, user: $RUN_USER, port: $DASHBOARD_PORT)"
 
@@ -129,15 +138,40 @@ fi
 mkdir -p "$INSTALL_DIR"
 chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
 
+# Changing RUN_USER between runs used to strand the install: the chown above moves
+# only $INSTALL_DIR itself, so the checkout beneath it keeps the previous owner.
+# git, running as the new RUN_USER, then refuses with "detected dubious ownership"
+# and the clone step below dies pointing at the clone token — which is not the
+# problem. Re-home the tree when the owners actually disagree. Guarded rather than
+# unconditional because a blanket `chown -R` over node_modules is slow on every run.
+if [[ -e "$APP_DIR" ]]; then
+  app_owner="$(stat -c '%U' "$APP_DIR" 2>/dev/null || echo '?')"
+  if [[ "$app_owner" != "$RUN_USER" ]]; then
+    warn "$APP_DIR is owned by '$app_owner' but RUN_USER is '$RUN_USER' — re-owning (may take a moment)"
+    chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
+    ok "Re-owned $INSTALL_DIR to $RUN_USER"
+  fi
+fi
+
 # Run a command as the service user with HOME pointed at its install dir, so
 # npm/git write caches/config there rather than into root's home.
 # GIT_TERMINAL_PROMPT=0 makes git fail fast on a private repo instead of hanging
 # on an interactive username/password prompt.
 run_as() { runuser -u "$RUN_USER" -- env "HOME=$INSTALL_DIR" GIT_TERMINAL_PROMPT=0 "$@"; }
 
-clone_help="Clone failed. If this is the private earlyaidopters repo, open the members
-  token site, copy the ghs_... token from its clone command, set
-  REPO_CLONE_TOKEN=ghs_... in $CONF, then re-run (tokens expire ~1h)."
+# This fires on ANY clone/fetch failure, so it must not assert a single cause.
+# git's own stderr is printed directly above it — that line is the real diagnosis,
+# and these are only the causes we've actually hit.
+clone_help="Clone/fetch failed — see git's error above, which gives the real reason.
+  Common causes:
+    • 'could not read Username' / 403 / 401 — the clone token expired or is unset.
+      The members token site shows a clone command containing a ghs_... token;
+      copy that token into REPO_CLONE_TOKEN in $CONF and re-run (they last ~1h).
+    • 'detected dubious ownership' — the checkout belongs to a different user than
+      RUN_USER ($RUN_USER). Fix with:
+          chown -R $RUN_USER:$RUN_USER $INSTALL_DIR
+    • 'couldn't find remote ref' — REPO_BRANCH ($REPO_BRANCH) does not exist on the
+      remote. Push the branch first, or correct REPO_BRANCH in $CONF."
 
 # ── 4. clone + build ──────────────────────────────────────────────────────────
 step "Cloning + building ClaudeClaw OS"
@@ -153,8 +187,27 @@ else
 fi
 run_as bash -lc "cd '$APP_DIR' && npm install --no-audit --no-fund"
 run_as bash -lc "cd '$APP_DIR' && npm run build"
-run_as mkdir -p "$APP_DIR/store"
 ok "Build complete"
+
+# Deliberately do NOT pre-create store/ here. src/migrations.ts treats
+# "store/ exists but migrations/.applied.json does not" as a pre-migration
+# install with pending migrations and refuses to start — so creating the
+# directory early makes a brand-new install look like a stale one and the
+# service crash-loops on exit 1. db.ts creates store/ itself on first run.
+step "Applying database migrations"
+# Fresh install: migrate sees no store/ and stamps .applied.json at the latest
+# version. Existing install: it applies what is pending, taking its own
+# pre-migration backup first. Already current: it is a no-op.
+#
+# `--yes` approves the "apply N migrations?" prompt without touching stdin, and
+# makes a failed pre-migration backup exit 1 instead of asking. Do NOT go back to
+# piping `printf 'y\n'`: readline answers only the FIRST prompt from a pipe, and
+# a second prompt then sees EOF, never fires its callback, and lets node exit 0
+# having migrated nothing — a silent success this step would report as real.
+# migrate.ts also verifies .applied.json records the expected version before
+# exiting 0, so this `ok` cannot fire on an unmigrated database.
+run_as bash -lc "cd '$APP_DIR' && npx tsx scripts/migrate.ts --yes"
+ok "Migrations up to date"
 
 # ── 5. Tailscale install + join ───────────────────────────────────────────────
 step "Installing + joining Tailscale"
@@ -181,7 +234,9 @@ ok "Tailnet name: $TS_FQDN"
 # Preserve secrets that must stay stable across re-runs.
 step "Writing $ENV_FILE"
 preserve() { # preserve <VAR_NAME> — echo existing value from .env if present
-  [[ -f "$ENV_FILE" ]] && grep -E "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2- || true
+  # Strip one layer of surrounding quotes (mirrors readEnvFile in src/env.ts) so single- or
+  # double-quoted values (e.g. quoted paths) round-trip cleanly for any caller.
+  [[ -f "$ENV_FILE" ]] && grep -E "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2- | sed -E "s/^'(.*)'\$/\1/; s/^\"(.*)\"\$/\1/" || true
 }
 DASHBOARD_TOKEN="$(preserve DASHBOARD_TOKEN)"; DASHBOARD_TOKEN="${DASHBOARD_TOKEN:-$(openssl rand -hex 24)}"
 DB_ENCRYPTION_KEY="$(preserve DB_ENCRYPTION_KEY)"; DB_ENCRYPTION_KEY="${DB_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"
@@ -199,6 +254,12 @@ cat > "$ENV_FILE" <<EOF
 TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
 ALLOWED_CHAT_ID=$ALLOWED_CHAT_ID
 
+# How agents address you on shared surfaces (e.g. the text War Room).
+# Left unquoted on purpose: both systemd's EnvironmentFile parser and
+# readEnvFile in src/env.ts take the rest of the line verbatim, so a name
+# with spaces works as-is.
+CLAUDECLAW_OWNER_NAME=$CLAUDECLAW_OWNER_NAME
+
 # Claude Code auth for headless host (no 'claude login' available).
 $CLAUDE_AUTH_LINE
 
@@ -211,10 +272,22 @@ DASHBOARD_URL=https://$TS_FQDN
 CLAUDECLAW_STORE_DIR=$APP_DIR/store
 DB_ENCRYPTION_KEY=$DB_ENCRYPTION_KEY
 
-# Beta multi-provider (ACP) switcher in the dashboard. When false, the provider
-# is forced to Claude and the picker is hidden. Non-Claude providers additionally
-# require their CLI installed + authenticated on this host.
+# Experimental provider tier (ACP family: codex-acp, Gemini, OpenCode,
+# OpenRouter, custom). When false, the experimental picker is hidden; the
+# stable tier (Claude, native OpenAI) is always available. Experimental
+# providers additionally require their CLI installed + authenticated here.
 ENABLE_ACP=$ENABLE_ACP
+
+# Native OpenAI (Codex) is a stable, ungated provider — auth via
+# \`codex login\` on this host (ChatGPT subscription) or OPENAI_API_KEY.
+${OPENAI_API_KEY:+OPENAI_API_KEY=$OPENAI_API_KEY}
+
+# Transport for native OpenAI. \`app-server\` is the preferred path: one warm
+# App Server process, incremental streaming, turn-scoped cancellation and
+# effective-policy verification. \`sdk\` is the rollback and remains the default
+# when unset. Set CODEX_TRANSPORT in claudeclaw-deploy.conf — editing it here by
+# hand does not survive the next installer run, which rewrites this file.
+CODEX_TRANSPORT=$CODEX_TRANSPORT
 EOF
 chown "$RUN_USER:$RUN_USER" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
@@ -260,8 +333,12 @@ RestrictSUIDSGID=yes
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now claudeclaw >/dev/null
-ok "Service enabled + started"
+systemctl enable claudeclaw >/dev/null
+# `enable --now` on an already-active service is a no-op for starting it —
+# it would NOT pick up a freshly rebuilt dist/ on a re-run/update. Restart
+# unconditionally; `restart` also starts a stopped/fresh service correctly.
+systemctl restart claudeclaw
+ok "Service enabled + restarted"
 
 # ── 9. firewall ───────────────────────────────────────────────────────────────
 step "Configuring firewall (ufw)"

@@ -76,6 +76,40 @@ describe('runAgentWithRetry', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
+  it('surfaces context compaction as a durable progress notice', async () => {
+    mockQuery.mockReturnValue(mockQueryEvents([
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: { trigger: 'auto', pre_tokens: 150000 },
+      },
+      resultEvent('Compacted and continued'),
+    ])());
+    const onProgress = vi.fn();
+
+    await runAgentWithRetry(
+      'continue',
+      undefined,
+      noop,
+      onProgress,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      claudeProvider,
+    );
+
+    expect(onProgress).toHaveBeenCalledWith({
+      type: 'task_completed',
+      description: 'Context compacted',
+      status: 'notice',
+      kind: 'compact',
+      toolCallId: 'context-compaction',
+    });
+  });
+
   it('retries on retryable error and succeeds on second attempt', async () => {
     const retryableError = new AgentError('rate_limit', {
       shouldRetry: true,

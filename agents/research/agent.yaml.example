@@ -3,5 +3,7 @@ description: Deep web research, academic sources, competitive intel, trend analy
 
 telegram_bot_token_env: RESEARCH_BOT_TOKEN
 
+# Setup and agent-create replace this example with the selected provider.
+# Keep provider/model/runtime options here, never in CLAUDE.md.
 provider:
-  type: opencode
+  type: claude

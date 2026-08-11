@@ -1,4 +1,4 @@
-import { agentProvider, ENABLE_ACP } from './config.js';
+import { agentProvider, DEFAULT_OPENAI_MODEL, DEFAULT_OPENROUTER_MODEL } from './config.js';
 import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_CODEX_MODEL,
@@ -6,23 +6,31 @@ import {
   getMainProviderConfig,
   type ProviderConfig,
 } from './provider.js';
+import { providerRunnable } from './provider-registry.js';
 
+/**
+ * The provider that should actually run this turn. Resolves the saved config
+ * (per-agent override, else main) and falls back to Claude when that provider
+ * isn't runnable — an experimental (ACP-family) type while ENABLE_ACP is off.
+ * This is the ONE place execution paths resolve the provider, so the engine and
+ * the model always come from the same decision (no gated-off provider ever
+ * reaches the Claude adapter carrying, say, a `gpt-5.5` model).
+ */
 export function getSelectedProviderConfig(): ProviderConfig {
-  // ENABLE_ACP gates the beta multi-provider feature. When off, force Claude
-  // regardless of saved agent.yaml or main-config.json. Belt-and-braces with
-  // the dashboard API gate so a stale config file can't reach the ACP engine.
-  if (!ENABLE_ACP) return { ...DEFAULT_PROVIDER };
-  return agentProvider ?? getMainProviderConfig();
+  const saved = agentProvider ?? getMainProviderConfig();
+  return providerRunnable(saved.type) ? saved : { ...DEFAULT_PROVIDER };
 }
 
 export function defaultModelForProvider(
   provider: ProviderConfig,
   claudeDefault = DEFAULT_CLAUDE_MODEL,
 ): string | undefined {
-  return provider.model
-    ?? (provider.type === 'claude'
-      ? claudeDefault
-      : provider.type === 'codex'
-        ? DEFAULT_CODEX_MODEL
-        : undefined);
+  if (provider.model) return provider.model;
+  switch (provider.type) {
+    case 'claude': return claudeDefault;
+    case 'openai': return DEFAULT_OPENAI_MODEL;
+    case 'acp-codex': return DEFAULT_CODEX_MODEL;
+    case 'openrouter': return DEFAULT_OPENROUTER_MODEL;
+    default: return undefined;
+  }
 }

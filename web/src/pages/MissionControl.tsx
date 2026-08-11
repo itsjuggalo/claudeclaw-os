@@ -9,7 +9,7 @@ import { AgentAvatar } from '@/components/AgentAvatar';
 import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost, apiPatch, apiDelete, apiGet } from '@/lib/api';
-import { formatRelativeTime } from '@/lib/format';
+import { formatRelativeTime, resolveAgentName } from '@/lib/format';
 import { pushToast } from '@/lib/toasts';
 import {
   workspaceName,
@@ -580,7 +580,7 @@ function InboxCard({
       pushToast({
         tone: 'success',
         title: 'Auto-assigned',
-        description: res.assigned_agent ? `Routed to @${res.assigned_agent}.` : 'Routed.',
+        description: res.assigned_agent ? `Routed to @${resolveAgentName(res.assigned_agent)}.` : 'Routed.',
       });
     } catch (err: any) {
       pushToast({ tone: 'error', title: 'Auto-assign failed', description: err?.message || String(err), durationMs: 6000 });
@@ -592,7 +592,7 @@ function InboxCard({
     try {
       await apiPatch(`/api/mission/tasks/${task.id}`, { assigned_agent: agentId });
       onChange();
-      pushToast({ tone: 'success', title: 'Assigned', description: `Routed to @${agentId}.` });
+      pushToast({ tone: 'success', title: 'Assigned', description: `Routed to @${resolveAgentName(agentId)}.` });
     } catch (err: any) {
       pushToast({ tone: 'error', title: 'Assign failed', description: err?.message || String(err), durationMs: 6000 });
     } finally { setBusy(null); }
@@ -1054,7 +1054,7 @@ function HistoryList() {
             <div class="flex items-center gap-2 mb-1">
               <Pill tone={t.status as any}>{t.status}</Pill>
               <span class="text-[10.5px] text-[var(--color-text-faint)] tabular-nums uppercase tracking-wider">{t.id.slice(0, 6)}</span>
-              {t.assigned_agent && <span class="text-[11px] text-[var(--color-text-muted)]">@{t.assigned_agent}</span>}
+              {t.assigned_agent && <span class="text-[11px] text-[var(--color-text-muted)]">@{resolveAgentName(t.assigned_agent)}</span>}
               <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">
                 {formatRelativeTime(t.completed_at || t.created_at)}
               </span>

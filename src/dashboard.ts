@@ -10,9 +10,9 @@ import os from 'os';
 import path from 'path';
 import zlib from 'zlib';
 import { spawnSync } from 'child_process';
+import { isDeepStrictEqual } from 'util';
 import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, MC_ACCESS_SECRET, MC_ACCESS_DISABLED, PROJECT_ROOT, STORE_DIR, WARROOM_TMP_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
 import { MC_COOKIE, MASTER_TTL_SEC, verifyToken, masterToken, signToken, isLoopbackAddr, nowSec, mcLoginPage } from './mc-access.js';
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, ProviderConfig, getProviderDisplay, checkProviderAvailability, getMainProviderConfig, normalizeProviderConfig, setMainProviderConfig } from './provider.js';
 import crypto from 'crypto';
 import { getWallets } from './wallets.js';
 import { getMassageMonitor, keepAccount, deleteAccount, setReaper, massageAdmin, massageAdminSoft } from './massage.js';
@@ -64,6 +64,7 @@ import {
   getCacheTokens,
   getDashboardRecentTokenUsage,
   getSession,
+  clearAgentSessions,
   getSessionTokenUsage,
   getHiveMindEntries,
   getAgentTokenStats,
@@ -112,6 +113,9 @@ import {
   DEFAULT_MAIN_DESCRIPTION,
   agentExists,
   listAgentIds,
+  resolveAgentId,
+  knownAgentIds,
+  findAgentIdentityCollision,
   loadAgentConfig,
   resolveAgentDir,
   resolveAgentDisplayName,
@@ -141,6 +145,19 @@ import {
   suggestBotNames,
   isAgentRunning,
 } from './agent-create.js';
+import {
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CODEX_MODEL,
+  ProviderConfig,
+  ProviderType,
+  getProviderDisplay,
+  checkProviderAvailability,
+  getMainProviderConfig,
+  normalizeProviderConfig,
+  normalizeProviderType,
+  setMainProviderConfig,
+} from './provider.js';
+import { PROVIDER_REGISTRY, providerDescriptor, providerRunnable, selectableProviders } from './provider-registry.js';
 import { getSelectedProviderConfig } from './active-provider.js';
 import { getMainModelOverride, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
@@ -160,7 +177,7 @@ import {
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaProvider } from './memory-ingest.js';
-import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU, DEFAULT_OPENROUTER_MODEL } from './config.js';
+import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENAI_MODEL } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
@@ -190,21 +207,24 @@ function getCompressedAsset(filePath: string, data: Buffer, enc: 'br' | 'gzip'):
   return out;
 }
 
-// Selectable/valid Claude models for the dashboard pickers and the model-set
-// endpoints. The current lineup is derived from the CLAUDE_MODEL_* config
-// constants (see config.ts) so an env-driven model bump is picked up here
-// without editing this file; older pinned IDs stay valid for agents still on
-// them. Deduped so a config value matching a legacy literal isn't listed twice.
+import {
+  CLAUDE_MODEL_OPTIONS,
+  OPENAI_MODEL_OPTIONS,
+  VALID_CLAUDE_MODELS as CATALOG_CLAUDE_MODELS,
+  modelDisplayLabel,
+  reconcileRuntimeOptions,
+  staticRuntimeOptionsFor,
+  validateProviderModelOptions,
+} from './model-catalog.js';
+
+// The catalog (model-catalog.ts) owns the canonical Claude lineup upstream.
+// Keep the fork's env-driven bump working: whatever CLAUDE_MODEL_* points at
+// stays selectable even before it lands in the catalog. Deduped.
 const VALID_CLAUDE_MODELS = Array.from(new Set([
   CLAUDE_MODEL_OPUS,
   CLAUDE_MODEL_SONNET,
   CLAUDE_MODEL_HAIKU,
-  'claude-fable-5',
-  'claude-sonnet-5',
-  'claude-opus-4-6',
-  'claude-sonnet-4-6',
-  'claude-sonnet-4-5',
-  'claude-haiku-4-5',
+  ...CATALOG_CLAUDE_MODELS,
 ]));
 
 // Format gate for model ids on the set-model endpoints. The curated list
@@ -214,21 +234,6 @@ const VALID_CLAUDE_MODELS = Array.from(new Set([
 // hard allowlist here went stale on every Anthropic model launch.
 const CLAUDE_MODEL_ID_RE = /^claude-[a-z0-9][a-z0-9.-]*$/;
 
-const CLAUDE_MODEL_LABELS: Record<string, string> = {
-  'claude-fable-5': 'Fable 5',
-  'claude-sonnet-5': 'Sonnet 5',
-  'claude-opus-4-8': 'Opus 4.8',
-  'claude-opus-4-6': 'Opus 4.6',
-  'claude-sonnet-4-6': 'Sonnet 4.6',
-  'claude-sonnet-4-5': 'Sonnet 4.5',
-  'claude-haiku-4-5': 'Haiku 4.5',
-};
-
-const CLAUDE_MODEL_OPTIONS = VALID_CLAUDE_MODELS.map((id) => ({
-  id,
-  label: CLAUDE_MODEL_LABELS[id] ?? id,
-}));
-
 const GEMINI_MODEL_OPTIONS = [
   { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
   { id: 'gemini-3-flash', label: 'Gemini 3 Flash' },
@@ -236,30 +241,10 @@ const GEMINI_MODEL_OPTIONS = [
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ];
 
-const CODEX_MODEL_OPTIONS = [
-  { id: DEFAULT_CODEX_MODEL, label: 'GPT-5.5' },
-  { id: 'gpt-5.4', label: 'GPT-5.4' },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-  { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
-  { id: 'gpt-5.2', label: 'GPT-5.2' },
-];
+const CODEX_MODEL_OPTIONS = OPENAI_MODEL_OPTIONS;
 
 const CUSTOM_ACP_MODEL_OPTIONS = [
   { id: 'provider-default', label: 'Provider default' },
-];
-
-const CLAUDE_RUNTIME_OPTIONS = [
-  { id: 'fast', label: 'Low / fast' },
-  { id: 'normal', label: 'Medium / normal' },
-  { id: 'deep', label: 'High / deep' },
-  { id: 'max', label: 'Max' },
-];
-
-const CLAUDE_THINKING_OPTIONS = [
-  { id: 'auto', label: 'Auto' },
-  { id: 'off', label: 'Off' },
-  { id: 'on', label: 'On' },
 ];
 
 const CODEX_THINKING_FALLBACK_OPTIONS = [
@@ -270,7 +255,7 @@ const CODEX_THINKING_FALLBACK_OPTIONS = [
 ];
 
 function fallbackRuntimeOptions(provider: ProviderConfig): AcpProviderRuntimeOptions {
-  if (provider.type === 'codex') {
+  if (provider.type === 'acp-codex') {
     return {
       provider: provider.type,
       modeOptions: [],
@@ -380,6 +365,29 @@ function persistedMainClaudeModel(): string | undefined {
   return persisted.type === 'claude' ? persisted.model : undefined;
 }
 
+// Turn the persisted effort/thinking dial into a short lowercase word for the
+// sidebar (e.g. "high", "extra high", "off"). Effort is the primary dial for
+// Claude (modeOptions); OpenAI exposes it as Reasoning effort (thinkingOptions).
+// Returns '' when the model has no dial (adaptive thinking) so the caller drops
+// the clause instead of inventing one.
+function resolveReasoningLabel(
+  provider: { type: string; runtimeMode?: string; thinkingMode?: string },
+  opts: { modeOptions: { id: string; label: string }[]; thinkingOptions: { id: string; label: string }[] } | null,
+): string {
+  if (!opts) return '';
+  const useMode = provider.type === 'claude';
+  const list = useMode ? opts.modeOptions : opts.thinkingOptions;
+  if (!list || list.length === 0) return '';
+  const current = (useMode ? provider.runtimeMode : provider.thinkingMode) ?? '';
+  const match = list.find((o) => o.id === current);
+  let label = match ? match.label : current;
+  if (!label) return '';
+  // Unwrap "Default (high)" -> "high" so the pill stays compact.
+  const defMatch = /^Default \((.+)\)$/.exec(label);
+  if (defMatch) label = defMatch[1];
+  return label.toLowerCase();
+}
+
 function getProviderStatus() {
   // Use getSelectedProviderConfig so the dashboard reflects the EFFECTIVE
   // runtime engine, not the stored config. When ENABLE_ACP=false, the gate
@@ -392,42 +400,123 @@ function getProviderStatus() {
       ? (provider.model ?? getOpenCodeDefaultModel() ?? 'OpenCode default')
       : provider.type === 'gemini'
         ? (provider.model ?? 'Gemini CLI default')
-        : provider.type === 'codex'
+        : provider.type === 'acp-codex'
           ? (provider.model ?? DEFAULT_CODEX_MODEL)
+          : provider.type === 'openai'
+            ? (provider.model ?? DEFAULT_OPENAI_MODEL)
       : (provider.model ?? (provider.command ? `${provider.command}${provider.args?.length ? ` ${provider.args.join(' ')}` : ''}` : 'Provider default'));
+
+  // Resolve a short reasoning descriptor for the sidebar's runtime summary.
+  // Reuses the same option lists the agent card renders from, so the label
+  // never drifts from what the model actually advertises. The primary dial is
+  // Effort for Claude and Reasoning effort for OpenAI; models that use adaptive
+  // thinking (empty option list) return '' so the caller omits the clause
+  // rather than printing a fake default.
+  const runtimeOpts = staticRuntimeOptionsFor(provider, model);
+  const reasoning = resolveReasoningLabel(provider, runtimeOpts);
 
   return {
     provider,
     providerType: provider.type,
-    label: provider.type === 'claude'
-      ? 'Claude'
-      : provider.type === 'opencode'
-        ? 'OpenCode'
-        : provider.type === 'gemini'
-          ? 'Gemini'
-          : provider.type === 'codex'
-            ? 'Codex'
-            : provider.type === 'openrouter'
-              ? 'OpenRouter'
-              : 'ACP',
+    label: providerDescriptor(provider.type).label,
     runtime: getProviderDisplay(provider),
     model,
-    // Surfaced so the dashboard can hide the provider picker when the
-    // beta ACP feature is off. Single source of truth for the UI.
+    // Raw persisted dials plus a display-ready descriptor (e.g. "high",
+    // "medium") for the sidebar. Empty string when the model has no dial.
+    runtimeMode: provider.runtimeMode ?? '',
+    thinkingMode: provider.thinkingMode ?? '',
+    reasoning,
+    // The provider picker renders from this registry-derived list (grouped by
+    // tier) instead of a per-provider boolean cascade: stable providers
+    // (Claude, OpenAI) are always present; experimental (ACP family) appear
+    // only under ENABLE_ACP.
+    providers: selectableProviders().map((p) => ({ type: p.type, label: p.label, tier: p.tier })),
+    // Retained for the legacy HTML dashboard / any external reader. The web UI
+    // uses `providers` above.
     acpEnabled: ENABLE_ACP,
   };
+}
+
+/**
+ * Per-type provider gate shared by the provider endpoints. Reads the single
+ * registry gate: stable providers (Claude, OpenAI) are always selectable;
+ * experimental (ACP family) require ENABLE_ACP. Returns the user-facing error
+ * message, or null when the type is currently selectable.
+ */
+function providerGateError(providerType: string): string | null {
+  const type = providerType as ProviderType;
+  if (!PROVIDER_REGISTRY[type]) return 'Unknown provider.';
+  if (providerRunnable(type)) return null;
+  return 'This provider is experimental. Set ENABLE_ACP=true in .env to enable (beta).';
 }
 
 function validateProviderConfig(provider: ProviderConfig): string | null {
   if (provider.type === 'acp' && !provider.command?.trim()) {
     return 'Custom ACP provider requires a command';
   }
-  return null;
+  return validateProviderModelOptions(provider);
+}
+
+/**
+ * Validates the provider type on an UNTRUSTED write body, before any
+ * normalization. Writes fail closed here.
+ *
+ * `normalizeProviderConfig` is built for TRUSTED persisted config, where an
+ * absent or unreadable type must degrade to Claude rather than brick the
+ * install. That fallback is right on read and wrong on write: a typo'd or
+ * malformed `type` would answer 200 OK and silently reconfigure the agent to
+ * Claude — a config change the caller never asked for and never sees. So the
+ * write endpoints reject instead, and the read fallback stays as it is.
+ *
+ * Returns the canonical type — migrating the legacy `codex` id to `acp-codex`
+ * exactly as persisted reads do — or a user-facing error for a missing,
+ * non-string, or unknown id.
+ */
+function validateInboundProviderType(raw: unknown): { type: ProviderType } | { error: string } {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { error: 'Provider type required.' };
+  }
+  const type = normalizeProviderType(raw);
+  if (!type) return { error: `Unknown provider "${raw.trim()}".` };
+  return { type };
+}
+
+/**
+ * Resolves the OPTIONAL `provider` field of a write body into the config that
+ * may be handed to `createAgent`.
+ *
+ * The distinction that matters is PRESENT vs ABSENT, not truthy vs falsy.
+ * `provider: null`, `false`, `0`, `''`, `'openai'`, and `[]` are all explicit
+ * statements by the caller — and all malformed. A truthiness check treats the
+ * falsy ones as "omitted", so the request would succeed while quietly creating
+ * an agent on a provider nobody chose. Hence `hasOwnProperty`: absence decides
+ * whether validation runs, and anything present must be a plain object (not
+ * null, not an array) carrying a known provider type.
+ *
+ * Returns `{ provider: undefined }` only for a genuinely absent field, so the
+ * caller can let the new agent inherit the main provider.
+ */
+function resolveInboundProvider(
+  body: unknown,
+  legacyModel?: string,
+): { provider: ProviderConfig | undefined } | { error: string } {
+  if (!body || typeof body !== 'object'
+    || !Object.prototype.hasOwnProperty.call(body, 'provider')) {
+    return { provider: undefined }; // absent → inherit the default provider
+  }
+  const raw = (body as { provider?: unknown }).provider;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'Provider must be an object with a provider type.' };
+  }
+  const inbound = validateInboundProviderType((raw as { type?: unknown }).type);
+  if ('error' in inbound) return { error: inbound.error };
+  // The type is proven good, so normalizeProviderConfig's Claude fallback is
+  // unreachable here — it only fills in the remaining optional fields.
+  return { provider: normalizeProviderConfig(raw, legacyModel) };
 }
 
 async function classifyTaskAgent(prompt: string): Promise<string | null> {
   const agentIds = listAgentIds();
-  const validAgents = ['main', ...agentIds];
   const agentDescriptions = agentIds.map((id) => {
     try {
       const config = loadAgentConfig(id);
@@ -449,7 +538,8 @@ Reply with JSON: {"agent": "agent_id"}`;
   try {
     const raw = await extractViaProvider(classificationPrompt);
     const parsed = parseJsonResponse<{ agent: string }>(raw);
-    if (parsed?.agent && validAgents.includes(parsed.agent)) return parsed.agent;
+    const resolved = parsed?.agent ? resolveAgentId(parsed.agent) : null;
+    if (resolved) return resolved;
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : err }, 'selected-provider classify failed, falling back to Gemini');
   }
@@ -459,7 +549,8 @@ Reply with JSON: {"agent": "agent_id"}`;
   try {
     const response = await generateContent(classificationPrompt);
     const parsed = parseJsonResponse<{ agent: string }>(response);
-    if (parsed?.agent && validAgents.includes(parsed.agent)) return parsed.agent;
+    const resolved = parsed?.agent ? resolveAgentId(parsed.agent) : null;
+    if (resolved) return resolved;
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : err }, 'Gemini classify failed, defaulting to main');
   }
@@ -4341,17 +4432,19 @@ init();
 
     const title = body?.title?.trim();
     const prompt = body?.prompt?.trim();
-    const assignedAgent = body?.assigned_agent?.trim() || null;
+    const rawAgent = body?.assigned_agent?.trim() || null;
     const priority = Math.max(0, Math.min(10, body?.priority ?? 0));
 
     if (!title || title.length > 200) return c.json({ error: 'title required (max 200 chars)' }, 400);
     if (!prompt || prompt.length > 10000) return c.json({ error: 'prompt required (max 10000 chars)' }, 400);
 
-    // Validate agent if provided
-    if (assignedAgent) {
-      const validAgents = ['main', ...listAgentIds()];
-      if (!validAgents.includes(assignedAgent)) {
-        return c.json({ error: `Unknown agent: ${assignedAgent}. Valid: ${validAgents.join(', ')}` }, 400);
+    // Resolve display-name/alias -> canonical id, or 4xx. Only the canonical
+    // id is ever stored so a poller's `WHERE assigned_agent = ?` always matches.
+    let assignedAgent: string | null = null;
+    if (rawAgent) {
+      assignedAgent = resolveAgentId(rawAgent);
+      if (!assignedAgent) {
+        return c.json({ error: `Unknown agent: ${rawAgent}. Known: ${knownAgentIds().join(', ')}` }, 400);
       }
     }
 
@@ -4409,9 +4502,11 @@ init();
     const body = await c.req.json<{ assigned_agent?: string }>();
     const newAgent = body?.assigned_agent?.trim();
     if (!newAgent) return c.json({ error: 'assigned_agent required' }, 400);
-    const validAgents = ['main', ...listAgentIds()];
-    if (!validAgents.includes(newAgent)) return c.json({ error: 'Unknown agent' }, 400);
-    const ok = reassignMissionTask(id, newAgent);
+    const resolvedAgent = resolveAgentId(newAgent);
+    if (!resolvedAgent) {
+      return c.json({ error: `Unknown agent: ${newAgent}. Known: ${knownAgentIds().join(', ')}` }, 400);
+    }
+    const ok = reassignMissionTask(id, resolvedAgent);
     return c.json({ ok });
   });
 
@@ -4635,6 +4730,9 @@ init();
       turns,
       compactions,
       sessionAge,
+      // Process uptime (whole seconds) so the sidebar can show how long the
+      // runtime has been alive, independent of the conversation session age.
+      uptimeSeconds: Math.floor(process.uptime()),
       ...getProviderStatus(),
       telegramConnected: getTelegramConnected(),
       waConnected: WHATSAPP_ENABLED,
@@ -4724,16 +4822,35 @@ init();
         const provider = id === 'main' ? getSelectedProviderConfig() : config.provider;
         const model = provider.type === 'claude'
           ? (mainOverride ?? mainPersistedModel ?? provider.model ?? config.model ?? DEFAULT_CLAUDE_MODEL)
-          : provider.model;
+          : provider.type === 'openai'
+            ? (provider.model ?? DEFAULT_OPENAI_MODEL)
+            : provider.model;
         // Report the effective model inside provider too so the dashboard
         // picker highlights the right entry.
-        const reportedProvider = provider.type === 'claude' && model ? { ...provider, model } : provider;
+        const reportedProvider = (provider.type === 'claude' || provider.type === 'openai') && model
+          ? { ...provider, model }
+          : provider;
+        // Old configs can carry effort/thinking values from a previously
+        // selected model. Reconcile the response so cards never advertise a
+        // stranded "(unsupported)" control. Persistence is normalized on the
+        // next real save; this read path stays non-mutating.
+        const displayProvider = reconcileRuntimeOptions(reportedProvider).provider;
         return {
           id,
           name: config.name || resolveAgentDisplayName(id),
-          description: id === 'main' ? getMainDescription() : config.description,
+          // main is normalized — its description comes from agents/main/agent.yaml
+          // (config.description) like every other agent, not a special store.
+          description: config.description,
           model,
-          provider: reportedProvider,
+          modelLabel: modelDisplayLabel(model),
+          provider: displayProvider,
+          // Per-model effort/thinking option lists so the agent card renders
+          // one dropdown per list the model actually supports (Opus 5 =
+          // effort only; Opus 4.8 = effort + thinking; Sonnet 4.5 = thinking
+          // only). Null for providers that own this in their CLI config.
+          runtimeOptions: staticRuntimeOptionsFor(displayProvider, model),
+          runtimeMode: displayProvider.runtimeMode ?? '',
+          thinkingMode: displayProvider.thinkingMode ?? '',
           running,
           todayTurns: stats.todayTurns,
           todayCost: stats.todayCost,
@@ -4744,7 +4861,7 @@ init();
         };
       } catch {
         const fallbackName = resolveAgentDisplayName(id);
-        return { id, name: fallbackName, description: '', model: 'unknown', provider: { type: 'opencode' }, running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
+        return { id, name: fallbackName, description: '', model: 'unknown', modelLabel: 'unknown', provider: { type: 'opencode' }, runtimeOptions: null, runtimeMode: '', thinkingMode: '', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
       }
     });
 
@@ -4768,13 +4885,19 @@ init();
       }
       const mainStats = getAgentTokenStats('main');
       const mainProvider = getMainProviderConfig();
+      const mainModel = getProviderStatus().model;
+      const displayMainProvider = reconcileRuntimeOptions({ ...mainProvider, model: mainModel }).provider;
       allAgents = [
         {
           id: 'main',
           name: resolveAgentDisplayName('main'),
           description: getMainDescription(),
-          model: getProviderStatus().model,
-          provider: mainProvider,
+          model: mainModel,
+          modelLabel: modelDisplayLabel(mainModel),
+          provider: displayMainProvider,
+          runtimeOptions: staticRuntimeOptionsFor(displayMainProvider, mainModel),
+          runtimeMode: displayMainProvider.runtimeMode ?? '',
+          thinkingMode: displayMainProvider.thinkingMode ?? '',
           running: mainRunning,
           todayTurns: mainStats.todayTurns,
           todayCost: mainStats.todayCost,
@@ -4784,7 +4907,14 @@ init();
       ];
     }
 
-    return c.json({ agents: allAgents });
+    // Ship the model catalog alongside the agents so the dashboard renders
+    // ids and labels from src/model-catalog.ts instead of keeping its own
+    // hardcoded copy that silently drifts.
+    return c.json({
+      agents: allAgents,
+      claudeModels: CLAUDE_MODEL_OPTIONS,
+      openaiModels: OPENAI_MODEL_OPTIONS,
+    });
   });
 
   // Agent-specific recent conversation
@@ -4824,19 +4954,26 @@ init();
       return c.json({ error: `Invalid model id format. Expected e.g. claude-opus-4-8 (known: ${VALID_CLAUDE_MODELS.join(', ')})` }, 400);
     }
 
-    const agentIds = listAgentIds();
+    const agentIds = [...new Set(['main', ...listAgentIds()])];
     const updated: string[] = [];
-    const restartRequired: string[] = [];
+    const changed: string[] = [];
     for (const id of agentIds) {
       try {
-        setAgentProvider(id, { type: 'claude', model });
+        const current = id === 'main' ? getMainProviderConfig() : loadAgentConfig(id).provider;
+        const next = { type: 'claude', model } as ProviderConfig;
         updated.push(id);
-        if (id !== 'main') restartRequired.push(id);
+        if (isDeepStrictEqual(current, next)) continue;
+        if (id === 'main') {
+          setMainProviderConfig(next);
+          updateAgentProvider(next);
+        } else {
+          setAgentProvider(id, next);
+        }
+        clearAgentSessions(id);
+        changed.push(id);
       } catch {}
     }
-    setMainProviderConfig({ type: 'claude', model });
-    updated.unshift('main');
-    return c.json({ ok: true, model, updated, restartRequired });
+    return c.json({ ok: true, model, updated, changed, restartRequired: [] });
   });
 
   // Update agent model
@@ -4846,36 +4983,153 @@ init();
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    if (!CLAUDE_MODEL_ID_RE.test(model)) {
-      return c.json({ error: `Invalid model id format. Expected e.g. claude-opus-4-8 (known: ${VALID_CLAUDE_MODELS.join(', ')})` }, 400);
+    // Preserve the agent's existing provider instead of assuming claude. The
+    // previous version wrote { type: 'claude', model } unconditionally, so a
+    // model change on a native-OpenAI agent silently switched its provider to
+    // Claude and dropped its command/args.
+    let current: ProviderConfig;
+    try {
+      current = agentId === 'main' ? getMainProviderConfig() : loadAgentConfig(agentId).provider;
+    } catch {
+      return c.json({ error: `Unknown agent "${agentId}"` }, 404);
+    }
+
+    if (current.type === 'openai') {
+      if (!OPENAI_MODEL_OPTIONS.some((option) => option.id === model)) {
+        return c.json({ error: `Unknown OpenAI model "${model}" (known: ${OPENAI_MODEL_OPTIONS.map((o) => o.id).join(', ')})` }, 400);
+      }
+    } else if (current.type === 'claude') {
+      if (!CLAUDE_MODEL_ID_RE.test(model)) {
+        return c.json({ error: `Invalid model id format. Expected e.g. claude-opus-4-8 (known: ${VALID_CLAUDE_MODELS.join(', ')})` }, 400);
+      }
+    } else {
+      return c.json({ error: `Provider "${current.type}" manages its model in its own CLI config` }, 400);
+    }
+
+    // Auto-clear any effort/thinking value the new model doesn't support, and
+    // report it so the caller can say what changed rather than leaving a config
+    // that would be rejected at turn start.
+    const { provider: merged, cleared } = reconcileRuntimeOptions({ ...current, model });
+
+    const changed = !isDeepStrictEqual(current, merged);
+    if (!changed) {
+      return c.json({
+        ok: true,
+        agent: agentId,
+        model,
+        cleared,
+        changed: false,
+        sessionReset: false,
+        restartRequired: false,
+      });
     }
 
     try {
       if (agentId === 'main') {
-        // Main applies in-memory immediately — no restart needed.
-        const { setMainModelOverride } = await import('./bot.js');
-        setMainModelOverride(model);
-        setMainProviderConfig({ type: 'claude', model });
-        return c.json({ ok: true, agent: agentId, model, restartRequired: false });
+        setMainProviderConfig(merged);
+        updateAgentProvider(merged);
+      } else {
+        setAgentProvider(agentId, merged);
       }
-      // Sub-agents read agentDefaultModel into config.ts module state once
-      // at process startup. Yaml change takes effect only after the agent
-      // process restarts. We don't auto-restart because that would kill any
-      // in-flight mission task or Telegram turn — surface the requirement
-      // so the UI can prompt deliberately.
-      setAgentProvider(agentId, { type: 'claude', model });
-      return c.json({ ok: true, agent: agentId, model, restartRequired: true });
+
+      // A model is fixed when a Claude/Codex thread starts. Drop all stored
+      // sessions for this agent so the next message starts on the selected
+      // model. The target bot re-reads agent.yaml per turn, including when it
+      // runs in a separate process from this dashboard.
+      clearAgentSessions(agentId);
+      return c.json({
+        ok: true,
+        agent: agentId,
+        model,
+        cleared,
+        changed: true,
+        sessionReset: true,
+        restartRequired: false,
+      });
     } catch (err) {
       return c.json({ error: 'Failed to update model' }, 500);
     }
   });
 
-  app.get('/api/providers/models', async (c) => {
-    const provider = (c.req.query('provider') || '').toLowerCase();
-    const current = getMainProviderConfig();
-    if (!ENABLE_ACP && provider !== 'claude') {
-      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+  // Update an agent's effort / thinking selection without touching the rest
+  // of its provider config. The agent card's secondary dropdowns POST here.
+  // An empty string clears the field back to the provider default rather than
+  // persisting a literal "" that would fail validation on the next read.
+  app.patch('/api/agents/:id/runtime', async (c) => {
+    const agentId = c.req.param('id');
+    const body = await c.req.json<{ runtimeMode?: string; thinkingMode?: string }>();
+    if (body?.runtimeMode === undefined && body?.thinkingMode === undefined) {
+      return c.json({ error: 'runtimeMode or thinkingMode required' }, 400);
     }
+
+    let current: ProviderConfig;
+    try {
+      current = agentId === 'main' ? getMainProviderConfig() : loadAgentConfig(agentId).provider;
+    } catch {
+      return c.json({ error: `Unknown agent "${agentId}"` }, 404);
+    }
+
+    const merged: ProviderConfig = { ...current };
+    if (body.runtimeMode !== undefined) {
+      const value = body.runtimeMode.trim();
+      if (value) merged.runtimeMode = value; else delete merged.runtimeMode;
+    }
+    if (body.thinkingMode !== undefined) {
+      const value = body.thinkingMode.trim();
+      if (value) merged.thinkingMode = value; else delete merged.thinkingMode;
+    }
+
+    // Reject a value the selected model doesn't actually support (e.g. xhigh
+    // on Sonnet 4.6) instead of persisting it and failing at turn start.
+    const validationError = validateProviderModelOptions(merged);
+    if (validationError) return c.json({ error: validationError }, 400);
+
+    const changed = !isDeepStrictEqual(current, merged);
+    if (!changed) {
+      return c.json({
+        ok: true,
+        agent: agentId,
+        runtimeMode: merged.runtimeMode ?? '',
+        thinkingMode: merged.thinkingMode ?? '',
+        changed: false,
+        newChatRequired: false,
+        sessionReset: false,
+        restartRequired: false,
+      });
+    }
+
+    try {
+      if (agentId === 'main') {
+        setMainProviderConfig(merged);
+        updateAgentProvider(merged);
+      } else {
+        setAgentProvider(agentId, merged);
+      }
+
+      return c.json({
+        ok: true,
+        agent: agentId,
+        runtimeMode: merged.runtimeMode ?? '',
+        thinkingMode: merged.thinkingMode ?? '',
+        changed: true,
+        newChatRequired: false,
+        sessionReset: false,
+        restartRequired: false,
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to update runtime options' }, 500);
+    }
+  });
+
+  app.get('/api/providers/models', async (c) => {
+    // Normalize first so a legacy `codex` query from a stale client resolves to
+    // acp-codex (and the response echoes the canonical id), while an unknown
+    // type still falls through to providerGateError's "Unknown provider."
+    const requestedProvider = (c.req.query('provider') || '').toLowerCase();
+    const provider = normalizeProviderType(requestedProvider) ?? requestedProvider;
+    const current = getMainProviderConfig();
+    const gateError = providerGateError(provider);
+    if (gateError) return c.json({ error: gateError }, 403);
     if (provider === 'claude') {
       return c.json({
         provider,
@@ -4910,11 +5164,11 @@ init();
         note: 'Gemini model selection is sent through ACP session/set_model when supported.',
       });
     }
-    if (provider === 'codex') {
+    if (provider === 'acp-codex') {
       return c.json({
         provider,
         models: CODEX_MODEL_OPTIONS,
-        defaultModel: current.type === 'codex' ? (current.model ?? DEFAULT_CODEX_MODEL) : DEFAULT_CODEX_MODEL,
+        defaultModel: current.type === 'acp-codex' ? (current.model ?? DEFAULT_CODEX_MODEL) : DEFAULT_CODEX_MODEL,
         selectable: true,
         allowCustom: true,
         note: 'Codex model selection is sent through the codex-acp adapter via ACP session/set_model when supported.',
@@ -4928,6 +5182,16 @@ init();
         selectable: true,
         allowCustom: true,
         note: 'Custom ACP model ids are provider-specific. Use provider-default to skip session/set_model.',
+      });
+    }
+    if (provider === 'openai') {
+      return c.json({
+        provider,
+        models: OPENAI_MODEL_OPTIONS,
+        defaultModel: current.type === 'openai' ? (current.model ?? DEFAULT_OPENAI_MODEL) : DEFAULT_OPENAI_MODEL,
+        selectable: true,
+        allowCustom: true,
+        note: 'Native Codex provider. App Server supports incremental streaming and verified policy; SDK remains the rollback transport. Auth via `codex login` (ChatGPT subscription) or OPENAI_API_KEY. Costs shown for GPT turns are estimates computed from token counts.',
       });
     }
     if (provider === 'openrouter') {
@@ -4951,25 +5215,31 @@ init();
   });
 
   app.get('/api/providers/runtime-options', async (c) => {
-    const providerType = (c.req.query('provider') || '').toLowerCase();
-    if (!ENABLE_ACP && providerType !== 'claude') {
-      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    const requestedType = (c.req.query('provider') || '').toLowerCase();
+    const providerType = normalizeProviderType(requestedType) ?? requestedType;
+    {
+      const gateError = providerGateError(providerType);
+      if (gateError) return c.json({ error: gateError }, 403);
     }
     const current = getMainProviderConfig();
-    const hasCommandOverride = c.req.query('command') !== undefined || c.req.query('args') !== undefined;
-    const base: ProviderConfig = providerType === current.type && !hasCommandOverride
+    const requestedModel = c.req.query('model')?.trim() || undefined;
+    const hasOverride = requestedModel !== undefined
+      || c.req.query('command') !== undefined
+      || c.req.query('args') !== undefined;
+    const base: ProviderConfig = providerType === current.type && !hasOverride
       ? current
       : normalizeProviderConfig({
         type: providerType,
+        model: requestedModel,
         command: c.req.query('command'),
         args: parseProviderArgsQuery(c.req.query('args')),
       });
 
-    if (base.type === 'claude') {
+    const staticOptions = staticRuntimeOptionsFor(base, requestedModel);
+    if (staticOptions) {
       return c.json({
         provider: base.type,
-        modeOptions: CLAUDE_RUNTIME_OPTIONS,
-        thinkingOptions: CLAUDE_THINKING_OPTIONS,
+        ...staticOptions,
         rawConfigOptions: [],
         source: 'static',
       });
@@ -4985,7 +5255,7 @@ init();
         source: 'static',
       });
     }
-    if (base.type !== 'opencode' && base.type !== 'gemini' && base.type !== 'codex' && base.type !== 'acp') {
+    if (base.type !== 'opencode' && base.type !== 'gemini' && base.type !== 'acp-codex' && base.type !== 'acp') {
       return c.json({ error: 'Invalid provider' }, 400);
     }
     if (base.type === 'acp' && !base.command?.trim()) {
@@ -5017,9 +5287,14 @@ init();
       command: body.command,
       args: body.args,
     };
+    // Fail closed on a bad type instead of letting the read-oriented Claude
+    // fallback in normalizeProviderConfig silently reconfigure the agent.
+    const inbound = validateInboundProviderType((candidate as { type?: unknown } | null)?.type);
+    if ('error' in inbound) return c.json({ error: inbound.error }, 400);
     const provider = normalizeProviderConfig(candidate);
-    if (!ENABLE_ACP && provider.type !== 'claude') {
-      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    {
+      const gateError = providerGateError(provider.type);
+      if (gateError) return c.json({ error: gateError }, 403);
     }
     const validationError = validateProviderConfig(provider);
     if (validationError) return c.json({ error: validationError }, 400);
@@ -5037,6 +5312,25 @@ init();
       }, 400);
     }
 
+    let current: ProviderConfig;
+    try {
+      current = agentId === 'main' ? getMainProviderConfig() : loadAgentConfig(agentId).provider;
+    } catch {
+      return c.json({ error: `Unknown agent "${agentId}"` }, 404);
+    }
+
+    const changed = !isDeepStrictEqual(current, provider);
+    if (!changed) {
+      return c.json({
+        ok: true,
+        agent: agentId,
+        provider,
+        changed: false,
+        sessionReset: false,
+        restartRequired: false,
+      });
+    }
+
     try {
       if (agentId === 'main') {
         setMainProviderConfig(provider);
@@ -5044,7 +5338,17 @@ init();
       } else {
         setAgentProvider(agentId, provider);
       }
-      return c.json({ ok: true, agent: agentId, provider, restartRequired: agentId !== 'main' });
+      // Provider transitions cannot resume a thread owned by the previous
+      // engine. Start clean on the next message without restarting the bot.
+      clearAgentSessions(agentId);
+      return c.json({
+        ok: true,
+        agent: agentId,
+        provider,
+        changed: true,
+        sessionReset: true,
+        restartRequired: false,
+      });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Failed to update provider' }, 500);
     }
@@ -5115,37 +5419,14 @@ init();
     return { claudeMd, agentYaml, agentYamlRedacted };
   }
 
-  // Main is the host process — it has no agents/main/ directory and no
-  // agent.yaml (its config lives in .env). Its CLAUDE.md is loaded from
-  // CLAUDECLAW_CONFIG/CLAUDE.md (preferred) or PROJECT_ROOT/CLAUDE.md
-  // (legacy fallback). The editor exposes only the persona for main.
-  function resolveMainClaudeMdPath(): string {
-    const external = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
-    if (fs.existsSync(external)) return external;
-    const repo = path.join(PROJECT_ROOT, 'CLAUDE.md');
-    if (fs.existsSync(repo)) return repo;
-    // Neither exists — write goes to the external path (the canonical
-    // location). Read returns empty.
-    return external;
-  }
-
+  // Disk + runtime already normalized `main` into the standard per-agent
+  // shape: agents/main/agent.yaml (full config) and agents/main/CLAUDE.md
+  // (persona the runtime reads from cwd). So main uses the same read/write
+  // path as every other agent — no special-casing, no hidden Config tab, and
+  // persona edits land where the runtime actually reads them.
   app.get('/api/agents/:id/files', (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
-
-    if (agentId === 'main') {
-      const mainClaude = resolveMainClaudeMdPath();
-      const claudeMd = fs.existsSync(mainClaude) ? fs.readFileSync(mainClaude, 'utf-8') : '';
-      return c.json({
-        agent_id: 'main',
-        claude_md: claudeMd,
-        agent_yaml: '',
-        bot_token_redacted: false,
-        // Tells the UI to hide the Config tab — main has no agent.yaml.
-        config_editable: false,
-        claude_md_path: mainClaude,
-      });
-    }
 
     let agentDir: string;
     try { agentDir = resolveAgentDir(agentId); }
@@ -5171,21 +5452,16 @@ init();
       return c.json({ error: 'CLAUDE.md exceeds 200KB' }, 400);
     }
 
-    // Resolve target path — main's CLAUDE.md lives outside the agents/
-    // tree. For sub-agents, the file goes into the agent's resolved dir
-    // (which respects CLAUDECLAW_CONFIG override).
-    let target: string;
-    if (agentId === 'main') {
-      target = resolveMainClaudeMdPath();
-      // Make sure the parent dir exists — fresh installs may not have
-      // created CLAUDECLAW_CONFIG yet.
-      try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
-    } else {
-      let agentDir: string;
-      try { agentDir = resolveAgentDir(agentId); }
-      catch { return c.json({ error: 'agent not found' }, 404); }
-      target = path.join(agentDir, 'CLAUDE.md');
-    }
+    // Every agent — main included — stores its persona at
+    // <agentDir>/CLAUDE.md, which is exactly where the runtime reads it from
+    // cwd. (Previously main wrote to CLAUDECLAW_CONFIG/CLAUDE.md, a path the
+    // runtime never reads, so a persona edit silently never reached the bot.)
+    let agentDir: string;
+    try { agentDir = resolveAgentDir(agentId); }
+    catch { return c.json({ error: 'agent not found' }, 404); }
+    const target = path.join(agentDir, 'CLAUDE.md');
+    // Fresh installs may not have created the agent dir yet.
+    try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
     try {
       snapshotPriorVersion(agentId, 'claudemd', target);
       const atomicEnvWrite = await getAtomicWriter();
@@ -5219,10 +5495,8 @@ init();
   app.put('/api/agents/:id/files/agent-yaml', async (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
-    if (agentId === 'main') {
-      // Main is the host process — its config lives in .env, not yaml.
-      return c.json({ error: 'main agent has no agent.yaml; edit .env directly' }, 400);
-    }
+    // `main` is normalized to the standard per-agent shape (agents/main/
+    // agent.yaml), so it saves through the same path as every other agent.
     const body = await c.req.json().catch(() => null) as { content?: string } | null;
     if (!body || typeof body.content !== 'string') {
       return c.json({ error: 'expected { content: string }' }, 400);
@@ -5235,10 +5509,10 @@ init();
     catch { return c.json({ error: 'agent not found' }, 404); }
 
     // Validate as YAML before writing — no point poisoning the file.
+    const yamlMod = await import('js-yaml');
     let parsed: any;
     try {
-      const yaml = await import('js-yaml');
-      parsed = yaml.load(body.content);
+      parsed = yamlMod.load(body.content);
     } catch (err: any) {
       return c.json({ error: 'YAML parse error: ' + (err?.message || err) }, 400);
     }
@@ -5254,18 +5528,63 @@ init();
       return c.json({ error: 'agent.yaml requires name and telegram_bot_token_env fields' }, 400);
     }
 
+    // Uniqueness guard: the new display name (and any aliases) must not collide
+    // with another agent's id, display name, or alias. Keeps the namespaces
+    // from ever overlapping so resolveAgentId is never ambiguous.
+    const nameCollision = findAgentIdentityCollision(String(parsed.name), { ignoreAgentId: agentId });
+    if (nameCollision) {
+      return c.json({ error: `Display name "${parsed.name}" collides with the ${nameCollision.kind} "${nameCollision.value}" of agent "${nameCollision.agentId}"` }, 409);
+    }
+    const incomingAliases: string[] = Array.isArray(parsed.aliases)
+      ? parsed.aliases.filter((a: unknown): a is string => typeof a === 'string')
+      : [];
+    for (const alias of incomingAliases) {
+      const aliasCollision = findAgentIdentityCollision(alias, { ignoreAgentId: agentId });
+      if (aliasCollision) {
+        return c.json({ error: `Alias "${alias}" collides with the ${aliasCollision.kind} "${aliasCollision.value}" of agent "${aliasCollision.agentId}"` }, 409);
+      }
+    }
+
+    const yamlPath = path.join(agentDir, 'agent.yaml');
+
+    // Rename-append: if the display name changed, retain the outgoing name as
+    // an alias so historical references (--agent <oldName>) keep resolving to
+    // this canonical id forever.
+    let outgoingName: string | undefined;
+    try {
+      if (fs.existsSync(yamlPath)) {
+        const onDiskYaml = yamlMod.load(fs.readFileSync(yamlPath, 'utf-8')) as Record<string, unknown> | null;
+        if (typeof onDiskYaml?.['name'] === 'string') outgoingName = onDiskYaml['name'] as string;
+      }
+    } catch { /* unreadable on-disk yaml — treat as no prior name */ }
+    const renamed = !!outgoingName
+      && outgoingName.trim().toLowerCase() !== String(parsed.name).trim().toLowerCase();
+
     // If the client posted back the redacted token, splice in the real
     // value from the file currently on disk. Means partial edits don't
     // require the user to know the real token.
     let content = body.content;
     if (/bot_token\s*:\s*"?\*\*\*REDACTED\*\*\*"?/.test(content)) {
-      const yamlPath = path.join(agentDir, 'agent.yaml');
       const onDisk = fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf-8') : '';
       const tokenMatch = onDisk.match(/^\s*bot_token\s*:\s*([^\n#]+?)\s*(?:#.*)?$/m);
       const realToken = tokenMatch ? tokenMatch[1] : '';
       if (realToken && realToken !== '"***REDACTED***"') {
         content = content.replace(/^(\s*bot_token\s*:\s*)"?\*\*\*REDACTED\*\*\*"?(\s*(?:#.*)?)$/m, `$1${realToken}$2`);
+        // Keep the parsed object in sync for the rename re-serialization below.
+        if (typeof parsed.bot_token === 'string') parsed.bot_token = realToken.replace(/^"|"$/g, '');
       }
+    }
+
+    if (renamed) {
+      const mergedAliases = [...incomingAliases];
+      if (!mergedAliases.some((a) => a.trim().toLowerCase() === outgoingName!.trim().toLowerCase())) {
+        mergedAliases.push(outgoingName!);
+      }
+      parsed.aliases = mergedAliases;
+      // Re-serialize from the parsed object so the appended alias persists.
+      // (agent.yaml is machine-managed; setAgentModel/Provider/Description
+      // already round-trip it through yaml.dump the same way.)
+      content = yamlMod.dump(parsed, { lineWidth: -1 });
     }
 
     const target = path.join(agentDir, 'agent.yaml');
@@ -5323,17 +5642,14 @@ init();
     if (!row || row.agent_id !== agentId) return c.json({ error: 'version not found' }, 404);
 
     // Resolve target path with the same rules the GET/PUT endpoints use.
-    let target: string;
-    if (agentId === 'main') {
-      if (row.file_kind !== 'claudemd') return c.json({ error: 'main has no agent.yaml' }, 400);
-      target = resolveMainClaudeMdPath();
-      try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
-    } else {
-      let agentDir: string;
-      try { agentDir = resolveAgentDir(agentId); }
-      catch { return c.json({ error: 'agent not found' }, 404); }
-      target = path.join(agentDir, row.file_kind === 'claudemd' ? 'CLAUDE.md' : 'agent.yaml');
-    }
+    // main is normalized to the standard per-agent shape, so it restores
+    // through the same path as every other agent (both CLAUDE.md and
+    // agent.yaml).
+    let agentDir: string;
+    try { agentDir = resolveAgentDir(agentId); }
+    catch { return c.json({ error: 'agent not found' }, 404); }
+    const target = path.join(agentDir, row.file_kind === 'claudemd' ? 'CLAUDE.md' : 'agent.yaml');
+    try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
 
     try {
       snapshotPriorVersion(agentId, row.file_kind as AgentFileKind, target);
@@ -5454,11 +5770,15 @@ init();
     if (!botToken) return c.json({ error: 'botToken required' }, 400);
 
     try {
-      const provider = body?.provider ? normalizeProviderConfig(body.provider, body?.model?.trim() || undefined) : undefined;
+      // Same fail-closed rule as PATCH: a supplied-but-malformed provider is a
+      // 400, never a silent downgrade to Claude. Only a genuinely ABSENT
+      // `provider` field is valid-and-empty — see resolveInboundProvider.
+      const resolved = resolveInboundProvider(body, body?.model?.trim() || undefined);
+      if ('error' in resolved) return c.json({ error: resolved.error }, 400);
+      const provider = resolved.provider;
       if (provider) {
-        if (!ENABLE_ACP && provider.type !== 'claude') {
-          return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
-        }
+        const gateError = providerGateError(provider.type);
+        if (gateError) return c.json({ error: gateError }, 403);
         const validationError = validateProviderConfig(provider);
         if (validationError) return c.json({ error: validationError }, 400);
         const availability = checkProviderAvailability(provider);
@@ -5684,6 +6004,7 @@ init();
     'workspace_name',
     'hotkey_mod', // 'meta' | 'ctrl' | 'auto'
     'sidebar_collapsed_sections', // JSON array of section ids
+    'sidebar_runtime_collapsed', // '1' | '0' — footer runtime detail rows collapsed
     'mission_column_order', // JSON array of agent ids
     'mission_column_widths', // JSON object { id: px }
     // JSON {agents: [{id, enabled}], maxSpeakers}. Drives /standup

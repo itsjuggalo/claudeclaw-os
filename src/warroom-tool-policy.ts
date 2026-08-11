@@ -12,14 +12,15 @@
  *
  *   - Default-allow read-only built-ins: Read, Glob, Grep, WebSearch,
  *     WebFetch, TodoWrite. These are safe for "answer in chat" turns.
- *   - Default-allow `Skill` only when an agent's per-meeting allowlist
- *     names skills that are themselves opt-in.
  *   - Default-deny side-effect built-ins: Bash, Write, Edit,
- *     NotebookEdit, claude-in-chrome, claude_ai_*, ExitPlanMode,
- *     and every MCP server.
- *   - Per-agent opt-in via `tools_allowlist:` in agents/<id>/agent.yaml.
- *     Ops typically wants Bash + google-calendar + gmail skills.
- *     Comms typically wants gmail + slack skills + Bash for scripts.
+ *     NotebookEdit, ExitPlanMode, Skill.
+ *   - Default-deny every MCP server, browser-driving and email-suite
+ *     ones (claude-in-chrome, claude_ai_*) included. filterMcpServers()
+ *     drops every server that is not explicitly opted in, so an
+ *     unlisted server is never attached to the runtime.
+ *   - Per-agent opt-in via `warroom_tools:` in agents/<id>/agent.yaml
+ *     (parsed in agent-config.ts). Ops and Comms default to Bash + Skill;
+ *     MCP access requires an `mcp:<server>` entry.
  *
  * Operators can customize the per-agent allowlist; the default-deny
  * list is hardcoded so a misconfigured agent.yaml can't accidentally
@@ -54,9 +55,9 @@ const SIDE_EFFECT_TOOLS = [
   'NotebookEdit',
   'ExitPlanMode',
   'Skill',
-  // Browser-driving and email-suite MCPs that have repeatedly shown up
-  // in war-room turns when they shouldn't have. Listed by prefix below
-  // via the disallowedTools pattern; named here for documentation.
+  // MCP servers are deliberately absent here. They are blocked one
+  // level up by filterMcpServers(), which never hands an unlisted server
+  // to the runtime, so there is no per-tool name for this list to carry.
 ] as const;
 
 // Agents configured for operational tasks. These defaults are sane
@@ -80,29 +81,35 @@ const DEFAULT_AGENT_ALLOWLISTS: Record<string, string[]> = {
 
 /**
  * Build the tool/MCP policy for a given agent in the war room. Pass
- * `agentTools` from the agent's loaded `agent.yaml` (the
- * `tools_allowlist` field, if any) to override defaults.
+ * `agentTools` from the agent's loaded `agent.yaml` (the `warroom_tools`
+ * field, if present) to replace the per-agent defaults. An explicit
+ * empty list is a read-only lockdown.
  */
 export function warRoomToolPolicy(
   agentId: string,
   agentTools?: string[],
 ): WarRoomToolPolicy {
-  const overrides = agentTools && agentTools.length > 0 ? agentTools : null;
-  const extra = overrides ?? DEFAULT_AGENT_ALLOWLISTS[agentId] ?? [];
-  const allowed = Array.from(new Set([...SAFE_READONLY_TOOLS, ...extra]));
+  const effectiveEntries = agentTools !== undefined
+    ? agentTools
+    : DEFAULT_AGENT_ALLOWLISTS[agentId] ?? [];
+  const builtinTools = effectiveEntries.filter((entry) => !entry.startsWith('mcp:'));
+  const allowed = Array.from(new Set([...SAFE_READONLY_TOOLS, ...builtinTools]));
 
   // Disallow EVERY side-effect tool the agent didn't explicitly opt into.
-  // This is defense in depth: if `allowedTools` is non-empty, the SDK
-  // already restricts to that set, but we list the dangerous tools here
-  // too so a future change that flips to an empty allowlist still has a
-  // floor.
+  // allowedTools is never empty because the read-only floor is always
+  // present. Naming dangerous built-ins here provides defense in depth;
+  // MCP access is gated separately by filterMcpServers().
   const disallowed = SIDE_EFFECT_TOOLS.filter((t) => !allowed.includes(t));
 
   // MCP servers default to none. An operator can opt agents in via
-  // `tools_allowlist` entries that begin with `mcp:` (e.g. `mcp:gmail`).
-  const allowedMcpServers = (overrides ?? [])
-    .filter((t) => t.startsWith('mcp:'))
-    .map((t) => t.slice('mcp:'.length));
+  // effective `warroom_tools` entries that begin with `mcp:`
+  // (e.g. `mcp:gmail`). Keep these tokens out of SDK allowedTools:
+  // MCP tools use runtime-specific names, not the configuration token.
+  const allowedMcpServers = Array.from(new Set(
+    effectiveEntries
+      .filter((entry) => entry.startsWith('mcp:') && entry.length > 'mcp:'.length)
+      .map((entry) => entry.slice('mcp:'.length)),
+  ));
 
   return {
     allowedTools: allowed,

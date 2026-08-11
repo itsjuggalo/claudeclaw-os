@@ -3,7 +3,7 @@
 
 # Agent CLI Reference
 
-Canonical reference for the ClaudeClaw agent-facing CLIs. This block is generated from each CLI's exported `descriptor` — do not hand-edit it; run `npm run gen:cli-docs` to regenerate. Resolve the project root with `PROJECT_ROOT=$(git rev-parse --show-toplevel)` and invoke a CLI as `node "$PROJECT_ROOT/<binary>" <command>`.
+Canonical reference for the ClaudeClaw agent-facing CLIs. This block is generated from each CLI's exported `descriptor` — do not hand-edit it; run `npm run gen:cli-docs` to regenerate. The runtime injects the correct absolute `PROJECT_ROOT` into your prompt; use that value and invoke a CLI as `node "$PROJECT_ROOT/<binary>" <command>`. Do NOT rediscover the root with `git rev-parse` or search the filesystem — a non-repo cwd can anchor onto the wrong checkout (see issue #157).
 
 ## Index
 

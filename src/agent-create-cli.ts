@@ -14,8 +14,13 @@
  *     --activate
  *
  * Flags:
- *   --id          Agent ID (required, lowercase, no spaces)
- *   --name        Display name (required)
+ *   --id          Canonical agent id (required, lowercase, no spaces). Permanent —
+ *                 it's the primary key every task/history row is stored under and
+ *                 never changes, so renames don't orphan history.
+ *   --name        Display name (required). Mutable later via the dashboard; the
+ *                 previous name is retained as an alias so old references still
+ *                 resolve. Must not collide with any existing agent's id, display
+ *                 name, or alias.
  *   --description What this agent does (required)
  *   --model       Model override (default: claude-sonnet-4-6)
  *   --template    Template to copy from (default: _template)

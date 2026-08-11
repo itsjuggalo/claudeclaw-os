@@ -5,6 +5,12 @@
  * Used by Claude assistants to create and manage one-shot mission tasks
  * that are picked up and executed by the target agent's scheduler.
  *
+ * This is a THIN argv front-end: it parses flags and formats output, but the
+ * business logic lives in `cli-actions.ts` — the SAME functions the in-process
+ * dispatch tools call, so the CLI and the tool can never drift. Recoverable
+ * failures (unknown agent, missing task) come back as `CliActionError`, which we
+ * print to stderr and exit non-zero on, exactly as before.
+ *
  * Usage:
  *   node dist/mission-cli.js create --agent research --title "Label" "Full prompt"
  *   node dist/mission-cli.js handback <task-id> "Report text"   (replies to the task's originator)
@@ -16,22 +22,19 @@
  *     (fan out N tasks, park a join mission the scheduler releases once all children finish)
  */
 
-import { randomBytes } from 'crypto';
 import { pathToFileURL } from 'url';
 
-import {
-  initDatabase,
-  createMissionTask,
-  getMissionTasks,
-  getMissionTask,
-  cancelMissionTask,
-} from './db.js';
-import {
-  resolveHandbackDestination,
-  MAIN_AGENT_ID,
-} from './routing.js';
 import { renderHelp } from './cli-reference.js';
 import { missionDescriptor as descriptor } from './cli-descriptors.js';
+import {
+  CliActionError,
+  actionCancelMission,
+  actionCreateMission,
+  actionGather,
+  actionHandbackMission,
+  actionListMissions,
+  actionMissionResult,
+} from './cli-actions.js';
 
 // Only run the CLI when invoked directly, so importing `descriptor` (for docs
 // generation and the drift-guard test) does not trigger DB init or arg parsing.
@@ -45,38 +48,13 @@ if (isMain) {
   runCli();
 }
 
-function runCli(): void {
-initDatabase();
-
-// Parse --agent flag (null = unassigned, use auto-assign on dashboard)
-const agentFlagIdx = process.argv.indexOf('--agent');
-const targetAgent = agentFlagIdx !== -1
-  ? process.argv[agentFlagIdx + 1] ?? null
-  : null;
-
-// Parse --title flag
-const titleFlagIdx = process.argv.indexOf('--title');
-const titleArg = titleFlagIdx !== -1
-  ? process.argv[titleFlagIdx + 1] ?? ''
-  : '';
-
-// Parse --status flag
-const statusFlagIdx = process.argv.indexOf('--status');
-const statusFilter = statusFlagIdx !== -1
-  ? process.argv[statusFlagIdx + 1] ?? undefined
-  : undefined;
-
-// Parse --priority flag
-const priorityFlagIdx = process.argv.indexOf('--priority');
-const priorityArg = priorityFlagIdx !== -1
-  ? parseInt(process.argv[priorityFlagIdx + 1] ?? '0', 10)
-  : 5;
-
-// Parse --summary-agent flag (gather command's join assignee)
-const summaryAgentFlagIdx = process.argv.indexOf('--summary-agent');
-const summaryAgentArg = summaryAgentFlagIdx !== -1
-  ? process.argv[summaryAgentFlagIdx + 1] ?? null
-  : null;
+function formatDate(unix: number | null): string {
+  if (!unix) return '-';
+  return new Date(unix * 1000).toLocaleString('en-US', {
+    month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  });
+}
 
 /**
  * Collect every occurrence of a repeated flag (e.g. `--task "a:b"` used
@@ -95,180 +73,191 @@ function collectRepeatedFlag(argv: string[], flag: string): { values: string[]; 
   return { values, indices };
 }
 
-const { values: taskArgs, indices: taskFlagIndices } = collectRepeatedFlag(process.argv, '--task');
-
-// Who created this task
-const createdBy = process.env.CLAUDECLAW_AGENT_ID ?? 'main';
-
-// Clean argv: remove all flag pairs
-const flagIndices = new Set<number>();
-[agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx].forEach(idx => {
-  if (idx !== -1) { flagIndices.add(idx); flagIndices.add(idx + 1); }
-});
-taskFlagIndices.forEach((idx) => flagIndices.add(idx));
-const cleanedArgv = process.argv.filter((_, i) => !flagIndices.has(i));
-const [, , command, ...rest] = cleanedArgv;
-
-function formatDate(unix: number | null): string {
-  if (!unix) return '-';
-  return new Date(unix * 1000).toLocaleString('en-US', {
-    month: 'short', day: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true,
-  });
+function runCli(): void {
+  try {
+    dispatch();
+  } catch (err) {
+    // Recoverable, user-facing action failures print their message to stderr and
+    // exit non-zero, writing nothing — identical surface to the old inline
+    // resolve-then-store guard. Programmer errors keep their stack trace.
+    if (err instanceof CliActionError) {
+      console.error(err.message);
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
-switch (command) {
-  case 'create': {
-    const prompt = rest[0];
-    if (!prompt) {
-      console.error('Usage: mission-cli create --agent <id> --title "Label" "Full prompt text"');
-      process.exit(1);
-    }
-    const title = titleArg || prompt.slice(0, 60);
-    const id = randomBytes(4).toString('hex');
-    createMissionTask(id, title, prompt, targetAgent ?? null, createdBy, priorityArg);
+function dispatch(): void {
+  // Parse --agent flag (null = unassigned, use auto-assign on dashboard)
+  const agentFlagIdx = process.argv.indexOf('--agent');
+  const targetAgent = agentFlagIdx !== -1
+    ? process.argv[agentFlagIdx + 1] ?? null
+    : null;
 
-    console.log(`Mission task created: ${id}`);
-    console.log(`  Title:    ${title}`);
-    console.log(`  Agent:    ${targetAgent || 'unassigned (use dashboard to assign)'}`);
-    console.log(`  Priority: ${priorityArg}`);
-    console.log(`  Prompt:   ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`);
-    break;
+  // Parse --title flag
+  const titleFlagIdx = process.argv.indexOf('--title');
+  const titleArg = titleFlagIdx !== -1
+    ? process.argv[titleFlagIdx + 1] ?? ''
+    : '';
+
+  // Parse --status flag
+  const statusFlagIdx = process.argv.indexOf('--status');
+  const statusFilter = statusFlagIdx !== -1
+    ? process.argv[statusFlagIdx + 1] ?? undefined
+    : undefined;
+
+  // Parse --priority flag
+  const priorityFlagIdx = process.argv.indexOf('--priority');
+  const priorityArg = priorityFlagIdx !== -1
+    ? parseInt(process.argv[priorityFlagIdx + 1] ?? '0', 10)
+    : 5;
+
+  // Parse --summary-agent flag (gather command's join assignee)
+  const summaryAgentFlagIdx = process.argv.indexOf('--summary-agent');
+  const summaryAgentArg = summaryAgentFlagIdx !== -1
+    ? process.argv[summaryAgentFlagIdx + 1] ?? null
+    : null;
+
+  const { values: taskArgs, indices: taskFlagIndices } = collectRepeatedFlag(process.argv, '--task');
+
+  // Who created this task
+  const createdBy = process.env.CLAUDECLAW_AGENT_ID ?? 'main';
+
+  // Clean argv: remove all flag pairs
+  const flagIndices = new Set<number>();
+  [agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx].forEach(idx => {
+    if (idx !== -1) { flagIndices.add(idx); flagIndices.add(idx + 1); }
+  });
+  taskFlagIndices.forEach((idx) => flagIndices.add(idx));
+  const cleanedArgv = process.argv.filter((_, i) => !flagIndices.has(i));
+  const [, , command, ...rest] = cleanedArgv;
+
+  // Reject unknown --flags rather than swallowing them as positional prompt text.
+  // Known flag pairs are stripped above; any leftover token starting with `--` is
+  // a typo'd/unsupported flag (e.g. `--body`). Without this guard it would be
+  // silently accepted as the prompt/report body and corrupt the task. See #162.
+  const KNOWN_FLAGS = [
+    '--agent', '--title', '--priority', '--status', '--summary-agent', '--task',
+    '--help',
+  ];
+  const unknownFlags = rest.filter((tok) => tok.startsWith('--'));
+  if (unknownFlags.length > 0) {
+    console.error(`Unknown flag(s): ${unknownFlags.join(', ')}`);
+    console.error(`Known flags: ${KNOWN_FLAGS.join(', ')}`);
+    console.error('If this was meant as prompt text, drop the leading "--".');
+    process.exit(1);
   }
 
-  case 'handback': {
-    const parentId = rest[0];
-    const report = rest[1];
-    if (!parentId || !report) {
-      console.error('Usage: mission-cli handback <task-id> "Report text"');
-      process.exit(1);
-    }
-    const parent = getMissionTask(parentId);
-    if (!parent) { console.error(`Task not found: ${parentId}`); process.exit(1); }
-
-    const dest = resolveHandbackDestination(parent.created_by);
-    const id = randomBytes(4).toString('hex');
-    const title = `Handback: ${parent.title}`.slice(0, 80);
-
-    if (dest.kind === 'agent') {
-      const body = [
-        `Handback report for task ${parent.id} ("${parent.title}").`,
-        `From: @${createdBy}`,
-        '',
-        report,
-      ].join('\n');
-      createMissionTask(id, title, body, dest.agent, createdBy, priorityArg, parent.id);
-      console.log(`Handback delivered to @${dest.agent} (originator of ${parent.id}).`);
-      console.log(`  Mission: ${id}`);
-    } else {
-      // Reserved origin (dashboard/human/scheduled) has no mission inbox —
-      // surface to the human via the runtime's primary agent. Make the relay
-      // explicit and actionable so the turn produces real output (an empty turn
-      // would otherwise be suppressed and the report never reach the human).
-      const body = [
-        `Relay the following handback report to the user on Telegram.`,
-        `Reply with the report (lightly cleaned up if useful) so it is delivered — do not just acknowledge it.`,
-        `Context: ${dest.reason} (task originator was "${parent.created_by}").`,
-        `Handback for task ${parent.id} ("${parent.title}"), from @${createdBy}:`,
-        '',
-        report,
-      ].join('\n');
-      createMissionTask(id, title, body, dest.via ?? MAIN_AGENT_ID, createdBy, priorityArg, parent.id);
-      console.log(`Handback routed to @${dest.via} to surface to the human (${dest.reason}).`);
-      console.log(`  Mission: ${id}`);
-    }
-    break;
-  }
-
-  case 'list': {
-    const tasks = getMissionTasks(undefined, statusFilter);
-    if (tasks.length === 0) {
-      console.log('No mission tasks' + (statusFilter ? ` with status "${statusFilter}"` : '') + '.');
-      break;
-    }
-    console.log(`${tasks.length} mission task${tasks.length === 1 ? '' : 's'}:\n`);
-    for (const t of tasks) {
-      console.log(`${t.id} [${t.status}] @${t.assigned_agent}`);
-      console.log(`  Title:   ${t.title}`);
-      console.log(`  Created: ${formatDate(t.created_at)}`);
-      if (t.completed_at) console.log(`  Done:    ${formatDate(t.completed_at)}`);
-      console.log();
-    }
-    break;
-  }
-
-  case 'result': {
-    const id = rest[0];
-    if (!id) { console.error('Usage: mission-cli result <id>'); process.exit(1); }
-    const task = getMissionTask(id);
-    if (!task) { console.error(`Task not found: ${id}`); process.exit(1); }
-    console.log(`Task:   ${task.id} [${task.status}]`);
-    console.log(`Title:  ${task.title}`);
-    console.log(`Agent:  ${task.assigned_agent}`);
-    if (task.result) {
-      console.log(`\nResult:\n${task.result}`);
-    } else if (task.error) {
-      console.log(`\nError: ${task.error}`);
-    } else {
-      console.log('\nNo result yet.');
-    }
-    break;
-  }
-
-  case 'cancel': {
-    const id = rest[0];
-    if (!id) { console.error('Usage: mission-cli cancel <id>'); process.exit(1); }
-    const ok = cancelMissionTask(id);
-    console.log(ok ? `Cancelled task: ${id}` : `Could not cancel (may already be completed): ${id}`);
-    break;
-  }
-
-  case 'gather': {
-    if (!summaryAgentArg) {
-      console.error('Usage: mission-cli gather --summary-agent <agent> --title "Label" --task "agent:prompt" [--task ...] "join/summary prompt"');
-      process.exit(1);
-    }
-    if (taskArgs.length === 0) {
-      console.error('gather requires at least one --task "agent:prompt"');
-      process.exit(1);
-    }
-
-    const groupId = randomBytes(4).toString('hex');
-    const title = titleArg || 'Gather';
-    const joinPrompt = rest[0] || 'All grouped tasks are complete. Produce ONE consolidated summary of the collected results below.';
-
-    const childIds: string[] = [];
-    for (const taskArg of taskArgs) {
-      const sepIdx = taskArg.indexOf(':');
-      if (sepIdx === -1) {
-        console.error(`Invalid --task value (expected "agent:prompt"): ${taskArg}`);
+  switch (command) {
+    case 'create': {
+      const prompt = rest[0];
+      if (!prompt) {
+        console.error('Usage: mission-cli create --agent <id> --title "Label" "Full prompt text"');
         process.exit(1);
       }
-      const childAgent = taskArg.slice(0, sepIdx);
-      const childPrompt = taskArg.slice(sepIdx + 1);
-      const childId = randomBytes(4).toString('hex');
-      const childTitle = `${title} (${childAgent})`.slice(0, 80);
-      const body = [
-        childPrompt,
-        '',
-        'Complete this mission with your findings as your final output. Do NOT fire a handback.',
-      ].join('\n');
-      createMissionTask(childId, childTitle, body, childAgent, createdBy, priorityArg, null, groupId, 'task');
-      childIds.push(childId);
+      const r = actionCreateMission({
+        prompt,
+        agent: targetAgent,
+        title: titleArg,
+        priority: priorityArg,
+        createdBy,
+      });
+      console.log(`Mission task created: ${r.id}`);
+      console.log(`  Title:    ${r.title}`);
+      console.log(`  Agent:    ${r.agent || 'unassigned (use dashboard to assign)'}`);
+      console.log(`  Priority: ${r.priority}`);
+      console.log(`  Prompt:   ${r.prompt.slice(0, 100)}${r.prompt.length > 100 ? '...' : ''}`);
+      break;
     }
 
-    const joinId = randomBytes(4).toString('hex');
-    const joinTitle = `${title} (join)`.slice(0, 80);
-    createMissionTask(joinId, joinTitle, joinPrompt, summaryAgentArg, createdBy, priorityArg, null, groupId, 'join', 'waiting');
+    case 'handback': {
+      const parentId = rest[0];
+      const report = rest[1];
+      if (!parentId || !report) {
+        console.error('Usage: mission-cli handback <task-id> "Report text"');
+        process.exit(1);
+      }
+      const r = actionHandbackMission({ taskId: parentId, report, priority: priorityArg, createdBy });
+      if (r.kind === 'agent') {
+        console.log(`Handback delivered to @${r.dest} (originator of ${r.parentId}).`);
+        console.log(`  Mission: ${r.missionId}`);
+      } else {
+        // Reserved origin (dashboard/human/scheduled) has no mission inbox —
+        // surfaced to the human via the runtime's primary agent.
+        console.log(`Handback routed to @${r.dest} to surface to the human (${r.reason}).`);
+        console.log(`  Mission: ${r.missionId}`);
+      }
+      break;
+    }
 
-    console.log(`Gather group created: ${groupId}`);
-    console.log(`  Children: ${childIds.join(', ')}`);
-    console.log(`  Join (parked, waiting): ${joinId} -> @${summaryAgentArg}`);
-    break;
+    case 'list': {
+      const tasks = actionListMissions({ status: statusFilter });
+      if (tasks.length === 0) {
+        console.log('No mission tasks' + (statusFilter ? ` with status "${statusFilter}"` : '') + '.');
+        break;
+      }
+      console.log(`${tasks.length} mission task${tasks.length === 1 ? '' : 's'}:\n`);
+      for (const t of tasks) {
+        console.log(`${t.id} [${t.status}] @${t.assigned_agent}`);
+        console.log(`  Title:   ${t.title}`);
+        console.log(`  Created: ${formatDate(t.created_at)}`);
+        if (t.completed_at) console.log(`  Done:    ${formatDate(t.completed_at)}`);
+        console.log();
+      }
+      break;
+    }
+
+    case 'result': {
+      const id = rest[0];
+      if (!id) { console.error('Usage: mission-cli result <id>'); process.exit(1); }
+      const task = actionMissionResult({ id });
+      console.log(`Task:   ${task.id} [${task.status}]`);
+      console.log(`Title:  ${task.title}`);
+      console.log(`Agent:  ${task.assigned_agent}`);
+      if (task.result) {
+        console.log(`\nResult:\n${task.result}`);
+      } else if (task.error) {
+        console.log(`\nError: ${task.error}`);
+      } else {
+        console.log('\nNo result yet.');
+      }
+      break;
+    }
+
+    case 'cancel': {
+      const id = rest[0];
+      if (!id) { console.error('Usage: mission-cli cancel <id>'); process.exit(1); }
+      const ok = actionCancelMission({ id });
+      console.log(ok ? `Cancelled task: ${id}` : `Could not cancel (may already be completed): ${id}`);
+      break;
+    }
+
+    case 'gather': {
+      if (!summaryAgentArg) {
+        console.error('Usage: mission-cli gather --summary-agent <agent> --title "Label" --task "agent:prompt" [--task ...] "join/summary prompt"');
+        process.exit(1);
+      }
+      if (taskArgs.length === 0) {
+        console.error('gather requires at least one --task "agent:prompt"');
+        process.exit(1);
+      }
+      const r = actionGather({
+        summaryAgent: summaryAgentArg,
+        tasks: taskArgs,
+        joinPrompt: rest[0],
+        title: titleArg,
+        priority: priorityArg,
+        createdBy,
+      });
+      console.log(`Gather group created: ${r.groupId}`);
+      console.log(`  Children: ${r.childIds.join(', ')}`);
+      console.log(`  Join (parked, waiting): ${r.joinId} -> @${r.summaryAgent}`);
+      break;
+    }
+
+    default:
+      console.error('Commands: create | handback | list | result | cancel | gather');
+      process.exit(1);
   }
-
-  default:
-    console.error('Commands: create | handback | list | result | cancel | gather');
-    process.exit(1);
-}
 }

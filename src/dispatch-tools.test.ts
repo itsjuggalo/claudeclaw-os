@@ -1,0 +1,339 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import type { ProviderConfig } from './provider.js';
+import {
+  _initTestDatabase,
+  getAllScheduledTasks,
+  getHiveMindEntries,
+  getMissionTask,
+  getMissionTasks,
+} from './db.js';
+import type { TurnToolPolicy } from './agent-engine/types.js';
+import {
+  DISPATCH_SERVER_NAME,
+  DISPATCH_STDIO_SERVER_NAME,
+  buildDispatchSdkTools,
+  deriveToolSchema,
+  dispatchMcpServersFor,
+  dispatchToolEntries,
+  dispatchToolNames,
+  dispatchToolsAllowed,
+} from './dispatch-tools.js';
+
+interface ToolResult {
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+}
+
+function callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const built = buildDispatchSdkTools().find((t) => t.name === name);
+  if (!built) throw new Error(`no dispatch tool named '${name}'`);
+  // The handler is invoked directly with structured args, exactly as the SDK
+  // MCP transport would after schema validation.
+  return built.handler(args as never, {}) as unknown as Promise<ToolResult>;
+}
+
+const asText = (r: ToolResult): string => r.content.map((c) => c.text).join('\n');
+
+// ── per-handler unit tests (isolated in-memory store) ────────────────────────
+
+describe('dispatch tool handlers reuse the db layer on an isolated store', () => {
+  beforeEach(() => {
+    // Fresh in-memory DB per test. The action layer's ensureDatabase() sees this
+    // open handle and never touches a real on-disk store.
+    _initTestDatabase();
+  });
+
+  it('mission_create queues a task assigned to the resolved agent', async () => {
+    const r = await callTool('mission_create', { prompt: 'do the thing', agent: 'main', title: 'T', priority: 3 });
+    expect(r.isError).toBeFalsy();
+    const tasks = getMissionTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].assigned_agent).toBe('main');
+    expect(tasks[0].title).toBe('T');
+    expect(tasks[0].priority).toBe(3);
+  });
+
+  it('mission_create leaves the task unassigned when agent is omitted', async () => {
+    await callTool('mission_create', { prompt: 'assign me later' });
+    expect(getMissionTasks()[0].assigned_agent).toBeNull();
+  });
+
+  it('mission_create rejects an unknown agent and writes nothing', async () => {
+    const r = await callTool('mission_create', { prompt: 'x', agent: 'definitely-not-an-agent' });
+    expect(r.isError).toBe(true);
+    expect(asText(r)).toContain("unknown agent 'definitely-not-an-agent'");
+    expect(getMissionTasks()).toHaveLength(0);
+  });
+
+  it('mission_list / mission_result / mission_cancel round-trip', async () => {
+    await callTool('mission_create', { prompt: 'p1', agent: 'main' });
+    const [t] = getMissionTasks();
+
+    expect(asText(await callTool('mission_list', {}))).toContain(t.id);
+    expect(asText(await callTool('mission_result', { id: t.id }))).toContain(t.id);
+
+    const cancel = await callTool('mission_cancel', { id: t.id });
+    expect(asText(cancel)).toContain('Cancelled');
+    expect(getMissionTask(t.id)?.status).toBe('cancelled');
+  });
+
+  it('mission_result errors on an unknown id', async () => {
+    const r = await callTool('mission_result', { id: 'nope' });
+    expect(r.isError).toBe(true);
+    expect(asText(r)).toContain('Task not found');
+  });
+
+  it('mission_gather creates one child per task plus a parked join', async () => {
+    const r = await callTool('mission_gather', {
+      summary_agent: 'main',
+      tasks: ['main:first', 'main:second'],
+      title: 'G',
+    });
+    expect(r.isError).toBeFalsy();
+    const tasks = getMissionTasks();
+    expect(tasks).toHaveLength(3); // 2 children + 1 join
+    const join = tasks.find((t) => t.role === 'join');
+    expect(join?.status).toBe('waiting');
+    expect(tasks.filter((t) => t.role === 'task')).toHaveLength(2);
+  });
+
+  it('mission_handback errors when the parent task does not exist', async () => {
+    const r = await callTool('mission_handback', { task_id: 'ghost', report: 'done' });
+    expect(r.isError).toBe(true);
+    expect(asText(r)).toContain('Task not found');
+  });
+
+  it('schedule_create stores a recurring task', async () => {
+    const r = await callTool('schedule_create', { prompt: 'weekly', cron: '0 9 * * 1', agent: 'main' });
+    expect(r.isError).toBeFalsy();
+    expect(getAllScheduledTasks()).toHaveLength(1);
+  });
+
+  it('schedule_create rejects an invalid cron and writes nothing', async () => {
+    const r = await callTool('schedule_create', { prompt: 'p', cron: 'not-a-cron' });
+    expect(r.isError).toBe(true);
+    expect(asText(r)).toContain('Invalid cron');
+    expect(getAllScheduledTasks()).toHaveLength(0);
+  });
+
+  it('schedule_list / pause / resume / delete round-trip', async () => {
+    await callTool('schedule_create', { prompt: 'p', cron: '0 9 * * 1', agent: 'main' });
+    const [s] = getAllScheduledTasks();
+
+    expect(asText(await callTool('schedule_list', {}))).toContain(s.id);
+
+    await callTool('schedule_pause', { id: s.id });
+    expect(getAllScheduledTasks()[0].status).toBe('paused');
+
+    await callTool('schedule_resume', { id: s.id });
+    expect(getAllScheduledTasks()[0].status).toBe('active');
+
+    await callTool('schedule_delete', { id: s.id });
+    expect(getAllScheduledTasks()).toHaveLength(0);
+  });
+
+  it('hive_log then hive_read round-trips through the store', async () => {
+    await callTool('hive_log', { action: 'unit-test', summary: 'dispatch round trip', agent: 'main' });
+    const read = await callTool('hive_read', { limit: 5 });
+    expect(asText(read)).toContain('unit-test');
+    expect(asText(read)).toContain('dispatch round trip');
+    expect(getHiveMindEntries(5)).toHaveLength(1);
+  });
+
+  it('hive_path returns the store db path without opening the db', async () => {
+    expect(asText(await callTool('hive_path', {}))).toMatch(/claudeclaw\.db$/);
+  });
+});
+
+// ── schema derivation (guards drift from the descriptors) ────────────────────
+
+describe('dispatch tool schemas are derived from the descriptor specs', () => {
+  it('each schema exactly mirrors its descriptor spec params (keys + required-ness)', () => {
+    for (const entry of dispatchToolEntries()) {
+      const schemaKeys = Object.keys(entry.schema).sort();
+      const paramNames = entry.spec.params.map((p) => p.name).sort();
+      expect(schemaKeys, `schema keys for ${entry.spec.name}`).toEqual(paramNames);
+
+      for (const p of entry.spec.params) {
+        // Optional params accept `undefined`; required params reject it.
+        const acceptsUndefined = entry.schema[p.name].safeParse(undefined).success;
+        expect(acceptsUndefined, `${entry.spec.name}.${p.name} optional?`).toBe(!p.required);
+      }
+    }
+  });
+
+  it('deriveToolSchema is a pure function of the spec (independent of the built tool)', () => {
+    for (const entry of dispatchToolEntries()) {
+      expect(Object.keys(deriveToolSchema(entry.spec)).sort()).toEqual(
+        entry.spec.params.map((p) => p.name).sort(),
+      );
+    }
+  });
+
+  it('promotes exactly the mission/schedule/hive command set', () => {
+    expect(dispatchToolNames().sort()).toEqual(
+      [
+        'hive_log', 'hive_path', 'hive_read',
+        'mission_cancel', 'mission_create', 'mission_gather',
+        'mission_handback', 'mission_list', 'mission_result',
+        'schedule_create', 'schedule_delete', 'schedule_list',
+        'schedule_pause', 'schedule_resume',
+      ].sort(),
+    );
+  });
+
+  it('every built SDK tool name matches a descriptor spec name', () => {
+    expect(buildDispatchSdkTools().map((t) => t.name).sort()).toEqual(dispatchToolNames().sort());
+  });
+});
+
+// ── asymmetric access policy (lockdown) ──────────────────────────────────────
+
+describe('provider access policy — Claude in-process, native OpenAI stdio, rest restricted', () => {
+  const p = (type: ProviderConfig['type']): ProviderConfig => ({ type });
+  const ctx = (type?: ProviderConfig['type'], policy: TurnToolPolicy = {}) =>
+    ({ provider: type ? p(type) : undefined, ...policy });
+
+  it('grants dispatch tools to Claude and native OpenAI only', () => {
+    expect(dispatchToolsAllowed(ctx('claude'))).toBe(true);
+    expect(dispatchToolsAllowed(ctx('openai'))).toBe(true);
+    expect(dispatchToolsAllowed(ctx('acp-codex'))).toBe(false); // Codex over ACP, not native
+    expect(dispatchToolsAllowed(ctx('openrouter'))).toBe(false);
+    expect(dispatchToolsAllowed(ctx('acp'))).toBe(false);
+    expect(dispatchToolsAllowed(ctx('gemini'))).toBe(false);
+    expect(dispatchToolsAllowed(ctx(undefined))).toBe(false);
+  });
+
+  it('a restricted provider gets no dispatch MCP server, so the gated tools are unreachable', () => {
+    expect(dispatchMcpServersFor(ctx('acp-codex'))).toEqual({});
+    expect(dispatchMcpServersFor(ctx('openrouter'))).toEqual({});
+    expect(dispatchMcpServersFor(ctx('acp'))).toEqual({});
+  });
+
+  it('the Claude provider gets exactly the one in-process dispatch server', () => {
+    const servers = dispatchMcpServersFor(ctx('claude'));
+    expect(Object.keys(servers)).toEqual([DISPATCH_SERVER_NAME]);
+  });
+
+  it('the native OpenAI provider gets exactly the one stdio dispatch bridge', () => {
+    const servers = dispatchMcpServersFor(ctx('openai'));
+    expect(Object.keys(servers)).toEqual([DISPATCH_STDIO_SERVER_NAME]);
+    const entry = servers[DISPATCH_STDIO_SERVER_NAME] as { command: string; args: string[]; env: Record<string, string> };
+    expect(entry.command).toBe(process.execPath);
+    expect(entry.args[0]).toMatch(/dispatch-mcp-server\.js$/);
+    // Everything the out-of-process server needs is passed EXPLICITLY (Codex
+    // scrubs the env of servers it spawns).
+    expect(entry.env.CLAUDECLAW_STORE_DIR).toBeTruthy();
+    expect(entry.env.CLAUDECLAW_DISPATCH_AGENT).toBeTruthy();
+  });
+
+});
+
+// ── tool-policy gate: the Phase 0 authorization fix ──────────────────────────
+//
+// Dispatch exposes state-changing mission/schedule/hive verbs. A caller that
+// granted NO tools must not receive it — on ANY provider. Before this gate, the
+// Codex adapter injected the stdio bridge itself, so every restricted native
+// OpenAI turn below silently received trusted tools it never asked for.
+
+describe('dispatch authorization is gated on the turn tool policy', () => {
+  const p = (type: ProviderConfig['type']): ProviderConfig => ({ type });
+
+  // The real call shapes, copied from their call sites. `claude` and `openai`
+  // differ ON PURPOSE for a restricted-but-non-empty allow-list: Claude applies
+  // our allow-list to MCP tool NAMES, so the dispatch verbs stay unreachable with
+  // the server present; the Codex runtime does not, so the server itself must be
+  // withheld.
+  const CALL_SHAPES: Array<{ name: string; policy: TurnToolPolicy; claude: boolean; openai: boolean }> = [
+    // memory-ingest.ts — extraction turn
+    { name: 'memory ingestion', policy: { allowedTools: [], disallowedTools: ['*'] }, claude: false, openai: false },
+    // warroom-text-orchestrator.ts — 'say ok' / 'ok' warmups
+    { name: 'war-room warmup', policy: { allowedTools: [], disallowedTools: ['*'] }, claude: false, openai: false },
+    // warroom-text-router.ts — classifier turn
+    { name: 'war-room routing', policy: { allowedTools: [], disallowedTools: ['*'] }, claude: false, openai: false },
+    // voice bridge / any untrusted-input turn
+    { name: 'untrusted voice', policy: { disallowedTools: ['*'] }, claude: false, openai: false },
+    // war-room default-deny agent policy
+    { name: 'default-deny war room', policy: { allowedTools: [] }, claude: false, openai: false },
+    // a read-only chat profile (STRICTEST_CHAT_TOOL_PROFILE)
+    { name: 'read-only allow-list', policy: { allowedTools: ['Read', 'Grep', 'Glob'] }, claude: true, openai: false },
+    // a write-capable but still explicit allow-list
+    { name: 'explicit write allow-list', policy: { allowedTools: ['Read', 'Bash', 'Write'] }, claude: true, openai: false },
+    // normal chat / mission / scheduled turn: 'full' profile => no restriction stated
+    { name: 'normal chat or mission', policy: {}, claude: true, openai: true },
+    // a deny that is not deny-all, and is separately enforceable on Codex
+    { name: 'WebSearch denied only', policy: { disallowedTools: ['WebSearch'] }, claude: true, openai: true },
+  ];
+
+  for (const shape of CALL_SHAPES) {
+    for (const type of ['claude', 'openai'] as const) {
+      const expected = shape[type];
+      it(`${shape.name} on ${type} ${expected ? 'receives dispatch exactly once' : 'receives NO dispatch'}`, () => {
+        const servers = dispatchMcpServersFor({ provider: p(type), ...shape.policy });
+        const names = Object.keys(servers);
+        if (!expected) {
+          expect(names).toEqual([]);
+        } else {
+          expect(names).toEqual([type === 'claude' ? DISPATCH_SERVER_NAME : DISPATCH_STDIO_SERVER_NAME]);
+        }
+      });
+    }
+  }
+
+  it('an explicit allow-list is not authorization for dispatch on the Codex runtime', () => {
+    // The load-bearing asymmetry: Codex does not apply Claude tool names to MCP
+    // invocation, so `allowedTools: ['Read']` + the dispatch server present would
+    // still let the model call mission_create. Withhold the server instead.
+    expect(dispatchMcpServersFor({ provider: p('openai'), allowedTools: ['Read'] })).toEqual({});
+    expect(dispatchToolsAllowed({ provider: p('openai'), allowedTools: ['Read'] })).toBe(false);
+    // Claude keeps it, because its allow-list genuinely gates the MCP tool names.
+    expect(dispatchToolsAllowed({ provider: p('claude'), allowedTools: ['Read'] })).toBe(true);
+  });
+
+  it('dispatchAccess "grant" is the explicit opt-in for a restricted-but-trusted turn', () => {
+    // The sanctioned path for e.g. a war-room ops agent that genuinely needs
+    // mission/schedule tools — materialized centrally, never adapter-side.
+    const servers = dispatchMcpServersFor({
+      provider: p('openai'),
+      allowedTools: ['Read', 'Bash'],
+      dispatchAccess: 'grant',
+    });
+    expect(Object.keys(servers)).toEqual([DISPATCH_STDIO_SERVER_NAME]);
+  });
+
+  it('dispatchAccess "deny" wins over an otherwise-eligible turn', () => {
+    expect(dispatchMcpServersFor({ provider: p('claude'), dispatchAccess: 'deny' })).toEqual({});
+    expect(dispatchMcpServersFor({ provider: p('openai'), dispatchAccess: 'deny' })).toEqual({});
+  });
+
+  it('a deny-all tool policy still wins over an explicit grant', () => {
+    for (const type of ['claude', 'openai'] as const) {
+      expect(dispatchMcpServersFor({
+        provider: p(type),
+        disallowedTools: ['*'],
+        dispatchAccess: 'grant',
+      })).toEqual({});
+    }
+  });
+
+  it('grant does not extend dispatch to a restricted provider type', () => {
+    expect(dispatchMcpServersFor({ provider: p('openrouter'), dispatchAccess: 'grant' })).toEqual({});
+    expect(dispatchMcpServersFor({ provider: p('acp'), dispatchAccess: 'grant' })).toEqual({});
+  });
+
+  it('a deny-all wins over a conflicting allow-list', () => {
+    const servers = dispatchMcpServersFor({
+      provider: p('openai'),
+      allowedTools: ['Bash', 'Write'],
+      disallowedTools: ['*'],
+    });
+    expect(servers).toEqual({});
+  });
+
+  it('an undefined allow-list is "no restriction stated", not deny-all', () => {
+    // Guards the distinction that makes the gate safe to apply everywhere: only
+    // an EXPLICITLY empty array means "nothing".
+    expect(Object.keys(dispatchMcpServersFor({ provider: p('claude'), allowedTools: undefined }))).toHaveLength(1);
+  });
+});

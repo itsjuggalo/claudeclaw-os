@@ -29,7 +29,13 @@ interface Health extends ContextHealth {
   provider?: { type: string; command?: string; args?: string[]; model?: string; runtimeMode?: RuntimeMode; thinkingMode?: ThinkingMode };
   providerType?: string;
   runtime?: string;
-  acpEnabled?: boolean;
+  providers?: ProviderOption[];
+}
+
+interface ProviderOption {
+  type: string;
+  label: string;
+  tier: 'stable' | 'experimental';
 }
 
 interface SecurityStatus { [key: string]: any; }
@@ -45,6 +51,8 @@ interface ProviderModelsResponse {
 interface ProviderRuntimeOption { id: string; label: string; current?: boolean; }
 interface ProviderRuntimeOptionsResponse {
   provider: string;
+  modeLabel?: string;
+  thinkingLabel?: string;
   modeOptions: ProviderRuntimeOption[];
   thinkingOptions: ProviderRuntimeOption[];
   source: 'provider' | 'fallback' | 'static';
@@ -155,10 +163,10 @@ export function Settings() {
             </Card>
           </Section>
 
-          {health.data?.acpEnabled ? (
+          {(health.data?.providers?.length ?? 0) > 1 ? (
             <Section
-              title="Agent provider (beta)"
-              subtitle="Provider selection is beta. Additional CLI setup may be required for non-Claude providers. Choose a built-in provider or point ClaudeClaw at any ACP-compatible agent command."
+              title="Agent provider"
+              subtitle="Claude and OpenAI are stable providers. Experimental (ACP) providers may need extra CLI setup and are enabled via ENABLE_ACP."
             >
               <Card>
                 <ProviderConfigPanel health={health} />
@@ -441,6 +449,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
     ? null
     : '/api/providers/runtime-options?provider='
       + encodeURIComponent(type)
+      + (model && model !== '__custom__' ? '&model=' + encodeURIComponent(model) : '')
       + (type === 'acp' ? '&command=' + encodeURIComponent(command.trim()) + '&args=' + encodeURIComponent(args) : '');
   const runtimeOptions = useFetch<ProviderRuntimeOptionsResponse>(runtimeOptionsPath, 0);
   const [busy, setBusy] = useState(false);
@@ -561,7 +570,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
         </div>
       </Row>
       <Divider />
-      <Row label="Provider" hint="Gemini uses gemini --acp. Codex uses the codex-acp adapter.">
+      <Row label="Provider" hint="Claude and OpenAI (native Codex) are stable. Experimental (ACP) providers appear when ENABLE_ACP is set.">
         <select
           value={type}
           onChange={(event) => {
@@ -573,12 +582,24 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
           aria-label="Provider"
           class="h-8 w-full max-w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)]"
         >
-          <option value="opencode">OpenCode</option>
-          <option value="openrouter">OpenRouter (native)</option>
-          <option value="gemini">Gemini CLI</option>
-          <option value="codex">Codex ACP</option>
-          <option value="claude">Claude Code</option>
-          <option value="acp">Custom ACP</option>
+          {(() => {
+            const opts = health.data?.providers ?? [{ type: 'claude', label: 'Claude', tier: 'stable' as const }];
+            const stable = opts.filter((p) => p.tier === 'stable');
+            const experimental = opts.filter((p) => p.tier === 'experimental');
+            if (experimental.length === 0) {
+              return stable.map((p) => <option key={p.type} value={p.type}>{p.label}</option>);
+            }
+            return (
+              <>
+                <optgroup label="Stable">
+                  {stable.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
+                </optgroup>
+                <optgroup label="Experimental (beta)">
+                  {experimental.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
+                </optgroup>
+              </>
+            );
+          })()}
         </select>
       </Row>
       <Divider />
@@ -620,7 +641,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
       <Divider />
       {(runtimeOptions.data?.modeOptions?.length ?? 0) > 0 && (
         <>
-          <Row label="Agent speed" hint="Shown only when the provider advertises speed-like runtime options. Access mode is handled automatically.">
+          <Row label={runtimeOptions.data?.modeLabel ?? 'Agent speed'} hint="Available values are specific to the selected model.">
             <SegmentedControl
               value={runtimeMode}
               options={(runtimeOptions.data?.modeOptions ?? []).map((option) => ({ value: option.id, label: option.label }))}
@@ -635,7 +656,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
       )}
       {(runtimeOptions.data?.thinkingOptions?.length ?? 0) > 0 && (
         <>
-          <Row label="Thinking" hint="Uses the provider's own thought-level values, for example Codex low/medium/high/extra high.">
+          <Row label={runtimeOptions.data?.thinkingLabel ?? 'Thinking'} hint="Available values are specific to the selected model.">
             <SegmentedControl
               value={thinkingMode}
               options={(runtimeOptions.data?.thinkingOptions ?? []).map((option) => ({ value: option.id, label: option.label }))}

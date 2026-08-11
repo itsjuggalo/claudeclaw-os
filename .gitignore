@@ -16,6 +16,8 @@ deploy/docs/
 .env.*.bak-rotate
 .env.bak-rotate
 *.bak-rotate
+# Upgrade migration backups — also contain the complete secret-bearing .env.
+.env.pre-*.bak
 
 # Runtime data — NEVER commit. Contains WhatsApp/Slack messages,
 # session tokens, conversation logs, and database files.

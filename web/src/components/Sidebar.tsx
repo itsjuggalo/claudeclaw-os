@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'wouter-preact';
-import { Search, ChevronDown, ChevronRight, X, Monitor, Smartphone, PanelLeftClose, PanelLeftOpen } from 'lucide-preact';
-import { useEffect, useState } from 'preact/hooks';
+import { Search, ChevronDown, ChevronRight, X, Cpu, Monitor, Smartphone, PanelLeftClose, PanelLeftOpen } from 'lucide-preact';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { ROUTES, SECTION_LABEL, type RouteDef, type RouteSection } from '@/lib/routes';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { Toggle } from './Toggle';
@@ -8,17 +8,21 @@ import { viewMode, setViewMode } from '@/lib/view-mode';
 import { commandPaletteOpen } from '@/lib/command-palette';
 import { chatUnread } from '@/lib/chat-stream';
 import { invalidateFetchCache, useFetch } from '@/lib/useFetch';
+import { modelLabel } from '@/lib/modelLabels';
 import { prefetchPage } from '@/lib/page-loaders';
 import { apiPatch } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { sidebarOpen, closeSidebar } from '@/lib/sidebar';
 import {
+  collapsedSections,
+  toggleSectionCollapsed,
+  runtimeDetailsCollapsed,
+  toggleRuntimeDetailsCollapsed,
   workspaceName,
   modKeyLabel,
 } from '@/lib/personalization';
 
 const SECTIONS: RouteSection[] = ['workspace', 'trade', 'studio', 'intelligence', 'collaborate', 'massage', 'mc', 'mcctrl', 'system'];
-const RUNTIME_PANEL_KEY = 'claudeclaw.sidebar.runtime.expanded';
 const SIDEBAR_COLLAPSED_KEY = 'claudeclaw.sidebar.nav.collapsed';
 
 export function Sidebar() {
@@ -315,172 +319,159 @@ function findActiveRoute(pathname: string, routes: RouteDef[]): RouteDef | undef
 
 interface Health {
   killSwitches: Record<string, boolean>;
+  uptimeSeconds?: number;
 }
 
 interface ProviderStatus {
-  providerType: 'claude' | 'opencode' | 'openrouter' | 'gemini' | 'codex' | 'acp';
+  providerType: 'claude' | 'opencode' | 'openrouter' | 'gemini' | 'acp-codex' | 'openai' | 'acp';
   label: string;
   model: string;
   runtime: string;
-  acpEnabled?: boolean;
+  // Short reasoning descriptor (e.g. "high", "off"). Empty when the model uses
+  // adaptive thinking and exposes no dial.
+  reasoning?: string;
+}
+
+// "2d 4h", "3h 12m", "18m", "42s" — two units max, coarse-first.
+function formatUptime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '-';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
 }
 
 function SidebarFooter() {
   const health = useFetch<Health>('/api/health', 30_000);
   const provider = useFetch<ProviderStatus>('/api/provider/status', 15_000);
-  const [switching, setSwitching] = useState(false);
-  const [expanded, setExpanded] = useState(() => {
-    try { return localStorage.getItem(RUNTIME_PANEL_KEY) === 'open'; } catch { return false; }
-  });
   const switches = health.data?.killSwitches || {};
   const off = Object.entries(switches).filter(([, on]) => !on);
   const anyOff = off.length > 0;
   const name = workspaceName.value;
-  const providerType = provider.data?.providerType ?? 'claude';
-  const acpEnabled = provider.data?.acpEnabled ?? false;
+  const providerName = provider.data?.label ?? 'Claude';
+  const modelName = modelLabel(provider.data?.model ?? 'claude-opus-4-8');
+  const reasoning = provider.data?.reasoning?.trim();
+  // Combine model + thinking as "Opus 4.8 (high)". Omit the clause for models
+  // that expose no dial (adaptive thinking).
+  const modelWithReasoning = reasoning ? `${modelName} (${reasoning})` : modelName;
+  const collapsed = runtimeDetailsCollapsed.value;
 
-  async function switchProvider(nextType: string) {
-    if (nextType === providerType || switching) return;
-    setSwitching(true);
-    try {
-      // OpenRouter (and other non-Claude providers) switch with just { type };
-      // the backend applies its single DEFAULT_OPENROUTER_MODEL default and the
-      // user picks a specific model from the live list in Settings.
-      const nextProvider = nextType === 'claude'
-        ? { type: 'claude', model: 'claude-opus-4-8' }
-        : { type: nextType };
-      await apiPatch('/api/agents/main/provider', { provider: nextProvider });
-      invalidateFetchCache('/api/provider/status');
-      invalidateFetchCache('/api/health');
-      invalidateFetchCache('/api/agents');
-      provider.refresh();
-      health.refresh();
-      pushToast({
-        tone: 'success',
-        title: 'Provider set to ' + providerLabel(nextType),
-        description: providerDescription(nextType),
-      });
-    } catch (err: any) {
-      pushToast({ tone: 'error', title: 'Provider change failed', description: err?.message || String(err), durationMs: 7000 });
-    } finally {
-      setSwitching(false);
-    }
-  }
-
-  function toggleExpanded() {
-    const next = !expanded;
-    setExpanded(next);
-    try { localStorage.setItem(RUNTIME_PANEL_KEY, next ? 'open' : 'closed'); } catch {}
-  }
+  // The /api/health poll only refreshes every 30s, so the raw uptime sits
+  // frozen between polls. Anchor the last server value to the moment it landed
+  // and advance it locally on a 30s tick so the line reads as live.
+  const rawUptime = health.data?.uptimeSeconds;
+  const anchor = useRef<{ base: number; at: number } | null>(null);
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (rawUptime == null) return;
+    anchor.current = { base: rawUptime, at: Date.now() };
+    forceTick((n) => n + 1);
+  }, [rawUptime]);
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const liveUptime = anchor.current
+    ? anchor.current.base + Math.floor((Date.now() - anchor.current.at) / 1000)
+    : null;
+  const uptime = liveUptime != null ? formatUptime(liveUptime) : null;
 
   return (
     <div class="border-t border-[var(--color-border)]">
-      <button
-        type="button"
-        onClick={toggleExpanded}
-        class="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[12px] text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
-        aria-expanded={expanded}
-      >
-        <ChevronDown
-          size={14}
-          class="shrink-0 text-[var(--color-text-faint)] transition-transform"
-          style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-        />
-        <span class="section-label flex-1">Runtime</span>
-        <span class="max-w-[86px] truncate text-[11px] text-[var(--color-text-faint)]">{provider.data?.label ?? 'Claude'}</span>
-      </button>
-
-      {expanded && (
-        <div class="overflow-hidden border-t border-[var(--color-border)] transition-all duration-200">
-          <div class="px-3 py-2.5 border-b border-[var(--color-border)]">
-            <div class="flex items-center justify-between gap-2">
-              <div class="min-w-0">
-                <div class="text-[11px] uppercase text-[var(--color-text-faint)]">Runtime</div>
-                <div class="text-[12.5px] font-medium text-[var(--color-text)] truncate">{provider.data?.label ?? 'Claude'}</div>
-              </div>
-              {acpEnabled ? (
-                <select
-                  value={providerType}
-                  disabled={switching}
-                  onChange={(event) => switchProvider((event.currentTarget as HTMLSelectElement).value)}
-                  class="h-8 max-w-[116px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12px] text-[var(--color-text)] disabled:opacity-60"
-                  aria-label="Switch main provider"
-                >
-                  <option value="claude">Claude</option>
-                  <option value="opencode">OpenCode</option>
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="gemini">Gemini</option>
-                  <option value="codex">Codex</option>
-                </select>
-              ) : null}
+      {/* The block navigates to Settings (where provider/model are configured).
+       *  The collapse chevron is an absolutely-positioned sibling — not nested
+       *  inside the <a> — so toggling details never triggers navigation and the
+       *  markup stays valid. */}
+      <div class="relative">
+        <Link
+          href="/settings"
+          aria-label="Active runtime"
+          title="Provider and model are configured under Agents or Settings"
+          class="block px-3 py-3 hover:bg-[var(--color-elevated)] transition-colors"
+        >
+          {/* Identity header: the Cpu icon replaces the old status dot and
+           *  carries the kill-switch signal via its tint. Right padding leaves
+           *  room for the collapse chevron. */}
+          <div class="flex items-center gap-2.5 pr-6">
+            <div
+              class="h-8 w-8 shrink-0 rounded-md border border-[var(--color-border)] flex items-center justify-center"
+              style={{
+                backgroundColor: anyOff
+                  ? 'color-mix(in srgb, var(--color-status-failed) 18%, transparent)'
+                  : 'var(--color-elevated)',
+                color: anyOff ? 'var(--color-status-failed)' : 'var(--color-text-muted)',
+              }}
+            >
+              <Cpu size={14} />
             </div>
-            <div class="mt-1.5 text-[11px] leading-snug text-[var(--color-text-muted)]">
-              <span class="text-[var(--color-text-faint)]">Model</span>{' '}
-              <span class="break-all">{provider.data?.model ?? 'claude-opus-4-8'}</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-[12.5px] font-medium text-[var(--color-text)] truncate">{name}</div>
+              <div class="truncate text-[11px] text-[var(--color-text-faint)]">
+                {anyOff
+                  ? off.length + ' kill switch' + (off.length === 1 ? '' : 'es') + ' off'
+                  : 'All systems normal'}
+              </div>
             </div>
           </div>
 
-          {/* Always rendered — never gate this on a breakpoint: forcing
-              desktop makes `md:` match and a breakpoint-hidden toggle would
-              strand the user in desktop view. No-op on real desktops. */}
-          <div class="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
-              {viewMode.value === 'desktop' ? <Monitor size={14} /> : <Smartphone size={14} />}
-              <span>Desktop view</span>
-            </div>
-            <Toggle
-              size="sm"
-              on={viewMode.value === 'desktop'}
-              onChange={() => setViewMode(viewMode.value === 'desktop' ? 'auto' : 'desktop')}
-              ariaLabel="Toggle desktop view"
-            />
-          </div>
-
-          <Link
-            href="/settings"
-            class="block px-3 py-3 text-[12px] text-[var(--color-text-faint)] hover:bg-[var(--color-elevated)] transition-colors"
-          >
-            <div class="flex items-center gap-2.5">
-              <div
-                class="w-7 h-7 rounded-full flex items-center justify-center text-[var(--color-text-muted)]"
-                style={{
-                  backgroundColor: anyOff
-                    ? 'color-mix(in srgb, var(--color-status-failed) 18%, transparent)'
-                    : 'var(--color-elevated)',
-                  color: anyOff ? 'var(--color-status-failed)' : 'var(--color-text-muted)',
-                }}
-              >
-                ●
+          {!collapsed && (
+            <>
+              <div class="mt-2.5 flex items-center justify-between gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[11px] leading-none">
+                <span class="text-[var(--color-text-faint)]">Runtime</span>
+                <span class="min-w-0 max-w-[160px] truncate text-right font-medium text-[var(--color-text-muted)]" title={providerName}>
+                  {providerName}
+                </span>
               </div>
-              <div class="flex-1 min-w-0">
-                <div class="text-[var(--color-text)] text-[12.5px] font-medium truncate">{name}</div>
-                <div class="truncate text-[11px]">
-                  {anyOff
-                    ? off.length + ' kill switch' + (off.length === 1 ? '' : 'es') + ' off'
-                    : 'All systems normal'}
+              <div class="mt-1.5 flex items-center justify-between gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[11px] leading-none">
+                <span class="text-[var(--color-text-faint)]">Model</span>
+                <span class="min-w-0 max-w-[160px] truncate text-right font-medium text-[var(--color-text-muted)]" title={modelWithReasoning}>
+                  {modelWithReasoning}
+                </span>
+              </div>
+              {uptime && (
+                <div class="mt-1.5 flex items-center justify-between gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[11px] leading-none">
+                  <span class="text-[var(--color-text-faint)]">Uptime</span>
+                  <span class="font-medium tabular-nums text-[var(--color-text-muted)]">{uptime}</span>
                 </div>
-              </div>
-            </div>
-          </Link>
+              )}
+            </>
+          )}
+        </Link>
+
+        <button
+          type="button"
+          onClick={toggleRuntimeDetailsCollapsed}
+          class="absolute top-3 right-2 p-1 rounded-md text-[var(--color-text-faint)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+          aria-label={collapsed ? 'Show runtime details' : 'Hide runtime details'}
+          aria-expanded={!collapsed}
+        >
+          <ChevronDown
+            size={14}
+            class="transition-transform"
+            style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+          />
+        </button>
+      </div>
+
+      {/* Local: desktop-view override. Always rendered — never gate this on a
+          breakpoint: forcing desktop makes `md:` match and a breakpoint-hidden
+          toggle would strand the user in desktop view. No-op on real desktops. */}
+      <div class="px-3 py-2.5 border-t border-[var(--color-border)] flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
+          {viewMode.value === 'desktop' ? <Monitor size={14} /> : <Smartphone size={14} />}
+          <span>Desktop view</span>
         </div>
-      )}
+        <Toggle
+          size="sm"
+          on={viewMode.value === 'desktop'}
+          onChange={() => setViewMode(viewMode.value === 'desktop' ? 'auto' : 'desktop')}
+          ariaLabel="Toggle desktop view"
+        />
+      </div>
     </div>
   );
-}
-
-function providerLabel(type: string): string {
-  if (type === 'claude') return 'Claude';
-  if (type === 'gemini') return 'Gemini';
-  if (type === 'codex') return 'Codex';
-  if (type === 'openrouter') return 'OpenRouter';
-  if (type === 'acp') return 'Custom ACP';
-  return 'OpenCode';
-}
-
-function providerDescription(type: string): string {
-  if (type === 'opencode') return 'OpenCode will use its configured default model.';
-  if (type === 'gemini') return 'Requires Gemini CLI on PATH. Model/auth are managed by Gemini.';
-  if (type === 'codex') return 'Requires the codex-acp adapter on PATH. Auth is managed by Codex.';
-  if (type === 'openrouter') return 'OpenRouter (native). Set OPENROUTER_API_KEY in .env. Pick a model from the live list in Settings. Single-turn chat only — no prior-turn context.';
-  return 'Takes effect on the next message.';
 }

@@ -5,6 +5,151 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.8.3] - 2026-08-04
+
+### Features
+
+- **deploy:** Set CLAUDECLAW_OWNER_NAME, and document OPENAI_API_KEY
+
+### Bug Fixes
+
+- **health:** Ignore supabase link artifacts under agents/health/supabase ([#199](https://github.com/earlyaidopters/claudeclaw-os/pull/199))
+- **docs:** Correct App Server reasoning config path ([#202](https://github.com/earlyaidopters/claudeclaw-os/pull/202))
+- **codex:** Fail closed on trusted MCP collisions ([#201](https://github.com/earlyaidopters/claudeclaw-os/pull/201))
+- **deps:** Declare @modelcontextprotocol/sdk as a direct dependency ([#184](https://github.com/earlyaidopters/claudeclaw-os/pull/184))
+- **deploy:** Re-own install dir on RUN_USER change, report real clone errors
+- **deploy:** Make migrations safe to run unattended
+- **deploy:** Restart the service so re-running actually deploys the rebuild
+- **deploy:** Apply migrations so a fresh v1.8 install can start
+
+### Documentation
+
+- **security:** Draft untrusted content provenance RFC ([#203](https://github.com/earlyaidopters/claudeclaw-os/pull/203))
+- **deploy:** Rename Day-2 section and fix stale branch guidance
+- Organize RFC lifecycle and documentation ([#183](https://github.com/earlyaidopters/claudeclaw-os/pull/183))
+
+## [1.8.2] - 2026-08-01
+
+### Bug Fixes
+
+- Warn on divergent cwd store env ([#182](https://github.com/earlyaidopters/claudeclaw-os/pull/182))
+- **deps:** Remediate compatible audit findings ([#181](https://github.com/earlyaidopters/claudeclaw-os/pull/181))
+- **test:** Make Codex path assertions portable ([#180](https://github.com/earlyaidopters/claudeclaw-os/pull/180))
+- **model:** Sync reset and runtime state ([#179](https://github.com/earlyaidopters/claudeclaw-os/pull/179))
+
+### Documentation
+
+- **release:** Upgrade applies to all installs + consolidated Codex .env block
+- **release:** Restore v1.8.0 upgrade steps (download, install, migrate, build, restart)
+- **release:** Drop redundant App Server/SDK line from v1.8.0 known limitations
+- **release:** Finalize v1.8.0 notes (transports, sandbox, hive-read governance, Windows write access)
+- **release:** Expand v1.8.0 notes (intro + Codex v0 framing + detail)
+
+## [1.8.1] - 2026-07-31
+
+### Bug Fixes
+
+- **warroom:** Correct tool/MCP policy semantics and cover with tests ([#178](https://github.com/earlyaidopters/claudeclaw-os/pull/178))
+
+### Documentation
+
+- **release:** Clarify v1.8.0 upgrade callout
+
+## [1.8.0] - 2026-07-31
+
+### Features
+
+- **telegram:** Switch native OpenAI models
+- **dashboard:** Enrich the sidebar runtime summary
+- **telegram:** Collapse repeated activity rows and keep the turn timer alive
+- **telegram:** Unify Telegram streaming activity
+- **setup:** Promote native OpenAI and prepare v1.8.0 notes
+- **runtime:** Inject resolved model identity per turn
+- **model:** Refresh model catalog and runtime controls
+- **codex:** Audit the inbound App Server schema surface
+- **codex:** Share the isolated CODEX_HOME credential lifecycle
+- **codex:** Enforce turn budgets and cap process concurrency
+- **codex:** Answer server-initiated requests instead of shrugging at them
+- **config:** Default STREAM_STRATEGY to global-throttle, drop dead single-agent-only
+- **telegram:** In-place streaming progress with an elapsed clock
+- **codex:** Surface reasoning and readable tool progress from the App Server adapter
+- **codex:** App Server manager + engine adapter behind a transport flag (Phase 2b)
+- **codex:** Effective-policy verification for App Server threads (Phase 2a)
+- **codex:** App Server transport client + pinned schema drift check (Phase 1)
+- **chat:** Align native Codex (openai) chat policy with Claude (full)
+- **chat:** Grant native Codex (openai) full write/exec chat policy
+- **codex:** Inject claudeclaw-dispatch stdio server on Codex turns (Part B)
+- **provider:** Initial cut of native OpenAI provider support via Codex SDK
+- **dispatch:** Stdio dispatch MCP server bridge (Part A)
+- **dispatch:** In-process dispatch API for mission/schedule/hive CLIs
+
+### Bug Fixes
+
+- **warroom:** Configure owner speaker identity
+- **config:** Migrate Windows config path quoting
+- **cli:** Load repo environment outside checkout
+- **runtime:** Synchronize agent settings and hide Codex windows
+- **claude:** Stream assistant text across the whole turn
+- **dashboard:** Refine dashboard agent card controls
+- **signal:** Stop reporting failed completions with a success glyph
+- **codex:** Report a non-zero command exit as an observation, not a verdict
+- **config:** Make agent templates provider-neutral
+- **telegram:** Render a notice completion as advisory, not a success
+- **codex:** Make launch-environment rotation drain instead of overlap
+- **codex:** Carry trusted MCP provenance into App Server thread config
+- **codex:** Establish cancellation instead of assuming it
+- **codex:** Make an unroutable consumed notification a protocol fault
+- **codex:** Quarantine the connection when turn/start's outcome is unknown
+- **codex:** Make the resumed thread's MCP set authoritative before turn/start
+- **codex:** Hold the per-thread lock across resume, verification and the turn
+- **telegram:** Fold successful tool completions into the streaming working line
+- **setup:** Ask main agent name before provider write so it isn't skipped
+- **setup:** Resolve config dir before provider setup to avoid orphaned default
+
+### Security
+
+- **codex:** Authorize dispatch above the engine seam + shared capability profiles
+
+### Refactor
+
+- **providers:** Clarify Codex taxonomy and fail closed on provider writes
+- **chat:** Shared per-provider chat tool policy module
+
+### Documentation
+
+- **telegram:** Advertise model reset
+- **readme:** Tighten OpenAI/Codex provider section
+
+## [1.7.1] - 2026-07-23
+
+### Bug Fixes
+
+- Reject unknown --flags instead of swallowing them ([#162](https://github.com/earlyaidopters/claudeclaw-os/pull/162)) ([#164](https://github.com/earlyaidopters/claudeclaw-os/pull/164))
+- Stamp absolute PROJECT_ROOT into injected CLI index ([#157](https://github.com/earlyaidopters/claudeclaw-os/pull/157)) ([#163](https://github.com/earlyaidopters/claudeclaw-os/pull/163))
+- Reconcile specialist agent seeds with the template (file-send + handback sections, hive-cli over raw sqlite3, drift guard) ([#166](https://github.com/earlyaidopters/claudeclaw-os/pull/166))
+
+### Security
+
+- Harden War Room bind, log redaction, exfil guard, migration guard (#160, #161) ([#165](https://github.com/earlyaidopters/claudeclaw-os/pull/165))
+
+## [1.7.0] - 2026-07-22
+
+### Features
+
+- Signal support via signal-cli + AskUserQuestion bridge ([#111](https://github.com/earlyaidopters/claudeclaw-os/pull/111))
+
+## [1.6.1] - 2026-07-21
+
+### Bug Fixes
+
+- Delegate with the target agent's provider, not the caller's ([#158](https://github.com/earlyaidopters/claudeclaw-os/pull/158))
+
+## [1.6.0] - 2026-07-21
+
+### Features
+
+- Reconcile agent id/display-name/alias routing ([#154](https://github.com/earlyaidopters/claudeclaw-os/pull/154))
+
 ## [1.5.1] - 2026-07-18
 
 ### Bug Fixes

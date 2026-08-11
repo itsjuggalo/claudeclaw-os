@@ -18,12 +18,51 @@
  * module, so there is no import cycle (the CLIs import `renderHelp` from here).
  */
 
+/**
+ * Scalar / array kinds a tool parameter can take. Kept deliberately small — the
+ * CLIs only ever accept strings, numbers, booleans, and (for repeated flags like
+ * `--task`) string arrays. `dispatch-tools.ts` derives the zod schema from this.
+ */
+export type CliToolParamType = 'string' | 'number' | 'boolean' | 'string[]';
+
+/** One input parameter of a command's first-class tool form. */
+export interface CliToolParam {
+  /** Parameter name as exposed in the tool schema (snake_case). */
+  name: string;
+  /** Value kind, used to derive the zod validator. */
+  type: CliToolParamType;
+  /** Whether the parameter is required. */
+  required: boolean;
+  /** One-line description surfaced in the tool schema. */
+  description: string;
+}
+
+/**
+ * The first-class in-process tool form of a command. When present, Phase 2
+ * (`dispatch-tools.ts`) derives an SDK tool from it: the tool `name` and the
+ * input schema come from THIS object, so the executable tool cannot drift from
+ * the documented CLI. Commands without a `tool` (e.g. purely informational
+ * forms) are documented but not promoted to a tool.
+ */
+export interface CliToolSpec {
+  /** Tool name exposed by the in-process MCP server, e.g. `mission_create`. */
+  name: string;
+  /** Input parameters; the zod schema is derived from these. */
+  params: CliToolParam[];
+}
+
 /** A single subcommand or invocation form of a CLI. */
 export interface CliCommand {
   /** Full usage line, e.g. `create --agent <id> --title "Label" "prompt"`. */
   usage: string;
   /** One-line description of what this command does. */
   description: string;
+  /**
+   * Optional first-class tool form. Purely additive — the doc/help/index
+   * renderers ignore it, so adding a `tool` does NOT change the generated
+   * reference (the Phase 1 drift guard stays green).
+   */
+  tool?: CliToolSpec;
 }
 
 /** Structured description of a shipped agent CLI. */
@@ -96,8 +135,10 @@ export function renderCliReference(descriptors: CliDescriptor[]): string {
     'Canonical reference for the ClaudeClaw agent-facing CLIs. This block is ' +
       'generated from each CLI\'s exported `descriptor` — do not hand-edit it; ' +
       'run `npm run gen:cli-docs` to regenerate. ' +
-      'Resolve the project root with `PROJECT_ROOT=$(git rev-parse --show-toplevel)` ' +
-      'and invoke a CLI as `node "$PROJECT_ROOT/<binary>" <command>`.',
+      'The runtime injects the correct absolute `PROJECT_ROOT` into your prompt; ' +
+      'use that value and invoke a CLI as `node "$PROJECT_ROOT/<binary>" <command>`. ' +
+      'Do NOT rediscover the root with `git rev-parse` or search the filesystem — ' +
+      'a non-repo cwd can anchor onto the wrong checkout (see issue #157).',
   );
   lines.push('');
   lines.push('## Index');
@@ -144,7 +185,7 @@ export function renderCliReference(descriptors: CliDescriptor[]): string {
  * bullet per ship=true CLI (sorted by name). NO marker fences — this text is
  * appended to a persona prompt, not spliced into a generated doc.
  */
-export function renderCliIndex(descriptors: CliDescriptor[]): string {
+export function renderCliIndex(descriptors: CliDescriptor[], projectRoot?: string): string {
   const shipped = descriptors
     .filter((d) => d.ship)
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -157,11 +198,26 @@ export function renderCliIndex(descriptors: CliDescriptor[]): string {
       'schedule-cli — never fake a one-shot with a far-future cron.',
   );
   lines.push('');
-  lines.push(
-    'Run each as `node "$PROJECT_ROOT/<binary>"` (resolve $PROJECT_ROOT with ' +
-      '`git rev-parse --show-toplevel`); these are NOT bare-PATH commands. Never read ' +
-      'or write the store with raw sqlite3 — always go through hive-cli.',
-  );
+  if (projectRoot) {
+    // The runtime already knows the absolute repo root (build-relative,
+    // always correct). Stamp it in and forbid rediscovery — a non-repo cwd
+    // (scheduled/automation turns run from the agent config dir) would send
+    // `git rev-parse --show-toplevel` hunting onto a sibling checkout with a
+    // stale store/.env, silently failing the turn. See issue #157.
+    lines.push(
+      `The project root is \`${projectRoot}\`. Set \`PROJECT_ROOT=${projectRoot}\` and ` +
+        'run each CLI as `node "$PROJECT_ROOT/<binary>"`; these are NOT bare-PATH ' +
+        'commands. Do NOT run `git rev-parse` or search the filesystem for another ' +
+        'checkout — this is the one correct root. Never read or write the store with ' +
+        'raw sqlite3 — always go through hive-cli.',
+    );
+  } else {
+    lines.push(
+      'Run each as `node "$PROJECT_ROOT/<binary>"` (resolve $PROJECT_ROOT with ' +
+        '`git rev-parse --show-toplevel`); these are NOT bare-PATH commands. Never read ' +
+        'or write the store with raw sqlite3 — always go through hive-cli.',
+    );
+  }
   lines.push('');
   lines.push('Full usage: docs/agent-cli-reference.md');
   lines.push('');
