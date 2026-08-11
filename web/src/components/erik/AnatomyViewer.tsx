@@ -722,25 +722,65 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
   };
   const chip = picked ? (TISSUE_CHIP[picked.tissue] || TISSUE_CHIP.other) : null;
 
+  // Layer-peel pills. On a phone they sit ABOVE the canvas in normal flow —
+  // overlaid they wrapped to two rows and covered the head and shoulders, which
+  // is exactly the body you're trying to look at. On desktop there's room to
+  // float them over the top-left corner.
+  const pills = hasLayers ? (
+    <div style={{
+      display: 'flex', gap: '6px', flexWrap: 'wrap',
+      ...(narrow
+        ? { marginBottom: '8px' }
+        : { position: 'absolute', top: '10px', left: '12px', maxWidth: 'calc(100% - 24px)' }),
+    }}>
+      {LAYER_DEFS.filter((d) => layersPresent.includes(d.key)).map((d) => {
+        const on = layerOn[d.key];
+        return (
+          <button key={d.key} type="button"
+            aria-pressed={on ? 'true' : 'false'}
+            onClick={() => setLayerOn((prev) => ({ ...prev, [d.key]: !prev[d.key] }))}
+            style={{ padding: '6px 11px', borderRadius: '999px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', lineHeight: 1,
+              border: '1px solid ' + (on ? d.tone : 'var(--color-border)'),
+              background: on ? d.tone + '22' : 'var(--color-bg)',
+              color: on ? d.tone : 'var(--color-text-faint)' }}>
+            {d.icon} {d.label}{on ? '' : ' ·off'}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  const hintText = 'Tap any muscle or bone to learn what it does · drag sideways to rotate · peel the layers above';
+
   return (
-    <div style={{ position: 'relative' }}>
+    <div>
+      {narrow && pills}
+      <div style={{ position: 'relative' }}>
       <div
         ref={wrapRef}
         style={{
-          width: '100%', height: '420px', borderRadius: '12px',
+          width: '100%',
+          // Phones get a much taller stage — the figure is head-to-toe, and 420px
+          // rendered it postage-stamp small. Desktop keeps the compact 420.
+          height: narrow ? 'min(68vh, 620px)' : '420px',
+          minHeight: '420px',
+          borderRadius: '12px',
           border: '1px solid var(--color-border)',
           background: 'radial-gradient(ellipse at 50% 35%, rgba(16,185,129,0.06), var(--color-card) 70%)',
           // 'none' meant the canvas swallowed EVERY touch — a vertical swipe that
-          // started on the 420px-tall model rotated it instead of scrolling the page.
+          // started on the tall model rotated it instead of scrolling the page.
           // 'pan-y' hands vertical swipes back to the scroller; sideways drags still
           // reach OrbitControls, and two-finger pinch still dollies.
           touchAction: 'pan-y', cursor: 'grab',
         }}
       />
-      {/* hint — sits below the layer pills when an atlas is loaded so the two never overlap on a narrow phone canvas */}
-      <div style={{ position: 'absolute', top: hasLayers ? '72px' : '10px', left: '12px', maxWidth: '58%', lineHeight: 1.3, fontSize: '12px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
-        Tap any muscle or bone to learn what it does · drag sideways to rotate · peel the layers above
-      </div>
+      {/* hint — overlaid only on desktop (below the floating pills); on a phone it
+          lives under the canvas so nothing sits on top of the body */}
+      {!narrow && (
+        <div style={{ position: 'absolute', top: hasLayers ? '48px' : '10px', left: '12px', maxWidth: '52%', lineHeight: 1.3, fontSize: '12px', color: 'var(--color-text-faint)', pointerEvents: 'none' }}>
+          {hintText}
+        </div>
+      )}
       {/* first-load indicator (the segmented atlas is ~20MB) */}
       {loading && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '10px', pointerEvents: 'none' }}>
@@ -751,33 +791,15 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
           <style>{'@keyframes erik-spin{to{transform:rotate(360deg)}}'}</style>
         </div>
       )}
-      {/* layer-peel pills (atlas only) — pinned top-left; the hint flows beneath them */}
-      {hasLayers && (
-        <div style={{ position: 'absolute', top: '10px', left: '12px', display: 'flex', gap: '6px', flexWrap: 'wrap', maxWidth: 'calc(100% - 24px)' }}>
-          {LAYER_DEFS.filter((d) => layersPresent.includes(d.key)).map((d) => {
-            const on = layerOn[d.key];
-            return (
-              <button key={d.key} type="button"
-                aria-pressed={on ? 'true' : 'false'}
-                onClick={() => setLayerOn((prev) => ({ ...prev, [d.key]: !prev[d.key] }))}
-                style={{ padding: '6px 11px', borderRadius: '999px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', lineHeight: 1,
-                  border: '1px solid ' + (on ? d.tone : 'var(--color-border)'),
-                  background: on ? d.tone + '22' : 'var(--color-bg)',
-                  color: on ? d.tone : 'var(--color-text-faint)' }}>
-                {d.icon} {d.label}{on ? '' : ' ·off'}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {!narrow && pills}
       {/* reset view */}
       <button type="button" onClick={() => stateRef.current?.resetView()}
         title="Reset camera"
         style={{ position: 'absolute', bottom: '10px', right: '12px', fontSize: '12px', fontWeight: 600, color: 'var(--color-text-muted)', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '7px', padding: '4px 10px', cursor: 'pointer' }}>
         ⟲ Reset view
       </button>
-      {/* attribution credit (only when a real atlas is loaded) */}
-      {hasLayers && (
+      {/* attribution credit — overlaid on desktop, under the canvas on a phone */}
+      {hasLayers && !narrow && (
         <div style={{ position: 'absolute', bottom: '10px', left: '12px', fontSize: '11px', color: 'var(--color-text-faint)', pointerEvents: 'none', maxWidth: '46%' }}>
           {ANATOMY_CREDIT}
         </div>
@@ -828,6 +850,14 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       {hoverName && mouse && (
         <div style={{ position: 'fixed', left: mouse.x + 14, top: mouse.y + 14, zIndex: 50, fontSize: '13px', fontWeight: 700, color: '#fff', background: 'rgba(16,120,90,0.92)', padding: '3px 9px', borderRadius: '6px', pointerEvents: 'none', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {hoverName}
+        </div>
+      )}
+      </div>
+      {/* phone: hint + credit live under the canvas, never over the body */}
+      {narrow && (
+        <div style={{ marginTop: '7px', fontSize: '12px', lineHeight: 1.35, color: 'var(--color-text-faint)' }}>
+          {hintText}
+          {hasLayers && <div style={{ fontSize: '10.5px', marginTop: '3px', opacity: 0.8 }}>{ANATOMY_CREDIT}</div>}
         </div>
       )}
     </div>
