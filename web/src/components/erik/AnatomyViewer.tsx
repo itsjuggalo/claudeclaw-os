@@ -73,8 +73,32 @@ const AMBIGUOUS_NEEDLE = new Set(['head', 'face', 'spine', 'neck', 'body', 'gene
 // bodyworker looking for the masseter wants the Jaw / TMJ lessons.
 const JAW_STRUCTURE = /(masseter|pterygoid|temporalis|temporomandibular)/i;
 
+// Head/neck meshes come from the companion Z-Anatomy file, and its Terminologia
+// spellings do not match the region muscle slugs in regions.ts:
+//   'scalene'                      vs  "Scalenus anterior muscle"
+//   'rectus-capitis-posterior-major' vs "Rectus posterior major capitis muscle"
+//   'suboccipitals'                vs  the four individual suboccipital bellies
+// and the whole facial-expression sheet (frontalis, orbicularis, zygomaticus…)
+// has no slug at all. Without these the Head / Face chip highlighted NOTHING and
+// the scalenes / suboccipitals — Erik's signature releases — stayed unlit.
+// Matched on the mesh name only; regions.ts keeps driving the KB plate lookups.
+const HEAD_NECK_REGION: Array<[RegExp, string]> = [
+  // Suboccipital group + the deep cervical capitis muscles, either word order.
+  [/(obliquus (superior|inferior) capitis|rectus (posterior|anterior|lateralis) (major |minor )?capitis|capitis posterior (major|minor)|suboccipital)/i, 'neck'],
+  // Terminologia spells the scalenes "scalenus".
+  [/scalenus/i, 'neck'],
+  [/(platysma|sternohyoid|sternothyroid|thyrohyoid|omohyoid|mylohyoid|geniohyoid|stylohyoid|digastric|longus (colli|capitis)|interspinales colli|spinalis (capitis|colli)|longissimus (capitis|colli)|cervical fascia)/i, 'neck'],
+  // Investing fascia follows the muscle it wraps: temporal fascia rides with
+  // temporalis, which is deliberately Jaw / TMJ above.
+  [/temporal fascia/i, 'jaw/TMJ'],
+  // Scalp + facial-expression sheet + the cheek muscle (Z-Anatomy spells it
+  // "Bucinator", one 'c').
+  [/(frontalis|occipitalis|temporoparietalis|epicranial|orbicularis (oculi|oris)|zygomaticus|risorius|mentalis|procerus|corrugator|nasalis|buc?cinator|depressor (anguli|labii|septi)|levator (labii|anguli oris|nasolabialis))/i, 'head/face'],
+];
+
 function meshRegion(rawName: string): string | null {
   if (JAW_STRUCTURE.test(rawName)) return 'jaw/TMJ';
+  for (const [re, key] of HEAD_NECK_REGION) if (re.test(rawName)) return key;
   const n = rawName.toLowerCase().replace(/[_\-.]/g, ' ');
   // Specific first: a named muscle beats any label word, whichever region it's in.
   for (const r of ERIK_REGIONS) {
