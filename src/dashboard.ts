@@ -1350,7 +1350,7 @@ init();
   // Top-level static files copied from web/public/ at build time
   // (e.g. /brain.glb for the 3D Hive Mind view). These have stable
   // names so they sit at the root rather than under /assets/.
-  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico)}', (c, next) => {
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico|json)}', (c, next) => {
     const filename = c.req.param('filename');
     // The pattern's `.+` swallows slashes, so any API path ending in one of these
     // extensions (e.g. /api/databases/kb/erikdalton/anatomy/img/psoas-front.png)
@@ -1360,10 +1360,14 @@ init();
     const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
     const root = path.join(PROJECT_ROOT, 'dist', 'web');
     if (!filePath.startsWith(root + path.sep)) return c.text('', 403);
-    if (!fs.existsSync(filePath)) return c.text('', 404);
+    // Fall THROUGH when there's no such static file — `.json` in particular is an
+    // extension real routes use, and a hard 404 here would shadow them (that's the
+    // same class of bug as the /api/*.png one guarded above).
+    if (!fs.existsSync(filePath)) return next();
     const data = fs.readFileSync(filePath);
     const ext = path.extname(filePath).toLowerCase();
     const ctype = ext === '.glb' ? 'model/gltf-binary'
+      : ext === '.json' ? 'application/json'
       : ext === '.gltf' ? 'model/gltf+json'
       : ext === '.wasm' ? 'application/wasm'
       : ext === '.svg' ? 'image/svg+xml'

@@ -208,7 +208,7 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
   const [selected, setSelected] = useState<string | null>(initialRegion);
   const region = selected ? REGION_BY_KEY[selected] : null;
 
-  // The 3D atlas is ~14 MB + Three.js — heavy on phones. Auto-load on wide
+  // The 3D atlas is ~20 MB + Three.js — heavy on phones. Auto-load on wide
   // screens; on mobile show the light 2D body map and load 3D only on tap.
   const [show3d, setShow3d] = useState(() => { try { return window.innerWidth >= 700; } catch { return true; } });
 
@@ -317,7 +317,7 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
 
       {/* Interactive 3D body — the headline learning surface. Shares the same
           selected/onSelect state as the chips and 2D map below. On mobile it's
-          opt-in (the 2D map below works the same) so phones don't auto-pull ~14 MB. */}
+          opt-in (the 2D map below works the same) so phones don't auto-pull ~20 MB. */}
       <div style={{ maxWidth: '460px', marginBottom: '18px' }}>
         {show3d ? (
           <Suspense fallback={
@@ -331,7 +331,7 @@ export function ExploreTab({ itemId, anatomy, videosMap }: {
           <button type="button" onClick={() => setShow3d(true)}
             style={{ width: '100%', padding: '16px', border: '1px dashed var(--color-border)', borderRadius: '12px', background: 'var(--color-card)', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '13px', lineHeight: 1.5 }}>
             <div style={{ fontSize: '15px', fontWeight: 700, color: ACCENT, marginBottom: '2px' }}>🧍 Load 3D anatomy model</div>
-            ~14 MB — or just use the flat body map below (it works the same).
+            ~20 MB — every muscle, bone, nerve & vessel is tappable, with layers you can peel.
           </button>
         )}
       </div>

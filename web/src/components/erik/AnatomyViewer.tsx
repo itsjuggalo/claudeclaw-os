@@ -41,18 +41,36 @@ type Layer = 'fascia' | 'superficial' | 'deep' | 'vessels' | 'nerves' | 'skeleto
 
 interface StructInfo { name: string; fn: string; note: string; tissue: Tissue; region: string | null }
 
+// The video library searches the words Erik SAYS, so hand it the bare anatomical
+// term — one phrase, no qualifiers. Info names carry alternates ("Brachialis /
+// upper arm", "Skull & jaw") and parenthetical aliases ("(SCM)"); a literal
+// search for the whole label matches nothing, so keep only the first clause.
+function videoQuery(name: string): string {
+  const first = name.split(/[—/&,]/)[0];
+  return first.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim() || name;
+}
+
 // ── Region → mesh helpers ──────────────────────────────────────────
 // Map a loaded GLB mesh name to one of our 15 region keys. Tolerant substring
 // match against the region key + label words + the region's muscle slugs. We
 // pass the mesh's full ancestor name-path so group-level naming still resolves.
+// Anatomical homonyms that show up inside unrelated structure names — "clavicular
+// HEAD of pectoralis major", "SPINE of the scapula", "NECK of the femur". Matching
+// a region on one of these mislabels half the atlas (pec major → Head / Face), so
+// they never count as a region needle on their own.
+const AMBIGUOUS_NEEDLE = new Set(['head', 'face', 'spine', 'neck', 'body', 'general', 'low', 'back', 'core']);
+
 function meshRegion(rawName: string): string | null {
   const n = rawName.toLowerCase().replace(/[_\-.]/g, ' ');
+  // Specific first: a named muscle beats any label word, whichever region it's in.
+  for (const r of ERIK_REGIONS) {
+    if (r.muscles.some((m) => n.includes(m.replace(/-/g, ' ')))) return r.key;
+  }
   for (const r of ERIK_REGIONS) {
     const needles = [
       r.key.replace(/[/]/g, ' '),
       ...r.label.toLowerCase().split(/[\s/]+/),
-      ...r.muscles.map((m) => m.replace(/-/g, ' ')),
-    ].filter((s) => s && s.length > 2);
+    ].filter((s) => s && s.length > 2 && !AMBIGUOUS_NEEDLE.has(s));
     if (needles.some((s) => n.includes(s))) return r.key;
   }
   return null;
@@ -107,6 +125,8 @@ const namePath = (o: THREE.Object3D) => nameParts(o).join(' ');
 const GENERIC_NAME = /^(mesh|object|scene|node|group|root|armature|bones?|bones_right|muscles?|fascia|cartilages?(_right)?)\b/i;
 function cleanLabel(s: string): string {
   let t = s.replace(/\.[rl]\b/gi, '').replace(/\([^)]*\)/g, '').replace(/\boverlay\b/gi, '');
+  // Atlas nodes are machine-named ("Thorax_-_veins") — make them readable.
+  t = t.replace(/[_]+/g, ' ').replace(/\s+-\s+/g, ' — ');
   t = t.replace(/\bmesh[._]?\d+\b/gi, '').replace(/\s+/g, ' ').trim();
   return t ? t.charAt(0).toUpperCase() + t.slice(1) : '';
 }
@@ -263,11 +283,17 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
   const [picked, setPicked] = useState<StructInfo | null>(null);
   // Which depth layers exist in the loaded atlas (gates which pills show).
   const [layersPresent, setLayersPresent] = useState<Layer[]>([]);
+  // Vessels + nerves start OFF: this is a bodywork explorer, and the venous web
+  // otherwise sits in front of the muscles Erik actually teaches (and eats the
+  // taps meant for them). The pills turn them back on.
   const [layerOn, setLayerOn] = useState<Record<Layer, boolean>>({
-    fascia: true, superficial: true, deep: true, vessels: true, nerves: true, skeleton: true,
+    fascia: true, superficial: true, deep: true, vessels: false, nerves: false, skeleton: true,
   });
   const [loading, setLoading] = useState(true);   // true until the figure is built
   const [pct, setPct] = useState<number | null>(null);
+  // Narrow canvas → the structure panel sits along the bottom instead of the
+  // top-right, where it would bury the layer pills on a phone.
+  const [narrow, setNarrow] = useState(false);
 
   // Refs so the once-only init effect's event handlers read latest values.
   const selectedRef = useRef<string | null>(selected);
@@ -515,6 +541,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       renderer.setSize(nw, nh, false);
       camera.aspect = nw / nh;
       camera.updateProjectionMatrix();
+      setNarrow(nw < 560);
     };
     const ro = new ResizeObserver(resize);
     ro.observe(wrap);
@@ -764,8 +791,10 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
       {/* structure panel — name + what it does + Mike's note + a jump into the Dalton videos */}
       {picked && chip && (
         <div style={{
-          position: 'absolute', top: '10px', right: '12px', width: 'min(272px, calc(100% - 24px))',
-          boxSizing: 'border-box', zIndex: 8,
+          position: 'absolute', zIndex: 8, boxSizing: 'border-box',
+          ...(narrow
+            ? { left: '12px', right: '12px', bottom: '44px', width: 'auto' }
+            : { top: '10px', right: '12px', width: 'min(272px, calc(100% - 24px))' }),
           background: 'var(--color-card)', color: 'var(--color-text)',
           border: '1px solid var(--color-border)', borderRadius: '12px',
           boxShadow: '0 8px 28px rgba(0,0,0,0.28)', padding: '13px 14px',
@@ -784,7 +813,7 @@ export function AnatomyViewer({ selected, onSelect }: Props) {
               {picked.note}
             </div>
           )}
-          <a href={`/dalton/?q=${encodeURIComponent(picked.name)}`} target="_blank" rel="noopener noreferrer"
+          <a href={`/dalton/?q=${encodeURIComponent(videoQuery(picked.name))}`} target="_blank" rel="noopener noreferrer"
             style={{ display: 'inline-block', marginTop: '11px', fontSize: '12.5px', fontWeight: 800, color: '#fff', background: ACCENT, textDecoration: 'none', padding: '6px 12px', borderRadius: '999px' }}>
             ▶ Dalton videos ↗
           </a>

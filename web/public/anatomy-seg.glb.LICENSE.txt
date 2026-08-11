@@ -1,0 +1,11 @@
+anatomy-seg.glb — FULL-BODY segmented human anatomy (skeleton + muscles + vessels
++ nerves), ~2254 separately named meshes, meshopt-compressed and quantized, with
+textures/UVs stripped (the viewer recolors by tissue at runtime). Derived from
+BodyParts3D (Database Center for Life Science) via the Z-Anatomy / AnatomyTOOL
+Open3DModel lineage.
+License: Creative Commons Attribution-ShareAlike (CC BY-SA).
+
+Same asset Mike ships on the massagebymike resources page
+(/AIWorkWSL/web/massage/models/anatomy-seg.glb). Used here in the Erik Dalton
+learning explorer (ClaudeClaw) for education. anatomy.glb (upper-body only) is
+kept as the fallback if this one is ever missing.
