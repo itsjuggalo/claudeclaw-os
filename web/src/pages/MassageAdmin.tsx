@@ -297,6 +297,9 @@ export function MassageAdmin() {
   const session = useFetch<AdminSession>('/api/massage-admin/session', 30000);
   const { busy: refreshing, spin } = useSpin();
   const [tab, setTab] = useState<'today' | 'profile' | 'accounts' | 'intakes' | 'formbuilder' | 'soap' | 'messaging' | 'promos' | 'availability'>('today');
+  // Today-tab "SOAP note" quick-open: which client (and appointment) the SOAP tab
+  // should land on. Cleared when the SOAP tab is opened directly from the tab bar.
+  const [soapJump, setSoapJump] = useState<{ clientId: string; apptId?: string } | null>(null);
   // Fetched here (not just in the tab) so the tab label can show a pending-request count badge.
   const pendingReqs = useFetch<PendingResp>('/api/massage-admin/availability/pending', 30000);
 
@@ -316,7 +319,7 @@ export function MassageAdmin() {
             <Tab label="Accounts" active={tab === 'accounts'} onClick={() => setTab('accounts')} />
             <Tab label="Intake Forms" active={tab === 'intakes'} onClick={() => setTab('intakes')} />
             <Tab label="Form Builder" active={tab === 'formbuilder'} onClick={() => setTab('formbuilder')} />
-            <Tab label="SOAP Notes" active={tab === 'soap'} onClick={() => setTab('soap')} />
+            <Tab label="SOAP Notes" active={tab === 'soap'} onClick={() => { setSoapJump(null); setTab('soap'); }} />
             <Tab label="Messaging" active={tab === 'messaging'} onClick={() => setTab('messaging')} />
             <Tab label="Promos & Codes" active={tab === 'promos'} onClick={() => setTab('promos')} />
             <Tab label="Availability" active={tab === 'availability'} count={pendingReqs.data?.pending?.length || undefined} onClick={() => setTab('availability')} />
@@ -351,12 +354,12 @@ export function MassageAdmin() {
             </section>
           )}
 
-          {tab === 'today' && <TodayTab overview={overview} pending={pendingReqs} onGoTo={setTab} />}
+          {tab === 'today' && <TodayTab overview={overview} pending={pendingReqs} onGoTo={setTab} onSoap={(j) => { setSoapJump(j); setTab('soap'); }} />}
           {tab === 'profile' && <ClientProfileTab overview={overview} canEdit={canEdit} />}
           {tab === 'accounts' && <AccountsTab overview={overview} canEdit={canEdit} />}
           {tab === 'intakes' && <IntakesTab canEdit={canEdit} />}
           {tab === 'formbuilder' && <FormBuilder canEdit={canEdit} />}
-          {tab === 'soap' && <SoapTab overview={overview} canEdit={canEdit} />}
+          {tab === 'soap' && <SoapTab overview={overview} canEdit={canEdit} jump={soapJump} />}
           {tab === 'messaging' && <MessagingTab />}
           {tab === 'promos' && <PromosTab canEdit={canEdit} />}
           {tab === 'availability' && <AvailabilityTab canEdit={canEdit} pending={pendingReqs} />}
@@ -1344,10 +1347,12 @@ function IntakeViewer({ id, canEdit, onReviewed }: { id: string; canEdit: boolea
 }
 
 // ─────────────────────────────────────────────────────────────── SOAP tab ──
-function SoapTab({ overview, canEdit }: { overview: ReturnType<typeof useFetch<Overview>>; canEdit: boolean }) {
+function SoapTab({ overview, canEdit, jump }: { overview: ReturnType<typeof useFetch<Overview>>; canEdit: boolean; jump?: { clientId: string; apptId?: string } | null }) {
   const clients = overview.data?.clients ?? [];
   const [query, setQuery] = useState('');
-  const [clientId, setClientId] = useState<string | null>(null);
+  // A Today-tab quick-open lands directly on that client (and straight into a
+  // new note for that appointment via autoNew below).
+  const [clientId, setClientId] = useState<string | null>(jump?.clientId ?? null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1379,15 +1384,16 @@ function SoapTab({ overview, canEdit }: { overview: ReturnType<typeof useFetch<O
           {filtered.length === 0 && <div class="px-3 py-6 text-center text-[15px] text-[var(--color-text-faint)]">No matching clients.</div>}
         </div>
       </aside>
-      <main>{selected ? <SoapClientPanel key={selected.id} client={selected} canEdit={canEdit} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[15px] text-[var(--color-text-faint)]">Select a client to view their SOAP notes over time.</div>}</main>
+      <main>{selected ? <SoapClientPanel key={selected.id} client={selected} canEdit={canEdit} autoNew={jump?.clientId === selected.id ? jump : null} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[15px] text-[var(--color-text-faint)]">Select a client to view their SOAP notes over time.</div>}</main>
     </div>
   );
 }
 
-function SoapClientPanel({ client, canEdit }: { client: MassageClient; canEdit: boolean }) {
+function SoapClientPanel({ client, canEdit, autoNew }: { client: MassageClient; canEdit: boolean; autoNew?: { apptId?: string } | null }) {
   const soap = useFetch<SoapClientResp>(`/api/massage-admin/soap?client=${encodeURIComponent(client.id)}`, 0);
   const appts = useFetch<{ appointments: Appointment[] }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/appointments`, 0);
-  const [mode, setMode] = useState<'timeline' | 'new' | { edit: SoapNote } | { dup: SoapNote }>('timeline');
+  // A Today-tab quick-open goes straight into a new note (appointment pre-picked).
+  const [mode, setMode] = useState<'timeline' | 'new' | { edit: SoapNote } | { dup: SoapNote }>(autoNew && canEdit ? 'new' : 'timeline');
 
   const notes = soap.data?.notes ?? [];
   const trend = soap.data?.trend;
@@ -1402,6 +1408,7 @@ function SoapClientPanel({ client, canEdit }: { client: MassageClient; canEdit: 
       <SoapForm
         client={client}
         appointments={appts.data?.appointments ?? []}
+        initialApptId={autoNew?.apptId}
         existing={existing}
         seed={seed}
         history={notes}
@@ -1522,8 +1529,8 @@ const SOAP_STEPS = [
 ] as const;
 
 // The structured SOAP form (create or edit). Areas-of-concern body-map + carry-forward.
-function SoapForm({ client, appointments, existing, seed, history, carryForward, canEdit, onCancel, onSaved }: {
-  client: MassageClient; appointments: Appointment[]; existing: SoapNote | null;
+function SoapForm({ client, appointments, initialApptId, existing, seed, history, carryForward, canEdit, onCancel, onSaved }: {
+  client: MassageClient; appointments: Appointment[]; initialApptId?: string; existing: SoapNote | null;
   seed?: SoapNote | null; history?: SoapNote[]; carryForward: CarryForward | null; canEdit: boolean; onCancel: () => void; onSaved: () => void;
 }) {
   // Per-client autofill: distinct non-empty values this client had in earlier notes, most-recent
@@ -1545,7 +1552,7 @@ function SoapForm({ client, appointments, existing, seed, history, carryForward,
   // Clinical content is seeded from the note being edited OR the note being duplicated.
   // Session-specific fields (date, appointment) always start fresh for a duplicate.
   const src = existing ?? seed ?? null;
-  const [apptId, setApptId] = useState<string>(existing?.appointment_id || '');
+  const [apptId, setApptId] = useState<string>(existing?.appointment_id || initialApptId || '');
   const [sessionDate, setSessionDate] = useState<string>(existing?.session_date || today);
   const [painBefore, setPainBefore] = useState<string>(src?.pain_before != null ? String(src.pain_before) : '');
   const [painAfter, setPainAfter] = useState<string>(src?.pain_after != null ? String(src.pain_after) : '');
@@ -2364,10 +2371,11 @@ function greeting(d: Date): string {
   return 'Good evening';
 }
 
-function TodayTab({ overview, pending, onGoTo }: {
+function TodayTab({ overview, pending, onGoTo, onSoap }: {
   overview: ReturnType<typeof useFetch<Overview>>;
   pending: { data: PendingResp | null; refresh: () => void };
   onGoTo: (tab: 'profile' | 'intakes' | 'availability') => void;
+  onSoap: (jump: { clientId: string; apptId?: string }) => void;
 }) {
   const now = new Date();
   const todayIso = isoLocalDate(now);
@@ -2439,14 +2447,23 @@ function TodayTab({ overview, pending, onGoTo }: {
           <div class="py-4 text-center text-[17px] text-[var(--color-text-faint)]">A clear day on the calendar — enjoy it.</div>
         ) : (
           <div class="divide-y divide-[var(--color-border)]">
-            {todays.map((a) => (
+            {todays.map((a) => {
+              const soapClient = a.client_email ? clients.find((c) => c.email.toLowerCase() === a.client_email!.toLowerCase()) : undefined;
+              return (
               <div key={a.id} class="flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5">
                 <span class="w-[92px] shrink-0 text-[16px] font-semibold tabular-nums text-[var(--color-accent)]">{a.appt_time}</span>
                 <span class="min-w-0 flex-1 truncate text-[16px] font-semibold text-[var(--color-text)]">{a.client_name}</span>
                 <span class="min-w-0 flex-1 truncate text-[16px] text-[var(--color-text-muted)]">{a.service_name}</span>
                 <span class="text-[15px] text-[var(--color-text-faint)]">{a.duration_min ? `${a.duration_min} min` : ''} · {a.status}</span>
+                {soapClient && (
+                  <button type="button" title="Write the SOAP note for this session"
+                    onClick={() => onSoap({ clientId: soapClient.id, apptId: a.id })}
+                    class="inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] px-2 py-1 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-text)]">
+                    <Stethoscope size={14} class="text-[var(--color-accent)]" /> SOAP note
+                  </button>
+                )}
               </div>
-            ))}
+            ); })}
           </div>
         )}
       </section>
@@ -2507,6 +2524,7 @@ function TodayTab({ overview, pending, onGoTo }: {
 
 interface ScheduleApptLite {
   id: string; appt_date: string; appt_time: string; client_name: string;
+  client_email?: string;
   service_name: string; status: string; duration_min: number;
 }
 
