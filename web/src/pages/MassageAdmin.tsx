@@ -1990,6 +1990,9 @@ function ClientProfileTab({ overview, canEdit }: { overview: ReturnType<typeof u
   const clients = overview.data?.clients ?? [];
   const [clientId, setClientId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  // "New client" lives here too (not just Accounts) — this is the tab Mike
+  // actually works from. Same CreateAccountCard, same create endpoint.
+  const [showCreate, setShowCreate] = useState(false);
 
   const selected = clients.find((c) => c.id === clientId) ?? null;
 
@@ -2031,11 +2034,16 @@ function ClientProfileTab({ overview, canEdit }: { overview: ReturnType<typeof u
         <input class={`${inputClass} max-w-[320px] py-1.5`} placeholder="Search name / email / phone" value={query}
           onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
         <span class="text-[14px] text-[var(--color-text-faint)]">{filtered.length} client{filtered.length === 1 ? '' : 's'}</span>
-        <button type="button" class={`${btnGhost} ml-auto`} title="Download the whole client book as CSV"
+        <button type="button" class={`${btnAccent} ml-auto`} style="background:var(--color-accent)" disabled={!canEdit}
+          onClick={() => setShowCreate((v) => !v)}>
+          <Plus size={15} /> New client
+        </button>
+        <button type="button" class={btnGhost} title="Download the whole client book as CSV"
           onClick={() => exportClientsCsv(filtered)}>
           <Download size={15} /> Export CSV
         </button>
       </div>
+      {showCreate && <div class="mb-3"><CreateAccountCard onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); overview.refresh(); }} /></div>}
       <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {filtered.map((c) => (
           <button key={c.id} type="button" onClick={() => setClientId(c.id)}
