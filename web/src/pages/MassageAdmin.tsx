@@ -292,26 +292,31 @@ function NoteField({ label, value, onChange, phraseKey, prior }: {
     </div>
   );
 }
-// Objective findings, tap-only (Mike's ask 2026-08-11). Every option is a
-// palpation/observation WITHIN the LMT scope of practice — things felt or seen
-// on the table, never a diagnosis (that's why there's no free-text box: typed
-// findings drifted out of scope). Writes the same `objective` DB column as a
-// comma-joined list, so old notes and the PDF render unchanged.
-const OBJECTIVE_FINDINGS = [
-  'Palpable hypertonicity', 'Muscle guarding', 'Taut bands', 'Trigger points noted',
-  'Adhesions present', 'Fascial restriction', 'Tender on palpation', 'Muscle spasm',
-  'Restricted ROM', 'Postural imbalance', 'Elevated shoulder', 'Forward head posture',
-  'Warmth noted', 'Swelling noted', 'Client relaxed during session',
+// Objective findings, tap-only, grouped by the documentation framework an LMT
+// is taught to chart with: the Four T's of palpation (Tone, Texture,
+// Tenderness, Temperature) + ROM/posture observations + response to treatment
+// (refined with research 2026-08-11 — massagetherapyreference.com/palpation,
+// AMTA journal "Effective Palpation", MBLExGuide SOAP notes). Every phrase is
+// an observation inside the LMT scope — felt, seen or measured, no diagnosis.
+// Location/side detail belongs to the Body Chart below; response chips make
+// the note show change, which is what an auditor or referring provider reads for.
+const OBJECTIVE_GROUPS: Array<{ group: string; options: string[] }> = [
+  { group: 'Tone', options: ['Hypertonic', 'Muscle guarding', 'Muscle spasm', 'Low tone'] },
+  { group: 'Texture', options: ['Taut bands', 'Ropy / fibrous', 'Trigger point (local)', 'Trigger point w/ referral', 'Adhesions — reduced glide', 'Fascial restriction', 'Boggy / edema'] },
+  { group: 'Tenderness', options: ['Tender — light pressure', 'Tender — deep pressure only', 'Referred pain on pressure', 'No tenderness reported'] },
+  { group: 'Temperature', options: ['Localized warmth', 'Cool to touch'] },
+  { group: 'ROM · Posture', options: ['Restricted ROM', 'Painful at end-range', 'ROM improved after work', 'Forward head posture', 'Rounded shoulders', 'Elevated shoulder', 'Uneven hips'] },
+  { group: 'Response', options: ['Released w/ sustained pressure', 'Guarding eased during session', 'Tolerated deep pressure well', 'Client relaxed during session'] },
 ];
-
 // Toggle-chip editor over a comma-joined string field, with a REDUCED free-text
 // row underneath (Mike's ask 2026-08-11: reduce the box, not remove it). Chips
 // carry the findings; the small box is for a brief in-scope extra only. Both
 // live in the same string: chip-matching fragments drive the chip state, and
 // everything else (including old typed notes) is the free text.
-function FindingChips({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void; options: string[];
+function FindingChips({ label, value, onChange, groups }: {
+  label: string; value: string; onChange: (v: string) => void; groups: Array<{ group: string; options: string[] }>;
 }) {
+  const options = groups.flatMap((g) => g.options);
   const parts = value.split(',').map((x) => x.trim()).filter(Boolean);
   const selected = new Set(parts.filter((x) => options.includes(x)));
   // Local text so a trailing comma isn't eaten mid-keystroke by the round-trip
@@ -324,16 +329,21 @@ function FindingChips({ label, value, onChange, options }: {
   return (
     <div class="block">
       <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
-      <div class="flex flex-wrap gap-1.5">
-        {options.map((o) => (
-          <button key={o} type="button" onClick={() => { const next = new Set(selected); if (next.has(o)) next.delete(o); else next.add(o); onChange(compose(next, freeText)); }}
-            class={`rounded-md border px-2 py-1.5 text-[14px] ${selected.has(o)
-              ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]'
-              : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
-            {o}
-          </button>
-        ))}
-      </div>
+      {groups.map((g) => (
+        <div key={g.group} class="mb-2">
+          <div class="mb-1 text-[12px] uppercase tracking-wider text-[var(--color-text-faint)] opacity-80">{g.group}</div>
+          <div class="flex flex-wrap gap-1.5">
+            {g.options.map((o) => (
+              <button key={o} type="button" onClick={() => { const next = new Set(selected); if (next.has(o)) next.delete(o); else next.add(o); onChange(compose(next, freeText)); }}
+                class={`rounded-md border px-2 py-1.5 text-[14px] ${selected.has(o)
+                  ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]'
+                  : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+                {o}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
       <input type="text" class={`${inputClass} mt-1.5`} placeholder="Anything else felt/observed (optional, stays in scope)…"
         value={freeText} onInput={(e) => { const v = (e.currentTarget as HTMLInputElement).value; setFreeText(v); onChange(compose(selected, v)); }} />
     </div>
@@ -1740,7 +1750,7 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
       </div>
 
       <div class="mt-4 grid gap-3 md:grid-cols-2">
-        <FindingChips label="Objective (findings)" value={objective} onChange={setObjective} options={OBJECTIVE_FINDINGS} />
+        <FindingChips label="Objective (findings)" value={objective} onChange={setObjective} groups={OBJECTIVE_GROUPS} />
         <NoteField label="Assessment" phraseKey="assessment" value={assessment} onChange={setAssessment} prior={priorVals((n) => n.assessment)} />
       </div>
 
