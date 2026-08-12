@@ -304,22 +304,29 @@ const OBJECTIVE_FINDINGS = [
   'Warmth noted', 'Swelling noted', 'Client relaxed during session',
 ];
 
-// Toggle-chip editor over a comma-joined string field. Fragments the chip list
-// doesn't know (typed on an old note before this existed) are preserved: they
-// ride along untouched and are echoed back on save.
+// Toggle-chip editor over a comma-joined string field, with a REDUCED free-text
+// row underneath (Mike's ask 2026-08-11: reduce the box, not remove it). Chips
+// carry the findings; the small box is for a brief in-scope extra only. Both
+// live in the same string: chip-matching fragments drive the chip state, and
+// everything else (including old typed notes) is the free text.
 function FindingChips({ label, value, onChange, options }: {
   label: string; value: string; onChange: (v: string) => void; options: string[];
 }) {
   const parts = value.split(',').map((x) => x.trim()).filter(Boolean);
   const selected = new Set(parts.filter((x) => options.includes(x)));
-  const legacy = parts.filter((x) => !options.includes(x));
-  const emit = (sel: Set<string>) => onChange([...legacy, ...options.filter((o) => sel.has(o))].join(', '));
+  // Local text so a trailing comma isn't eaten mid-keystroke by the round-trip
+  // through the composed value; seeded once from the non-chip fragments.
+  const [freeText, setFreeText] = useState(() => parts.filter((x) => !options.includes(x)).join(', '));
+  const compose = (sel: Set<string>, free: string) => {
+    const extra = free.split(',').map((x) => x.trim()).filter(Boolean);
+    return [...options.filter((o) => sel.has(o)), ...extra].join(', ');
+  };
   return (
     <div class="block">
       <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
       <div class="flex flex-wrap gap-1.5">
         {options.map((o) => (
-          <button key={o} type="button" onClick={() => { const next = new Set(selected); if (next.has(o)) next.delete(o); else next.add(o); emit(next); }}
+          <button key={o} type="button" onClick={() => { const next = new Set(selected); if (next.has(o)) next.delete(o); else next.add(o); onChange(compose(next, freeText)); }}
             class={`rounded-md border px-2 py-1.5 text-[14px] ${selected.has(o)
               ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]'
               : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
@@ -327,9 +334,8 @@ function FindingChips({ label, value, onChange, options }: {
           </button>
         ))}
       </div>
-      {legacy.length > 0 && (
-        <div class="mt-1.5 text-[13px] text-[var(--color-text-faint)]">Kept from earlier note: {legacy.join(', ')}</div>
-      )}
+      <input type="text" class={`${inputClass} mt-1.5`} placeholder="Anything else felt/observed (optional, stays in scope)…"
+        value={freeText} onInput={(e) => { const v = (e.currentTarget as HTMLInputElement).value; setFreeText(v); onChange(compose(selected, v)); }} />
     </div>
   );
 }
