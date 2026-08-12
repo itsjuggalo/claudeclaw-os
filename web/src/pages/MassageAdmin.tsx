@@ -1797,11 +1797,14 @@ const SOAP_REGION_POS: Record<string, { front?: [number, number]; back?: [number
 // Labeled pill buttons flank the figures (Massage Envy "My Body Care" style),
 // tied to their body spot by a leader line. Single-view splits pills per side;
 // "both" view puts the front figure's pills on the left, the back's on the right.
+// Exactly 6 chart buttons (ME "My Body Care" layout). Other regions stay
+// reachable through the "+ add region…" dropdown.
+const CHART_REGIONS = ['Neck', 'Shoulders', 'Arms & Hands', 'Back', 'Gluteal Region', 'Legs'];
 const SOAP_REGION_SIDE: Record<'front' | 'back', Record<'left' | 'right', string[]>> = {
-  front: { left: ['Face', 'Neck', 'Pectoral Muscles', 'Abdomen', 'Legs'], right: ['Scalp', 'Shoulders', 'Arms & Hands', 'Feet'] },
-  back: { left: ['Neck', 'Back', 'Gluteal Region', 'Legs'], right: ['Scalp', 'Shoulders', 'Arms & Hands', 'Feet'] },
+  front: { left: ['Neck', 'Shoulders', 'Arms & Hands'], right: ['Legs'] },
+  back: { left: ['Neck', 'Shoulders', 'Arms & Hands'], right: ['Back', 'Gluteal Region', 'Legs'] },
 };
-const SOAP_REGION_SHORT: Record<string, string> = { 'Pectoral Muscles': 'Pecs', 'Gluteal Region': 'Glutes', 'Arms & Hands': 'Arms' };
+const SOAP_REGION_SHORT: Record<string, string> = { 'Gluteal Region': 'Glutes', 'Arms & Hands': 'Arms' };
 
 // Marker key for the body chart. Picking a marker makes the body figure a
 // stamp: tap a region and it records that finding at a sensible starting
@@ -1858,26 +1861,24 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
   const chart = () => {
     const both = show === 'both';
     const views: Array<'front' | 'back'> = both ? ['front', 'back'] : [show];
-    const pillW = 26;                      // % width of each pill column
-    const imgW = both ? 24 : 48;                       // % width of each figure image
+    const pillW = both ? 28 : 26;                      // % width of each pill column
+    const imgW = both ? 22 : 48;                       // % width of each figure image
     const imgH = imgW * (1264 / 848);                  // figure height in width-units
-    // Chart height in width-units: "both" needs extra room so 9 pills never
-    // overlap on a phone; single view fits inside the figure's own height.
-    const H = both ? Math.max(imgH, 56) : imgH;
+    const H = imgH;                                    // chart height in width-units
     const imgLeft = (v: 'front' | 'back') => pillW + (both && v === 'back' ? imgW : 0);
     const inView = (v: 'front' | 'back') => (r: string) => !!SOAP_REGION_POS[r]?.[v];
     const sortByY = (v: 'front' | 'back') => (a: string, b: string) => SOAP_REGION_POS[a]![v]![1] - SOAP_REGION_POS[b]![v]![1];
     const cols: Array<{ side: 'left' | 'right'; items: Array<{ region: string; view: 'front' | 'back' }> }> = both
       ? [
-          { side: 'left', items: SOAP_REGIONS.filter(inView('front')).sort(sortByY('front')).map((region) => ({ region, view: 'front' as const })) },
-          { side: 'right', items: SOAP_REGIONS.filter(inView('back')).sort(sortByY('back')).map((region) => ({ region, view: 'back' as const })) },
+          { side: 'left', items: ['Neck', 'Shoulders', 'Arms & Hands'].filter(inView('front')).sort(sortByY('front')).map((region) => ({ region, view: 'front' as const })) },
+          { side: 'right', items: ['Back', 'Gluteal Region', 'Legs'].filter(inView('back')).sort(sortByY('back')).map((region) => ({ region, view: 'back' as const })) },
         ]
       : (['left', 'right'] as const).map((side) => ({
           side,
           items: SOAP_REGION_SIDE[show][side].filter(inView(show)).sort(sortByY(show)).map((region) => ({ region, view: show as 'front' | 'back' })),
         }));
     // y values below are in width-units (0..H), converted to % via /H.
-    const slotY = (i: number, n: number) => (n <= 1 ? H / 2 : 2 + (i * (H - 4)) / (n - 1));
+    const slotY = (i: number, n: number) => (n <= 1 ? H / 2 : 6 + (i * (H - 12)) / (n - 1));
     const target = (region: string, v: 'front' | 'back') => {
       const [px, py] = SOAP_REGION_POS[region]![v]!;
       return { x: imgLeft(v) + (px / 100) * imgW, y: (py / 100) * imgH };
@@ -1915,7 +1916,7 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
               <button key={`pill-${col.side}-${view}-${region}`} type="button"
                 title={`${region}${area ? ` — ${area.findings || 'flagged'} (sev ${area.severity})` : marker ? ` — tap to mark ${marker.label}` : ''}`}
                 aria-pressed={!!area} onClick={() => toggleRegion(region)}
-                class={'absolute truncate rounded-full border text-center font-semibold leading-none shadow-sm transition ' + (both ? 'px-0.5 py-1 text-[10px] tracking-tight' : 'px-1.5 py-1.5 text-[13px]')}
+                class={'absolute truncate rounded-md border text-center font-semibold uppercase leading-none shadow-sm transition ' + (both ? 'px-0 py-2 text-[9px] tracking-tighter' : 'px-1.5 py-2.5 text-[12px] tracking-wide')}
                 style={`left:${col.side === 'left' ? 0 : 100 - pillW}%;width:${pillW - 1.5}%;top:${(slotY(i, col.items.length) / H) * 100}%;transform:translateY(-50%);${area
                   ? `background:${color};color:#fff;border-color:${color}`
                   : 'background:#fff;color:#334155;border-color:#cbd5e1'}`}>
@@ -1924,7 +1925,7 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
             );
           }))}
 
-          {views.map((v) => SOAP_REGIONS.filter(inView(v)).map((r) => {
+          {views.map((v) => CHART_REGIONS.filter(inView(v)).map((r) => {
             const t = target(r, v);
             const { color } = stateOf(r);
             return (
