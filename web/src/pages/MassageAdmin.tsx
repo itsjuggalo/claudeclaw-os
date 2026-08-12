@@ -533,7 +533,7 @@ function AccountsTab({ overview, canEdit }: { overview: ReturnType<typeof useFet
                     <span class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[12px] uppercase text-[var(--color-warn)]">{client.accountStatus}</span>
                   )}
                 </span>
-                <span class="mt-0.5 block truncate text-[14px] text-[var(--color-text-muted)]">{client.email}</span>
+                <span class="mt-0.5 block truncate text-[14px] text-[var(--color-text-muted)]">{client.email.endsWith('@noemail.local') ? 'no email on file' : client.email}</span>
                 <span class="mt-0.5 block text-[13px] text-[var(--color-text-faint)]">
                   {client.appointmentCount} appts · {client.upcomingAppointmentCount} upcoming · ★{client.rewardBalance}
                   {client.nextVisitFreeEnhancement ? ' · 🎁' : ''}
@@ -579,15 +579,15 @@ function CreateAccountCard({ onClose, onDone }: { onClose: () => void; onDone: (
         <button type="button" class={btnGhost} onClick={onClose}><X size={14} /></button>
       </div>
       <div class="grid gap-3 md:grid-cols-3">
-        <Field label="Email"><input class={inputClass} value={email} onInput={(e) => setEmail((e.currentTarget as HTMLInputElement).value)} /></Field>
         <Field label="Name"><input class={inputClass} value={name} onInput={(e) => setName((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Phone"><input class={inputClass} value={phone} onInput={(e) => setPhone((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Email (optional)"><input class={inputClass} value={email} onInput={(e) => setEmail((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Phone (optional)"><input class={inputClass} value={phone} onInput={(e) => setPhone((e.currentTarget as HTMLInputElement).value)} /></Field>
       </div>
       <div class="mt-3 flex items-center justify-between">
         <label class="inline-flex items-center gap-2 text-[15px] text-[var(--color-text-muted)]">
-          <input type="checkbox" checked={welcome} onChange={(e) => setWelcome((e.currentTarget as HTMLInputElement).checked)} /> Send welcome email
+          <input type="checkbox" checked={welcome && email.includes('@')} disabled={!email.includes('@')} onChange={(e) => setWelcome((e.currentTarget as HTMLInputElement).checked)} /> Send welcome email
         </label>
-        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !email.includes('@')} onClick={create}>
+        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !name.trim() || (email.trim() !== '' && !email.includes('@'))} onClick={create}>
           {busy ? 'Creating…' : 'Create account'}
         </button>
       </div>
