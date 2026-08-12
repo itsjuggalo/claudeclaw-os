@@ -199,7 +199,6 @@ const appendText = (cur: string, add: string) => {
 // Tap-to-insert canned phrases per SOAP field, and quick finding chips per body region.
 const SOAP_PHRASES: Record<string, string[]> = {
   subjective: ['Client reports', 'Pain worse with', 'Pain better with', 'No new concerns', 'Sleeping poorly', 'Stress / tension'],
-  objective: ['Palpable hypertonicity', 'Restricted ROM', 'Trigger points noted', 'Adhesions present', 'Tender on palpation', 'Postural imbalance'],
   assessment: ['Myofascial restriction', 'Muscle tension / spasm', 'Postural strain', 'Responding well', 'Chronic holding pattern'],
   plan: ['Continue current plan', 'Increase frequency', 'Focus next session', '4–6 week plan', 'Reassess next visit'],
   home_care: ['Hydrate', 'Daily stretching', 'Heat before / ice after', 'Rest the area', 'Self-massage'],
@@ -293,6 +292,48 @@ function NoteField({ label, value, onChange, phraseKey, prior }: {
     </div>
   );
 }
+// Objective findings, tap-only (Mike's ask 2026-08-11). Every option is a
+// palpation/observation WITHIN the LMT scope of practice — things felt or seen
+// on the table, never a diagnosis (that's why there's no free-text box: typed
+// findings drifted out of scope). Writes the same `objective` DB column as a
+// comma-joined list, so old notes and the PDF render unchanged.
+const OBJECTIVE_FINDINGS = [
+  'Palpable hypertonicity', 'Muscle guarding', 'Taut bands', 'Trigger points noted',
+  'Adhesions present', 'Fascial restriction', 'Tender on palpation', 'Muscle spasm',
+  'Restricted ROM', 'Postural imbalance', 'Elevated shoulder', 'Forward head posture',
+  'Warmth noted', 'Swelling noted', 'Client relaxed during session',
+];
+
+// Toggle-chip editor over a comma-joined string field. Fragments the chip list
+// doesn't know (typed on an old note before this existed) are preserved: they
+// ride along untouched and are echoed back on save.
+function FindingChips({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void; options: string[];
+}) {
+  const parts = value.split(',').map((x) => x.trim()).filter(Boolean);
+  const selected = new Set(parts.filter((x) => options.includes(x)));
+  const legacy = parts.filter((x) => !options.includes(x));
+  const emit = (sel: Set<string>) => onChange([...legacy, ...options.filter((o) => sel.has(o))].join(', '));
+  return (
+    <div class="block">
+      <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+      <div class="flex flex-wrap gap-1.5">
+        {options.map((o) => (
+          <button key={o} type="button" onClick={() => { const next = new Set(selected); if (next.has(o)) next.delete(o); else next.add(o); emit(next); }}
+            class={`rounded-md border px-2 py-1.5 text-[14px] ${selected.has(o)
+              ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]'
+              : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+            {o}
+          </button>
+        ))}
+      </div>
+      {legacy.length > 0 && (
+        <div class="mt-1.5 text-[13px] text-[var(--color-text-faint)]">Kept from earlier note: {legacy.join(', ')}</div>
+      )}
+    </div>
+  );
+}
+
 const btnDanger = 'inline-flex items-center gap-1.5 rounded-md border border-[var(--color-status-failed)] px-3 py-1.5 text-[14px] font-semibold text-[var(--color-status-failed)] transition-colors hover:bg-[color-mix(in_srgb,var(--color-status-failed)_12%,transparent)] disabled:opacity-40';
 
 export function MassageAdmin() {
@@ -1693,7 +1734,7 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
       </div>
 
       <div class="mt-4 grid gap-3 md:grid-cols-2">
-        <NoteField label="Objective (findings)" phraseKey="objective" value={objective} onChange={setObjective} prior={priorVals((n) => n.objective)} />
+        <FindingChips label="Objective (findings)" value={objective} onChange={setObjective} options={OBJECTIVE_FINDINGS} />
         <NoteField label="Assessment" phraseKey="assessment" value={assessment} onChange={setAssessment} prior={priorVals((n) => n.assessment)} />
       </div>
 
