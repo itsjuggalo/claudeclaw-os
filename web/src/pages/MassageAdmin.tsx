@@ -91,6 +91,9 @@ interface Appointment {
   appt_date: string;
   appt_time: string;
   service_name: string;
+  // Booked service length — the SOAP note derives its duration from this
+  // instead of asking (the server's appointmentsForUser does SELECT *).
+  duration_min?: number | null;
   status: string;
   start_ms: number;
   client_email: string;
@@ -1554,8 +1557,10 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
   const src = existing ?? seed ?? null;
   const [apptId, setApptId] = useState<string>(existing?.appointment_id || initialApptId || '');
   const [sessionDate, setSessionDate] = useState<string>(existing?.session_date || today);
-  const [painBefore, setPainBefore] = useState<string>(src?.pain_before != null ? String(src.pain_before) : '');
-  const [painAfter, setPainAfter] = useState<string>(src?.pain_after != null ? String(src.pain_after) : '');
+  // Pain before/after: no longer asked (removed 2026-08-11), but values on an
+  // existing note are preserved through edits — the payload echoes them back.
+  const painBefore = src?.pain_before != null ? String(src.pain_before) : '';
+  const painAfter = src?.pain_after != null ? String(src.pain_after) : '';
   const [position, setPosition] = useState<string>(src?.position || '');
   const [pressure, setPressure] = useState<string>(src?.pressure || '');
   const [duration, setDuration] = useState<string>(src?.duration_min != null ? String(src.duration_min) : '');
@@ -1585,11 +1590,15 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
   }
   const flags = (existing ? existing.flags : (seed?.flags ?? carryForward?.flags)) as Record<string, IntakeFlag> || {};
 
-  // When an appointment is chosen, default the session date to its date.
+  // When an appointment is chosen, the session date AND duration come from the
+  // booking — the note never asks for a length the calendar already knows.
   function pickAppt(id: string) {
     setApptId(id);
     const a = appointments.find((x) => x.id === id);
-    if (a && !existing) setSessionDate(a.appt_date || today);
+    if (a && !existing) {
+      setSessionDate(a.appt_date || today);
+      if (a.duration_min != null) setDuration(String(a.duration_min));
+    }
   }
 
   async function save() {
@@ -1662,27 +1671,54 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
       </div>
 
       {step === 1 && (<>
-      <div class="grid gap-3 md:grid-cols-3">
-        <Field label="Appointment (optional)">
-          <select class={inputClass} value={apptId} onChange={(e) => pickAppt((e.currentTarget as HTMLSelectElement).value)}>
-            <option value="">— none —</option>
-            {appointments.map((a) => <option key={a.id} value={a.id}>{a.appt_date} {a.appt_time} · {a.service_name}</option>)}
-          </select>
-        </Field>
-        <Field label="Session date"><input type="date" class={inputClass} value={sessionDate} onInput={(e) => setSessionDate((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Duration (min)" prior={priorVals((n) => n.duration_min)} onPick={setDuration}><input type="number" class={inputClass} value={duration} onInput={(e) => setDuration((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Pain before (0-10)" prior={priorVals((n) => n.pain_before)} onPick={setPainBefore}><input type="number" min="0" max="10" class={inputClass} value={painBefore} onInput={(e) => setPainBefore((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Pain after (0-10)" prior={priorVals((n) => n.pain_after)} onPick={setPainAfter}><input type="number" min="0" max="10" class={inputClass} value={painAfter} onInput={(e) => setPainAfter((e.currentTarget as HTMLInputElement).value)} /></Field>
-        <Field label="Position" prior={priorVals((n) => n.position)} onPick={setPosition}>
-          <select class={inputClass} value={position} onChange={(e) => setPosition((e.currentTarget as HTMLSelectElement).value)}>
-            <option value="">—</option>{SOAP_POSITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-        </Field>
-        <Field label="Pressure" prior={priorVals((n) => n.pressure)} onPick={setPressure}>
-          <select class={inputClass} value={pressure} onChange={(e) => setPressure((e.currentTarget as HTMLSelectElement).value)}>
-            <option value="">—</option>{SOAP_PRESSURES.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-        </Field>
+      {/* Tap-only step (Mike's ask, 2026-08-11): pain before/after removed, and
+          duration is never asked — it comes from the booked appointment. The only
+          typing on this step is the Subjective note at the bottom. */}
+      <div>
+        <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Session</div>
+        <div class="flex flex-wrap gap-1.5">
+          <button type="button" onClick={() => { setApptId(''); if (!existing) setSessionDate(today); }}
+            class={`rounded-md border px-2 py-1.5 text-[14px] ${apptId === '' ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+            No booking
+          </button>
+          {appointments.map((a) => (
+            <button key={a.id} type="button" onClick={() => pickAppt(a.id)}
+              class={`rounded-md border px-2 py-1.5 text-[14px] ${apptId === a.id ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+              {a.appt_date} {a.appt_time} · {a.service_name}{a.duration_min ? ` · ${a.duration_min}m` : ''}
+            </button>
+          ))}
+        </div>
+        <div class="mt-1.5 text-[13px] text-[var(--color-text-faint)]">
+          {sessionDate || today}{duration !== '' ? ` · ${duration} min (from booking)` : ''}
+          {apptId === '' && (
+            <input type="date" class="ml-2 rounded-md border border-[var(--color-border)] bg-transparent px-1.5 py-0.5 text-[13px] text-[var(--color-text-muted)]"
+              value={sessionDate} onInput={(e) => setSessionDate((e.currentTarget as HTMLInputElement).value)} />
+          )}
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Position</div>
+        <div class="flex flex-wrap gap-1.5">
+          {SOAP_POSITIONS.map((p) => (
+            <button key={p} type="button" onClick={() => setPosition((cur) => cur === p ? '' : p)}
+              class={`rounded-md border px-2 py-1.5 text-[14px] ${position === p ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+              {p}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Pressure</div>
+        <div class="flex flex-wrap gap-1.5">
+          {SOAP_PRESSURES.map((p) => (
+            <button key={p} type="button" onClick={() => setPressure((cur) => cur === p ? '' : p)}
+              class={`rounded-md border px-2 py-1.5 text-[14px] ${pressure === p ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+              {p}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div class="mt-4">
@@ -1717,7 +1753,6 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
       <div class="mb-4 rounded-md border border-[var(--color-border)] px-3 py-2 text-[14px] text-[var(--color-text-muted)]">
         <span class="font-semibold text-[var(--color-text)]">{sessionDate || today}</span>
         {duration !== '' && <> · {duration} min</>}
-        {(painBefore !== '' || painAfter !== '') && <> · pain {painBefore || '—'} → {painAfter || '—'}</>}
         {position && <> · {position}</>}
         {pressure && <> · {pressure}</>}
         {techniques.length > 0 && <> · {techniques.join(', ')}</>}
