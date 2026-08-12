@@ -304,8 +304,13 @@ const OBJECTIVE_GROUPS: Array<{ group: string; options: string[] }> = [
   { group: 'Tone', options: ['Hypertonic', 'Muscle guarding', 'Muscle spasm', 'Low tone'] },
   { group: 'Texture', options: ['Taut bands', 'Ropy / fibrous', 'Trigger point (local)', 'Trigger point w/ referral', 'Adhesions — reduced glide', 'Fascial restriction', 'Boggy / edema'] },
   { group: 'Tenderness', options: ['Tender — light pressure', 'Tender — deep pressure only', 'Referred pain on pressure', 'No tenderness reported'] },
-  { group: 'Temperature', options: ['Localized warmth', 'Cool to touch'] },
-  { group: 'ROM · Posture', options: ['Restricted ROM', 'Painful at end-range', 'ROM improved after work', 'Forward head posture', 'Rounded shoulders', 'Elevated shoulder', 'Uneven hips'] },
+  // Vagaro's charting guide (learn/soap-notes-massage-therapists) adds visible
+  // signs (redness/swelling) and side-to-side comparison to the objective
+  // vocabulary — their worked example: "ROM limited turning right, compared to
+  // the left". Side chips give that comparison without a free-text detour.
+  { group: 'Temperature · Visible', options: ['Localized warmth', 'Cool to touch', 'Redness noted', 'Swelling noted'] },
+  { group: 'ROM · Posture', options: ['Restricted ROM', 'Painful at end-range', 'ROM improved after work', 'Guarded movement', 'Forward head posture', 'Rounded shoulders', 'Elevated shoulder', 'Uneven hips'] },
+  { group: 'Side', options: ['Left side', 'Right side', 'Bilateral', 'R > L', 'L > R'] },
   { group: 'Response', options: ['Released w/ sustained pressure', 'Guarding eased during session', 'Tolerated deep pressure well', 'Client relaxed during session'] },
 ];
 // Toggle-chip editor over a comma-joined string field, with a REDUCED free-text
