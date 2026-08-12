@@ -1195,7 +1195,6 @@ function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { da
 // general always-worked regions first, then the consent-gated ones.
 const SOAP_REGIONS = ['Neck', 'Shoulders', 'Back', 'Arms & Hands', 'Legs', 'Scalp', 'Face', 'Pectoral Muscles', 'Abdomen', 'Gluteal Region', 'Feet'];
 const SOAP_TECHNIQUES = ['Swedish', 'Deep tissue', 'Trigger point', 'Myofascial release', 'Cupping', 'Hot stone', 'Stretching', 'Sports', 'Prenatal', 'Lymphatic'];
-const SOAP_POSITIONS = ['supine', 'prone', 'side-lying', 'seated'];
 const SOAP_PRESSURES = ['light', 'medium', 'deep'];
 
 interface IntakeRow {
@@ -1521,16 +1520,6 @@ function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
   );
 }
 
-// The SOAP note is written as a 4-step wizard rather than one long scroll: the
-// order matches how the session actually runs (what they said → what you found →
-// where → what happens next), and on a phone one step fits the screen.
-const SOAP_STEPS = [
-  { label: 'Narrative' },
-  { label: 'Findings' },
-  { label: 'Body Chart' },
-  { label: 'Summary' },
-] as const;
-
 // The structured SOAP form (create or edit). Areas-of-concern body-map + carry-forward.
 function SoapForm({ client, appointments, initialApptId, existing, seed, history, carryForward, canEdit, onCancel, onSaved }: {
   client: MassageClient; appointments: Appointment[]; initialApptId?: string; existing: SoapNote | null;
@@ -1561,7 +1550,9 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
   // existing note are preserved through edits — the payload echoes them back.
   const painBefore = src?.pain_before != null ? String(src.pain_before) : '';
   const painAfter = src?.pain_after != null ? String(src.pain_after) : '';
-  const [position, setPosition] = useState<string>(src?.position || '');
+  // Position + subjective: no longer asked (removed 2026-08-11); values on an
+  // existing note survive edits — the payload echoes them back.
+  const position = src?.position || '';
   const [pressure, setPressure] = useState<string>(src?.pressure || '');
   const [duration, setDuration] = useState<string>(src?.duration_min != null ? String(src.duration_min) : '');
   const [techniques, setTechniques] = useState<string[]>(src?.techniques || []);
@@ -1571,7 +1562,7 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
     if (carryForward?.next_focus?.length) return carryForward.next_focus.map((n) => ({ region: n.region, severity: 0, findings: n.note || '', focus: false }));
     return [];
   });
-  const [subjective, setSubjective] = useState(src?.subjective || '');
+  const subjective = src?.subjective || '';
   const [objective, setObjective] = useState(src?.objective || '');
   const [assessment, setAssessment] = useState(src?.assessment || '');
   const [plan, setPlan] = useState(src?.plan || '');
@@ -1580,11 +1571,6 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
   const [adverse, setAdverse] = useState(src?.adverse_reactions || '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Wizard step. Every field stays mounted in this component's state, so moving
-  // between steps never loses a keystroke and "Save & exit" works from any step —
-  // the steps are presentation only, not a multi-request form.
-  const [step, setStep] = useState(1);
-
   function toggleTechnique(t: string) {
     setTechniques((cur) => cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]);
   }
@@ -1635,7 +1621,6 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
       <div class="mb-3 flex items-center justify-between">
         <h3 class="text-[16px] font-semibold text-[var(--color-text)]">
           {existing ? 'Edit SOAP note' : seed ? 'Duplicate note' : 'New SOAP note'} · {client.name || client.email}
-          <span class="ml-2 rounded-md border border-[var(--color-accent)] px-1.5 py-0.5 text-[13px] font-normal text-[var(--color-accent)]">{SOAP_STEPS[step - 1].label} ({step}/{SOAP_STEPS.length})</span>
         </h3>
         <button type="button" class={btnGhost} onClick={onCancel}><X size={15} /> Close</button>
       </div>
@@ -1657,23 +1642,9 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
         </div>
       )}
 
-      {/* Step rail — every step is reachable directly; nothing here is required
-          to advance, so gating the jumps would only add friction. */}
-      <div class="mb-4 flex flex-wrap items-center gap-1">
-        {SOAP_STEPS.map((s, i) => (
-          <button key={s.label} type="button" onClick={() => setStep(i + 1)}
-            class={`rounded-md border px-2 py-1 text-[13px] ${step === i + 1
-              ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-[var(--color-text)]'
-              : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
-            <span class="opacity-60">{i + 1}</span> {s.label}
-          </button>
-        ))}
-      </div>
-
-      {step === 1 && (<>
-      {/* Tap-only step (Mike's ask, 2026-08-11): pain before/after removed, and
-          duration is never asked — it comes from the booked appointment. The only
-          typing on this step is the Subjective note at the bottom. */}
+      {/* One-page form (Mike's ask, 2026-08-11): no wizard tabs — everything in
+          one scroll. Tap-first: pain before/after, position and the subjective
+          note are gone; duration comes from the booked appointment. */}
       <div>
         <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Session</div>
         <div class="flex flex-wrap gap-1.5">
@@ -1698,18 +1669,6 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
       </div>
 
       <div class="mt-4">
-        <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Position</div>
-        <div class="flex flex-wrap gap-1.5">
-          {SOAP_POSITIONS.map((p) => (
-            <button key={p} type="button" onClick={() => setPosition((cur) => cur === p ? '' : p)}
-              class={`rounded-md border px-2 py-1.5 text-[14px] ${position === p ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
-              {p}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div class="mt-4">
         <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Pressure</div>
         <div class="flex flex-wrap gap-1.5">
           {SOAP_PRESSURES.map((p) => (
@@ -1722,12 +1681,6 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
       </div>
 
       <div class="mt-4">
-        <NoteField label="Subjective (client reports)" phraseKey="subjective" value={subjective} onChange={setSubjective} prior={priorVals((n) => n.subjective)} />
-      </div>
-      </>)}
-
-      {step === 2 && (<>
-      <div>
         <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Techniques</div>
         <div class="flex flex-wrap gap-1.5">
           {SOAP_TECHNIQUES.map((t) => (
@@ -1743,43 +1696,21 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
         <NoteField label="Objective (findings)" phraseKey="objective" value={objective} onChange={setObjective} prior={priorVals((n) => n.objective)} />
         <NoteField label="Assessment" phraseKey="assessment" value={assessment} onChange={setAssessment} prior={priorVals((n) => n.assessment)} />
       </div>
-      </>)}
 
-      {step === 3 && <BodyMapPicker areas={areas} onChange={setAreas} />}
+      <div class="mt-4"><BodyMapPicker areas={areas} onChange={setAreas} /></div>
 
-      {step === 4 && (<>
-      {/* Recap of what the earlier steps captured, so the plan is written with the
-          session in view instead of from memory. */}
-      <div class="mb-4 rounded-md border border-[var(--color-border)] px-3 py-2 text-[14px] text-[var(--color-text-muted)]">
-        <span class="font-semibold text-[var(--color-text)]">{sessionDate || today}</span>
-        {duration !== '' && <> · {duration} min</>}
-        {position && <> · {position}</>}
-        {pressure && <> · {pressure}</>}
-        {techniques.length > 0 && <> · {techniques.join(', ')}</>}
-        <div class="mt-1">
-          {areas.length > 0
-            ? <>{areas.length} area{areas.length === 1 ? '' : 's'} charted: {areas.map((a) => `${a.region}${a.severity ? ` (${a.severity})` : ''}`).join(' · ')}</>
-            : <span class="text-[var(--color-text-faint)]">No areas charted — go back to Body Chart if this session had findings.</span>}
-        </div>
-      </div>
-      <div class="grid gap-3 md:grid-cols-2">
+      <div class="mt-4 grid gap-3 md:grid-cols-2">
         <NoteField label="Plan" phraseKey="plan" value={plan} onChange={setPlan} prior={priorVals((n) => n.plan)} />
         <NoteField label="Home care (self-care given)" phraseKey="home_care" value={homeCare} onChange={setHomeCare} prior={priorVals((n) => n.home_care)} />
         <NoteField label="Referrals" phraseKey="referrals" value={referrals} onChange={setReferrals} prior={priorVals((n) => n.referrals)} />
         <NoteField label="Adverse reactions" phraseKey="adverse_reactions" value={adverse} onChange={setAdverse} prior={priorVals((n) => n.adverse_reactions)} />
       </div>
-      </>)}
 
       {err && <div class="mt-3 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
       <div class="mt-4 flex flex-wrap items-center justify-end gap-2">
         <button type="button" class={btnGhost} onClick={onCancel}>Cancel</button>
         <span class="flex-1" />
-        <button type="button" class={btnGhost} disabled={step === 1} onClick={() => setStep((s) => Math.max(1, s - 1))}>Back</button>
-        {/* Saving is allowed from any step — a half-written note beats a lost one. */}
-        <button type="button" class={btnGhost} disabled={busy || !canEdit} onClick={save}><Save size={15} /> {busy ? 'Saving…' : 'Save & exit'}</button>
-        {step < SOAP_STEPS.length
-          ? <button type="button" class={btnAccent} style="background:var(--color-accent)" onClick={() => setStep((s) => Math.min(SOAP_STEPS.length, s + 1))}>Continue</button>
-          : <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !canEdit} onClick={save}><Save size={15} /> {busy ? 'Saving…' : existing ? 'Save changes' : 'Save note'}</button>}
+        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !canEdit} onClick={save}><Save size={15} /> {busy ? 'Saving…' : existing ? 'Save changes' : 'Save note'}</button>
       </div>
     </section>
   );
