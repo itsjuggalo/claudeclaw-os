@@ -8,7 +8,6 @@ import {
   Download,
   Gift,
   History,
-  Keyboard,
   LockKeyhole,
   Mail,
   MessageSquareText,
@@ -249,49 +248,6 @@ function MicButton({ onText }: { onText: (t: string) => void }) {
   );
 }
 
-// Narrative SOAP field: tap-first (canned-phrase chips + reuse-from-history) with a mic
-// (voice→text) and a keyboard button that reveals the textarea for manual typing.
-function NoteField({ label, value, onChange, phraseKey, prior }: {
-  label: string; value: string; onChange: (v: string) => void; phraseKey?: string; prior?: string[];
-}) {
-  // Open for writing by default — hiding the textarea behind a "type" tap made
-  // note-writing feel cramped; the toggle now just collapses it when not needed.
-  const [typing, setTyping] = useState<boolean>(true);
-  const phrases = (phraseKey && SOAP_PHRASES[phraseKey]) || [];
-  return (
-    <div class="block">
-      <div class="mb-1 flex flex-wrap items-center justify-between gap-1">
-        <div class="text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
-        <div class="flex items-center gap-1">
-          <MicButton onText={(t) => onChange(appendText(value, t))} />
-          <button type="button" title="Type manually" onClick={() => setTyping((v) => !v)}
-            class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[13px] ${typing
-              ? 'border-[var(--color-accent)] text-[var(--color-text)]'
-              : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
-            <Keyboard size={14} /> type
-          </button>
-          {prior && prior.length > 0 && (
-            <select class="max-w-[130px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-[13px] text-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
-              title="Reuse a value you wrote before for this client" value=""
-              onChange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { onChange(v); setTyping(true); } (e.currentTarget as HTMLSelectElement).value = ''; }}>
-              <option value="">↺ reuse…</option>
-              {prior.map((p, i) => <option key={i} value={p}>{p.length > 50 ? p.slice(0, 47) + '…' : p}</option>)}
-            </select>
-          )}
-        </div>
-      </div>
-      {phrases.length > 0 && (
-        <div class="mb-1 flex flex-wrap gap-1">
-          {phrases.map((p) => <Chip key={p} label={`+ ${p}`} onClick={() => { onChange(appendText(value, p)); setTyping(true); }} />)}
-        </div>
-      )}
-      {(typing || !!value) && (
-        <textarea class={`${inputClass} min-h-[130px] resize-y leading-relaxed`} placeholder="Tap a chip above, dictate, or just start typing…"
-          value={value} onInput={(e) => onChange((e.currentTarget as HTMLTextAreaElement).value)} />
-      )}
-    </div>
-  );
-}
 // Objective findings, tap-only, grouped by the documentation framework an LMT
 // is taught to chart with: the Four T's of palpation (Tone, Texture,
 // Tenderness, Temperature) + ROM/posture observations + response to treatment
@@ -318,8 +274,8 @@ const OBJECTIVE_GROUPS: Array<{ group: string; options: string[] }> = [
 // carry the findings; the small box is for a brief in-scope extra only. Both
 // live in the same string: chip-matching fragments drive the chip state, and
 // everything else (including old typed notes) is the free text.
-function FindingChips({ label, value, onChange, groups }: {
-  label: string; value: string; onChange: (v: string) => void; groups: Array<{ group: string; options: string[] }>;
+function FindingChips({ label, value, onChange, groups, input = true, placeholder }: {
+  label: string; value: string; onChange: (v: string) => void; groups: Array<{ group: string; options: string[] }>; input?: boolean; placeholder?: string;
 }) {
   const options = groups.flatMap((g) => g.options);
   const parts = value.split(',').map((x) => x.trim()).filter(Boolean);
@@ -336,7 +292,7 @@ function FindingChips({ label, value, onChange, groups }: {
       <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
       {groups.map((g) => (
         <div key={g.group} class="mb-2">
-          <div class="mb-1 text-[12px] uppercase tracking-wider text-[var(--color-text-faint)] opacity-80">{g.group}</div>
+          {g.group && <div class="mb-1 text-[12px] uppercase tracking-wider text-[var(--color-text-faint)] opacity-80">{g.group}</div>}
           <div class="flex flex-wrap gap-1.5">
             {g.options.map((o) => (
               <button key={o} type="button" onClick={() => { const next = new Set(selected); if (next.has(o)) next.delete(o); else next.add(o); onChange(compose(next, freeText)); }}
@@ -349,8 +305,8 @@ function FindingChips({ label, value, onChange, groups }: {
           </div>
         </div>
       ))}
-      <input type="text" class={`${inputClass} mt-1.5`} placeholder="Anything else felt/observed (optional, stays in scope)…"
-        value={freeText} onInput={(e) => { const v = (e.currentTarget as HTMLInputElement).value; setFreeText(v); onChange(compose(selected, v)); }} />
+      {input && <input type="text" class={`${inputClass} mt-1.5`} placeholder={placeholder || 'Anything else felt/observed (optional, stays in scope)…'}
+        value={freeText} onInput={(e) => { const v = (e.currentTarget as HTMLInputElement).value; setFreeText(v); onChange(compose(selected, v)); }} />}
     </div>
   );
 }
@@ -1583,25 +1539,10 @@ function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
 }
 
 // The structured SOAP form (create or edit). Areas-of-concern body-map + carry-forward.
-function SoapForm({ client, appointments, initialApptId, existing, seed, history, carryForward, canEdit, onCancel, onSaved }: {
+function SoapForm({ client, appointments, initialApptId, existing, seed, carryForward, canEdit, onCancel, onSaved }: {
   client: MassageClient; appointments: Appointment[]; initialApptId?: string; existing: SoapNote | null;
   seed?: SoapNote | null; history?: SoapNote[]; carryForward: CarryForward | null; canEdit: boolean; onCancel: () => void; onSaved: () => void;
 }) {
-  // Per-client autofill: distinct non-empty values this client had in earlier notes, most-recent
-  // first. Excludes the note being edited so you never "reuse" its own current value. Powers the
-  // per-field "↺ reuse…" pickers (Field prop) so repeat clients don't mean repeat typing.
-  const priorNotes = (history ?? []).filter((n) => n.id !== existing?.id);
-  const priorVals = (get: (n: SoapNote) => unknown): string[] => {
-    const seen = new Set<string>(); const out: string[] = [];
-    for (const n of priorNotes) {
-      const raw = get(n);
-      const v = raw == null ? '' : String(raw).trim();
-      if (!v || seen.has(v)) continue;
-      seen.add(v); out.push(v);
-      if (out.length >= 8) break;
-    }
-    return out;
-  };
   const today = new Date().toISOString().slice(0, 10);
   // Clinical content is seeded from the note being edited OR the note being duplicated.
   // Session-specific fields (date, appointment) always start fresh for a duplicate.
@@ -1754,19 +1695,19 @@ function SoapForm({ client, appointments, initialApptId, existing, seed, history
         </div>
       </div>
 
-      <div class="mt-4 grid gap-3 md:grid-cols-2">
-        <FindingChips label="Objective (findings)" value={objective} onChange={setObjective} groups={OBJECTIVE_GROUPS} />
-        <NoteField label="Assessment" phraseKey="assessment" value={assessment} onChange={setAssessment} prior={priorVals((n) => n.assessment)} />
-      </div>
+      <div class="mt-4"><FindingChips label="Objective (findings)" value={objective} onChange={setObjective} groups={OBJECTIVE_GROUPS} input={false} /></div>
 
       <div class="mt-4"><BodyMapPicker areas={areas} onChange={setAreas} /></div>
 
       <div class="mt-4 grid gap-3 md:grid-cols-2">
-        <NoteField label="Plan" phraseKey="plan" value={plan} onChange={setPlan} prior={priorVals((n) => n.plan)} />
-        <NoteField label="Home care (self-care given)" phraseKey="home_care" value={homeCare} onChange={setHomeCare} prior={priorVals((n) => n.home_care)} />
-        <NoteField label="Referrals" phraseKey="referrals" value={referrals} onChange={setReferrals} prior={priorVals((n) => n.referrals)} />
-        <NoteField label="Adverse reactions" phraseKey="adverse_reactions" value={adverse} onChange={setAdverse} prior={priorVals((n) => n.adverse_reactions)} />
+        <FindingChips label="Plan" value={plan} onChange={setPlan} groups={[{ group: '', options: SOAP_PHRASES.plan }]} input={false} />
+        <FindingChips label="Home care (self-care given)" value={homeCare} onChange={setHomeCare} groups={[{ group: '', options: SOAP_PHRASES.home_care }]} input={false} />
+        <FindingChips label="Referrals" value={referrals} onChange={setReferrals} groups={[{ group: '', options: SOAP_PHRASES.referrals }]} input={false} />
+        <FindingChips label="Adverse reactions" value={adverse} onChange={setAdverse} groups={[{ group: '', options: SOAP_PHRASES.adverse_reactions }]} input={false} />
       </div>
+
+      <div class="mt-4"><FindingChips label="Assessment — plus anything else" value={assessment} onChange={setAssessment}
+        groups={[{ group: '', options: SOAP_PHRASES.assessment }]} placeholder="Anything else about this session (optional)…" /></div>
 
       {err && <div class="mt-3 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
       <div class="mt-4 flex flex-wrap items-center justify-end gap-2">
@@ -1797,14 +1738,11 @@ const SOAP_REGION_POS: Record<string, { front?: [number, number]; back?: [number
 // Labeled pill buttons flank the figures (Massage Envy "My Body Care" style),
 // tied to their body spot by a leader line. Single-view splits pills per side;
 // "both" view puts the front figure's pills on the left, the back's on the right.
-// Exactly 6 chart buttons (ME "My Body Care" layout). Other regions stay
-// reachable through the "+ add region…" dropdown.
-const CHART_REGIONS = ['Neck', 'Shoulders', 'Arms & Hands', 'Back', 'Gluteal Region', 'Legs'];
 const SOAP_REGION_SIDE: Record<'front' | 'back', Record<'left' | 'right', string[]>> = {
-  front: { left: ['Neck', 'Shoulders', 'Arms & Hands'], right: ['Legs'] },
-  back: { left: ['Neck', 'Shoulders', 'Arms & Hands'], right: ['Back', 'Gluteal Region', 'Legs'] },
+  front: { left: ['Face', 'Neck', 'Pectoral Muscles', 'Abdomen', 'Legs'], right: ['Scalp', 'Shoulders', 'Arms & Hands', 'Feet'] },
+  back: { left: ['Neck', 'Back', 'Gluteal Region', 'Legs'], right: ['Scalp', 'Shoulders', 'Arms & Hands', 'Feet'] },
 };
-const SOAP_REGION_SHORT: Record<string, string> = { 'Gluteal Region': 'Glutes', 'Arms & Hands': 'Arms' };
+const SOAP_REGION_SHORT: Record<string, string> = { 'Pectoral Muscles': 'Pecs', 'Gluteal Region': 'Glutes', 'Arms & Hands': 'Arms', 'Shoulders': 'Shoulder' };
 
 // Marker key for the body chart. Picking a marker makes the body figure a
 // stamp: tap a region and it records that finding at a sensible starting
@@ -1864,21 +1802,21 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
     const pillW = both ? 28 : 26;                      // % width of each pill column
     const imgW = both ? 22 : 48;                       // % width of each figure image
     const imgH = imgW * (1264 / 848);                  // figure height in width-units
-    const H = imgH;                                    // chart height in width-units
+    const H = both ? Math.max(imgH, 78) : imgH;        // extra room in both-view so 9 pills never overlap
     const imgLeft = (v: 'front' | 'back') => pillW + (both && v === 'back' ? imgW : 0);
     const inView = (v: 'front' | 'back') => (r: string) => !!SOAP_REGION_POS[r]?.[v];
     const sortByY = (v: 'front' | 'back') => (a: string, b: string) => SOAP_REGION_POS[a]![v]![1] - SOAP_REGION_POS[b]![v]![1];
     const cols: Array<{ side: 'left' | 'right'; items: Array<{ region: string; view: 'front' | 'back' }> }> = both
       ? [
-          { side: 'left', items: ['Neck', 'Shoulders', 'Arms & Hands'].filter(inView('front')).sort(sortByY('front')).map((region) => ({ region, view: 'front' as const })) },
-          { side: 'right', items: ['Back', 'Gluteal Region', 'Legs'].filter(inView('back')).sort(sortByY('back')).map((region) => ({ region, view: 'back' as const })) },
+          { side: 'left', items: SOAP_REGIONS.filter(inView('front')).sort(sortByY('front')).map((region) => ({ region, view: 'front' as const })) },
+          { side: 'right', items: SOAP_REGIONS.filter(inView('back')).sort(sortByY('back')).map((region) => ({ region, view: 'back' as const })) },
         ]
       : (['left', 'right'] as const).map((side) => ({
           side,
           items: SOAP_REGION_SIDE[show][side].filter(inView(show)).sort(sortByY(show)).map((region) => ({ region, view: show as 'front' | 'back' })),
         }));
     // y values below are in width-units (0..H), converted to % via /H.
-    const slotY = (i: number, n: number) => (n <= 1 ? H / 2 : 6 + (i * (H - 12)) / (n - 1));
+    const slotY = (i: number, n: number) => (n <= 1 ? H / 2 : 3 + (i * (H - 6)) / (n - 1));
     const target = (region: string, v: 'front' | 'back') => {
       const [px, py] = SOAP_REGION_POS[region]![v]!;
       return { x: imgLeft(v) + (px / 100) * imgW, y: (py / 100) * imgH };
@@ -1916,8 +1854,8 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
               <button key={`pill-${col.side}-${view}-${region}`} type="button"
                 title={`${region}${area ? ` — ${area.findings || 'flagged'} (sev ${area.severity})` : marker ? ` — tap to mark ${marker.label}` : ''}`}
                 aria-pressed={!!area} onClick={() => toggleRegion(region)}
-                class={'absolute truncate rounded-md border text-center font-semibold uppercase leading-none shadow-sm transition ' + (both ? 'px-0 py-2 text-[9px] tracking-tighter' : 'px-1.5 py-2.5 text-[12px] tracking-wide')}
-                style={`left:${col.side === 'left' ? 0 : 100 - pillW}%;width:${pillW - 1.5}%;top:${(slotY(i, col.items.length) / H) * 100}%;transform:translateY(-50%);${area
+                class={'absolute truncate rounded-md border text-center font-semibold uppercase leading-none shadow-sm transition ' + (both ? 'px-0 py-0.5 text-[8px] tracking-tighter' : 'px-1.5 py-2.5 text-[12px] tracking-wide')}
+                style={`line-height:1;font-size:${both ? 8 : 12}px;letter-spacing:${both ? '-0.3px' : 'normal'};left:${col.side === 'left' ? 0 : 100 - pillW}%;width:${pillW - (both ? 0.5 : 1.5)}%;top:${(slotY(i, col.items.length) / H) * 100}%;transform:translateY(-50%);${area
                   ? `background:${color};color:#fff;border-color:${color}`
                   : 'background:#fff;color:#334155;border-color:#cbd5e1'}`}>
                 {area && m ? `${m.glyph} ` : ''}{label}
@@ -1925,7 +1863,7 @@ function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a
             );
           }))}
 
-          {views.map((v) => CHART_REGIONS.filter(inView(v)).map((r) => {
+          {views.map((v) => SOAP_REGIONS.filter(inView(v)).map((r) => {
             const t = target(r, v);
             const { color } = stateOf(r);
             return (
