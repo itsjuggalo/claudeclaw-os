@@ -1,0 +1,101 @@
+# ClaudeClaw OS — VPS deploy config
+#
+# Copy this file to `claudeclaw-deploy.conf`, fill it in, then run:
+#   sudo bash install-vps.sh
+#
+# This file holds live secrets — it is git-ignored. Keep mode 600.
+# Every value here can also be passed as an environment variable instead.
+
+# ── Required ──────────────────────────────────────────────────────────────────
+
+# Telegram bot token from @BotFather.
+TELEGRAM_BOT_TOKEN=
+
+# Your Telegram chat ID (numeric). Get it by messaging the bot /chatid once running,
+# or via @userinfobot.
+ALLOWED_CHAT_ID=
+
+# Claude Code auth for the headless VPS — set EXACTLY ONE of the two below.
+#   - Max plan (uses your subscription, no per-token billing):
+#       run `claude setup-token` on your local machine, paste the token here.
+#   - Pay-per-token (bills per request, from console.anthropic.com):
+#       set ANTHROPIC_API_KEY instead.
+CLAUDE_CODE_OAUTH_TOKEN=
+ANTHROPIC_API_KEY=
+
+# ── Tailscale ─────────────────────────────────────────────────────────────────
+
+# Pre-auth key for unattended join (Tailscale admin console → Settings → Keys).
+# Recommended: make it reusable=false, and DISABLE KEY EXPIRY on the resulting
+# node so the VPS never silently drops off the tailnet.
+# Leave blank to log in interactively (the script prints a URL to approve).
+TS_AUTHKEY=
+
+# Hostname this VPS shows up as in your tailnet (becomes <name>.<tailnet>.ts.net).
+TS_HOSTNAME=claudeclaw
+
+# ── Optional (sensible defaults) ──────────────────────────────────────────────
+
+# Your DISPLAY name — how agents address you on shared surfaces such as the text
+# War Room. Cosmetic only; it is not a Linux account. (For the account the service
+# runs as, see RUN_USER below — the two are unrelated, so setting your own name
+# here does NOT change who owns the install.)
+# Defaults to "User" — set it unless you like being called that.
+# This file is sourced by bash, so QUOTE any name containing spaces.
+# CLAUDECLAW_OWNER_NAME="Ada Lovelace"
+
+# Dashboard port (loopback only; never exposed publicly).
+# DASHBOARD_PORT=3141
+
+# Where everything is installed, and the unprivileged SYSTEM ACCOUNT the service
+# runs under. RUN_USER is a Linux user (created with --system and a nologin shell),
+# NOT your display name — for that, see CLAUDECLAW_OWNER_NAME above. Most people
+# should leave RUN_USER alone.
+# Changing it after the first install is supported — the installer re-owns
+# INSTALL_DIR to the new user — but it rewrites ownership of the whole tree,
+# including store/ and .env, so stop the service before re-running.
+# INSTALL_DIR=/opt/claudeclaw
+# RUN_USER=claudeclaw
+
+# SSH policy:
+#   public        - (default) keep public SSH, key-only auth + fail2ban
+#   tailscale-only - block public port 22; SSH over the tailnet only (strongest)
+#   off           - make no SSH changes
+# Before choosing tailscale-only: confirm Hostinger's browser/VNC console works
+# (your lockout recovery), and disable this node's key expiry in Tailscale.
+# SSH_HARDENING=public
+
+# Native OpenAI (Codex SDK) is a stable, ungated provider — no ENABLE_ACP needed.
+# Authenticate it either by setting a key here, or by running `codex login` on
+# this VPS once it's deployed (uses a ChatGPT subscription instead of per-token
+# billing). Leave blank if you only use Claude.
+# OPENAI_API_KEY=
+
+# Transport used by the native OpenAI provider above.
+#   app-server - preferred. One warm `codex app-server` process: incremental
+#                text streaming, turn-scoped cancellation, effective-policy
+#                verification.
+#   sdk        - (default when unset) the rollback path. Use this if app-server
+#                misbehaves after an upgrade.
+# Set it here rather than in .env: the installer rewrites .env on every run, so
+# a hand-edited value there is lost on the next deploy.
+# CODEX_TRANSPORT=sdk
+
+# Experimental provider tier (the ACP family: codex-acp, Gemini, OpenCode,
+# OpenRouter, custom). Default false = the experimental picker is hidden; the
+# stable tier (Claude and native OpenAI above) is always available. Set true to
+# unlock it — but each experimental provider still needs its CLI installed AND
+# authenticated on this VPS (e.g. `opencode auth login`), or its runs will fail.
+# ENABLE_ACP=false
+
+# Source repo + branch to deploy.
+# REPO_URL=https://github.com/earlyaidopters/claudeclaw-os.git
+# REPO_BRANCH=main
+
+# Private-repo clone token (the upstream earlyaidopters repo is private).
+# The members token site shows a clone command like:
+#   git clone https://x-access-token:ghs_XXXX@github.com/earlyaidopters/claudeclaw-os.git
+# Copy just the ghs_... token and paste it here. It's used only for the clone,
+# then scrubbed from .git/config. Tokens expire in ~1h — regenerate + re-run if
+# the clone step fails. Leave blank for public repos.
+# REPO_CLONE_TOKEN=

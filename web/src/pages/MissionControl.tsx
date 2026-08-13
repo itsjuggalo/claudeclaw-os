@@ -6,9 +6,10 @@ import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
 import { Modal, Drawer } from '@/components/Modal';
 import { AgentAvatar } from '@/components/AgentAvatar';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost, apiPatch, apiDelete, apiGet } from '@/lib/api';
-import { formatRelativeTime } from '@/lib/format';
+import { formatRelativeTime, resolveAgentName } from '@/lib/format';
 import { pushToast } from '@/lib/toasts';
 import {
   workspaceName,
@@ -131,7 +132,7 @@ export function MissionControl() {
         title={headerTitle}
         actions={
           <>
-            <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
+            <span class="hidden lg:inline text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
               {totalActive} active · {inbox.length} unassigned · {tasks.data?.tasks?.length ?? 0} total
             </span>
             <LayoutMenu agents={orderedAgents} />
@@ -208,7 +209,7 @@ function InboxColumn({ tasks, agents, onChange }: { tasks: MissionTask[]; agents
   const [draggingId, setDraggingId] = useState<string | null>(null);
   return (
     <div
-      class="w-[300px] shrink-0 flex flex-col bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg overflow-hidden"
+      class="w-[min(300px,85vw)] shrink-0 flex flex-col bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg overflow-hidden"
       onDragOver={(e) => e.preventDefault()}
     >
       <div class="px-3 py-3 border-b border-[var(--color-border)] flex items-center gap-2">
@@ -579,7 +580,7 @@ function InboxCard({
       pushToast({
         tone: 'success',
         title: 'Auto-assigned',
-        description: res.assigned_agent ? `Routed to @${res.assigned_agent}.` : 'Routed.',
+        description: res.assigned_agent ? `Routed to @${resolveAgentName(res.assigned_agent)}.` : 'Routed.',
       });
     } catch (err: any) {
       pushToast({ tone: 'error', title: 'Auto-assign failed', description: err?.message || String(err), durationMs: 6000 });
@@ -591,7 +592,7 @@ function InboxCard({
     try {
       await apiPatch(`/api/mission/tasks/${task.id}`, { assigned_agent: agentId });
       onChange();
-      pushToast({ tone: 'success', title: 'Assigned', description: `Routed to @${agentId}.` });
+      pushToast({ tone: 'success', title: 'Assigned', description: `Routed to @${resolveAgentName(agentId)}.` });
     } catch (err: any) {
       pushToast({ tone: 'error', title: 'Assign failed', description: err?.message || String(err), durationMs: 6000 });
     } finally { setBusy(null); }
@@ -764,7 +765,7 @@ function TaskDetailsModal({
             </div>
           </div>
         )}
-        <div class="grid grid-cols-3 gap-3 pt-1">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
           <Stat label="Created" value={formatRelativeTime(task.created_at)} />
           <Stat label="Priority" value={task.priority > 0 ? 'P' + task.priority : '—'} />
           <Stat label="Created by" value={task.created_by || 'dashboard'} />
@@ -956,7 +957,7 @@ function CreateTaskModal({
           />
           <div class="text-[10px] text-[var(--color-text-faint)] mt-0.5 tabular-nums">{prompt.length} / 10000</div>
         </div>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Assign</label>
             <select
@@ -1022,15 +1023,15 @@ function HistoryList() {
     <div class="px-6 py-4">
       <div class="flex items-center gap-3 mb-3">
         <div class="text-[12px] text-[var(--color-text-muted)] tabular-nums">{total} historical tasks</div>
-        {!loading && (
-          <button
-            type="button"
-            onClick={() => load(0, true)}
-            class="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
-          >
-            ↻ Refresh
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => load(0, true)}
+          disabled={loading}
+          aria-busy={loading}
+          class="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
+        >
+          {loading ? <NestedSquaresSpinner size={11} /> : '↻'} Refresh
+        </button>
       </div>
       {error && (
         <div class="bg-[var(--color-card)] border border-[var(--color-status-failed)] rounded p-3 mb-3">
@@ -1039,9 +1040,11 @@ function HistoryList() {
           <button
             type="button"
             onClick={() => load(0, true)}
-            class="mt-2 text-[11.5px] text-[var(--color-accent)] hover:underline"
+            disabled={loading}
+            aria-busy={loading}
+            class="mt-2 inline-flex items-center gap-1 text-[11.5px] text-[var(--color-accent)] hover:underline"
           >
-            Try again
+            {loading ? <NestedSquaresSpinner size={11} /> : null} Try again
           </button>
         </div>
       )}
@@ -1051,7 +1054,7 @@ function HistoryList() {
             <div class="flex items-center gap-2 mb-1">
               <Pill tone={t.status as any}>{t.status}</Pill>
               <span class="text-[10.5px] text-[var(--color-text-faint)] tabular-nums uppercase tracking-wider">{t.id.slice(0, 6)}</span>
-              {t.assigned_agent && <span class="text-[11px] text-[var(--color-text-muted)]">@{t.assigned_agent}</span>}
+              {t.assigned_agent && <span class="text-[11px] text-[var(--color-text-muted)]">@{resolveAgentName(t.assigned_agent)}</span>}
               <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">
                 {formatRelativeTime(t.completed_at || t.created_at)}
               </span>

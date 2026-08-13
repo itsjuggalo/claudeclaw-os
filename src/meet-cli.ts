@@ -29,7 +29,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 import { getVenvPython, IS_WINDOWS, killProcess } from './platform.js';
 
@@ -48,8 +48,8 @@ import { loadAgentConfig, listAgentIds } from './agent-config.js';
 import { resolveAgentAvatar } from './avatars.js';
 import { readEnvFile } from './env.js';
 import { createRoom as dailyCreateRoom, deleteRoom as dailyDeleteRoom, DailyApiError } from './daily-client.js';
-
-initDatabase();
+import { renderHelp } from './cli-reference.js';
+import { meetDescriptor as descriptor } from './cli-descriptors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -856,67 +856,45 @@ function cmdShow(): void {
 
 const command = process.argv[2];
 
-function printHelp(): void {
-  process.stderr.write(`ClaudeClaw Meet CLI
+// Only run the CLI when invoked directly, so importing `descriptor` (for docs
+// generation and the drift-guard test) does not trigger DB init or dispatch.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 
-Commands:
-  join        Pika avatar mode. Bot joins with a real-time AI avatar.
-              --agent <id> --meet-url <url> [--brief <file>] [--auto-brief]
-              [--context <hint>] [--bot-name <name>] [--voice-id <id>]
-              [--meeting-password <pw>]
-  join-daily  Daily.co mode. Creates a new Daily.co room, spawns a
-              Pipecat agent in it, returns the room URL to share.
-              Full speech-to-speech via Gemini Live, tool calling via
-              answer_as_agent. Fastest path, no tunnel needed.
-              --agent <id> [--mode direct|auto] [--brief <file>]
-              [--auto-brief] [--context <hint>] [--bot-name <name>]
-              [--room-name <slug>] [--ttl-sec <seconds>]
-              (Requires DAILY_API_KEY and GOOGLE_API_KEY in .env)
-  brief       Pre-flight research pipeline. Writes a system prompt file
-              to <tmpdir>/meeting_brief_*.txt using the agent's full stack.
-              --agent <id> --meet-url <url> [--context <hint>]
-  leave       --session-id <id>
-  list        [--active]
-  show        --session-id <id>
-
-Pika avatar files: warroom/avatars/<agent>-meet.png, falling back to
-<agent>.png (PNG only — the resolver doesn't load .jpg/.jpeg). voice_id
-defaults to the Pika preset ${DEFAULT_VOICE_ID} if agent.yaml has no
-meet_voice_id field. Briefing budget: ${BRIEF_TIMEOUT_SEC}s.
-`);
-}
-
-(async () => {
-  try {
-    switch (command) {
-      case 'join':
-        await cmdJoin();
-        break;
-      case 'join-daily':
-        await cmdJoinDaily();
-        break;
-      case 'brief':
-        await cmdBrief();
-        break;
-      case 'leave':
-        await cmdLeave();
-        break;
-      case 'list':
-        cmdList();
-        break;
-      case 'show':
-        cmdShow();
-        break;
-      case '--help':
-      case '-h':
-      case undefined:
-        printHelp();
-        process.exit(command ? 0 : 1);
-        break;
-      default:
-        die(`unknown command: ${command}. Run --help for usage.`);
-    }
-  } catch (err) {
-    fail({ error: err instanceof Error ? err.message : String(err) });
+if (isMain) {
+  // Handle --help / -h before any other work (including DB init).
+  if (command === '--help' || command === '-h' || command === undefined) {
+    console.log(renderHelp(descriptor));
+    process.exit(command ? 0 : 1);
   }
-})();
+
+  initDatabase();
+
+  void (async () => {
+    try {
+      switch (command) {
+        case 'join':
+          await cmdJoin();
+          break;
+        case 'join-daily':
+          await cmdJoinDaily();
+          break;
+        case 'brief':
+          await cmdBrief();
+          break;
+        case 'leave':
+          await cmdLeave();
+          break;
+        case 'list':
+          cmdList();
+          break;
+        case 'show':
+          cmdShow();
+          break;
+        default:
+          die(`unknown command: ${command}. Run --help for usage.`);
+      }
+    } catch (err) {
+      fail({ error: err instanceof Error ? err.message : String(err) });
+    }
+  })();
+}

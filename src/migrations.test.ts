@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import yaml from 'js-yaml';
 
-import { checkPendingMigrations, compareSemver } from './migrations.js';
+import { checkPendingMigrations, compareSemver, backfillMainAgent } from './migrations.js';
 
 // ── compareSemver ────────────────────────────────────────────────────────────
 
@@ -226,5 +227,155 @@ describe('checkPendingMigrations', () => {
 
       expect(process.exit).not.toHaveBeenCalled();
     });
+
+    // ── fail-closed on corrupt registry (#160 S6) ──────────────────────────
+    it('fails CLOSED when version.json is present but corrupt', () => {
+      const migrationsDir = path.join(tmpDir, 'migrations');
+      fs.mkdirSync(migrationsDir, { recursive: true });
+      fs.writeFileSync(path.join(migrationsDir, 'version.json'), '{ not valid json');
+
+      checkPendingMigrations(tmpDir);
+
+      expect(process.exit).toHaveBeenCalledWith(1);
+    });
+
+    it('fails CLOSED when .applied.json is present but corrupt', () => {
+      writeVersionJson({ 'v1.0.0': [], 'v1.1.0': [] });
+      createStoreDir();
+      const migrationsDir = path.join(tmpDir, 'migrations');
+      fs.writeFileSync(path.join(migrationsDir, '.applied.json'), '{ corrupt');
+
+      checkPendingMigrations(tmpDir);
+
+      expect(process.exit).toHaveBeenCalledWith(1);
+    });
+  });
+});
+
+// ── backfillMainAgent ────────────────────────────────────────────────────────
+
+describe('backfillMainAgent', () => {
+  let root: string;
+  let configDir: string;
+  let storeDir: string;
+  let projectRoot: string;
+  let mainYaml: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeclaw-backfill-'));
+    configDir = path.join(root, 'config');
+    storeDir = path.join(root, 'store');
+    projectRoot = path.join(root, 'project');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(storeDir, { recursive: true });
+    fs.mkdirSync(projectRoot, { recursive: true });
+    mainYaml = path.join(configDir, 'agents', 'main', 'agent.yaml');
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function run() {
+    return backfillMainAgent({ configDir, storeDir, projectRoot });
+  }
+
+  function loadYaml(): Record<string, unknown> {
+    return yaml.load(fs.readFileSync(mainYaml, 'utf-8')) as Record<string, unknown>;
+  }
+
+  it('creates a valid agent.yaml when it is missing', () => {
+    const { changed } = run();
+    expect(changed).toContain('created agents/main/agent.yaml');
+    expect(fs.existsSync(mainYaml)).toBe(true);
+    const y = loadYaml();
+    expect(y.name).toBe('Main');
+    expect(typeof y.description).toBe('string');
+    expect(y.telegram_bot_token_env).toBe('TELEGRAM_BOT_TOKEN');
+  });
+
+  it('folds legacy main-config.json into the yaml, then retires the json to .bak', () => {
+    const jsonPath = path.join(storeDir, 'main-config.json');
+    fs.writeFileSync(jsonPath, JSON.stringify({
+      name: 'Holden',
+      description: 'From the legacy json',
+      model: 'claude-sonnet-4-6',
+    }), 'utf-8');
+
+    const { changed } = run();
+
+    const y = loadYaml();
+    expect(y.name).toBe('Holden');
+    expect(y.description).toBe('From the legacy json');
+    expect(y.provider).toEqual({ type: 'claude', model: 'claude-sonnet-4-6' });
+
+    // json retired, not deleted.
+    expect(fs.existsSync(jsonPath)).toBe(false);
+    expect(fs.existsSync(jsonPath + '.bak')).toBe(true);
+    expect(changed.some((c) => c.includes('retired main-config.json'))).toBe(true);
+  });
+
+  it('is a no-op on the second run (idempotent)', () => {
+    fs.writeFileSync(path.join(storeDir, 'main-config.json'), JSON.stringify({ description: 'x', model: 'claude-opus-4-8' }), 'utf-8');
+    run();
+    const after1 = fs.readFileSync(mainYaml, 'utf-8');
+
+    const { changed } = run();
+    expect(changed).toEqual([]);
+    expect(fs.readFileSync(mainYaml, 'utf-8')).toBe(after1);
+  });
+
+  it('never overwrites a user-edited agent.yaml', () => {
+    fs.mkdirSync(path.dirname(mainYaml), { recursive: true });
+    fs.writeFileSync(mainYaml, yaml.dump({
+      name: 'Holden',
+      description: 'User custom description',
+      telegram_bot_token_env: 'TELEGRAM_BOT_TOKEN',
+      provider: { type: 'opencode' },
+    }), 'utf-8');
+    // Legacy json with conflicting values that must NOT win.
+    fs.writeFileSync(path.join(storeDir, 'main-config.json'), JSON.stringify({
+      description: 'json description',
+      model: 'claude-haiku-4-5',
+    }), 'utf-8');
+
+    run();
+
+    const y = loadYaml();
+    expect(y.name).toBe('Holden');
+    expect(y.description).toBe('User custom description'); // preserved
+    expect(y.provider).toEqual({ type: 'opencode' }); // provider not clobbered
+    // json still retired (its stale data is superseded).
+    expect(fs.existsSync(path.join(storeDir, 'main-config.json'))).toBe(false);
+  });
+
+  it('copies a legacy persona into agents/main/CLAUDE.md then retires the original to .bak', () => {
+    const legacyPersona = path.join(configDir, 'CLAUDE.md');
+    fs.writeFileSync(legacyPersona, '# Legacy persona\nBe Holden.', 'utf-8');
+
+    const { changed } = run();
+
+    const mainClaude = path.join(configDir, 'agents', 'main', 'CLAUDE.md');
+    expect(fs.existsSync(mainClaude)).toBe(true);
+    expect(fs.readFileSync(mainClaude, 'utf-8')).toContain('Legacy persona');
+    expect(changed.some((c) => c.includes('copied legacy persona'))).toBe(true);
+    // No live duplicate left at the parent config root; original preserved as .bak.
+    expect(fs.existsSync(legacyPersona)).toBe(false);
+    expect(fs.existsSync(legacyPersona + '.bak')).toBe(true);
+    expect(fs.readFileSync(legacyPersona + '.bak', 'utf-8')).toContain('Legacy persona');
+    expect(changed.some((c) => c.includes('retired legacy CLAUDE.md'))).toBe(true);
+  });
+
+  it('leaves a malformed agent.yaml untouched and keeps the legacy json', () => {
+    fs.mkdirSync(path.dirname(mainYaml), { recursive: true });
+    const bad = 'name: "unterminated\n  : : :';
+    fs.writeFileSync(mainYaml, bad, 'utf-8');
+    fs.writeFileSync(path.join(storeDir, 'main-config.json'), JSON.stringify({ description: 'x' }), 'utf-8');
+
+    run();
+
+    // Bad file untouched; legacy json NOT retired (nothing valid to fold into).
+    expect(fs.readFileSync(mainYaml, 'utf-8')).toBe(bad);
+    expect(fs.existsSync(path.join(storeDir, 'main-config.json'))).toBe(true);
   });
 });

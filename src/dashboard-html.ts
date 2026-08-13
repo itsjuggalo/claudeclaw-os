@@ -169,6 +169,23 @@ const WARROOM_ENABLED = warroomEnabled;
     </button>
   </div>
 </div>
+
+<!-- Quick Links — ARIES + Mobile Hub + Portal.
+     Both targets are stated as explicit tailnet host:port. The bare tailnet
+     host used to stand in for ARIES, but :443 is served to localhost:3003 —
+     the Massage By Mike site — so that link opened the wrong product entirely.
+     ARIES is :1337. Mobile Hub is plain HTTP (nginx, no cert on :8443) and is
+     addressed by tailnet name rather than a pinned 100.x IP, which silently
+     rots if the tailnet address ever changes. -->
+<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+  <a href="http://g59-wsl.taile1328b.ts.net:1337" target="_blank" rel="noopener"
+     style="font-size:11px;font-weight:600;color:#7fd1ff;background:#0c2244;border:1px solid #1e3a5f;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">🚀 ARIES</a>
+  <a href="http://g59-wsl.taile1328b.ts.net:8443" target="_blank" rel="noopener"
+     style="font-size:11px;font-weight:600;color:#86efac;background:#071f12;border:1px solid #14532d;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">📡 Mobile Hub</a>
+  <a href="/portal" target="_blank" rel="noopener"
+     style="font-size:11px;font-weight:600;color:#c4b5fd;background:#1a1730;border:1px solid #3730a3;border-radius:20px;padding:3px 10px;text-decoration:none;white-space:nowrap">⚡ All Services</a>
+</div>
+
 <div id="bot-info" class="flex items-center gap-3 mb-4 text-xs text-gray-500" style="display:none"></div>
 
 <!-- Summary Stats Bar -->
@@ -200,8 +217,12 @@ const WARROOM_ENABLED = warroomEnabled;
       <div class="model-picker" onclick="toggleModelPicker(this)" style="display:inline-block">
         <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
         <div class="model-menu" style="display:none;right:0;left:auto">
-          <div class="model-opt" data-model="claude-opus-4-6" onclick="pickGlobalModel(this)">All Opus</div>
-          <div class="model-opt" data-model="claude-sonnet-4-6" onclick="pickGlobalModel(this)">All Sonnet</div>
+          <div class="model-opt" data-model="claude-opus-5" onclick="pickGlobalModel(this)">All Opus 5</div>
+          <div class="model-opt" data-model="claude-fable-5" onclick="pickGlobalModel(this)">All Fable 5</div>
+          <div class="model-opt" data-model="claude-sonnet-5" onclick="pickGlobalModel(this)">All Sonnet 5</div>
+          <div class="model-opt" data-model="claude-opus-4-8" onclick="pickGlobalModel(this)">All Opus 4.8</div>
+          <div class="model-opt" data-model="claude-opus-4-6" onclick="pickGlobalModel(this)">All Opus 4.6</div>
+          <div class="model-opt" data-model="claude-sonnet-4-6" onclick="pickGlobalModel(this)">All Sonnet 4.6</div>
           <div class="model-opt" data-model="claude-haiku-4-5" onclick="pickGlobalModel(this)">All Haiku</div>
         </div>
       </div>
@@ -218,6 +239,24 @@ ${WARROOM_ENABLED ? `<div class="card" style="display:flex;align-items:center;ju
   </div>
   <div style="font-size:20px;color:#3b82f6">&#127908;</div>
 </div>` : ''}
+
+<!-- Token Dashboard quick link -->
+<div class="card" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;border:1px solid #1a2a4a;background:linear-gradient(135deg,#0d1526 0%,#1a1a1a 100%)" onclick="window.location.href='/token-dashboard'">
+  <div>
+    <div style="font-size:14px;font-weight:600;color:#a5b4fc">Token Dashboard</div>
+    <div style="font-size:12px;color:#6b7280;margin-top:2px">Per-prompt cost analytics &amp; cache stats</div>
+  </div>
+  <div style="font-size:20px">&#128202;</div>
+</div>
+
+<!-- CLI Tools quick link -->
+<div class="card" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;border:1px solid #1a2a4a;background:linear-gradient(135deg,#0d1526 0%,#1a1a1a 100%)" onclick="window.location.href='/cli-tools'">
+  <div>
+    <div style="font-size:14px;font-weight:600;color:#a5b4fc">CLI Tools</div>
+    <div style="font-size:12px;color:#6b7280;margin-top:2px">213 Printing Press CLIs + CLI-Anything inventory</div>
+  </div>
+  <div style="font-size:20px">&#128295;</div>
+</div>
 
 <!-- War Room Voice Settings (only shown when WARROOM_ENABLED) -->
 ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
@@ -569,6 +608,27 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
   </div>
 </div>
 
+<!-- Disk Space Card -->
+<div id="disk-section" class="mt-3 mb-3">
+  <div class="card" style="padding:12px 16px">
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Disk</span>
+      <span id="disk-warning" style="display:none;font-size:11px;padding:2px 8px;border-radius:10px;background:#7f1d1d;color:#fca5a5"></span>
+    </div>
+    <div class="grid grid-cols-2 gap-3 text-center">
+      <div>
+        <div class="stat-val text-base" id="disk-c-free">-</div>
+        <div class="stat-label">C: Free <span style="color:#6b7280;font-size:9px">(physical limit)</span></div>
+        <div style="margin-top:4px;background:#1e293b;border-radius:3px;height:4px;overflow:hidden"><div id="disk-c-bar" style="height:100%;background:#22c55e;width:0%;transition:width 0.4s"></div></div>
+      </div>
+      <div>
+        <div class="stat-val text-base" id="disk-wsl-free">-</div>
+        <div class="stat-label">WSL Free <span style="color:#6b7280;font-size:9px">(virtual)</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Token / Cost -->
 <div id="token-section" class="mt-5 mb-8">
   <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2" id="tokens-section">Token Usage<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Token consumption (text units processed by the AI). Today's totals and all-time cumulative. Included in your Max subscription.</span></span></h2>
@@ -590,6 +650,37 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
     <canvas id="cost-chart" height="140"></canvas>
   </div>
 
+</div>
+
+<!-- ComfyUI Status Card -->
+<div id="comfyui-section" class="mt-5 mb-5">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">ComfyUI
+    <span class="info-tip"><span class="info-icon">&#x24D8;</span><span class="info-tooltip">Local image/video generation. CyberRealistic Pony + Juggernaut Z (Flux). Run comfyui-start in WSL to launch.</span></span>
+  </h2>
+  <div class="card" id="comfyui-card">
+    <div class="flex justify-between items-center mb-3">
+      <div class="flex items-center gap-2">
+        <span id="comfyui-dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#6b7280"></span>
+        <span id="comfyui-status-text" class="text-sm text-gray-400">Checking...</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="comfy-start-btn" onclick="startComfyUI()" style="display:none;font-size:12px;color:#22c55e;background:transparent;border:1px solid #166534;padding:3px 10px;border-radius:6px;cursor:pointer">Launch ▶</button>
+        <button id="comfy-stop-btn" onclick="stopComfyUI()" style="display:none;font-size:12px;color:#f87171;background:transparent;border:1px solid #7f1d1d;padding:3px 10px;border-radius:6px;cursor:pointer">Stop ■</button>
+        <a id="comfyui-link" href="http://localhost:8188" target="_blank" rel="noopener"
+           style="display:none;font-size:12px;color:#60a5fa;text-decoration:none;border:1px solid #1e3a5f;padding:3px 10px;border-radius:6px">
+          Open UI →
+        </a>
+      </div>
+    </div>
+    <div id="comfyui-vram" class="mb-3" style="display:none">
+      <div class="text-xs text-gray-500 mb-1">VRAM</div>
+      <div style="background:#1e293b;border-radius:4px;height:8px;overflow:hidden">
+        <div id="comfyui-vram-bar" style="height:100%;background:#3b82f6;width:0%;transition:width 0.4s"></div>
+      </div>
+      <div class="text-xs text-gray-500 mt-1"><span id="comfyui-vram-used">-</span> / <span id="comfyui-vram-total">-</span> MiB used</div>
+    </div>
+    <div id="comfyui-models" class="text-xs text-gray-500"></div>
+  </div>
 </div>
 
 </div><!-- end RIGHT COLUMN -->
@@ -1519,18 +1610,27 @@ async function loadAgents() {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
       const statusText = a.running ? 'live' : 'off';
-      const modelOpts = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
-      const modelShort = function(m) { return {'claude-opus-4-6':'Opus','claude-sonnet-4-6':'Sonnet','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
-      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-6' : 'claude-sonnet-4-6');
-      const modelLabel = modelShort(currentModel);
       const providerType = (a.provider && a.provider.type) || 'opencode';
-      const providerLabel = providerType === 'claude' ? 'Claude: ' + modelLabel : providerType === 'opencode' ? 'OpenCode' : 'ACP';
+      // Catalog comes from the API (src/model-catalog.ts) — no local copy to drift.
+      const catalog = (providerType === 'openai' ? data.openaiModels : data.claudeModels) || [];
+      const modelOpts = catalog.map(function(o) { return o.id; });
+      const modelShort = function(m) {
+        for (var i = 0; i < catalog.length; i++) { if (catalog[i].id === m) return catalog[i].label; }
+        return m;
+      };
+      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-8' : 'claude-sonnet-4-6');
+      // Provider-neutral: the pill shows the model only. Provider lives in the
+      // agent detail panel, so "Claude · Opus 5" collapses to "Opus 5".
+      const providerLabel = (providerType === 'claude' || providerType === 'openai')
+        ? (a.modelLabel || modelShort(currentModel))
+        : providerType === 'opencode' ? 'OpenCode' : 'ACP';
       const modelSelect = '<div class="model-picker" data-agent="' + a.id + '" onclick="event.stopPropagation();toggleModelPicker(this)">' +
         '<span class="model-current">' + providerLabel + ' <span style="font-size:8px;opacity:0.5">&#9662;</span></span>' +
         '<div class="model-menu" style="display:none">' +
           '<div class="model-opt' + (providerType === 'opencode' ? ' model-active' : '') + '" data-provider="opencode" onclick="pickProvider(this)">OpenCode default</div>' +
           '<div class="model-opt' + (providerType === 'acp' ? ' model-active' : '') + '" data-provider="acp" onclick="pickProvider(this)">ACP default</div>' +
           modelOpts.map(m => '<div class="model-opt' + (currentModel === m ? ' model-active' : '') + '" data-model="' + m + '" onclick="pickModel(this)">' + modelShort(m) + '</div>').join('') +
+          '<div class="model-opt' + (modelOpts.indexOf(currentModel) === -1 && providerType === 'claude' ? ' model-active' : '') + '" onclick="pickCustomModel(this)">Custom…</div>' +
         '</div>' +
       '</div>';
       // Unified avatar endpoint: serves user uploads, Telegram-cached
@@ -1549,12 +1649,85 @@ async function loadAgents() {
             '<div class="font-bold text-white text-sm">' + escapeHtml(a.name) + '</div>' +
             '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
             modelSelect +
+            renderRuntimePills(a) +
             (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns</div>' : '') +
           '</div>' +
         '</div>' +
       '</div>';
     }).join('');
   } catch {}
+}
+
+// Secondary dropdowns beside the model pill. One pill per option list the
+// selected model actually advertises, sourced from staticRuntimeOptionsFor()
+// on the server: Opus 5 gets Effort only (adaptive thinking, no toggle),
+// Opus 4.8 gets Effort + Thinking, Sonnet 4.5 gets Thinking only, native
+// OpenAI gets Reasoning effort. A model with no lists renders nothing.
+function renderRuntimePills(a) {
+  var opts = a.runtimeOptions;
+  if (!opts) return '';
+  var pills = '';
+  if (opts.modeOptions && opts.modeOptions.length) {
+    pills += runtimePill(a.id, 'runtimeMode', opts.modeLabel || 'Effort', opts.modeOptions, a.runtimeMode || '');
+  }
+  if (opts.thinkingOptions && opts.thinkingOptions.length) {
+    pills += runtimePill(a.id, 'thinkingMode', opts.thinkingLabel || 'Thinking', opts.thinkingOptions, a.thinkingMode || '');
+  }
+  if (!pills) return '';
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' + pills + '</div>';
+}
+
+function runtimePill(agentId, field, groupLabel, options, current) {
+  var currentLabel = '';
+  for (var i = 0; i < options.length; i++) {
+    if (options[i].id === (current || '')) { currentLabel = options[i].label; break; }
+  }
+  // A persisted value that is no longer valid for this model (e.g. xhigh kept
+  // from Opus 4.8 after switching to Sonnet 4.6) shows as-is with a marker so
+  // it's visibly wrong rather than silently rendering as the default.
+  if (!currentLabel) currentLabel = current ? current + ' (?)' : 'default';
+  return '<div class="model-picker" data-agent="' + agentId + '" data-field="' + field + '"' +
+    ' title="' + escapeHtml(groupLabel) + '"' +
+    ' onclick="event.stopPropagation();toggleModelPicker(this)">' +
+    '<span class="model-current">' + escapeHtml(currentLabel) +
+      ' <span style="font-size:8px;opacity:0.5">&#9662;</span></span>' +
+    '<div class="model-menu" style="display:none">' +
+      '<div class="model-opt" style="opacity:0.5;font-size:10px;pointer-events:none">' + escapeHtml(groupLabel) + '</div>' +
+      options.map(function(o) {
+        return '<div class="model-opt' + (o.id === (current || '') ? ' model-active' : '') + '"' +
+          ' data-value="' + escapeHtml(o.id) + '" onclick="pickRuntimeOption(this)">' +
+          escapeHtml(o.label) + '</div>';
+      }).join('') +
+    '</div>' +
+  '</div>';
+}
+
+async function pickRuntimeOption(optEl) {
+  var picker = optEl.closest('.model-picker');
+  var agentId = picker.dataset.agent;
+  var field = picker.dataset.field;
+  var value = optEl.dataset.value || '';
+  picker.querySelector('.model-menu').style.display = 'none';
+  var body = {};
+  body[field] = value;
+  try {
+    var res = await fetch(BASE + '/api/agents/' + agentId + '/runtime?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      var err = {};
+      try { err = await res.json(); } catch(_) {}
+      alert('Update failed: ' + (err.error || ('HTTP ' + res.status)));
+      return;
+    }
+    var data = await res.json();
+    if (data.restartRequired) {
+      alert('Saved. Restart agent "' + agentId + '" for it to take effect.');
+    }
+    await loadAgents();
+  } catch(e) { console.error('Runtime option update failed:', e); alert('Update failed: ' + e); }
 }
 
 function toggleModelPicker(el) {
@@ -1570,14 +1743,39 @@ async function pickModel(optEl) {
   var picker = optEl.closest('.model-picker');
   var agentId = picker.dataset.agent;
   picker.querySelector('.model-menu').style.display = 'none';
+  await setAgentModelReq(agentId, model);
+}
+
+async function pickCustomModel(optEl) {
+  var picker = optEl.closest('.model-picker');
+  var agentId = picker.dataset.agent;
+  picker.querySelector('.model-menu').style.display = 'none';
+  var model = window.prompt('Model id (e.g. claude-fable-5):');
+  if (!model || !model.trim()) return;
+  await setAgentModelReq(agentId, model.trim());
+}
+
+// Shared PATCH helper — surfaces server rejections (e.g. bad model id
+// format) instead of silently swallowing the 400.
+async function setAgentModelReq(agentId, model) {
   try {
-    await fetch(BASE + '/api/agents/' + agentId + '/model?token=' + TOKEN, {
+    var res = await fetch(BASE + '/api/agents/' + agentId + '/model?token=' + TOKEN, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model }),
     });
+    if (!res.ok) {
+      var err = {};
+      try { err = await res.json(); } catch(_) {}
+      alert('Model update failed: ' + (err.error || ('HTTP ' + res.status)));
+      return;
+    }
+    var data = await res.json();
+    if (data.restartRequired) {
+      alert('Model set to ' + model + '. Restart agent "' + agentId + '" for it to take effect.');
+    }
     await loadAgents();
-  } catch(e) { console.error('Model update failed:', e); }
+  } catch(e) { console.error('Model update failed:', e); alert('Model update failed: ' + e); }
 }
 
 async function pickProvider(optEl) {
@@ -1600,13 +1798,23 @@ async function pickGlobalModel(optEl) {
   var model = optEl.dataset.model;
   optEl.closest('.model-menu').style.display = 'none';
   try {
-    await fetch(BASE + '/api/agents/model?token=' + TOKEN, {
+    var res = await fetch(BASE + '/api/agents/model?token=' + TOKEN, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model }),
     });
+    if (!res.ok) {
+      var err = {};
+      try { err = await res.json(); } catch(_) {}
+      alert('Global model update failed: ' + (err.error || ('HTTP ' + res.status)));
+      return;
+    }
+    var data = await res.json();
+    if (data.restartRequired && data.restartRequired.length) {
+      alert('Model set to ' + model + '. Restart required for: ' + data.restartRequired.join(', '));
+    }
     await loadAgents();
-  } catch(e) { console.error('Global model update failed:', e); }
+  } catch(e) { console.error('Global model update failed:', e); alert('Global model update failed: ' + e); }
 }
 
 // Close model menus when clicking outside
@@ -1778,10 +1986,26 @@ let cawTokenDebounce = null;
 let cawNameManuallyEdited = false;
 const CAW_FALLBACK_MODELS = {
   claude: [
+    { id: 'claude-opus-5', label: 'Opus 5' },
+    { id: 'claude-fable-5', label: 'Fable 5' },
+    { id: 'claude-sonnet-5', label: 'Sonnet 5' },
+    { id: 'claude-opus-4-8', label: 'Opus 4.8' },
     { id: 'claude-opus-4-6', label: 'Opus 4.6' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
     { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
     { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+  ],
+  openai: [
+    { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+    { id: 'gpt-5.5', label: 'GPT-5.5' },
+  ],
+  'acp-codex': [
+    { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+    { id: 'gpt-5.5', label: 'GPT-5.5' },
   ],
   opencode: [{ id: 'opencode-default', label: 'OpenCode default' }],
   acp: [{ id: 'provider-default', label: 'Provider default' }],
@@ -2537,10 +2761,105 @@ function closeTaskHistory() {
 // Poll mission tasks more frequently (every 15s) for responsiveness
 setInterval(loadMissionControl, 15000);
 
+async function loadComfyUI() {
+  try {
+    const r = await fetch(BASE + '/api/comfyui/status?token=' + TOKEN);
+    const d = await r.json();
+    const dot = document.getElementById('comfyui-dot');
+    const txt = document.getElementById('comfyui-status-text');
+    const link = document.getElementById('comfyui-link');
+    const vramWrap = document.getElementById('comfyui-vram');
+    const vramBar = document.getElementById('comfyui-vram-bar');
+    const vramUsed = document.getElementById('comfyui-vram-used');
+    const vramTotal = document.getElementById('comfyui-vram-total');
+    const modelsEl = document.getElementById('comfyui-models');
+    if (d.running) {
+      dot.style.background = '#22c55e';
+      // Host-derived, not the literal 'localhost': in a phone browser that names
+      // the handset, so both the label and the href sent Mike to a dead port on
+      // his own device. NOTE: :8188 has no tailscale-serve entry, so this only
+      // resolves on the LAN — the link is honest about the host now, but ComfyUI
+      // still needs a serve entry to be reachable over the tailnet.
+      txt.textContent = 'Running — ' + location.hostname + ':8188';
+      link.href = 'http://' + location.hostname + ':8188';
+      txt.style.color = '#22c55e';
+      link.style.display = '';
+      document.getElementById('comfy-start-btn').style.display = 'none';
+      document.getElementById('comfy-stop-btn').style.display = '';
+    } else {
+      dot.style.background = '#6b7280';
+      txt.textContent = 'Stopped';
+      txt.style.color = '#9ca3af';
+      link.style.display = 'none';
+      document.getElementById('comfy-start-btn').style.display = '';
+      document.getElementById('comfy-stop-btn').style.display = 'none';
+    }
+    if (d.vram) {
+      vramWrap.style.display = '';
+      const pct = Math.round(d.vram.used / d.vram.total * 100);
+      vramBar.style.width = pct + '%';
+      vramBar.style.background = pct > 80 ? '#ef4444' : pct > 60 ? '#f59e0b' : '#3b82f6';
+      vramUsed.textContent = d.vram.used;
+      vramTotal.textContent = d.vram.total;
+    }
+    if (d.checkpoints || d.loras) {
+      const ckpts = (d.checkpoints || []).map(f => f.name.replace('.safetensors','').replace('.gguf','').replace('.ckpt','')).join(', ') || 'none';
+      const loras = (d.loras || []).map(f => f.name.replace('.safetensors','')).join(', ') || 'none';
+      modelsEl.innerHTML = '<b style="color:#9ca3af">Models:</b> ' + escapeHtml(ckpts) + '<br><b style="color:#9ca3af">LoRAs:</b> ' + escapeHtml(loras);
+    }
+  } catch {}
+}
+setInterval(loadComfyUI, 30000);
+
+async function startComfyUI() {
+  const btn = document.getElementById('comfy-start-btn');
+  btn.textContent = 'Starting…';
+  btn.disabled = true;
+  try {
+    const r = await fetch(BASE + '/api/comfy/start?token=' + TOKEN, { method: 'POST' }).then(x => x.json());
+    if (r.ok) { setTimeout(loadComfyUI, 5000); setTimeout(loadComfyUI, 15000); setTimeout(loadComfyUI, 30000); }
+    else alert('Failed to start ComfyUI: ' + (r.error || 'unknown'));
+  } catch (e) { alert('Error: ' + e); }
+  btn.textContent = 'Launch ▶';
+  btn.disabled = false;
+}
+
+async function stopComfyUI() {
+  const btn = document.getElementById('comfy-stop-btn');
+  btn.textContent = 'Stopping…';
+  btn.disabled = true;
+  try {
+    await fetch(BASE + '/api/comfy/stop?token=' + TOKEN, { method: 'POST' });
+    setTimeout(loadComfyUI, 2000);
+  } catch (e) { alert('Error: ' + e); }
+  btn.textContent = 'Stop ■';
+  btn.disabled = false;
+}
+
+async function loadDisk() {
+  try {
+    const d = await api('/api/system/disk');
+    const cFreeEl = document.getElementById('disk-c-free');
+    const wslFreeEl = document.getElementById('disk-wsl-free');
+    const bar = document.getElementById('disk-c-bar');
+    const warn = document.getElementById('disk-warning');
+    if (d.cdrive) {
+      cFreeEl.textContent = d.cdrive.avail;
+      const pct = parseInt(d.cdrive.pct) || 0;
+      bar.style.width = Math.min(100, pct) + '%';
+      bar.style.background = pct >= 95 ? '#ef4444' : pct >= 85 ? '#f59e0b' : '#22c55e';
+    }
+    if (d.wsl) wslFreeEl.textContent = d.wsl.avail;
+    if (d.warning) { warn.textContent = '⚠ ' + d.warning; warn.style.display = ''; }
+    else { warn.style.display = 'none'; }
+  } catch {}
+}
+setInterval(loadDisk, 120000);
+
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary(), loadMissionControl()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary(), loadMissionControl()]); loadComfyUI(); loadDisk();
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }
@@ -2563,6 +2882,7 @@ refreshAll();
 let chatOpen = false;
 let chatSSE = null;
 let chatHistoryLoaded = false;
+let chatSSEReconnecting = false;
 let unreadCount = 0;
 let chatAgents = [];
 let activeAgentTab = 'all';
@@ -2714,12 +3034,25 @@ function connectChatSSE() {
   chatSSE.addEventListener('ping', function() { /* keepalive */ });
 
   chatSSE.onerror = function() {
-    // Auto-reconnect handled by EventSource
+    // EventSource auto-reconnects. Mark that we dropped so the next onopen
+    // knows it's a reconnect (not the initial connect) and can backfill any
+    // messages exchanged while we were disconnected.
     updateChatStatus(false);
-    setTimeout(() => updateChatStatus(true), 3000);
+    chatSSEReconnecting = true;
   };
 
-  chatSSE.onopen = function() { updateChatStatus(true); };
+  chatSSE.onopen = function() {
+    updateChatStatus(true);
+    if (chatSSEReconnecting) {
+      // We just reconnected after a drop. Messages sent during the gap were
+      // never streamed, so the panel has a silent hole. Force a history
+      // refresh: reload now if the panel is open, otherwise invalidate so the
+      // next openChat() re-fetches.
+      chatSSEReconnecting = false;
+      chatHistoryLoaded = false;
+      if (chatOpen) loadChatHistory();
+    }
+  };
 }
 
 function updateChatStatus(connected) {

@@ -5,6 +5,7 @@ import { PageState } from '@/components/PageState';
 import { Toggle } from '@/components/Toggle';
 import { invalidateFetchCache, useFetch, type FetchState } from '@/lib/useFetch';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
+import { contextDetail, contextSummary, type ContextHealth } from '@/lib/context-display';
 import { pushToast } from '@/lib/toasts';
 import {
   theme, themeMeta, setTheme, type ThemeName,
@@ -12,6 +13,7 @@ import {
   uiScale, setUiScale,
   showCosts, setShowCosts,
 } from '@/lib/theme';
+import { viewMode, setViewMode } from '@/lib/view-mode';
 import {
   workspaceName,
   setWorkspaceName,
@@ -20,15 +22,20 @@ import {
   type HotkeyMod,
 } from '@/lib/personalization';
 
-interface Health {
+interface Health extends ContextHealth {
   killSwitches: Record<string, boolean>;
   killSwitchRefusals: Record<string, number>;
   model: string;
-  contextPct: number;
   provider?: { type: string; command?: string; args?: string[]; model?: string; runtimeMode?: RuntimeMode; thinkingMode?: ThinkingMode };
   providerType?: string;
   runtime?: string;
-  acpEnabled?: boolean;
+  providers?: ProviderOption[];
+}
+
+interface ProviderOption {
+  type: string;
+  label: string;
+  tier: 'stable' | 'experimental';
 }
 
 interface SecurityStatus { [key: string]: any; }
@@ -44,6 +51,8 @@ interface ProviderModelsResponse {
 interface ProviderRuntimeOption { id: string; label: string; current?: boolean; }
 interface ProviderRuntimeOptionsResponse {
   provider: string;
+  modeLabel?: string;
+  thinkingLabel?: string;
   modeOptions: ProviderRuntimeOption[];
   thinkingOptions: ProviderRuntimeOption[];
   source: 'provider' | 'fallback' | 'static';
@@ -125,6 +134,14 @@ export function Settings() {
                 <ScalePicker />
               </Row>
               <Divider />
+              <Row label="Desktop view" hint="Force the full desktop layout on phones (like Request Desktop Site). Reloads the page. No effect in desktop browsers.">
+                <Toggle
+                  on={viewMode.value === 'desktop'}
+                  onChange={() => setViewMode(viewMode.value === 'desktop' ? 'auto' : 'desktop')}
+                  ariaLabel="Desktop view"
+                />
+              </Row>
+              <Divider />
               <Row label="Show costs" hint="Hide if you're on a Claude Code subscription — costs only matter on the API path.">
                 <Toggle
                   on={showCosts.value}
@@ -146,10 +163,10 @@ export function Settings() {
             </Card>
           </Section>
 
-          {health.data?.acpEnabled ? (
+          {(health.data?.providers?.length ?? 0) > 1 ? (
             <Section
-              title="Agent provider (beta)"
-              subtitle="Provider selection is beta. Additional CLI setup may be required for non-Claude providers. Choose a built-in provider or point ClaudeClaw at any ACP-compatible agent command."
+              title="Agent provider"
+              subtitle="Claude and OpenAI are stable providers. Experimental (ACP) providers may need extra CLI setup and are enabled via ENABLE_ACP."
             >
               <Card>
                 <ProviderConfigPanel health={health} />
@@ -182,7 +199,7 @@ export function Settings() {
 
           <Section title="Read-only" subtitle="System limits and bundled assets.">
             <Card>
-              <ReadOnlyRow label="Context window" value={health.data.contextPct + '%'} />
+              <ReadOnlyRow label="Context window" value={contextSummary(health.data)} title={contextDetail(health.data)} />
             </Card>
           </Section>
 
@@ -219,7 +236,7 @@ function WorkspaceNameField() {
         onInput={onInput}
         maxLength={32}
         placeholder="ClaudeClaw"
-        class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[200px]"
+        class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-full max-w-[200px]"
       />
       {savedTick && <Check size={14} class="text-[var(--color-status-done)] shrink-0" />}
     </div>
@@ -432,6 +449,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
     ? null
     : '/api/providers/runtime-options?provider='
       + encodeURIComponent(type)
+      + (model && model !== '__custom__' ? '&model=' + encodeURIComponent(model) : '')
       + (type === 'acp' ? '&command=' + encodeURIComponent(command.trim()) + '&args=' + encodeURIComponent(args) : '');
   const runtimeOptions = useFetch<ProviderRuntimeOptionsResponse>(runtimeOptionsPath, 0);
   const [busy, setBusy] = useState(false);
@@ -552,7 +570,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
         </div>
       </Row>
       <Divider />
-      <Row label="Provider" hint="Gemini uses gemini --acp. Codex uses the codex-acp adapter.">
+      <Row label="Provider" hint="Claude and OpenAI (native Codex) are stable. Experimental (ACP) providers appear when ENABLE_ACP is set.">
         <select
           value={type}
           onChange={(event) => {
@@ -562,13 +580,26 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
             markDirty();
           }}
           aria-label="Provider"
-          class="h-8 w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)]"
+          class="h-8 w-full max-w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)]"
         >
-          <option value="opencode">OpenCode</option>
-          <option value="gemini">Gemini CLI</option>
-          <option value="codex">Codex ACP</option>
-          <option value="claude">Claude Code</option>
-          <option value="acp">Custom ACP</option>
+          {(() => {
+            const opts = health.data?.providers ?? [{ type: 'claude', label: 'Claude', tier: 'stable' as const }];
+            const stable = opts.filter((p) => p.tier === 'stable');
+            const experimental = opts.filter((p) => p.tier === 'experimental');
+            if (experimental.length === 0) {
+              return stable.map((p) => <option key={p.type} value={p.type}>{p.label}</option>);
+            }
+            return (
+              <>
+                <optgroup label="Stable">
+                  {stable.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
+                </optgroup>
+                <optgroup label="Experimental (beta)">
+                  {experimental.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
+                </optgroup>
+              </>
+            );
+          })()}
         </select>
       </Row>
       <Divider />
@@ -585,7 +616,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
             }}
             disabled={models.loading}
             aria-label="Model"
-            class="h-8 w-[220px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
+            class="h-8 w-full max-w-[220px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
           >
             {(models.data?.models ?? []).map((m) => (
               <option key={m.id} value={m.id}>{m.label}</option>
@@ -601,7 +632,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
                 markDirty();
               }}
               placeholder="model-id"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
+              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-full max-w-[220px]"
             />
           )}
           {models.data?.note && <div class="text-[10.5px] text-[var(--color-text-faint)] max-w-[260px] text-right leading-snug">{models.data.note}</div>}
@@ -610,7 +641,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
       <Divider />
       {(runtimeOptions.data?.modeOptions?.length ?? 0) > 0 && (
         <>
-          <Row label="Agent speed" hint="Shown only when the provider advertises speed-like runtime options. Access mode is handled automatically.">
+          <Row label={runtimeOptions.data?.modeLabel ?? 'Agent speed'} hint="Available values are specific to the selected model.">
             <SegmentedControl
               value={runtimeMode}
               options={(runtimeOptions.data?.modeOptions ?? []).map((option) => ({ value: option.id, label: option.label }))}
@@ -625,7 +656,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
       )}
       {(runtimeOptions.data?.thinkingOptions?.length ?? 0) > 0 && (
         <>
-          <Row label="Thinking" hint="Uses the provider's own thought-level values, for example Codex low/medium/high/extra high.">
+          <Row label={runtimeOptions.data?.thinkingLabel ?? 'Thinking'} hint="Available values are specific to the selected model.">
             <SegmentedControl
               value={thinkingMode}
               options={(runtimeOptions.data?.thinkingOptions ?? []).map((option) => ({ value: option.id, label: option.label }))}
@@ -655,7 +686,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
                 markDirty();
               }}
               placeholder="my-acp-agent"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
+              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-full max-w-[220px]"
             />
           </Row>
           <Divider />
@@ -668,7 +699,7 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
                 markDirty();
               }}
               placeholder="--acp"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
+              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-full max-w-[220px]"
             />
           </Row>
         </>
@@ -776,13 +807,16 @@ function Card({ children }: { children: any }) {
 }
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: any }) {
+  // Stacks label-above-control on phones; side-by-side from sm: up.
+  // The inline row used to squeeze the label to a sliver and let wide
+  // controls (theme chips, scale buttons) overlap the hint text.
   return (
-    <div class="flex items-center gap-4 py-1.5">
+    <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 py-2 sm:py-1.5">
       <div class="flex-1 min-w-0">
         <div class="text-[13px] text-[var(--color-text)]">{label}</div>
         {hint && <div class="text-[11px] text-[var(--color-text-faint)] mt-0.5">{hint}</div>}
       </div>
-      {children}
+      <div class="flex flex-wrap items-center gap-2 sm:justify-end sm:shrink-0 sm:max-w-[60%]">{children}</div>
     </div>
   );
 }
@@ -791,11 +825,11 @@ function Divider() {
   return <div class="border-t border-[var(--color-border)] my-1" />;
 }
 
-function ReadOnlyRow({ label, value }: { label: string; value: string }) {
+function ReadOnlyRow({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <div class="flex items-center justify-between py-1.5">
       <span class="text-[13px] text-[var(--color-text-muted)]">{label}</span>
-      <span class="font-mono text-[12.5px] text-[var(--color-text)] tabular-nums">{value}</span>
+      <span class="font-mono text-[12.5px] text-[var(--color-text)] tabular-nums" title={title}>{value}</span>
     </div>
   );
 }

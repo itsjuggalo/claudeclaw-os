@@ -24,12 +24,16 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { EngineFactory } from './agent-engine/index.js';
 import { defaultModelForProvider } from './active-provider.js';
+import { resolveAgentClaudeMd } from './agent-config.js';
 import {
+  DEFAULT_PROVIDER,
   decodeProviderSession,
+  effectiveSkipPermissions,
   encodeProviderSession,
   getMainProviderConfig,
   sessionBelongsToProvider,
 } from './provider.js';
+import { providerRunnable } from './provider-registry.js';
 
 // The voice bridge is a standalone subprocess — initialize the DB
 // connection before any getSession/setSession calls run. Without this,
@@ -124,7 +128,12 @@ async function main() {
 
     // Resume session if one exists for this chat+agent
     const sessionId = getSession(chatId, agentId) ?? undefined;
-    const provider = getMainProviderConfig();
+    // This subprocess has no agentProvider override, so resolve main's saved
+    // provider and apply the same gate the main process uses: a non-runnable
+    // (gated-off experimental) provider falls back to Claude with a Claude
+    // model, never a stale non-Claude model against the Claude adapter.
+    const saved = getMainProviderConfig();
+    const provider = providerRunnable(saved.type) ? saved : { ...DEFAULT_PROVIDER };
     const providerSessionId = sessionBelongsToProvider(sessionId, provider)
       ? decodeProviderSession(provider, sessionId)
       : undefined;
@@ -145,6 +154,24 @@ async function main() {
     parts.push(message);
     const fullMessage = parts.join('\n\n');
 
+    // The Codex (OpenAI) engine ignores settingSources, so it never picks up
+    // the agent's CLAUDE.md persona the way the Claude engine does via
+    // settingSources:['project']. Read it here and pass it as systemPrompt so
+    // voice specialists keep their identity/boundaries on OpenAI turns. Only
+    // for openai — passing it for Claude would double the persona (project +
+    // systemPrompt).
+    let voicePersona: string | undefined;
+    if (provider.type === 'openai') {
+      try {
+        // Use the canonical resolver (CLAUDECLAW_CONFIG/agents/<id> first, then
+        // PROJECT_ROOT) — NOT a raw agentDir join, which misses main's external
+        // persona path.
+        const personaPath = resolveAgentClaudeMd(agentId);
+        if (personaPath && fs.existsSync(personaPath)) voicePersona = fs.readFileSync(personaPath, 'utf-8');
+      } catch { /* non-fatal: no persona */ }
+    }
+    const skipPerms = effectiveSkipPermissions(provider);
+
     let resultText: string | null = null;
     let newSessionId: string | undefined;
     let usage: Record<string, number> = {};
@@ -156,14 +183,26 @@ async function main() {
       cwd: agentDir,
       sessionId: providerSessionId,
       settingSources: ['project', 'user'],
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      ...(voicePersona ? { systemPrompt: voicePersona } : {}),
+      // When the provider hasn't explicitly opted into skip-permissions, pin a
+      // READ-ONLY tool allow-list (no Bash/Write/Edit). For the Codex engine
+      // this yields a read-only sandbox, so an untrusted voice participant can't
+      // drive file edits or command execution; the Claude path is unaffected
+      // (Claude's effectiveSkipPermissions is true, so skipPerms is set and no
+      // restriction is applied). WebSearch/WebFetch stay available for answers.
+      permissionMode: skipPerms ? 'bypassPermissions' : 'default',
+      allowDangerouslySkipPermissions: skipPerms,
+      ...(skipPerms ? {} : { allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'] }),
       // Quick mode caps turns hard so an auto-routed voice answer
       // can't spiral into a 30s tool-use loop. Direct mode keeps the
       // higher ceiling for more substantive voice conversations.
       maxTurns: quickMode ? 3 : 15,
       env: sdkEnv,
-      ...(mcpServerNames.length > 0 ? { mcpServers } : {}),
+      // Withhold MCP servers on untrusted (non-skip) turns: Codex's sandbox
+      // doesn't gate MCP invocation, so an untrusted voice participant could
+      // otherwise trigger email/calendar/Slack side-effects. Trusted (opted-in)
+      // turns keep their configured MCP servers.
+      ...(skipPerms && mcpServerNames.length > 0 ? { mcpServers } : {}),
       ...(defaultModelForProvider(provider) ? { model: defaultModelForProvider(provider) } : {}),
     })) {
       if (event.type === 'session') newSessionId = event.sessionId;

@@ -1,439 +1,96 @@
-import fs from 'fs';
-import path from 'path';
-
-import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd, resolveInstructionMd, refreshWarRoomRoster } from './agent-config.js';
-import { createBot } from './bot.js';
-import { checkPendingMigrations } from './migrations.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
-import { startDashboard } from './dashboard.js';
-import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
-import { initSecurity, setAuditCallback } from './security.js';
+// Telegram entry point. Supplies a Telegram Messenger to the shared
+// bootMessenger() path (src/messenger.ts) — all the non-transport boot logic
+// (DB, security, dashboard, War Room, scheduler, shutdown) lives there and is
+// shared with the Signal entry (src/signal-entry.ts). This realises upstream
+// #98 (bootMessenger(messengerFactory)).
+// Imported first so the process-level uncaughtException guard registers before
+// any transport module (bot.ts → agent.ts) transitively pulls in the SDK.
+import './crash-guard.js';
+import { createBot, splitMessage } from './bot.js';
+import { activeBotToken, ALLOWED_CHAT_ID } from './config.js';
 import { logger } from './logger.js';
-import { cleanupOldUploads } from './media.js';
-import { runConsolidation } from './memory-consolidate.js';
-import { runDecaySweep } from './memory.js';
-import { runWarroomAvatarMigration } from './avatars.js';
-import { initOAuthHealthCheck } from './oauth-health.js';
-import { initOrchestrator } from './orchestrator.js';
-import { initScheduler } from './scheduler.js';
-import { getMainProviderConfig } from './provider.js';
+import { bootMessenger, Messenger, MessengerFactory } from './messenger.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
-import { getVenvPython, IS_WINDOWS, killProcess, tmpDir } from './platform.js';
 
-// Parse --agent flag
-const agentFlagIndex = process.argv.indexOf('--agent');
-const AGENT_ID = agentFlagIndex !== -1 ? process.argv[agentFlagIndex + 1] : 'main';
-
-// Export AGENT_ID to env so child processes (schedule-cli, etc.) inherit it
-process.env.CLAUDECLAW_AGENT_ID = AGENT_ID;
-
-if (AGENT_ID !== 'main') {
-  const agentConfig = loadAgentConfig(AGENT_ID);
-  const agentDir = resolveAgentDir(AGENT_ID);
-  const claudeMdPath = resolveAgentClaudeMd(AGENT_ID);
-  let systemPrompt: string | undefined;
-  if (claudeMdPath) {
-    try {
-      systemPrompt = fs.readFileSync(claudeMdPath, 'utf-8');
-    } catch { /* no CLAUDE.md */ }
-  }
-  setAgentOverrides({
-    agentId: AGENT_ID,
-    botToken: agentConfig.botToken,
-    cwd: agentDir,
-    model: agentConfig.model,
-    provider: agentConfig.provider,
-    obsidian: agentConfig.obsidian,
-    systemPrompt,
-    mcpServers: agentConfig.mcpServers,
-  });
-  logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
-} else {
-  // Main bot follows the same pattern as sub-agents: load CLAUDE.md from
-  // CLAUDECLAW_CONFIG/agents/main/ and set CWD to that directory so the
-  // Claude SDK loads the personal CLAUDE.md (not the repo template).
-  // Falls back to CLAUDECLAW_CONFIG/CLAUDE.md for backward compatibility.
-  const agentClaudeMd = resolveAgentClaudeMd('main');
-  const claudeMdSource = agentClaudeMd ?? resolveInstructionMd(CLAUDECLAW_CONFIG);
-
-  // Use the agent dir as CWD when a personal CLAUDE.md exists there.
-  // This prevents the SDK from loading the repo's template CLAUDE.md
-  // (which is gone — only CLAUDE.md.example ships in the repo now).
-  const mainAgentDir = agentClaudeMd ? path.dirname(agentClaudeMd) : null;
-
-  if (claudeMdSource) {
-    let systemPrompt: string | undefined;
-    try {
-      systemPrompt = fs.readFileSync(claudeMdSource, 'utf-8');
-    } catch { /* unreadable */ }
-    if (systemPrompt) {
-      setAgentOverrides({
-        agentId: 'main',
-        botToken: activeBotToken,
-        cwd: mainAgentDir ?? PROJECT_ROOT,
-        provider: getMainProviderConfig(),
-        systemPrompt,
-      });
-      logger.info({ source: claudeMdSource, cwd: mainAgentDir ?? PROJECT_ROOT }, 'Loaded main agent CLAUDE.md');
-    }
-  } else {
-    logger.warn(
-      'No CLAUDE.md found. Copy CLAUDE.md.example to %s/agents/main/CLAUDE.md and customize it.',
-      CLAUDECLAW_CONFIG,
-    );
-  }
-}
-
-const PID_FILE = path.join(STORE_DIR, `${AGENT_ID === 'main' ? 'claudeclaw' : `agent-${AGENT_ID}`}.pid`);
-
-function showBanner(): void {
-  const bannerPath = path.join(PROJECT_ROOT, 'banner.txt');
-  try {
-    const banner = fs.readFileSync(bannerPath, 'utf-8');
-    console.log('\n' + banner);
-  } catch {
-    console.log('\n  ClaudeClaw\n');
-  }
-}
-
-function acquireLock(): void {
-  fs.mkdirSync(STORE_DIR, { recursive: true });
-  try {
-    if (fs.existsSync(PID_FILE)) {
-      const old = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
-      if (!isNaN(old) && old !== process.pid) {
-        killProcess(old);
-        try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); } catch { /* ok */ }
-      }
-    }
-  } catch { /* ignore */ }
-  fs.writeFileSync(PID_FILE, String(process.pid), { mode: 0o600 });
-}
-
-function releaseLock(): void {
-  try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
-}
-
-async function main(): Promise<void> {
-  
-  checkPendingMigrations(PROJECT_ROOT);
-
-  if (AGENT_ID === 'main') {
-    showBanner();
-  }
-
-  if (!activeBotToken) {
-    if (AGENT_ID === 'main') {
-      logger.error('Bot token is not set. Run npm run setup to configure it.');
-    } else {
-      logger.error({ agentId: AGENT_ID }, `Configuration for agent "${AGENT_ID}" is broken: bot token not set. Check .env or re-run npm run agent:create.`);
-    }
-    process.exit(1);
-  }
-
-  acquireLock();
-
-  try {
-    initDatabase();
-  } catch (err: any) {
-    logger.error('Database initialization failed: %s', err?.message || err);
-    if (err?.message?.includes('DB_ENCRYPTION_KEY')) {
-      logger.error('Fix: add DB_ENCRYPTION_KEY to .env. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
-    }
-    process.exit(1);
-  }
-  logger.info('Database ready');
-
-  // Initialize security (PIN lock, kill phrase, destructive confirmation, audit)
-  initSecurity({
-    pinHash: SECURITY_PIN_HASH || undefined,
-    idleLockMinutes: IDLE_LOCK_MINUTES,
-    killPhrase: EMERGENCY_KILL_PHRASE || undefined,
-  });
-  setAuditCallback((entry) => {
-    insertAuditLog(entry.agentId, entry.chatId, entry.action, entry.detail, entry.blocked);
-  });
-
-  initOrchestrator();
-
-  // Decay and consolidation run ONLY in the main process to prevent
-  // multi-process over-decay (5x decay on simultaneous restart) and
-  // duplicate consolidation records from overlapping memory batches.
-  if (AGENT_ID === 'main') {
-    runDecaySweep();
-    cleanupOldMissionTasks(7);
-    setInterval(() => { runDecaySweep(); cleanupOldMissionTasks(7); }, 24 * 60 * 60 * 1000);
-
-    // One-time bundled→mutable avatar migration. After this lands, any
-    // previously user-uploaded main avatar that we wrote into the
-    // bundled namespace gets copied into STORE_DIR/avatars/main.png so
-    // the new resolver serves it as the mutable source-of-truth.
-    runWarroomAvatarMigration();
-
-    // Memory consolidation: find patterns across recent memories every 30 minutes
-    if (ALLOWED_CHAT_ID && GOOGLE_API_KEY) {
-      // Delay first consolidation 2 minutes after startup to let things settle
-      setTimeout(() => {
-        void runConsolidation(ALLOWED_CHAT_ID).catch((err) =>
-          logger.error({ err }, 'Initial consolidation failed'),
-        );
-      }, 2 * 60 * 1000);
-      setInterval(() => {
-        void runConsolidation(ALLOWED_CHAT_ID).catch((err) =>
-          logger.error({ err }, 'Periodic consolidation failed'),
-        );
-      }, 30 * 60 * 1000);
-      logger.info('Memory consolidation enabled (every 30 min)');
-    }
-  } else {
-    logger.info({ agentId: AGENT_ID }, 'Skipping decay/consolidation (main process owns these)');
-  }
-
-  cleanupOldUploads();
-
+/** Build the Telegram Messenger (called after DB init — createBot() reads the DB). */
+function createTelegramMessenger(agentId: string): Messenger {
   const bot = createBot();
 
-  // Dashboard only runs in the main bot process
-  if (AGENT_ID === 'main') {
-    startDashboard(bot.api);
+  return {
+    kind: 'telegram',
+    primaryRecipient: ALLOWED_CHAT_ID,
+    dashboardApi: bot.api,
 
-    // War Room voice server (auto-start if enabled, with auto-respawn)
-    if (WARROOM_ENABLED) {
-      const { spawn } = await import('child_process');
-      const venvPython = getVenvPython(path.join(PROJECT_ROOT, 'warroom', '.venv'));
-      const serverScript = path.join(PROJECT_ROOT, 'warroom', 'server.py');
-
-      // Write agent roster so the Python voice stack can discover agents.
-      // Shared helper so agent-create can call it too on new/delete.
-      refreshWarRoomRoster();
-
-      // Detect uv for better error messages (used in both branches below)
-      const { spawnSync } = await import('child_process');
-      let uvAvailable = false;
-      try { uvAvailable = spawnSync('uv', ['--version'], { stdio: 'pipe', windowsHide: true }).status === 0; } catch { /* */ }
-      if (uvAvailable) logger.info('uv detected — will use uv commands in War Room instructions');
-
-      if (fs.existsSync(venvPython) && fs.existsSync(serverScript)) {
-        // Pre-flight: verify Python dependencies are actually installed
-
-        const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000, windowsHide: true });
-        if (depCheck.status !== 0) {
-          const msg = uvAvailable
-            ? 'War Room Python dependencies not installed. Run:\n\n'
-              + `uv pip install --python ${venvPython} -r warroom/requirements.txt\n\n`
-              + 'Then restart the bot.'
-            : IS_WINDOWS
-              ? 'War Room Python dependencies not installed. Run:\n\n'
-                + 'In PowerShell:\n'
-                + '  .\\warroom\\.venv\\Scripts\\Activate.ps1\n'
-                + '  pip install -r warroom\\requirements.txt\n\n'
-                + 'Or in Command Prompt:\n'
-                + '  warroom\\.venv\\Scripts\\activate.bat\n'
-                + '  pip install -r warroom\\requirements.txt\n\n'
-                + 'Then restart the bot.'
-              : 'War Room Python dependencies not installed. Run:\n\n'
-                + 'source warroom/.venv/bin/activate\n'
-                + 'pip install -r warroom/requirements.txt\n\n'
-                + 'Then restart the bot.';
-          logger.error(msg);
-          if (ALLOWED_CHAT_ID) {
-            bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room could not start.\n\n${msg}`).catch(() => {});
-          }
-        } else {
-        // Dedicated log file for the warroom subprocess
-        const warroomLogPath = path.join(tmpDir(), 'warroom-debug.log');
-        let warroomLogFd: number | null = null;
-        try {
-          warroomLogFd = fs.openSync(warroomLogPath, 'a');
-        } catch (err) {
-          logger.warn({ err, warroomLogPath }, 'Could not open warroom log');
-        }
-
-        const MAX_CRASH_RESPAWNS = 3;
-        // Time a process must stay alive without crashing before we treat
-        // its crash counter as "recovered" and reset it. The python server
-        // prints "ready" before it actually binds the WS transport, so a
-        // bind-time failure could print ready then crash in the same
-        // second. Resetting on first stdout chunk let that loop forever.
-        const STABLE_UPTIME_MS = 20_000;
-        let respawnAttempts = 0;
-        let shuttingDown = false;
-        let currentProc: ReturnType<typeof spawn> | null = null;
-
-        const spawnWarroom = (): void => {
-          if (shuttingDown) return;
-          const proc = spawn(venvPython, [serverScript], {
-            cwd: PROJECT_ROOT,
-            env: { ...process.env, WARROOM_PORT: String(WARROOM_PORT) },
-            stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true,
-          });
-          currentProc = proc;
-
-          // Schedule the crash-counter reset based on *uptime*, not the
-          // readiness line. Cleared in the exit handler if the process
-          // dies before reaching STABLE_UPTIME_MS.
-          const stableResetHandle = setTimeout(() => {
-            respawnAttempts = 0;
-          }, STABLE_UPTIME_MS);
-
-          proc.stdout.once('data', (data: Buffer) => {
-            try {
-              const info = JSON.parse(data.toString().trim());
-              logger.info({ port: WARROOM_PORT, ws_url: info.ws_url, pid: proc.pid }, 'War Room server started');
-            } catch {
-              logger.info({ port: WARROOM_PORT, pid: proc.pid }, 'War Room server started');
-            }
-          });
-
-          // Forward stdout+stderr into the dedicated log file.
-          if (warroomLogFd !== null) {
-            const write = (buf: Buffer) => { try { fs.writeSync(warroomLogFd!, buf); } catch { /* ok */ } };
-            proc.stdout.on('data', write);
-            proc.stderr.on('data', write);
-          }
-
-          proc.on('exit', (code, signal) => {
-            clearTimeout(stableResetHandle);
-            if (shuttingDown) return;
-            const wasIntentional = signal === 'SIGTERM' || signal === 'SIGKILL' || signal === 'SIGINT';
-            logger.warn({ code, signal, pid: proc.pid, intentional: wasIntentional }, 'War Room server exited');
-            let delayMs: number;
-            if (wasIntentional) {
-              delayMs = 300;
-              respawnAttempts = 0;
-            } else {
-              respawnAttempts += 1;
-              if (respawnAttempts > MAX_CRASH_RESPAWNS) {
-                logger.error(`War Room crashed ${MAX_CRASH_RESPAWNS} times. Giving up. Check ${warroomLogPath} for errors.`);
-                if (ALLOWED_CHAT_ID) {
-                  bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room crashed ${MAX_CRASH_RESPAWNS} times and has been disabled.\n\nCheck ${warroomLogPath}, fix the issue, and restart the bot.`).catch(() => {});
-                }
-                return;
-              }
-              delayMs = Math.min(30000, 500 * 2 ** Math.min(respawnAttempts, 6));
-            }
-            logger.info({ delayMs, attempt: respawnAttempts }, 'Respawning War Room server');
-            setTimeout(spawnWarroom, delayMs);
-          });
-        };
-
-        spawnWarroom();
-
-        // Clean up on main process exit.
-        const shutdownWarroom = () => {
-          shuttingDown = true;
-          try { currentProc?.kill(); } catch { /* ok */ }
-          if (warroomLogFd !== null) { try { fs.closeSync(warroomLogFd); } catch { /* ok */ } }
-        };
-        process.on('exit', shutdownWarroom);
-        process.on('SIGTERM', shutdownWarroom);
-        process.on('SIGINT', shutdownWarroom);
-        } // end dep check else
-      } else {
-        const missingVenv = !fs.existsSync(venvPython);
-        const missingScript = !fs.existsSync(serverScript);
-        const hint = missingVenv
-          ? uvAvailable
-            ? 'Python venv not found. Run:\n\nuv venv warroom/.venv\nuv pip install --python warroom/.venv -r warroom/requirements.txt'
-            : IS_WINDOWS
-              ? 'Python venv not found. Run:\n\n'
-                + 'python -m venv warroom\\.venv\n\n'
-                + 'In PowerShell:\n'
-                + '  .\\warroom\\.venv\\Scripts\\Activate.ps1\n'
-                + '  pip install -r warroom\\requirements.txt\n\n'
-                + 'Or in Command Prompt:\n'
-                + '  warroom\\.venv\\Scripts\\activate.bat\n'
-                + '  pip install -r warroom\\requirements.txt'
-              : 'Python venv not found. Run:\n\npython3 -m venv warroom/.venv\nsource warroom/.venv/bin/activate\npip install -r warroom/requirements.txt'
-          : 'warroom/server.py not found. Make sure the warroom/ directory exists.';
-        logger.warn('War Room enabled but cannot start: %s', hint);
-        if (ALLOWED_CHAT_ID) {
-          bot.api.sendMessage(ALLOWED_CHAT_ID, `War Room is enabled but could not start.\n\n${hint}`).catch(() => {});
-        }
-      }
-    }
-  }
-
-  if (ALLOWED_CHAT_ID) {
-    initScheduler(
-      async (text) => {
-        // Split long messages to respect Telegram's 4096 char limit.
-        // The scheduler's splitMessage handles chunking, but the sender
-        // callback is also called directly for status messages which may exceed the limit.
-        const { splitMessage } = await import('./bot.js');
-        for (const chunk of splitMessage(text)) {
-          await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
-            logger.error({ err }, 'Scheduler failed to send message'),
-          );
-        }
-      },
-      AGENT_ID,
-    );
-
-    // Proactive OAuth health monitoring — alerts via Telegram before the
-    // Claude CLI token expires. OPT-IN as of 2026-04-10: users were getting
-    // spammed with "Expiring soon" alerts on fresh installs (reported by
-    // Benjamin Elkrieff in Discord), and people who don't monitor their
-    // phone can't re-auth in time anyway. Enable only if you actually want
-    // the alerts by setting OAUTH_HEALTH_ENABLED=true in .env.
-    const oauthHealthEnv = (await import('./env.js')).readEnvFile(['OAUTH_HEALTH_ENABLED']);
-    if ((oauthHealthEnv.OAUTH_HEALTH_ENABLED || '').trim().toLowerCase() === 'true') {
-      initOAuthHealthCheck(async (text) => {
-        const { splitMessage } = await import('./bot.js');
-        for (const chunk of splitMessage(text)) {
-          await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
-            logger.error({ err }, 'OAuth health alert failed'),
-          );
-        }
-      });
-    } else {
-      logger.info('OAuth health check disabled (set OAUTH_HEALTH_ENABLED=true in .env to enable)');
-    }
-  } else {
-    logger.warn('ALLOWED_CHAT_ID not set — scheduler disabled (no destination for results)');
-  }
-
-  const shutdown = async () => {
-    logger.info('Shutting down...');
-    setTelegramConnected(false);
-    releaseLock();
-    await bot.stop();
-    process.exit(0);
-  };
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
-
-  logger.info({ agentId: AGENT_ID }, 'Starting ClaudeClaw...');
-
-  // Clear any existing webhook so polling works cleanly (e.g., if token was
-  // previously used with a webhook-based bot or another ClaudeClaw instance).
-  try {
-    await bot.api.deleteWebhook({ drop_pending_updates: false });
-  } catch (err) {
-    logger.warn({ err }, 'Could not clear webhook (non-fatal)');
-  }
-
-  await bot.start({
-    onStart: (botInfo) => {
-      setTelegramConnected(true);
-      setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
-      logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
-      if (AGENT_ID === 'main') {
-        console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
-        if (!ALLOWED_CHAT_ID) {
-          console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID`);
-        }
-        console.log();
-      } else {
-        console.log(`\n  ClaudeClaw agent [${AGENT_ID}] online: @${botInfo.username}\n`);
+    async sendToPrimary(text: string): Promise<void> {
+      if (!ALLOWED_CHAT_ID) return;
+      // Telegram's 4096-char limit + HTML parse mode.
+      for (const chunk of splitMessage(text)) {
+        await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
+          logger.error({ err }, 'Telegram status message failed'),
+        );
       }
     },
-  });
+
+    async start(interactive: boolean): Promise<void> {
+      if (!interactive) {
+        // Automation-only agent: do NOT poll Telegram (no getUpdates), so it can
+        // share a bot token with an interactive agent without a 409. It still
+        // sends outbound (scheduler results, alerts) via bot.api.
+        try {
+          const me = await bot.api.getMe();
+          setTelegramConnected(true);
+          setBotInfo(me.username ?? '', me.first_name ?? 'ClaudeClaw');
+          logger.info({ agentId, username: me.username }, 'ClaudeClaw agent running (automation-only, no polling)');
+          console.log(`\n  ClaudeClaw agent [${agentId}] online (automation-only): @${me.username}\n`);
+        } catch (err) {
+          logger.warn({ err, agentId }, 'Could not fetch bot identity (non-fatal)');
+        }
+        return;
+      }
+
+      // Clear any existing webhook so polling works cleanly.
+      try {
+        await bot.api.deleteWebhook({ drop_pending_updates: false });
+      } catch (err) {
+        logger.warn({ err }, 'Could not clear webhook (non-fatal)');
+      }
+
+      await bot.start({
+        onStart: (botInfo) => {
+          setTelegramConnected(true);
+          setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
+          logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
+          if (agentId === 'main') {
+            console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
+            if (!ALLOWED_CHAT_ID) {
+              console.log('  Send /chatid to get your chat ID for ALLOWED_CHAT_ID');
+            }
+            console.log();
+          } else {
+            console.log(`\n  ClaudeClaw agent [${agentId}] online: @${botInfo.username}\n`);
+          }
+        },
+      });
+    },
+
+    async stop(): Promise<void> {
+      await bot.stop();
+    },
+  };
 }
 
-main().catch((err: unknown) => {
-  logger.error({ err }, 'Fatal error');
-  releaseLock();
-  process.exit(1);
-});
+const telegramFactory: MessengerFactory = {
+  preflight(agentId: string): void {
+    if (!activeBotToken) {
+      if (agentId === 'main') {
+        logger.error('Bot token is not set. Run npm run setup to configure it.');
+      } else {
+        logger.error({ agentId }, `Configuration for agent "${agentId}" is broken: bot token not set. Check .env or re-run npm run agent:create.`);
+      }
+      process.exit(1);
+    }
+  },
+  create: createTelegramMessenger,
+};
+
+void bootMessenger(telegramFactory);

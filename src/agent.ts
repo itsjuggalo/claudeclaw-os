@@ -1,13 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 
-import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
+import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd, agentSystemPrompt } from './config.js';
 import { readEnvFile } from './env.js';
 import { classifyError, AgentError } from './errors.js';
 import { logger } from './logger.js';
 import { getScrubbedSdkEnv } from './security.js';
 import { requireEnabled } from './kill-switches.js';
 import { EngineFactory } from './agent-engine/index.js';
+import type { AskUserQuestionResolver } from './agent-engine/index.js';
 import {
   ProviderConfig,
   ProviderRuntimeMode,
@@ -18,6 +19,10 @@ import {
   sessionBelongsToProvider,
 } from './provider.js';
 import { defaultModelForProvider, getSelectedProviderConfig } from './active-provider.js';
+import { claudeThinkingForModel, selectedEffortForProvider } from './model-catalog.js';
+import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import { dispatchMcpServersForTurn } from './dispatch-registry.js';
+import { runtimeModelIdentity } from './runtime-identity.js';
 
 // ── MCP server loading ──────────────────────────────────────────────
 // The Agent SDK's settingSources loads CLAUDE.md and permissions from
@@ -30,16 +35,31 @@ export interface McpStdioConfig {
   env?: Record<string, string>;
 }
 
+export interface McpHttpConfig {
+  type: 'http' | 'sse';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+// Mirrors agent-engine/types.ts McpServerConfig. Includes the in-process SDK
+// variant so the dispatch tools can be merged into a turn's mcpServers (see
+// runAgent). `loadMcpServers` itself only ever emits stdio/http from settings;
+// the union just has to admit the SDK server that runAgent adds afterward.
+export type McpConfig = McpStdioConfig | McpHttpConfig | McpSdkServerConfigWithInstance;
+
 /**
  * Merge MCP server configs from user settings (~/.claude/settings.json) and
  * project settings (.claude/settings.json in cwd), optionally filtered by
  * an allowlist (e.g. from an agent's agent.yaml `mcp_servers` field).
  *
+ * Supports both stdio transport (command/args/env) and HTTP/SSE transport
+ * (type/url/headers), matching the Claude Agent SDK's McpServerConfig types.
+ *
  * Exported so the voice bridge can reuse the exact same loader the text
  * bot uses — keeping behavior consistent across channels.
  */
-export function loadMcpServers(allowlist?: string[], projectCwd?: string): Record<string, McpStdioConfig> {
-  const merged: Record<string, McpStdioConfig> = {};
+export function loadMcpServers(allowlist?: string[], projectCwd?: string): Record<string, McpConfig> {
+  const merged: Record<string, McpConfig> = {};
 
   // Load from project settings (.claude/settings.json in cwd). `projectCwd`
   // lets callers (e.g. the voice bridge) target a specific sub-agent's
@@ -59,7 +79,13 @@ export function loadMcpServers(allowlist?: string[], projectCwd?: string): Recor
       if (servers && typeof servers === 'object') {
         for (const [name, config] of Object.entries(servers)) {
           const cfg = config as Record<string, unknown>;
-          if (cfg.command && typeof cfg.command === 'string') {
+          if (cfg.url && typeof cfg.url === 'string') {
+            merged[name] = {
+              type: (cfg.type as 'http' | 'sse') ?? 'http',
+              url: cfg.url,
+              ...(cfg.headers ? { headers: cfg.headers as Record<string, string> } : {}),
+            };
+          } else if (cfg.command && typeof cfg.command === 'string') {
             merged[name] = {
               command: cfg.command,
               ...(cfg.args ? { args: cfg.args as string[] } : {}),
@@ -88,6 +114,8 @@ export interface UsageInfo {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
+  /** Cumulative cache_creation_input_tokens (cache writes) across the turn. */
+  cacheCreationInputTokens: number;
   totalCostUsd: number;
   /** True if the SDK auto-compacted context during this turn */
   didCompact: boolean;
@@ -100,11 +128,31 @@ export interface UsageInfo {
    */
   lastCallCacheRead: number;
   /**
+   * The cache_creation_input_tokens from the LAST API call in the turn —
+   * the cache-write count that pairs with lastCallCacheRead for savings math.
+   */
+  lastCallCacheCreation: number;
+  /**
    * The input_tokens from the LAST API call in the turn.
    * This is the actual context window size: system prompt + conversation
    * history + tool results for that call. Use this for context warnings.
    */
   lastCallInputTokens: number;
+  /**
+   * The active model's real context window (tokens), from the SDK's
+   * result.modelUsage. Null for engines that don't report one — callers
+   * fall back to CONTEXT_LIMIT. Use this (not CONTEXT_LIMIT) to size the
+   * context gauge so it tracks the actual model (e.g. Opus 4.8 = 1M,
+   * Sonnet 4.6 = 200k).
+   */
+  contextWindow: number | null;
+  /** Per-turn telemetry from the SDK result object. */
+  model: string | null;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  stopReasonDetail: string | null;
+  isError: boolean;
 }
 
 /** Progress event emitted during agent execution for Telegram feedback. */
@@ -132,6 +180,20 @@ function effortForMode(mode: ProviderRuntimeMode | undefined): 'low' | 'medium' 
   if (normalized === 'deep' || normalized === 'high') return 'high';
   if (normalized === 'max' || normalized === 'extra_high' || normalized === 'xhigh') return 'max';
   return undefined;
+}
+
+function sanitizeProviderResultText(text: string | null, provider: ProviderConfig): string | null {
+  if (!text) return text;
+  if (provider.type !== 'acp') return text;
+
+  // Some ACP backends append a transport provenance footer like `[acp]`
+  // after normal assistant content. Strip trailing footer markers so
+  // Telegram users don't see protocol metadata in every reply.
+  let cleaned = text;
+  while (/(?:\r?\n\s*)?\[acp\]\s*$/i.test(cleaned)) {
+    cleaned = cleaned.replace(/(?:\r?\n\s*)?\[acp\]\s*$/i, '');
+  }
+  return cleaned.trimEnd();
 }
 
 function thinkingForMode(
@@ -180,6 +242,7 @@ export async function runAgent(
   mcpAllowlist?: string[],
   providerConfig?: ProviderConfig,
   toolPolicy?: AgentToolPolicy,
+  onAskUserQuestion?: AskUserQuestionResolver,
 ): Promise<AgentResult> {
   // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
   // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
@@ -195,8 +258,19 @@ export async function runAgent(
     : undefined;
 
   const effectiveModel = model ?? defaultModelForProvider(provider);
-  const effectiveEffort = effortForMode(provider.runtimeMode);
-  const effectiveThinking = thinkingForMode(provider.thinkingMode);
+  // Resolve the provider-specific effort field once, then use that same
+  // normalized value for execution, identity, and reporting.
+  const selectedEffort = selectedEffortForProvider(provider, effectiveModel);
+  // AgentTurnInput.effort is the Claude-compatible subset; OpenAI's `none`
+  // travels through thinkingMode, which is the Codex-native field.
+  const effectiveEffort = (selectedEffort === 'none' ? undefined : selectedEffort) as
+    | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined;
+  const effectiveThinkingMode = provider.type === 'openai'
+    ? selectedEffort
+    : provider.thinkingMode;
+  const effectiveThinking = provider.type === 'claude' && effectiveModel
+    ? claudeThinkingForModel(effectiveModel, provider.thinkingMode, effectiveEffort)
+    : undefined;
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
   // automatically. Only needed if you want to override which account is used.
@@ -222,6 +296,28 @@ export async function runAgent(
   try {
     // Load MCP servers from project + user settings files, filtered by agent allowlist
     const mcpServers = loadMcpServers(mcpAllowlist);
+    // Merge the dispatch tools (mission/schedule/hive) for eligible turns —
+    // the in-process server for Claude, the stdio bridge for native OpenAI.
+    // `dispatchMcpServersForTurn` returns {} unless the runtime has registered
+    // them (bootMessenger), the provider is granted them, AND this turn's tool
+    // policy grants tools at all. This is the single AUTHORIZATION point for
+    // chat, scheduled, and mission turns: engine adapters receive the resulting
+    // set as complete and must never add to it, so a direct engine caller that
+    // doesn't come through here (memory ingest, war-room, voice) gets no
+    // dispatch by design. Because the server lives in module state (not env),
+    // scheduled turns with a scrubbed env still see it.
+    const dispatchServers = dispatchMcpServersForTurn({
+      provider,
+      ...(toolPolicy?.allowedTools ? { allowedTools: toolPolicy.allowedTools } : {}),
+      ...(toolPolicy?.disallowedTools ? { disallowedTools: toolPolicy.disallowedTools } : {}),
+    });
+    // Assigned AFTER the settings-file servers so an authorized dispatch entry
+    // wins a name collision with a project/user-configured server.
+    Object.assign(mcpServers, dispatchServers);
+    // Provenance for engines that pre-approve trusted servers: only what the
+    // authorization layer actually built this turn. Never a name match — a
+    // `.mcp.json` entry claiming the dispatch name must not inherit its trust.
+    const trustedMcpServers = Object.keys(dispatchServers);
     const mcpServerNames = Object.keys(mcpServers);
     logger.info(
       { sessionId: providerSessionId ?? 'new', messageLen: message.length, mcpServers: mcpServerNames },
@@ -234,20 +330,30 @@ export async function runAgent(
       provider,
       sessionId: providerSessionId,
       cwd: agentCwd ?? PROJECT_ROOT,
-      settingSources: ['project', 'user'],
+      // 'user' only: the persona now rides in the system prompt (below), so we no
+      // longer need 'project' to re-load agents/{id}/CLAUDE.md from cwd on every
+      // turn. 'user' still loads ~/.claude/CLAUDE.md and global skills.
+      settingSources: ['user'],
+      ...(agentSystemPrompt ? { systemPrompt: agentSystemPrompt } : {}),
+      runtimeIdentity: runtimeModelIdentity(provider, effectiveModel, {
+        ...(selectedEffort ? { effort: selectedEffort } : {}),
+        ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
+      }),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: effectiveSkipPermissions(provider),
       ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
       env: sdkEnv,
       ...(mcpServerNames.length > 0 ? { mcpServers } : {}),
+      ...(trustedMcpServers.length > 0 ? { trustedMcpServers } : {}),
       includePartialMessages: !!onStreamText,
       ...(effectiveModel ? { model: effectiveModel } : {}),
       ...(provider.runtimeMode ? { runtimeMode: provider.runtimeMode } : {}),
-      ...(provider.thinkingMode ? { thinkingMode: provider.thinkingMode } : {}),
+      ...(effectiveThinkingMode ? { thinkingMode: effectiveThinkingMode } : {}),
       ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
       ...(toolPolicy?.allowedTools ? { allowedTools: toolPolicy.allowedTools } : {}),
       ...(toolPolicy?.disallowedTools ? { disallowedTools: toolPolicy.disallowedTools } : {}),
+      ...(onAskUserQuestion ? { onAskUserQuestion } : {}),
       abortController,
     })) {
       if (event.type === 'session') {
@@ -262,6 +368,13 @@ export async function runAgent(
           { trigger: event.trigger, preCompactTokens },
           'Context window compacted',
         );
+        onProgress?.({
+          type: 'task_completed',
+          description: 'Context compacted',
+          status: 'notice',
+          kind: 'compact',
+          toolCallId: 'context-compaction',
+        });
       }
 
       if (event.type === 'progress') {
@@ -280,7 +393,7 @@ export async function runAgent(
 
       if (event.type === 'aborted') {
         return {
-          text: event.text,
+          text: sanitizeProviderResultText(event.text, provider),
           newSessionId: encodeProviderSession(provider, event.sessionId ?? newSessionId ?? providerSessionId),
           usage: event.usage,
           aborted: true,
@@ -288,7 +401,7 @@ export async function runAgent(
       }
 
       if (event.type === 'result') {
-        resultText = event.text;
+        resultText = sanitizeProviderResultText(event.text, provider);
         if (event.usage) {
           usage = event.usage;
           logger.info(
@@ -359,6 +472,7 @@ export async function runAgentWithRetry(
   mcpAllowlist?: string[],
   providerConfig?: ProviderConfig,
   toolPolicy?: AgentToolPolicy,
+  onAskUserQuestion?: AskUserQuestionResolver,
 ): Promise<AgentResult> {
   let lastError: AgentError | undefined;
 
@@ -376,6 +490,7 @@ export async function runAgentWithRetry(
         mcpAllowlist,
         providerConfig,
         toolPolicy,
+        onAskUserQuestion,
       );
     } catch (err) {
       if (!(err instanceof AgentError)) throw err;

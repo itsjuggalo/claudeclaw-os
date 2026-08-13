@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0e0e10" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ClaudeClaw" />
     <meta name="referrer" content="no-referrer" />
     <title>Mission Control · ClaudeClaw</title>
     <script>
@@ -14,10 +20,36 @@
           document.documentElement.setAttribute('data-theme', saved);
         }
       } catch {}
+      // Apply forced-desktop viewport before first paint so the browser
+      // computes its auto-fit scale against the wide layout viewport.
+      // Width is multiplied by uiScale to compensate for the CSS zoom
+      // theme.ts applies on <html> (see web/src/lib/view-mode.ts).
+      try {
+        if (localStorage.getItem('claudeclaw.viewMode') === 'desktop') {
+          var s = parseFloat(localStorage.getItem('claudeclaw.uiScale') || '1');
+          if (!(s >= 0.8 && s <= 1.6)) s = 1;
+          document.querySelector('meta[name="viewport"]')
+            .setAttribute('content', 'width=' + Math.round(1100 * s) + ', user-scalable=yes');
+        }
+      } catch {}
     </script>
   </head>
   <body>
     <div id="app"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!-- Universal markup overlay (Ctrl+Shift+A). Loaded cross-origin from missionctrl,
+         which is the one app that serves /annotate.js + hosts the collector. -->
+    <script>
+      (function () {
+        var h = location.hostname;
+        var local = h === 'localhost' || h === '127.0.0.1' || /^g59/i.test(h) ||
+          /^192\.168\./.test(h) || /^10\./.test(h) || /^100\./.test(h);
+        var o = local ? 'http://localhost:3000' : 'https://missionctrl.serveftp.com';
+        window.__ANNOTATE_CFG = { origin: o };
+        var s = document.createElement('script');
+        s.src = o + '/annotate.js'; s.defer = true;
+        document.head.appendChild(s);
+      })();
+    </script>
   </body>
 </html>

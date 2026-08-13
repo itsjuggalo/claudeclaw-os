@@ -14,8 +14,13 @@
  *     --activate
  *
  * Flags:
- *   --id          Agent ID (required, lowercase, no spaces)
- *   --name        Display name (required)
+ *   --id          Canonical agent id (required, lowercase, no spaces). Permanent —
+ *                 it's the primary key every task/history row is stored under and
+ *                 never changes, so renames don't orphan history.
+ *   --name        Display name (required). Mutable later via the dashboard; the
+ *                 previous name is retained as an alias so old references still
+ *                 resolve. Must not collide with any existing agent's id, display
+ *                 name, or alias.
  *   --description What this agent does (required)
  *   --model       Model override (default: claude-sonnet-4-6)
  *   --template    Template to copy from (default: _template)
@@ -25,26 +30,11 @@
  *   --suggest     Only print suggested bot names for the given --id
  */
 
+import { pathToFileURL } from 'url';
+
 import { createAgent, validateBotToken, validateAgentId, activateAgent, suggestBotNames, listTemplates } from './agent-create.js';
-
-function usage(): void {
-  console.log(`Usage: agent-create-cli --id ID --name NAME --description DESC --token TOKEN [options]
-
-Required:
-  --id ID              Agent identifier (lowercase, no spaces)
-  --name NAME          Display name
-  --description DESC   What this agent does
-  --token TOKEN        Telegram bot token from @BotFather
-
-Options:
-  --model MODEL        Claude model (default: claude-sonnet-4-6)
-  --template TEMPLATE  Template to clone from (default: _template)
-  --activate           Install and start service after creation
-  --validate           Only validate the token, then exit
-  --suggest            Print suggested bot names for --id, then exit
-  --templates          List available templates, then exit
-  --help               Show this help`);
-}
+import { renderHelp } from './cli-reference.js';
+import { agentCreateDescriptor as descriptor } from './cli-descriptors.js';
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const args: Record<string, string | boolean> = {};
@@ -71,7 +61,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv);
 
   if (args.help) {
-    usage();
+    console.log(renderHelp(descriptor));
     process.exit(0);
   }
 
@@ -164,7 +154,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error('Fatal:', err);
-  process.exit(1);
-});
+// Only run the CLI when invoked directly, so importing `descriptor` (for docs
+// generation and the drift-guard test) does not trigger the creation flow.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMain) {
+  main().catch((err) => {
+    console.error('Fatal:', err);
+    process.exit(1);
+  });
+}

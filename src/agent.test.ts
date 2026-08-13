@@ -14,7 +14,12 @@ vi.mock('./config.js', () => ({
   AGENT_MAX_TURNS: 30,
   PROJECT_ROOT: '/tmp/test',
   agentCwd: undefined,
+  agentSystemPrompt: undefined,
   ENABLE_ACP: true,
+  DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
+  CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
+  CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
+  CLAUDE_MODEL_HAIKU: 'claude-haiku-4-5',
 }));
 
 vi.mock('./logger.js', () => ({
@@ -69,6 +74,40 @@ describe('runAgentWithRetry', () => {
     const result = await runAgentWithRetry('hi', undefined, noop, undefined, undefined, undefined, undefined, undefined, undefined, undefined, claudeProvider);
     expect(result.text).toBe('Hello!');
     expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces context compaction as a durable progress notice', async () => {
+    mockQuery.mockReturnValue(mockQueryEvents([
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: { trigger: 'auto', pre_tokens: 150000 },
+      },
+      resultEvent('Compacted and continued'),
+    ])());
+    const onProgress = vi.fn();
+
+    await runAgentWithRetry(
+      'continue',
+      undefined,
+      noop,
+      onProgress,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      claudeProvider,
+    );
+
+    expect(onProgress).toHaveBeenCalledWith({
+      type: 'task_completed',
+      description: 'Context compacted',
+      status: 'notice',
+      kind: 'compact',
+      toolCallId: 'context-compaction',
+    });
   });
 
   it('retries on retryable error and succeeds on second attempt', async () => {

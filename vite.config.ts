@@ -17,8 +17,13 @@ export default defineConfig({
     rollupOptions: {
       output: {
         // Single-page app: keep entry chunk tight, code-split routes lazily.
-        manualChunks: {
-          vendor: ['preact', '@preact/signals', 'wouter-preact', 'lucide-preact'],
+        // Function form (not object) so the build works under both Rollup and
+        // rolldown. Object form throws "manualChunks is not a function" on
+        // fresh installs whose tree resolves a rolldown-powered vite.
+        manualChunks(id) {
+          if (/node_modules[\\/](preact|@preact[\\/]signals|wouter-preact|lucide-preact)[\\/]/.test(id)) {
+            return 'vendor';
+          }
         },
       },
     },

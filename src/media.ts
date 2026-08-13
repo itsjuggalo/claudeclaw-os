@@ -152,6 +152,83 @@ export function buildDocumentMessage(localPath: string, filename: string, captio
 }
 
 /**
+ * Build the message for a Telegram album (media group): several files sent
+ * together with one caption. Lists every saved path so the agent reads them all
+ * in a single turn, and tells it to treat them as one set.
+ *
+ * NOTE: photos and documents only. Videos in an album are NOT grouped — each
+ * still routes through buildVideoMessage as its own turn (known limitation).
+ */
+export function buildMediaGroupMessage(items: Array<{ path: string; label?: string }>, caption?: string): string {
+  const n = items.length;
+  let msg = `${n} files received together (one album). Saved at:\n` +
+    items.map((it, i) => `  ${i + 1}. ${it.label ? it.label + ': ' : ''}${it.path}`).join('\n');
+  if (caption) {
+    msg += `\nCaption: "${caption}"`;
+  }
+  msg += `\nPlease consider ALL ${n} files together as one set when answering.`;
+  return msg;
+}
+
+export interface MediaGroupItem { path: string; label?: string }
+
+export interface MediaGroupBufferDeps {
+  /** Debounce window in ms (default 1400). Measured from the last item ARRIVAL. */
+  debounceMs?: number;
+  /** Called once per group after the debounce settles and downloads resolve. */
+  onFlush: (key: string, items: MediaGroupItem[], caption: string | undefined) => void;
+  /** Injectable for tests. Defaults to global setTimeout/clearTimeout. */
+  setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimer?: (t: ReturnType<typeof setTimeout>) => void;
+}
+
+/**
+ * Buffers Telegram album items that share a media_group_id and flushes them as
+ * one set once no new item has arrived for `debounceMs`.
+ *
+ * Key design point (fixes the large-file split): membership is registered at
+ * message ARRIVAL via add(), which resets the debounce timer immediately. The
+ * actual download is passed in as a promise and awaited only at flush time, so
+ * a slow sequential download can never push the next item past the debounce
+ * window and split one album into multiple turns. Items whose download rejects
+ * are dropped; a group that ends up empty is not flushed.
+ */
+export function createMediaGroupBuffer(deps: MediaGroupBufferDeps) {
+  const debounceMs = deps.debounceMs ?? 1400;
+  const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+  const clearTimer = deps.clearTimer ?? ((t) => clearTimeout(t));
+  interface Group {
+    pending: Array<Promise<MediaGroupItem>>;
+    caption?: string;
+    timer?: ReturnType<typeof setTimeout>;
+  }
+  const groups = new Map<string, Group>();
+
+  function add(key: string, item: Promise<MediaGroupItem>, caption?: string): void {
+    let g = groups.get(key);
+    if (!g) { g = { pending: [] }; groups.set(key, g); }
+    g.pending.push(item);
+    if (caption && !g.caption) g.caption = caption;
+    if (g.timer) clearTimer(g.timer);
+    g.timer = setTimer(() => { void flush(key); }, debounceMs);
+  }
+
+  async function flush(key: string): Promise<void> {
+    const g = groups.get(key);
+    if (!g) return;
+    groups.delete(key);
+    const settled = await Promise.allSettled(g.pending);
+    const items = settled
+      .filter((r): r is PromiseFulfilledResult<MediaGroupItem> => r.status === 'fulfilled')
+      .map((r) => r.value);
+    if (items.length === 0) return;
+    deps.onFlush(key, items, g.caption);
+  }
+
+  return { add, flush, get size() { return groups.size; } };
+}
+
+/**
  * Build the message text to send to Claude when a video is received.
  * Instructs Claude to use the gemini-api-dev skill for video understanding.
  */

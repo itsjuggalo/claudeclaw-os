@@ -1,0 +1,13 @@
+import { chromium } from "playwright";
+const STATE = `${process.env.HOME}/skool-mcp/storageState.json`;
+const browser = await chromium.launch({ headless: true });
+const ctx = await browser.newContext({ storageState: STATE });
+const page = await ctx.newPage();
+await page.goto(process.argv[2], { waitUntil: "domcontentloaded", timeout: 45000 });
+await page.waitForTimeout(2500);
+const data = await page.evaluate(() => document.getElementById("__NEXT_DATA__")?.textContent || "");
+console.log("bytes:", data.length);
+for (const kw of ["file_name", "attachmentsData", "read_url"]) console.log(kw, ":", data.split(kw).length - 1);
+const i = data.indexOf("file_name");
+if (i > 0) console.log("sample:", data.slice(i - 100, i + 300));
+await browser.close();

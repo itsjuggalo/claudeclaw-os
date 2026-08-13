@@ -165,7 +165,7 @@ export function Scheduled() {
 
       {tasks.length > 0 && view === 'cards' && (
         <div class="flex-1 overflow-y-auto p-6">
-          <div class="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))' }}>
+          <div class="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(360px, 100%), 1fr))' }}>
             {tasks.map((t) => (
               <TaskCard
                 key={t.id}
@@ -183,7 +183,7 @@ export function Scheduled() {
       )}
 
       {tasks.length > 0 && view === 'list' && (
-        <div class="flex-1 overflow-y-auto">
+        <div class="flex-1 overflow-auto">
           <table class="w-full text-[12.5px]">
             <thead class="sticky top-0 bg-[var(--color-bg)] border-b border-[var(--color-border)] z-10">
               <tr class="text-left">

@@ -9,6 +9,7 @@ import { formatRelativeTime, formatCost } from '@/lib/format';
 import { chatId, dashboardToken } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { showCosts } from '@/lib/theme';
+import { modelLabel } from '@/lib/modelLabels';
 
 interface Agent {
   id: string;
@@ -203,13 +204,13 @@ function OverviewTab({ agent }: { agent: Agent }) {
   const costsOn = showCosts.value;
   return (
     <div class="space-y-3">
-      <div class={(costsOn ? 'grid-cols-3' : 'grid-cols-1') + ' grid gap-2'}>
+      <div class={(costsOn ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1') + ' grid gap-2'}>
         <Kpi label="Today turns" value={String(agent.todayTurns)} />
         {costsOn && <Kpi label="Today cost" value={formatCost(agent.todayCost)} />}
         {costsOn && <Kpi label="Lifetime cost" value={formatCost(tokens.data?.allTimeCost || 0)} />}
       </div>
       <Section label="Configuration">
-        <Row label="Model"><Pill tone="neutral">{agent.model || 'default'}</Pill></Row>
+        <Row label="Model"><Pill tone="neutral">{modelLabel(agent.model)}</Pill></Row>
         <Row label="Status">{agent.running
           ? <Pill tone="done">running</Pill>
           : <Pill tone="cancelled">offline</Pill>}</Row>

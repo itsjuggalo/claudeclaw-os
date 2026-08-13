@@ -24,7 +24,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 
-import { PROJECT_ROOT, CLAUDECLAW_CONFIG } from './config.js';
+import { PROJECT_ROOT, CLAUDECLAW_CONFIG, CLAUDECLAW_OWNER_NAME } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import {
@@ -47,6 +47,7 @@ import { buildMemoryContext } from './memory.js';
 import { ingestConversationTurn } from './memory-ingest.js';
 import {
   resolveAgentDir,
+  resolveAgentClaudeMd,
   loadAgentConfig,
   listAllAgents,
   resolveAgentDisplayName,
@@ -568,6 +569,8 @@ export async function warmupMeeting(): Promise<void> {
         provider,
         cwd: PROJECT_ROOT,
         model: defaultModelForProvider(provider, 'claude-haiku-4-5-20251001'),
+        // Deny-all IS the explicit tool-less request (codex-capability-policy.ts):
+        // a warmup turn gets no shell, web search, MCP, or dispatch.
         allowedTools: [],
         disallowedTools: ['*'],
         settingSources: [],
@@ -654,6 +657,8 @@ export async function warmupAgentSDK(agentId: string): Promise<void> {
           // providers, use the selected provider/model because its adapter
           // owns the actual warmup behavior.
           model: defaultModelForProvider(provider, 'claude-haiku-4-5-20251001'),
+          // Deny-all IS the explicit tool-less request (codex-capability-policy.ts):
+          // a warmup turn gets no shell, web search, MCP, or dispatch.
           allowedTools: [],
           disallowedTools: ['*'],
           settingSources: [],
@@ -774,13 +779,13 @@ const _activeCancelFlags = new Map<string, { meetingId: string; flag: { cancelle
  * Format intentionally tagged so the agent understands "I didn't say
  * these other lines." Lines labeled "You:" are the agent's own past
  * replies (useful when its session got new framing), other agent lines
- * use their display name, user lines say "Mark".
+ * use their display name, and user lines use the configured owner name.
  */
 function buildMeetingContextBlock(meetingId: string, agentId: string): string {
   // Grab the 8 most recent rows, oldest first. Drop the very last one
   // if it's the user's current message — we append that separately at
   // the end of the framed prompt, and duplicating would confuse the
-  // agent into thinking Mark said it twice.
+  // agent into thinking the owner said it twice.
   let rows = getWarRoomTranscript(meetingId, { limit: 8 }).reverse();
   if (rows.length > 0) {
     const last = rows[rows.length - 1];
@@ -788,21 +793,28 @@ function buildMeetingContextBlock(meetingId: string, agentId: string): string {
   }
   if (rows.length === 0) return '';
   const roster = getRoster();
-  const nameFor = (speaker: string) => {
-    if (speaker === 'user') return 'Mark';
-    if (speaker === agentId) return 'You';
-    return roster.find((r) => r.id === speaker)?.name ?? speaker;
-  };
   const lines: string[] = [];
   for (const row of rows) {
     if (row.speaker === '__divider__') continue; // skip UI dividers
     if (row.speaker === 'system') continue;
-    const label = nameFor(row.speaker);
+    const label = meetingSpeakerLabel(row.speaker, agentId, roster);
     const snippet = row.text.length > 400 ? row.text.slice(0, 400) + '…' : row.text;
     lines.push(`${label}: ${snippet}`);
   }
   if (lines.length === 0) return '';
   return `[Meeting so far — most recent last. Lines marked "You" are your own; other names are teammates who already spoke in this same group chat.\n${lines.join('\n')}]`;
+}
+
+/** Resolve a deterministic label without asking the model to infer identity. */
+export function meetingSpeakerLabel(
+  speaker: string,
+  agentId: string,
+  roster: RosterAgent[],
+  ownerName = CLAUDECLAW_OWNER_NAME,
+): string {
+  if (speaker === 'user') return ownerName.trim() || 'User';
+  if (speaker === agentId) return 'You';
+  return roster.find((r) => r.id === speaker)?.name ?? speaker;
 }
 
 function routerContextFor(args: {
@@ -1354,6 +1366,29 @@ interface RunAgentTurnArgs {
   roleBudgetMs?: number;
 }
 
+/**
+ * Build the exact tool-policy fields forwarded to the agent runtime.
+ * Keeping policy construction and MCP filtering in one seam prevents
+ * either half of the boundary from being omitted at the invoke call.
+ */
+export function buildWarRoomRuntimeToolOptions<T>(
+  agentId: string,
+  agentTools: string[] | undefined,
+  rawMcpServers: Record<string, T>,
+): {
+  allowedTools: string[];
+  disallowedTools: string[];
+  mcpServers?: Record<string, T>;
+} {
+  const policy = warRoomToolPolicy(agentId, agentTools);
+  const mcpServers = filterMcpServers(rawMcpServers, policy);
+  return {
+    allowedTools: policy.allowedTools,
+    disallowedTools: policy.disallowedTools,
+    ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+  };
+}
+
 async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
   const {
     agentId, meetingId, userText, originalUserText, meetingChatId,
@@ -1405,9 +1440,12 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
   // War-room tool boundary. Default-deny side-effect tools and MCPs
   // unless this agent explicitly opted in via `warroom_tools:` in
   // agent.yaml. Closes the "agents inherit unrestricted MCP" finding.
-  const toolPolicy = warRoomToolPolicy(agentId, warroomTools);
   const rawMcpServers = loadMcpServers(mcpAllowlist, agentDir);
-  const mcpServers = filterMcpServers(rawMcpServers, toolPolicy);
+  const runtimeToolOptions = buildWarRoomRuntimeToolOptions(
+    agentId,
+    warroomTools,
+    rawMcpServers,
+  );
   // Synthetic SDK session key — namespaced per meeting so each war-room
   // chat is its own SDK conversation. NEVER pass this into memory or
   // conversation_log queries; those need the real Telegram chat id
@@ -1597,6 +1635,20 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
     // Caught below so we can emit a clean system_note instead of crashing
     // the orchestrator and leaving the bubble stuck.
     requireEnabled('LLM_SPAWN_ENABLED');
+    // The Codex (OpenAI) engine ignores settingSources, so unlike the Claude
+    // engine it won't load the agent's CLAUDE.md persona from cwd. Pass it as
+    // systemPrompt for openai only (Claude gets it via settingSources:['project']
+    // below; passing both would double it).
+    let warRoomPersona: string | undefined;
+    if (provider.type === 'openai') {
+      try {
+        // Canonical resolver handles main's external persona path and the
+        // CLAUDECLAW_CONFIG→PROJECT_ROOT fallback; a raw agentDir join would
+        // miss main (agentDir=PROJECT_ROOT) and externally-configured agents.
+        const personaPath = resolveAgentClaudeMd(agentId);
+        if (personaPath && fs.existsSync(personaPath)) warRoomPersona = fs.readFileSync(personaPath, 'utf-8');
+      } catch { /* non-fatal: no persona */ }
+    }
     const engine = EngineFactory.forProvider(provider);
     for await (const ev of engine.invoke({
       prompt: framedText,
@@ -1604,15 +1656,14 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
       cwd: agentDir,
       sessionId: providerSessionId,
       settingSources: ['project', 'user'],
+      ...(warRoomPersona ? { systemPrompt: warRoomPersona } : {}),
       // War-room runs with the SDK's default permission mode. Combined
       // with the per-agent tool policy below, every side-effect tool call
       // goes through the SDK's permission machinery.
       permissionMode: 'default',
-      allowedTools: toolPolicy.allowedTools,
-      disallowedTools: toolPolicy.disallowedTools,
+      ...runtimeToolOptions,
       maxTurns: agentId === 'main' ? 10 : 8,
       env: sdkEnvStripped(),
-      ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
       includePartialMessages: true,
       abortController: abortCtrl,
       ...(defaultModelForProvider(provider, agentModel) ? { model: defaultModelForProvider(provider, agentModel) } : {}),
@@ -1688,6 +1739,16 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
                 ev.usage.totalCostUsd,
                 ev.usage.didCompact,
                 agentId,
+                ev.usage.contextWindow,
+                ev.usage.cacheCreationInputTokens,
+                {
+                  model: ev.usage.model,
+                  durationMs: ev.usage.durationMs,
+                  durationApiMs: ev.usage.durationApiMs,
+                  numTurns: ev.usage.numTurns,
+                  stopReason: ev.usage.stopReasonDetail,
+                  isError: ev.usage.isError,
+                },
               );
             }
           } catch (err) {
@@ -1821,6 +1882,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
             const inputTokens = evUsage['input_tokens'] ?? 0;
             const outputTokens = evUsage['output_tokens'] ?? 0;
             const cacheRead = evUsage['cache_read_input_tokens'] ?? 0;
+            const cacheCreation = evUsage['cache_creation_input_tokens'] ?? 0;
             saveTokenUsage(
               sessionChatId,
               undefined,
@@ -1831,6 +1893,8 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
               totalCost ?? 0,
               false,
               agentId,
+              null,
+              cacheCreation,
             );
           }
         } catch (err) {

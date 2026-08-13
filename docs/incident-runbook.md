@@ -1,5 +1,7 @@
 # Incident Runbook — War Room
 
+_Operational runbook. Last reviewed against v1.8.2 on 2026-08-01._
+
 When something is on fire, you don't want to read source. Find the symptom, flip the kill switch.
 
 ## Kill switches (hot-reload, ~2s to take effect)

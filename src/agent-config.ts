@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 
-import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
+import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR, WARROOM_TMP_DIR } from './config.js';
 import { readEnvFile } from './env.js';
 import {
   ProviderConfig,
@@ -38,7 +38,7 @@ function mainConfigPath(): string {
 // roster changes (new agent, deleted agent). Read by the Python Pipecat
 // voice stack so new agents propagate into voice War Room without a
 // full bot restart.
-export const WARROOM_ROSTER_PATH = '/tmp/warroom-agents.json';
+export const WARROOM_ROSTER_PATH = path.join(WARROOM_TMP_DIR, 'warroom-agents.json');
 
 /** Single source of truth for "is this string a syntactically valid
  *  agent id?". Lifted out of the various inline copies in the dashboard
@@ -67,6 +67,16 @@ export interface AgentConfig {
   description: string;
   botTokenEnv: string;
   botToken: string;
+  /** When false, the agent runs automation-only: it never polls Telegram
+   *  for incoming updates (no getUpdates), only sending outbound messages
+   *  (scheduler results, alerts). Lets a non-interactive agent share one
+   *  bot token with an interactive agent without a getUpdates 409 conflict.
+   *  Defaults to true (full interactive polling). */
+  interactive: boolean;
+  /** Append-only list of prior display names retained across renames, so
+   *  historical references keep resolving to this canonical id (see
+   *  resolveAgentId). Empty when the agent has never been renamed. */
+  aliases: string[];
   model?: string;
   provider: ProviderConfig;
   mcpServers?: string[];
@@ -114,10 +124,21 @@ export function ensureAgentsMdSymlink(dir: string): boolean {
   if (!fs.existsSync(claudePath) || fs.existsSync(agentsPath)) return false;
 
   try {
+    // Primary: a relative symlink so AGENTS.md always tracks CLAUDE.md and can
+    // never drift out of sync.
     fs.symlinkSync('CLAUDE.md', agentsPath);
     return true;
   } catch {
-    return false;
+    // Fallback: on platforms/accounts that can't create symlinks (notably
+    // stock Windows without Developer Mode, where symlinkSync throws EPERM),
+    // write a real copy so Codex/ACP loaders that read AGENTS.md by name still
+    // get the instructions instead of nothing.
+    try {
+      fs.copyFileSync(claudePath, agentsPath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -146,6 +167,9 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   const description = (raw['description'] as string) ?? '';
   const botTokenEnv = (raw['telegram_bot_token_env'] as string) || (agentId === 'main' ? 'TELEGRAM_BOT_TOKEN' : '');
   const model = raw['model'] as string | undefined;
+  // interactive defaults to true; set `interactive: false` for automation-only
+  // agents that must not poll Telegram (e.g. a scheduler agent sharing a token).
+  const interactive = raw['interactive'] === false ? false : true;
   const provider = readProviderFromYaml(raw);
 
   if (!name) {
@@ -188,12 +212,17 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   const warroomTools = raw['warroom_tools'] as string[] | undefined;
   const meetVoiceId = typeof raw['meet_voice_id'] === 'string' ? (raw['meet_voice_id'] as string) : undefined;
   const meetBotName = typeof raw['meet_bot_name'] === 'string' ? (raw['meet_bot_name'] as string) : undefined;
+  const aliases = Array.isArray(raw['aliases'])
+    ? (raw['aliases'] as unknown[]).filter((a): a is string => typeof a === 'string')
+    : [];
 
   return {
     name,
     description,
     botTokenEnv,
     botToken,
+    interactive,
+    aliases,
     model,
     provider,
     mcpServers,
@@ -240,26 +269,50 @@ export function setAgentDescription(agentId: string, description: string): void 
   fs.writeFileSync(configPath, yaml.dump(raw, { lineWidth: -1 }), 'utf-8');
 }
 
-/** Load the description for the main bot (persisted, editable). */
+/**
+ * Load the description for the main bot (persisted, editable). `main` is
+ * normalized to the standard per-agent shape, so its description lives in
+ * agents/main/agent.yaml like every other agent. Falls back to the legacy
+ * store/main-config.json (pre-backfill installs), then the hardcoded default.
+ */
 export function getMainDescription(): string {
+  try {
+    const cfg = loadAgentConfig('main');
+    if (cfg.description && cfg.description.trim()) return cfg.description.trim();
+  } catch {
+    // No / broken agents/main/agent.yaml — fall through to the legacy path.
+  }
   const configPath = mainConfigPath();
   try {
-    if (!fs.existsSync(configPath)) return DEFAULT_MAIN_DESCRIPTION;
-    const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { description?: string };
-    const desc = (raw.description ?? '').trim();
-    return desc || DEFAULT_MAIN_DESCRIPTION;
+    if (fs.existsSync(configPath)) {
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { description?: string };
+      const desc = (raw.description ?? '').trim();
+      if (desc) return desc;
+    }
   } catch {
-    return DEFAULT_MAIN_DESCRIPTION;
+    // Corrupt legacy json — ignore.
   }
+  return DEFAULT_MAIN_DESCRIPTION;
 }
 
-/** Persist a description for the main bot. */
+/**
+ * Persist a description for the main bot. Writes agents/main/agent.yaml (the
+ * normalized location) when it exists so it is the single source of truth;
+ * falls back to the legacy store/main-config.json only on a pre-backfill
+ * install that has no main agent.yaml yet.
+ */
 export function setMainDescription(description: string): void {
   const trimmed = description.trim();
   if (!trimmed) throw new Error('description cannot be empty');
 
-  if (!fs.existsSync(STORE_DIR)) fs.mkdirSync(STORE_DIR, { recursive: true });
+  const yamlPath = path.join(resolveAgentDir('main'), 'agent.yaml');
+  if (fs.existsSync(yamlPath)) {
+    setAgentDescription('main', trimmed);
+    return;
+  }
 
+  // Legacy fallback: no main agent.yaml yet (backfill hasn't run).
+  if (!fs.existsSync(STORE_DIR)) fs.mkdirSync(STORE_DIR, { recursive: true });
   const configPath = mainConfigPath();
   let raw: Record<string, unknown> = {};
   if (fs.existsSync(configPath)) {
@@ -287,6 +340,160 @@ export function listAgentIds(): string[] {
   }
 
   return [...ids];
+}
+
+/**
+ * Read the append-only alias list for an agent from its `agent.yaml`.
+ * Aliases are prior display names retained on rename so historical references
+ * (`--agent naomi` after Naomi→Nova) keep resolving to the same canonical id.
+ * Returns [] when the agent has no aliases, no yaml, or an unreadable/malformed
+ * yaml — never throws.
+ */
+export function getAgentAliases(agentId: string): string[] {
+  try {
+    const configPath = path.join(resolveAgentDir(agentId), 'agent.yaml');
+    if (!fs.existsSync(configPath)) return [];
+    const raw = yaml.load(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown> | null;
+    const aliases = raw?.['aliases'];
+    if (!Array.isArray(aliases)) return [];
+    return aliases.filter((a): a is string => typeof a === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve any user- or agent-supplied agent reference to its canonical id.
+ *
+ * Agents are LLMs that only ever see display names, so a reference by the name
+ * an agent sees (`--agent holden` when the canonical id is `main`) must map back
+ * to the id every routing/write path actually stores — otherwise the row
+ * dead-letters (no poller's `WHERE assigned_agent = ?` ever matches). This is
+ * that single display-name → id resolver.
+ *
+ * Accepts a canonical id, a current display name, or a historical alias, in that
+ * precedence order (id > name > alias). Case- and whitespace-insensitive.
+ *
+ * Returns null for unknown / empty / non-string input; **never throws** — callers
+ * decide how to handle a miss (CLI errors and exits, dashboard returns 4xx,
+ * internal callers fall back to prior behavior). Reads the same `agent.yaml`
+ * source `agentExists` / `resolveAgentDisplayName` already use: no new registry
+ * table, no second source of truth.
+ */
+export function resolveAgentId(input: string): string | null {
+  if (typeof input !== 'string') return null;
+  const norm = input.trim().toLowerCase();
+  if (!norm) return null;
+
+  // Canonical id set. `main` always counts as a valid id even before its
+  // agent.yaml has been backfilled (agentExists('main') is likewise always
+  // true), so a legacy install still routes to it.
+  const ids = new Set(listAgentIds());
+  ids.add('main');
+
+  // 1. canonical id — checked across all agents before any name, so the
+  //    documented id > name > alias precedence holds even if a display name or
+  //    alias were to collide with another agent's id.
+  if (ids.has(norm)) return norm;
+
+  // 2. current display name
+  for (const id of ids) {
+    if (resolveAgentDisplayName(id).toLowerCase() === norm) return id;
+  }
+
+  // 3. historical alias
+  for (const id of ids) {
+    for (const alias of getAgentAliases(id)) {
+      if (alias.trim().toLowerCase() === norm) return id;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The known canonical agent ids, `main` first then the rest sorted. Used to
+ * build self-diagnosing "unknown agent" errors (`known: main, amos, naomi, …`)
+ * across the CLIs and dashboard so a bad `--agent` names its alternatives
+ * instead of failing silently.
+ */
+export function knownAgentIds(): string[] {
+  const ids = new Set(listAgentIds());
+  ids.add('main');
+  const rest = [...ids].filter((id) => id !== 'main').sort();
+  return ['main', ...rest];
+}
+
+/** What an identity value collided with: the owning agent + which namespace. */
+export interface AgentIdentityCollision {
+  agentId: string;
+  kind: 'id' | 'name' | 'alias';
+  value: string;
+}
+
+/**
+ * Does a proposed identity value (a new id, display name, or alias) collide,
+ * case-insensitively, with any existing agent's canonical id, display name, or
+ * alias? Returns the collision (owning agent + namespace + matched value) or
+ * null if the value is free.
+ *
+ * This backs the create-time / rename uniqueness guard: keeping the id, name,
+ * and alias namespaces from ever overlapping means resolveAgentId's
+ * id > name > alias precedence is only ever a belt-and-suspenders tiebreak, not
+ * a load-bearing rule. Pass `ignoreAgentId` to exclude the agent being renamed
+ * (so keeping its own name is not treated as a self-collision).
+ */
+export function findAgentIdentityCollision(
+  value: string,
+  opts: { ignoreAgentId?: string } = {},
+): AgentIdentityCollision | null {
+  const norm = value.trim().toLowerCase();
+  if (!norm) return null;
+
+  const ids = new Set(listAgentIds());
+  ids.add('main');
+
+  for (const id of ids) {
+    if (opts.ignoreAgentId && id === opts.ignoreAgentId) continue;
+    if (id.toLowerCase() === norm) return { agentId: id, kind: 'id', value: id };
+    const name = resolveAgentDisplayName(id);
+    if (name.toLowerCase() === norm) return { agentId: id, kind: 'name', value: name };
+    for (const alias of getAgentAliases(id)) {
+      if (alias.trim().toLowerCase() === norm) return { agentId: id, kind: 'alias', value: alias };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolve which agent is the primary (the one that owns user-facing,
+ * install-wide notifications so they aren't sent N times by N agents).
+ *
+ * Resolution order:
+ *   1. The agent whose agent.yaml has `primary: true`.
+ *   2. 'main', if it exists (legacy default).
+ *   3. The first agent id, sorted, as a deterministic fallback.
+ *
+ * Returns null only when no agents are configured at all.
+ */
+export function resolvePrimaryAgentId(): string | null {
+  const ids = listAgentIds();
+  if (ids.length === 0) return null;
+
+  for (const id of ids) {
+    try {
+      const configPath = path.join(resolveAgentDir(id), 'agent.yaml');
+      if (!fs.existsSync(configPath)) continue;
+      const raw = yaml.load(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+      if (raw && raw['primary'] === true) return id;
+    } catch {
+      // Unreadable yaml — skip, fall through to the defaults below.
+    }
+  }
+
+  if (ids.includes('main')) return 'main';
+  return [...ids].sort()[0];
 }
 
 /** Return the capabilities (name + description) for a specific agent. */
@@ -362,6 +569,7 @@ export function refreshWarRoomRoster(): void {
         return { id, name: capitalize(id), description: '' };
       }
     });
+    fs.mkdirSync(WARROOM_TMP_DIR, { recursive: true });
     fs.writeFileSync(WARROOM_ROSTER_PATH, JSON.stringify(roster, null, 2));
   } catch {
     // Non-fatal. Voice stack falls back to the built-in default roster

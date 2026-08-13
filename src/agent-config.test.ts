@@ -15,6 +15,11 @@ vi.mock('./config.js', () => {
     get CLAUDECLAW_CONFIG() { return claudeclawConfig; },
     get PROJECT_ROOT() { return projectRoot; },
     get STORE_DIR() { return storeDir; },
+    get WARROOM_TMP_DIR() { return path.join(storeDir, 'tmp'); },
+    DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
+    CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
+    CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
+    CLAUDE_MODEL_HAIKU: 'claude-haiku-4-5',
   };
 });
 
@@ -46,6 +51,40 @@ function writeAgentYaml(agentId: string, content: Record<string, unknown>): stri
   fs.writeFileSync(yamlPath, yaml.dump(content), 'utf-8');
   return yamlPath;
 }
+
+describe('loadAgentConfig interactive flag', () => {
+  it('defaults interactive to true when the field is absent', async () => {
+    writeAgentYaml('raka', {
+      name: 'Raka',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('raka').interactive).toBe(true);
+  });
+
+  it('honours interactive: false (automation-only agent)', async () => {
+    writeAgentYaml('cron', {
+      name: 'Cron',
+      description: 'scheduler',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      interactive: false,
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('cron').interactive).toBe(false);
+  });
+
+  it('treats interactive: true explicitly as true', async () => {
+    writeAgentYaml('raka', {
+      name: 'Raka',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      interactive: true,
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('raka').interactive).toBe(true);
+  });
+});
 
 describe('setAgentDescription', () => {
   it('updates the description field in agent.yaml', async () => {
@@ -139,6 +178,31 @@ describe('main description', () => {
     expect(raw.description).toBe('hello');
     expect(raw.other).toBe('value');
   });
+
+  it('reads the description from agents/main/agent.yaml when present (normalized shape)', async () => {
+    writeAgentYaml('main', { name: 'Holden', description: 'From the yaml' });
+    const { getMainDescription } = await import('./agent-config.js');
+    expect(getMainDescription()).toBe('From the yaml');
+  });
+
+  it('agent.yaml wins over the legacy main-config.json', async () => {
+    writeAgentYaml('main', { name: 'Holden', description: 'Yaml description' });
+    fs.writeFileSync(path.join(storeDir, 'main-config.json'), JSON.stringify({ description: 'Legacy json' }), 'utf-8');
+    const { getMainDescription } = await import('./agent-config.js');
+    expect(getMainDescription()).toBe('Yaml description');
+  });
+
+  it('setMainDescription writes agents/main/agent.yaml when it exists, not the json', async () => {
+    const yamlPath = writeAgentYaml('main', { name: 'Holden', description: 'old' });
+    const { setMainDescription, getMainDescription } = await import('./agent-config.js');
+    setMainDescription('updated via yaml');
+
+    const raw = yaml.load(fs.readFileSync(yamlPath, 'utf-8')) as Record<string, unknown>;
+    expect(raw.description).toBe('updated via yaml');
+    expect(raw.name).toBe('Holden');
+    expect(fs.existsSync(path.join(storeDir, 'main-config.json'))).toBe(false);
+    expect(getMainDescription()).toBe('updated via yaml');
+  });
 });
 
 describe('resolveAgentDisplayName', () => {
@@ -211,7 +275,7 @@ describe('loadAgentConfig main fallback', () => {
 describe('provider config', () => {
   it('keeps legacy installs on Claude when no provider is configured', async () => {
     const { getMainProviderConfig } = await import('./provider.js');
-    expect(getMainProviderConfig()).toEqual({ type: 'claude', model: 'claude-opus-4-6' });
+    expect(getMainProviderConfig()).toEqual({ type: 'claude', model: 'claude-opus-4-8' });
   });
 
   it('maps legacy Claude model to Claude provider', async () => {
@@ -252,12 +316,20 @@ describe('provider config', () => {
       name: 'Codex Agent',
       description: 'codex',
       telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      provider: { type: 'acp-codex' },
+    });
+    // A sub-agent yaml written before the rename still carries `codex`.
+    writeAgentYaml('legacy-codex-agent', {
+      name: 'Legacy Codex Agent',
+      description: 'codex',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
       provider: { type: 'codex' },
     });
 
     const { loadAgentConfig } = await import('./agent-config.js');
     expect(loadAgentConfig('gemini-agent').provider).toEqual({ type: 'gemini' });
-    expect(loadAgentConfig('codex-agent').provider).toEqual({ type: 'codex' });
+    expect(loadAgentConfig('codex-agent').provider).toEqual({ type: 'acp-codex' });
+    expect(loadAgentConfig('legacy-codex-agent').provider).toEqual({ type: 'acp-codex' });
   });
 
   it('persists provider model and removes legacy model', async () => {
@@ -315,8 +387,213 @@ describe('provider config', () => {
 
     const geminiSession = encodeProviderSession({ type: 'gemini' }, 'abc');
     expect(geminiSession).toBe('gemini:abc');
-    expect(sessionBelongsToProvider(geminiSession, { type: 'codex' })).toBe(false);
-    expect(decodeProviderSession({ type: 'codex' }, geminiSession)).toBeUndefined();
+    expect(sessionBelongsToProvider(geminiSession, { type: 'acp-codex' })).toBe(false);
+    expect(decodeProviderSession({ type: 'acp-codex' }, geminiSession)).toBeUndefined();
     expect(decodeProviderSession({ type: 'gemini' }, geminiSession)).toBe('abc');
+  });
+});
+
+describe('resolveAgentId', () => {
+  // A small roster mirroring the live fleet: canonical id != display name.
+  function seedRoster() {
+    writeAgentYaml('main', { name: 'Holden', description: 'hub' });
+    writeAgentYaml('amos', {
+      name: 'Amos',
+      description: 'ops',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+    });
+    writeAgentYaml('naomi', {
+      name: 'Naomi',
+      description: 'research',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+    });
+  }
+
+  it('passes a canonical id straight through', async () => {
+    seedRoster();
+    const { resolveAgentId } = await import('./agent-config.js');
+    expect(resolveAgentId('main')).toBe('main');
+    expect(resolveAgentId('amos')).toBe('amos');
+  });
+
+  it('resolves main even when its agent.yaml is absent (legacy install)', async () => {
+    // No main yaml written — main is always a valid id.
+    const { resolveAgentId } = await import('./agent-config.js');
+    expect(resolveAgentId('main')).toBe('main');
+  });
+
+  it('resolves a display name to its canonical id (regression for fdfec14a)', async () => {
+    seedRoster();
+    const { resolveAgentId } = await import('./agent-config.js');
+    expect(resolveAgentId('Holden')).toBe('main');
+    expect(resolveAgentId('holden')).toBe('main');
+    expect(resolveAgentId('Naomi')).toBe('naomi');
+  });
+
+  it('is case- and whitespace-insensitive', async () => {
+    seedRoster();
+    const { resolveAgentId } = await import('./agent-config.js');
+    expect(resolveAgentId('  HOLDEN  ')).toBe('main');
+    expect(resolveAgentId('\tAmOs\n')).toBe('amos');
+  });
+
+  it('resolves a historical alias after a rename append', async () => {
+    // Naomi renamed to Nova; the outgoing display name is retained as an alias.
+    writeAgentYaml('naomi', {
+      name: 'Nova',
+      description: 'research',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      aliases: ['Naomi'],
+    });
+    const { resolveAgentId } = await import('./agent-config.js');
+    expect(resolveAgentId('Nova')).toBe('naomi'); // current display name
+    expect(resolveAgentId('Naomi')).toBe('naomi'); // historical alias
+    expect(resolveAgentId('naomi')).toBe('naomi'); // canonical id
+  });
+
+  it('returns null for an unknown agent', async () => {
+    seedRoster();
+    const { resolveAgentId } = await import('./agent-config.js');
+    expect(resolveAgentId('bogus')).toBeNull();
+  });
+
+  it('returns null for empty / whitespace-only input', async () => {
+    seedRoster();
+    const { resolveAgentId } = await import('./agent-config.js');
+    expect(resolveAgentId('')).toBeNull();
+    expect(resolveAgentId('   ')).toBeNull();
+  });
+
+  it('resolves id-first when a display name collides with another agent id', async () => {
+    // The uniqueness guard (commit 3) prevents this being created, but the
+    // resolver precedence (id > name > alias) is the documented backstop.
+    writeAgentYaml('amos', {
+      name: 'Amos',
+      description: 'ops',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+    });
+    // A second agent whose *display name* equals amos's canonical id.
+    writeAgentYaml('impostor', {
+      name: 'amos',
+      description: 'collides',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+    });
+    const { resolveAgentId } = await import('./agent-config.js');
+    expect(resolveAgentId('amos')).toBe('amos');
+  });
+});
+
+describe('getAgentAliases', () => {
+  it('returns the aliases array from agent.yaml', async () => {
+    writeAgentYaml('naomi', {
+      name: 'Nova',
+      description: 'research',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      aliases: ['Naomi', 'Research'],
+    });
+    const { getAgentAliases } = await import('./agent-config.js');
+    expect(getAgentAliases('naomi')).toEqual(['Naomi', 'Research']);
+  });
+
+  it('returns [] when there are no aliases or no yaml', async () => {
+    writeAgentYaml('amos', {
+      name: 'Amos',
+      description: 'ops',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+    });
+    const { getAgentAliases } = await import('./agent-config.js');
+    expect(getAgentAliases('amos')).toEqual([]);
+    expect(getAgentAliases('ghost')).toEqual([]);
+  });
+});
+
+describe('findAgentIdentityCollision', () => {
+  beforeEach(() => {
+    writeAgentYaml('main', { name: 'Holden', description: 'hub' });
+    writeAgentYaml('naomi', {
+      name: 'Nova',
+      description: 'research',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      aliases: ['Naomi'],
+    });
+  });
+
+  it('detects a collision with an existing canonical id', async () => {
+    const { findAgentIdentityCollision } = await import('./agent-config.js');
+    expect(findAgentIdentityCollision('naomi')).toEqual({ agentId: 'naomi', kind: 'id', value: 'naomi' });
+    expect(findAgentIdentityCollision('MAIN')).toEqual({ agentId: 'main', kind: 'id', value: 'main' });
+  });
+
+  it('detects a collision with an existing display name (case-insensitive)', async () => {
+    const { findAgentIdentityCollision } = await import('./agent-config.js');
+    expect(findAgentIdentityCollision('holden')).toEqual({ agentId: 'main', kind: 'name', value: 'Holden' });
+    expect(findAgentIdentityCollision('nova')).toEqual({ agentId: 'naomi', kind: 'name', value: 'Nova' });
+  });
+
+  it('detects a collision with an existing alias', async () => {
+    const { findAgentIdentityCollision } = await import('./agent-config.js');
+    expect(findAgentIdentityCollision('naomi ')).toEqual({ agentId: 'naomi', kind: 'id', value: 'naomi' });
+    expect(findAgentIdentityCollision('Naomi', { ignoreAgentId: 'naomi' })).toBeNull();
+    // With naomi ignored, its alias no longer collides; a fresh value is free.
+    expect(findAgentIdentityCollision('brandnew')).toBeNull();
+  });
+
+  it('returns null for a free value and ignores the named agent', async () => {
+    const { findAgentIdentityCollision } = await import('./agent-config.js');
+    expect(findAgentIdentityCollision('freshname')).toBeNull();
+    // Renaming naomi and keeping its own name/alias is not a self-collision.
+    expect(findAgentIdentityCollision('Nova', { ignoreAgentId: 'naomi' })).toBeNull();
+    expect(findAgentIdentityCollision('')).toBeNull();
+  });
+});
+
+describe('ensureAgentsMdSymlink', () => {
+  function makeAgentDir(withClaudeMd: boolean): string {
+    const dir = path.join(projectRoot, 'agents', 'sym');
+    fs.mkdirSync(dir, { recursive: true });
+    if (withClaudeMd) fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'INSTRUCTIONS', 'utf-8');
+    return dir;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('creates AGENTS.md resolving to CLAUDE.md content', async () => {
+    const dir = makeAgentDir(true);
+    const { ensureAgentsMdSymlink } = await import('./agent-config.js');
+    expect(ensureAgentsMdSymlink(dir)).toBe(true);
+    const agentsPath = path.join(dir, 'AGENTS.md');
+    expect(fs.existsSync(agentsPath)).toBe(true);
+    // Reading through the link/copy yields the canonical instructions either way.
+    expect(fs.readFileSync(agentsPath, 'utf-8')).toBe('INSTRUCTIONS');
+  });
+
+  it('returns false when CLAUDE.md is absent', async () => {
+    const dir = makeAgentDir(false);
+    const { ensureAgentsMdSymlink } = await import('./agent-config.js');
+    expect(ensureAgentsMdSymlink(dir)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'AGENTS.md'))).toBe(false);
+  });
+
+  it('is a no-op when AGENTS.md already exists', async () => {
+    const dir = makeAgentDir(true);
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'PREEXISTING', 'utf-8');
+    const { ensureAgentsMdSymlink } = await import('./agent-config.js');
+    expect(ensureAgentsMdSymlink(dir)).toBe(false);
+    expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf-8')).toBe('PREEXISTING');
+  });
+
+  it('falls back to a real copy when symlink creation fails (e.g. stock Windows EPERM)', async () => {
+    const dir = makeAgentDir(true);
+    vi.spyOn(fs, 'symlinkSync').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    });
+    const { ensureAgentsMdSymlink } = await import('./agent-config.js');
+    expect(ensureAgentsMdSymlink(dir)).toBe(true);
+    const agentsPath = path.join(dir, 'AGENTS.md');
+    // A real file (not a symlink) containing the instructions.
+    expect(fs.lstatSync(agentsPath).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(agentsPath, 'utf-8')).toBe('INSTRUCTIONS');
   });
 });

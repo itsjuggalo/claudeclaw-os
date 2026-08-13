@@ -8,16 +8,31 @@ import path from 'path';
 process.env.DASHBOARD_TOKEN = 'test-contract-token';
 process.env.DASHBOARD_MUTATIONS_ENABLED = process.env.DASHBOARD_MUTATIONS_ENABLED || 'true';
 process.env.WARROOM_ENABLED = process.env.WARROOM_ENABLED || 'false';
+// Contract tests exercise endpoint shapes through Hono's app.request(), not
+// the fleet-wide browser login. Keep the real machine's .env mc_access secret
+// from turning every API request into a 401 in local test runs.
+process.env.MC_ACCESS_DISABLED = '1';
 
 // Sandbox CLAUDECLAW_CONFIG to a temp dir so tests that exercise
-// loadAgentConfig or resolveAgentDisplayName don't collide with the
-// developer's real ~/.claudeclaw config. The temp dir is created once
-// per test run; individual tests can populate it with agent.yaml files.
-if (!process.env.CLAUDECLAW_CONFIG) {
-  const testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeclaw-test-config-'));
-  fs.mkdirSync(path.join(testConfigDir, 'agents'), { recursive: true });
-  process.env.CLAUDECLAW_CONFIG = testConfigDir;
-}
+// loadAgentConfig / resolveAgentDisplayName / setMainProviderConfig don't
+// collide with a real config dir. The temp dir is created once per test
+// run; individual tests can populate it with agent.yaml files.
+//
+// This ALWAYS overrides any inherited CLAUDECLAW_CONFIG. It must not honor
+// an ambient production value: tests like dashboard.contract.test.ts's
+// "updates main provider with a selected model" persist a fixture provider
+// via setMainProviderConfig, which (correctly, since #147) writes to
+// CLAUDECLAW_CONFIG/agents/main/agent.yaml. If that resolved to a user's
+// real config dir (e.g. CLAUDECLAW_CONFIG exported by PM2 --update-env, a
+// shell profile, or a systemd EnvironmentFile), running the suite would
+// silently overwrite their live main provider with the test fixture and
+// never restore it — breaking the bot on next turn. To intentionally point
+// tests at a specific dir, set CLAUDECLAW_TEST_CONFIG_DIR (test-only, never
+// a production path).
+const testConfigDir = process.env.CLAUDECLAW_TEST_CONFIG_DIR
+  || fs.mkdtempSync(path.join(os.tmpdir(), 'claudeclaw-test-config-'));
+fs.mkdirSync(path.join(testConfigDir, 'agents'), { recursive: true });
+process.env.CLAUDECLAW_CONFIG = testConfigDir;
 
 // Fallback bot token for tests that exercise loadAgentConfig('main').
 // The main agent falls back to TELEGRAM_BOT_TOKEN when agent.yaml omits

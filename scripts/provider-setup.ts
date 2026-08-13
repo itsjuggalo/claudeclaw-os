@@ -11,6 +11,7 @@ import {
   providerToYaml,
   type ProviderConfig,
 } from '../src/provider.js';
+import { DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENAI_MODEL } from '../src/config.js';
 import { listAgentIds, resolveAgentDir } from '../src/agent-config.js';
 import yaml from 'js-yaml';
 
@@ -109,17 +110,27 @@ function setAgentProviderYaml(agentId: string, provider: ProviderConfig): void {
 async function selectProvider(): Promise<ProviderConfig> {
   console.log('Providers:');
   console.log('  1. Claude (default)');
-  console.log('  2. OpenCode');
-  console.log('  3. Gemini CLI');
-  console.log('  4. Codex ACP adapter');
-  console.log('  5. Custom ACP command');
+  console.log('  2. OpenAI (native Codex)');
+  console.log('  3. OpenCode');
+  console.log('  4. OpenRouter (native, OpenAI-compatible API — no CLI)');
+  console.log('  5. Gemini CLI');
+  console.log('  6. Codex ACP adapter');
+  console.log('  7. Custom ACP command');
   console.log();
 
   const answer = (await ask('Select provider', '1')).toLowerCase();
-  if (answer === '2' || answer === 'opencode' || answer === 'o') return { type: 'opencode' };
-  if (answer === '3' || answer === 'gemini' || answer === 'g') return { type: 'gemini' };
-  if (answer === '4' || answer === 'codex') return { type: 'codex' };
-  if (answer === '5' || answer === 'acp' || answer === 'custom') {
+  if (answer === '2' || answer === 'openai') {
+    const model = await ask(`OpenAI model id (e.g. ${DEFAULT_OPENAI_MODEL})`, DEFAULT_OPENAI_MODEL);
+    return { type: 'openai', model };
+  }
+  if (answer === '3' || answer === 'opencode' || answer === 'o') return { type: 'opencode' };
+  if (answer === '4' || answer === 'openrouter' || answer === 'or') {
+    const model = await ask(`OpenRouter model id (e.g. ${DEFAULT_OPENROUTER_MODEL})`, DEFAULT_OPENROUTER_MODEL);
+    return { type: 'openrouter', model };
+  }
+  if (answer === '5' || answer === 'gemini' || answer === 'g') return { type: 'gemini' };
+  if (answer === '6' || answer === 'codex' || answer === 'acp-codex') return { type: 'acp-codex' };
+  if (answer === '7' || answer === 'acp' || answer === 'custom') {
     const command = await ask('ACP command');
     if (!command) throw new Error('Custom ACP provider requires a command.');
     const args = splitArgs(await ask('ACP arguments', '--acp'));
@@ -171,10 +182,17 @@ async function main(): Promise<void> {
     } else {
       console.log('Keeping OpenCode current default model.');
     }
+  } else if (provider.type === 'openrouter') {
+    console.log('OpenRouter requires only OPENROUTER_API_KEY in .env (get a key at https://openrouter.ai/keys).');
+    console.log('No CLI install, no separate auth flow. Restart the bot after editing .env.');
   } else if (provider.type === 'gemini') {
     console.log('Gemini CLI found. Auth and model selection stay in Gemini CLI.');
-  } else if (provider.type === 'codex') {
+  } else if (provider.type === 'acp-codex') {
     console.log('Codex CLI found. ClaudeClaw uses the bundled codex-acp adapter to connect.');
+  } else if (provider.type === 'openai') {
+    console.log('OpenAI (native Codex) — a stable, ungated provider. No feature flag needed.');
+    console.log('Transport: CODEX_TRANSPORT=app-server, or sdk for the temporary rollback path.');
+    console.log('Auth: `codex login` (ChatGPT subscription) or OPENAI_API_KEY in .env.');
   }
 
   const targets = target === 'all' ? agents : [target];

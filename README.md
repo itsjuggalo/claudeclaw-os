@@ -26,9 +26,9 @@ Eight surfaces, one bot, one machine. Telegram for chat, the dashboard for every
 
 <a id="disclaimer"></a>
 
-> **DISCLAIMER — Provider support.** Setup configures **Claude** as the agent provider. This release also introduces runtime support for OpenCode, Gemini CLI, the Codex ACP adapter, and custom ACP commands; those are gated behind `ENABLE_ACP=true` in `.env` and can be enabled post-setup via the dashboard Settings page or `npm run provider:setup` (or by editing `store/main-config.json`).
+> **DISCLAIMER — Provider support.** ClaudeClaw runs on two **stable** providers: **Claude** (the default) and **native OpenAI through Codex**. Either can be selected from the dashboard Settings page or `npm run provider:setup` — OpenAI needs no feature flag, just Codex auth (`codex login` or `OPENAI_API_KEY`). An **experimental** tier (OpenCode, Gemini CLI, the Codex ACP adapter, custom ACP commands) is gated behind `ENABLE_ACP=true` in `.env`.
 >
-> Non-Claude providers are experimental and new. Different models interpret prompts differently — some will treat a casual chat message as a request to run shell commands or modify files. To keep that surprise contained, conversational Telegram and dashboard chat with non-Claude providers is restricted to read-only tools (`Read`, `Grep`, `Glob`) by default. Mission tasks, scheduled jobs, and the war-room flows are unaffected. If a non-Claude provider isn't behaving the way you expect, switch back to Claude.
+> Different models interpret prompts differently, and some treat a casual chat message as a request to run shell commands or modify files. Experimental ACP providers stay on a restricted chat policy. Native OpenAI turns are governed by the shared Codex capability policy and the runtime's verified sandbox; `CODEX_DANGER_WRITE` is an explicit trusted-operator escape hatch and must stay off for untrusted or public input. If a provider is not behaving as expected, switch back to Claude.
 
 ---
 
@@ -266,6 +266,18 @@ npm run build          # recompile TypeScript
 
 Then restart the bot (Ctrl+C and `npm start`, or restart the background service).
 
+**Self-healing on first start.** Older installs stored the main bot's config in a
+few scattered places (`store/main-config.json`, a persona at the config-dir root).
+On the first start after upgrading, ClaudeClaw automatically migrates `main` into
+the standard per-agent layout — `agents/main/agent.yaml` and
+`agents/main/CLAUDE.md` — folding the old `main-config.json` into the yaml and
+retiring it to `main-config.json.bak`. It's idempotent and never overwrites edits
+you've made, so there's nothing for you to do.
+
+**Restart every agent, not just the main bot.** If you run multiple agents, each one is its own long-lived process. A rebuild does **not** touch already-running agents — they keep executing the old pre-upgrade code and will typically start returning "Something went wrong" until restarted. After `npm run build`, restart **all** agent processes so they pick up the new build (see [Restart ALL agents after a rebuild](#step-4-start-your-agents), or re-run the install script which rebuilds and restarts everything).
+
+**Auth token may have expired.** If `git pull` fails to fetch, your stored access token may have lapsed since your last update. Refresh it and pull again — an expired token is the most common cause of a fetch that suddenly stops working after months on the same version.
+
 **Do not** point Claude at the GitHub URL to read updates. Claude works with local files, so you need the repo cloned on your machine. `git pull` is how you stay current.
 
 **Upgrading from V1?** If you heavily customized V1, start fresh with V2 and copy over your `.env` and any CLAUDE.md customizations. If you kept V1 mostly stock, `git pull` will work.
@@ -313,9 +325,25 @@ If your platform refuses to run the bot at all (binary missing, npm install fail
 
 ![ClaudeClaw architecture](assets/architecture.png)
 
+### Agent identity: id, display name, and aliases
+
+Each agent has a permanent **canonical id** (`main`, `naomi`, …), a **display
+name** you can change any time (`Holden`, `Nova`, …), and an append-only list of
+**aliases** — former display names kept automatically on rename. You can address
+an agent by **any of the three**: the CLIs and dashboard resolve whatever you
+pass to the canonical id before doing anything with it. An unknown name fails
+loudly with the list of known agents instead of silently going nowhere, and a
+rename never orphans an old reference. Full details in
+[docs/agent-identity-and-addressing.md](docs/agent-identity-and-addressing.md).
+
 ## What's included
 
 See the feature table at the top of this README. Core features work with zero extra API keys. Experimental features are opt-in.
+
+## Documentation
+
+The [documentation index](docs/README.md) separates architecture decisions from
+living guides, generated references, operational runbooks, and security policy.
 
 ---
 
@@ -333,6 +361,8 @@ The ACP providers below are an experimental opt-in (see the provider disclaimer 
 - **Gemini CLI**: configure Gemini CLI separately. ClaudeClaw starts `gemini --acp`; Gemini handles its own model and auth.
 - **Custom ACP**: configure the provider and its API keys outside ClaudeClaw, then save the ACP command and args via the dashboard Settings page or `npm run provider:setup`.
 - **Codex ACP adapter**: ClaudeClaw includes the `codex-acp` adapter and uses it to connect to your locally signed-in Codex CLI. Run `codex` once in your terminal first to confirm your Codex account is authenticated. This is adapter-based support, not native Codex ACP.
+
+> **Fleet dispatch for non-Claude providers (`DISPATCH_ALLOW_HIVE_READ`).** Non-Claude providers reach the fleet dispatch tools (mission / schedule / hive) through an out-of-process MCP bridge. `hive_read` returns shared cross-agent memory, which would egress to that provider's vendor, so it is **withheld by default**; `hive_log` and the mission/schedule verbs stay available. Set `DISPATCH_ALLOW_HIVE_READ=true` in `.env` only if you accept shared-memory content leaving to the non-Claude vendor. Claude's own in-process dispatch path is unaffected.
 
 ### Telegram Bot Token (required)
 
@@ -405,6 +435,58 @@ The skill reads `GOOGLE_API_KEY` from the environment automatically.
 **When to use it:** Server deployments, or if you want zero ambiguity about billing. The Max plan assumes "ordinary individual usage". an always-on bot can hit limits faster than expected.
 
 **Get it:** [console.anthropic.com](https://console.anthropic.com)
+
+---
+
+### OpenRouter (native, no CLI required)
+
+**What it does:** Talks directly to OpenRouter's OpenAI-compatible API from inside ClaudeClaw. No CLI install, no subprocess, no ACP — just an API key in `.env`. Use it to chat through any of the hundreds of models OpenRouter aggregates (free or paid).
+
+**Setup (one-time):**
+
+1. Set `ENABLE_ACP=true` in `.env` (gates the alternate-provider UI in the dashboard).
+2. Get a key at [openrouter.ai/keys](https://openrouter.ai/keys), then add it to `.env`:
+   ```
+   OPENROUTER_API_KEY=sk-or-v1-...
+   ```
+3. Restart with `pm2 restart claudeclaw --update-env`.
+4. In the dashboard: **Settings → Provider = OpenRouter (native)**, pick a model from the dropdown, **Save provider**.
+
+The model dropdown is populated live from OpenRouter's `/models` endpoint (cached 5 minutes server-side). Type-ahead works — start typing `openai/`, `anthropic/`, `:free` to narrow.
+
+**Known-good models to try:**
+
+| Model id | Notes |
+|---|---|
+| `z-ai/glm-4.5-air:free` | Free, conversational, currently responsive |
+| `openai/gpt-4o-mini` | Paid, fast (~1s), cheap |
+| `anthropic/claude-3.5-sonnet` | Paid, billed by OpenRouter |
+| `openai/gpt-oss-120b:free` | Free, agentic-trained — works for instruction tasks |
+
+**Scope:** v1 is **chat-only** (no tool calling) and **single-turn** — each message is an independent `[system, user]` exchange (the system message is the project `CLAUDE.md`). Prior turns are **not** replayed, so pronoun and "rephrase that" follow-ups won't resolve against earlier messages. Persistent facts still reach the model through ClaudeClaw's memory injection (keyword-selective), but recent dialogue is not. For tool-heavy or multi-turn workflows (Read/Bash/Obsidian, threaded back-and-forth), use Claude. Paid models report per-turn cost (from OpenRouter's `usage.cost`) to the dashboard cost footer and the daily budget tracker.
+
+**Caveats:** Free models (suffix `:free`) are rate-limited by their upstream providers and rotate frequently — if one starts returning 429s or hangs, switch to a different one in the dashboard.
+
+---
+
+### OpenAI (native Codex)
+
+First-class OpenAI/GPT provider on the official Codex runtime. `CODEX_TRANSPORT=app-server` uses one warm App Server process for incremental text streaming, turn-scoped cancellation, and effective-policy verification. `CODEX_TRANSPORT=sdk` uses the temporary SDK rollback path. The Codex runtime owns the full agentic loop (shell, file edits, MCP servers, web search, session resume), so this is a real multi-turn agent, not the experimental Codex ACP adapter.
+
+**Setup (one-time), no feature flag:**
+
+1. Authenticate one way:
+   - **API key** (recommended for untrusted-input bots): add `OPENAI_API_KEY=sk-...` to `.env`, `pm2 restart claudeclaw --update-env`.
+   - **ChatGPT subscription:** `codex login` on the host (`npm i -g @openai/codex` first if needed). Flat-rate, no per-token billing.
+2. Dashboard: **Settings → Provider = OpenAI**, pick a model, **Save provider**.
+
+`CODEX_HOME` is auto-isolated per turn (under `~/.claudeclaw`, outside the project) so your global `~/.codex/config.toml` never bleeds in — **don't set it yourself.** Auth carries over from `~/.codex/auth.json` automatically.
+
+> **Security — untrusted input.** The read-only sandbox still lets the model *read* local files, so a prompt-injected message could try to echo on-disk credentials. Mitigations: outbound exfiltration guard redacts key/JWT-shaped strings, secrets are stripped from the model's shell env, MCP servers drop on read-only turns, network is off unless a turn is deliberately full-access, and `CODEX_HOME` is isolated. For a public bot, prefer **API-key auth with a scoped, rotatable key.**
+
+**Scope:** personas, multi-turn sessions (`openai:<thread-id>`, persisted in `~/.codex/sessions`), MCP (stdio + streamable HTTP), streamed text/tool events, and cost tracking all work. GPT costs are **estimates** from token counts (subscription auth = $0 marginal); override with `OPENAI_PRICING_JSON`.
+
+**Caveats:** AskUserQuestion buttons aren't supported (model asks in plain text), and per-tool allow/deny lists don't apply — Codex brings its own workspace-sandboxed toolset.
 
 ---
 
@@ -546,6 +628,31 @@ Provider sessions carry context across messages. ClaudeClaw namespaces session i
 ### Skills load automatically
 
 Every skill in `~/.claude/skills/` loads on every session. Call them directly (`/gmail check inbox`) or describe what you want. Claude routes automatically if you've listed the skill in `CLAUDE.md`.
+
+### Memory isolation
+
+Memory recall is **per-agent** by default. Each agent recalls only its own memories plus anything explicitly promoted to the **shared tier**. This prevents one agent absorbing another agent's disposition through recall (e.g. a community agent picking up a builder agent's code-fix reflexes).
+
+- **Single-agent setups** are unaffected — one agent owns everything it recalls.
+- **Existing multi-agent installs** flip from the old shared-everything behavior to per-agent isolation on upgrade. The primary agent posts a one-time heads-up when this happens. Existing memories are never retroactively shared.
+- **Promote system-wide truths** (date handling, deploy steps, the agent roster, lane rules) to the shared tier so every agent still sees them. The `memory-share` skill surfaces candidates and lets you approve them one by one; it stays conservative on purpose — don't bulk-share per-agent role or code-fix memories.
+- **Revert to shared recall** (all agents contribute to recall, like before). Two ways, with the env seed being the simplest for an upgrade:
+
+  1. **Set it once in `.env`** and forget it — ideal if you upgraded and just want the old behavior back:
+
+     ```sh
+     MEMORY_RECALL_MODE=shared
+     ```
+
+     This only *seeds* the default. Anything other than `shared` (including unset) means `isolated`.
+
+  2. **Toggle it live** via the `memory_recall_mode` dashboard setting — useful for flipping without editing `.env`:
+
+     ```sh
+     sqlite3 store/claudeclaw.db "INSERT INTO dashboard_settings (key, value, updated_at) VALUES ('memory_recall_mode','shared',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value='shared';"
+     ```
+
+  **Precedence:** an explicit `dashboard_settings` row always wins over the `.env` seed, so the live toggle (set it back to `isolated`, or delete the row) is authoritative. The dashboard change takes effect on the next message — no restart needed; the `.env` seed is read at startup.
 
 ---
 
@@ -1512,7 +1619,15 @@ cp -r skills/slack ~/.claude/skills/slack
 
 # TLDR: summarize conversations and save as notes
 cp -r skills/tldr ~/.claude/skills/tldr
+
+# Memory hygiene: propose-only review (pin / dedup / resolve conflicts / decay)
+cp -r skills/memory-hygiene ~/.claude/skills/memory-hygiene
+
+# Memory share: promote genuinely universal memories to the shared tier (pairs with per-agent isolation)
+cp -r skills/memory-share ~/.claude/skills/memory-share
 ```
+
+**Memory skills pair with per-agent isolation.** `memory-share` only does anything once the shared-tier schema from this release is in place; `memory-hygiene` works standalone. Both are propose-only and never write without your approval.
 
 **Gmail + Calendar require Google OAuth credentials.** See `.env.example` for the variables and each skill's `SKILL.md` for one-time setup instructions (create a Google Cloud project, enable the API, download credentials, run auth once).
 
@@ -1575,11 +1690,13 @@ npm run typecheck # Type-check without compiling
 
 ## Is the Claude Code provider compliant with Anthropic's Terms of Service?
 
-**For Claude Code, it's a grey area, but signs point to yes for personal use.** Anthropic's Agent SDK (`@anthropic-ai/claude-agent-sdk`) is a published, official package. Boris Cherny (Anthropic) has indicated the Agent SDK can be used for personal usage with a Claude subscription. When the active provider is Claude Code, ClaudeClaw uses this SDK path.
+**Yes.** On February 19, 2026, Anthropic published their [Legal and Compliance page](https://docs.anthropic.com/en/docs/legal-and-compliance) banning OAuth-token extraction by third-party tools. ClaudeClaw is not affected when running the Claude Code provider.
 
-**How the Claude Code provider works:** The Agent SDK's `query()` spawns the `claude` binary as a child process. That subprocess manages its own auth from `~/.claude/`. ClaudeClaw never reads or transmits your token. It runs Claude Code and reads the output, identical to typing `claude -p "message"` in a terminal.
+**What's banned:** Tools that extract your OAuth token and make API calls with it from third-party code, or impersonate Claude Code without actually running it (e.g. the old OpenClaw).
 
-**How ACP providers work:** ClaudeClaw starts an ACP command and talks to it over the Agent Client Protocol. Built-in presets currently include `opencode acp`, `gemini --acp`, and the bundled `codex-acp` adapter. OpenCode, Gemini, Codex CLI, or your custom ACP provider owns auth, API keys, and model availability. Configure auth before selecting the provider in ClaudeClaw; model, thinking, and speed preferences can be saved from the dashboard when the provider supports those ACP settings.
+**Why the Claude Code provider is different:** The Agent SDK (`@anthropic-ai/claude-agent-sdk`) is a published, official package. Its `query()` spawns the `claude` binary as a child process, and that subprocess manages its own OAuth from `~/.claude/`. ClaudeClaw never reads or transmits your token — it runs Claude Code and reads the output, identical to typing `claude -p "message"` in a terminal. Anthropic telemetry stays intact.
+
+**How ACP providers work:** ClaudeClaw can also talk to an ACP command over the Agent Client Protocol. Built-in presets include `opencode acp`, `gemini --acp`, and the bundled `codex-acp` adapter. OpenCode, Gemini, Codex CLI, or your custom ACP provider owns its own auth, API keys, and model availability — configure that provider's auth before selecting it in ClaudeClaw. Model, thinking, and speed preferences can be saved from the dashboard when the provider supports those ACP settings.
 
 | | ClaudeClaw | Token-extraction tools |
 |---|---|---|
@@ -1589,9 +1706,7 @@ npm run typecheck # Type-check without compiling
 | Single-user, personal machine | ✅ | ❌ |
 | Anthropic telemetry intact | ✅ | ❌ |
 
-**What's clearly not OK:** Tools that extract your OAuth token and make API calls with it from third-party code, or impersonate Claude Code without running it.
-
-For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-token billing. This removes any ambiguity since you're paying directly for usage.
+For server or multi-user deployments, set `ANTHROPIC_API_KEY` to use pay-per-token billing — you're paying Anthropic directly for usage.
 
 ---
 
@@ -1704,6 +1819,17 @@ Or view it in the dashboard via the API: `GET /api/audit?limit=50`.
 
 **File downloads fail**
 - Telegram caps downloads at 20MB. this is a Telegram API limit, not a ClaudeClaw one
+
+**Agents hang / time out after ~15 minutes with no response (older Intel Macs)**
+- The Claude Agent SDK bundles a Bun binary that hangs silently on Intel CPUs without AVX support, stalling every query until the turn timeout fires.
+- Confirm it in the logs — look for: `warn: CPU lacks AVX support, strange crashes may occur`
+- ClaudeClaw auto-detects this case and falls back to your system `claude` CLI when one is on `PATH`. If none is found, you'll see a warning naming the fix below.
+- **Fix:** install Claude Code so `claude` is on `PATH`, or set the path explicitly in `.env`:
+  ```bash
+  CLAUDECLAW_CLAUDE_EXECUTABLE_PATH=/usr/local/bin/claude
+  ```
+- **macOS + launchd:** `.env` alone is not enough for services managed by launchd. Add the same variable to each agent's plist in `~/Library/LaunchAgents/`, then reload with `launchctl unload` / `launchctl load`.
+- Apple Silicon and non-Mac platforms are unaffected.
 
 ---
 
@@ -2309,4 +2435,4 @@ The same `runAgent()` pattern in `src/agent.ts` works on any channel:
 
 ## License
 
-MIT
+ClaudeClaw OS is source-available under the ClaudeClaw OS Community Commercial License, see [LICENSE.md](LICENSE.md). It is not MIT and not open source. Use is limited to active Early AI-dopters community members.

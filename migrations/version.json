@@ -1,4 +1,7 @@
 {
-  "migrations": {   
+  "migrations": {
+    "v1.8.0": [
+      "quote-windows-config-path"
+    ]
   }
 }

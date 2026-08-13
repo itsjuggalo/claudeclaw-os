@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'preact/hooks';
-import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText, Lightbulb, RefreshCw } from 'lucide-preact';
+import { NestedSquaresSpinner } from '../components/NestedSquaresSpinner';
+import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText, Lightbulb, RefreshCw, SlidersHorizontal, Info } from 'lucide-preact';
 import { Link } from 'wouter-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
 import { Modal } from '@/components/Modal';
-import { ModelPicker } from '@/components/ModelPicker';
+import { ProviderConfigEditor, type ProviderConfig, type ProviderOption } from '@/components/ProviderConfigEditor';
 import { AgentAvatar } from '@/components/AgentAvatar';
 import { AgentDetail } from '@/components/AgentDetail';
 import { AgentSuggestionBadge, AgentSuggestionModal, useAgentSuggestions, type AgentSuggestion } from '@/components/AgentSuggestions';
@@ -15,25 +16,43 @@ import { apiPost, apiPatch, apiDelete } from '@/lib/api';
 import { formatCost } from '@/lib/format';
 import { showCosts } from '@/lib/theme';
 import { pushToast } from '@/lib/toasts';
+import { modelLabel } from '@/lib/modelLabels';
+
+interface RuntimeOption { id: string; label: string; }
+
+// Per-model option lists from staticRuntimeOptionsFor() on the server. Which
+// lists are non-empty depends on the model: Opus 5 exposes effort only (its
+// thinking is adaptive), Opus 4.8 exposes both, Sonnet 4.5 thinking only,
+// native OpenAI a single reasoning-effort list. null for providers that own
+// this in their own CLI config.
+interface AgentRuntimeOptions {
+  modeLabel?: string;
+  thinkingLabel?: string;
+  modeOptions: RuntimeOption[];
+  thinkingOptions: RuntimeOption[];
+}
 
 interface Agent {
   id: string;
   name: string;
   description: string;
   model: string;
+  provider: ProviderConfig;
   running: boolean;
   todayTurns: number;
   todayCost: number;
+  runtimeOptions?: AgentRuntimeOptions | null;
+  runtimeMode?: string;
+  thinkingMode?: string;
 }
 
 interface Template { id: string; name: string; description: string; }
 
 export function Agents() {
-  const { data, loading, error, refresh } = useFetch<{ agents: Agent[] }>('/api/agents', 30_000);
+  const { data, loading, error, refresh } = useFetch<{ agents: Agent[]; claudeModels?: RuntimeOption[]; openaiModels?: RuntimeOption[] }>('/api/agents', 30_000);
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [bulkModel, setBulkModel] = useState<string>('');
   const [detailAgent, setDetailAgent] = useState<Agent | null>(null);
+  const [providerAgent, setProviderAgent] = useState<Agent | null>(null);
   const [openedSuggestion, setOpenedSuggestion] = useState<AgentSuggestion | null>(null);
   const [suggestionPrefill, setSuggestionPrefill] = useState<AgentSuggestion | null>(null);
   const [refreshingSuggestions, setRefreshingSuggestions] = useState(false);
@@ -68,51 +87,15 @@ export function Agents() {
     setWizardOpen(true);
   }
 
-  async function setAllModels(model: string) {
-    setPendingAction('bulk-model');
-    try {
-      const res = await apiPatch<{ ok: boolean; updated: string[]; restartRequired: string[] }>('/api/agents/model', { model });
-      setBulkModel(model);
-      const restartCount = res.restartRequired?.length || 0;
-      if (restartCount > 0) {
-        pushToast({
-          tone: 'warn',
-          title: `${restartCount} agent${restartCount === 1 ? '' : 's'} need restart`,
-          description: 'Yaml updated, but running processes still use the old model: ' + res.restartRequired.join(', '),
-          durationMs: 0,
-          action: {
-            label: 'Restart all',
-            run: async () => {
-              await Promise.all(res.restartRequired.map((id) => apiPost(`/api/agents/${id}/restart`).catch(() => null)));
-              pushToast({ tone: 'success', title: 'Restarting agents', description: restartCount + ' processes bouncing.' });
-              setTimeout(refresh, 3000);
-            },
-          },
-        });
-      } else {
-        pushToast({ tone: 'success', title: 'Model set for all agents', description: 'Now running on ' + model });
-      }
-      refresh();
-    } catch (err: any) {
-      pushToast({ tone: 'error', title: 'Bulk model change failed', description: err?.message || String(err), durationMs: 6000 });
-    } finally { setPendingAction(null); }
-  }
-
   return (
     <div class="flex flex-col h-full">
       <PageHeader
         title="Agents"
         actions={
           <>
-            <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
+            <span class="hidden sm:inline text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
               {agents.filter((a) => a.running).length} live · {agents.length} total
             </span>
-            <ModelPicker
-              size="md"
-              value={bulkModel}
-              onSelect={setAllModels}
-              disabled={pendingAction === 'bulk-model'}
-            />
             {suggestions.length > 0 ? (
               // Cached on mount via useAgentSuggestions — clicking is
               // INSTANT, not a scan. Opens the first suggestion's modal
@@ -135,7 +118,7 @@ export function Agents() {
                   title="Re-scan hive_mind for new suggestions (~30–90s)"
                   class="inline-flex items-center justify-center px-2 py-1.5 rounded-r text-[12px] border bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)] hover:bg-[var(--color-accent)] hover:text-white disabled:opacity-40 transition-colors"
                 >
-                  <RefreshCw size={12} class={refreshingSuggestions ? 'animate-spin' : ''} />
+                  {refreshingSuggestions ? <NestedSquaresSpinner size={12} /> : <RefreshCw size={12} />}
                 </button>
               </div>
             ) : (
@@ -169,14 +152,19 @@ export function Agents() {
       )}
 
       {agents.length > 0 && (
-        <div class="flex-1 overflow-y-auto p-6">
-          <div class="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+        <div class="flex-1 overflow-y-auto p-3 sm:p-6 min-w-0">
+          <div
+            class="grid gap-3 items-stretch min-w-0"
+            style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))' }}
+          >
             {agents.map((a) => (
               <AgentCard
                 key={a.id}
                 agent={a}
+                catalog={a.provider?.type === 'openai' ? (data?.openaiModels ?? []) : (data?.claudeModels ?? [])}
                 onChange={refresh}
                 onOpen={() => setDetailAgent(a)}
+                onConfigureProvider={() => setProviderAgent(a)}
                 suggestions={suggestions}
                 onOpenSuggestion={(s) => setOpenedSuggestion(s)}
               />
@@ -196,6 +184,7 @@ export function Agents() {
         } : undefined}
       />
       <AgentDetail agent={detailAgent} onClose={() => setDetailAgent(null)} />
+      <AgentProviderModal agent={providerAgent} onClose={() => setProviderAgent(null)} onChange={refresh} />
       <AgentSuggestionModal
         suggestion={openedSuggestion}
         onClose={() => setOpenedSuggestion(null)}
@@ -206,10 +195,12 @@ export function Agents() {
   );
 }
 
-function AgentCard({ agent, onChange, onOpen, suggestions, onOpenSuggestion }: {
+function AgentCard({ agent, catalog, onChange, onOpen, onConfigureProvider, suggestions, onOpenSuggestion }: {
   agent: Agent;
+  catalog: RuntimeOption[];
   onChange: () => void;
   onOpen: () => void;
+  onConfigureProvider: () => void;
   suggestions: AgentSuggestion[];
   onOpenSuggestion: (s: AgentSuggestion) => void;
 }) {
@@ -231,40 +222,11 @@ function AgentCard({ agent, onChange, onOpen, suggestions, onOpenSuggestion }: {
     }
   }
 
-  async function setModel(model: string) {
-    setBusy('model');
-    try {
-      const res = await apiPatch<{ ok: boolean; restartRequired: boolean }>(`/api/agents/${agent.id}/model`, { model });
-      if (res.restartRequired) {
-        pushToast({
-          tone: 'warn',
-          title: agent.id + ' needs a restart',
-          description: `Model is now ${model}, but the running process is still on the old one.`,
-          durationMs: 0,
-          action: {
-            label: 'Restart now',
-            run: async () => {
-              await apiPost(`/api/agents/${agent.id}/restart`);
-              pushToast({ tone: 'success', title: agent.id + ' restarting', description: 'Should be live again in a few seconds.' });
-              setTimeout(onChange, 2500);
-            },
-          },
-        });
-      } else {
-        pushToast({ tone: 'success', title: 'Model set to ' + model, description: 'Takes effect on the next message.' });
-      }
-      onChange();
-    } catch (err: any) {
-      pushToast({ tone: 'error', title: 'Model change failed', description: err?.message || String(err), durationMs: 6000 });
-    } finally { setBusy(null); }
-  }
-
   const isMain = agent.id === 'main';
 
   return (
     <div
-      class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 hover:border-[var(--color-border-strong)] transition-colors cursor-pointer"
-      onClick={onOpen}
+      class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 hover:border-[var(--color-border-strong)] transition-colors h-full min-w-0 flex flex-col"
     >
       <div class="flex items-start gap-3 mb-3">
         <AgentAvatar agentId={agent.id} name={agent.name} running={agent.running} size={36} />
@@ -275,6 +237,15 @@ function AgentCard({ agent, onChange, onOpen, suggestions, onOpenSuggestion }: {
               {agent.name || agent.id}
             </span>
             <AgentSuggestionBadge agentId={agent.id} suggestions={suggestions} onOpen={onOpenSuggestion} />
+            <button
+              type="button"
+              onClick={onConfigureProvider}
+              class="ml-auto h-7 w-7 shrink-0 inline-flex items-center justify-center rounded text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+              title={`Provider setup · ${providerLabel(agent.provider)}`}
+              aria-label={`Configure provider for ${agent.name || agent.id}`}
+            >
+              <SlidersHorizontal size={13} />
+            </button>
           </div>
           <div class="text-[10px] text-[var(--color-text-faint)] uppercase tracking-wider">
             {agent.id}
@@ -288,74 +259,340 @@ function AgentCard({ agent, onChange, onOpen, suggestions, onOpenSuggestion }: {
         </div>
       )}
 
-      <div class="flex items-center gap-2 mb-3 flex-wrap" onClick={(e) => e.stopPropagation()}>
-        <ModelPicker value={agent.model} onSelect={setModel} disabled={busy === 'model'} />
-        {agent.running ? <Pill tone="done">running</Pill> : <Pill tone="cancelled">offline</Pill>}
+      <div
+        class="grid gap-2 mb-3 min-w-0"
+        style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 120px), 1fr))' }}
+      >
+        <ControlField label="Model">
+          <ModelDropdown
+            agent={agent}
+            catalog={catalog}
+            onChange={onChange}
+            onConfigureProvider={onConfigureProvider}
+          />
+        </ControlField>
+        <RuntimeDropdowns agent={agent} onChange={onChange} />
       </div>
 
       <div
-        class={(showCosts.value ? 'grid grid-cols-2' : 'grid grid-cols-1') + ' gap-3 border-t border-[var(--color-border)] pt-2.5 mb-3'}
+        class="flex items-end gap-3 border-t border-[var(--color-border)] pt-2.5 mb-3 mt-auto"
+        aria-label="Agent activity summary"
       >
-        <div>
-          <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today turns</div>
-          <div class="text-[var(--color-text)] tabular-nums text-[12px]">{agent.todayTurns ?? 0}</div>
-        </div>
-        {showCosts.value && (
-          <div class="text-right">
-            <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today cost</div>
-            <div class="text-[var(--color-text)] tabular-nums text-[12px]">{formatCost(agent.todayCost ?? 0)}</div>
+        <div class={(showCosts.value ? 'grid grid-cols-2' : 'grid grid-cols-1') + ' flex-1 gap-3'}>
+          <div>
+            <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today turns</div>
+            <div class="text-[var(--color-text)] tabular-nums text-[12px]">{agent.todayTurns ?? 0}</div>
           </div>
-        )}
+          {showCosts.value && (
+            <div class="text-right">
+              <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today cost</div>
+              <div class="text-[var(--color-text)] tabular-nums text-[12px]">{formatCost(agent.todayCost ?? 0)}</div>
+            </div>
+          )}
+        </div>
+        <span class="shrink-0 pb-0.5">
+          {agent.running ? <Pill tone="done">running</Pill> : <Pill tone="cancelled">offline</Pill>}
+        </span>
       </div>
 
-      <div class="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <div class="flex items-center gap-1">
         {agent.running ? (
           <button
             type="button"
             onClick={() => run('stop')}
             disabled={busy !== null || isMain}
-            class="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-card)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            class="h-8 flex-1 inline-flex items-center justify-center gap-1 px-2.5 rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-card)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title={isMain ? 'Main agent cannot be stopped from the dashboard' : 'Stop this agent'}
           >
-            <Power size={11} /> {busy === 'stop' ? 'Stopping…' : 'Stop'}
+            <Power size={12} /> {busy === 'stop' ? 'Stopping…' : 'Stop'}
           </button>
         ) : (
           <button
             type="button"
             onClick={() => run('start')}
             disabled={busy !== null || isMain}
-            class="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[11px] bg-[var(--color-accent-soft)] text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white border border-[var(--color-accent-soft)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            class="h-8 flex-1 inline-flex items-center justify-center gap-1 px-2.5 rounded text-[11px] bg-[var(--color-accent-soft)] text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white border border-[var(--color-accent-soft)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <Power size={11} /> {busy === 'start' ? 'Starting…' : 'Start'}
+            <Power size={12} /> {busy === 'start' ? 'Starting…' : 'Start'}
           </button>
         )}
+        <button
+          type="button"
+          onClick={onOpen}
+          class="h-8 w-8 inline-flex items-center justify-center rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] transition-colors"
+          title="Agent details"
+          aria-label={`Open details for ${agent.name || agent.id}`}
+        >
+          <Info size={13} />
+        </button>
         <Link
           href={`/agents/${agent.id}/files`}
-          class="inline-flex items-center justify-center px-2 py-1.5 rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors"
+          class="h-8 w-8 inline-flex items-center justify-center rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors"
           title="Edit persona + config"
         >
-          <FileText size={11} />
+          <FileText size={13} />
         </Link>
         <button
           type="button"
           onClick={() => run('restart')}
           disabled={busy !== null || isMain}
-          class="inline-flex items-center justify-center px-2 py-1.5 rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class="h-8 w-8 inline-flex items-center justify-center rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           title="Restart"
         >
-          <RotateCcw size={11} class={busy === 'restart' ? 'animate-spin' : ''} />
+          {busy === 'restart' ? <NestedSquaresSpinner size={11} /> : <RotateCcw size={11} />}
         </button>
         <button
           type="button"
           onClick={() => run('delete')}
           disabled={busy !== null || isMain}
-          class="inline-flex items-center justify-center px-2 py-1.5 rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-status-failed)] border border-[var(--color-border)] hover:border-[var(--color-status-failed)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class="h-8 w-8 inline-flex items-center justify-center rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-status-failed)] border border-[var(--color-border)] hover:border-[var(--color-status-failed)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           title="Delete"
         >
-          <Trash2 size={11} />
+          <Trash2 size={14} />
         </button>
       </div>
     </div>
+  );
+}
+
+// Model selection inline on the card, since it's the most-changed setting.
+// Only providers with a real selectable model get a dropdown — opencode,
+// gemini and acp keep their model in their own CLI config, so for those this
+// stays a button into the provider modal rather than a dropdown that lies.
+function ModelDropdown({ agent, catalog, onChange, onConfigureProvider }: {
+  agent: Agent;
+  catalog: RuntimeOption[];
+  onChange: () => void;
+  onConfigureProvider: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const selectable = agent.provider?.type === 'claude' || agent.provider?.type === 'openai';
+  const cls = 'h-8 w-full min-w-0 rounded font-medium border px-2 text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] border-[var(--color-border)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)] transition-colors disabled:opacity-40';
+
+  if (!selectable || !catalog.length) {
+    return (
+      <button
+        type="button"
+        onClick={onConfigureProvider}
+        class={cls + ' inline-flex items-center justify-center gap-1'}
+        title={`Configure provider and model · provider: ${providerLabel(agent.provider)}`}
+      >
+        {modelLabel(agent.model)}
+      </button>
+    );
+  }
+
+  // A model set outside the curated list (custom id) still needs to display and
+  // stay selected, so it gets its own leading entry.
+  const known = catalog.some((o) => o.id === agent.model);
+
+  async function save(value: string) {
+    if (value === '__custom__') { onConfigureProvider(); return; }
+    if (value === agent.model) return;
+    setBusy(true);
+    try {
+      const res = await apiPatch<{ restartRequired: boolean; cleared?: Array<{ label: string; value: string }> }>(
+        `/api/agents/${agent.id}/model`,
+        { model: value },
+      );
+      // The server drops effort/thinking values the new model can't honour.
+      // Say so, otherwise the neighbouring dropdown appears to reset itself.
+      if (res?.cleared?.length) {
+        pushToast({
+          tone: 'info',
+          title: `Switched to ${modelLabel(value)}`,
+          description: res.cleared.map((c) => `${c.label} reset (${c.value} not supported)`).join('; '),
+        });
+      } else if (res?.restartRequired) {
+        pushToast({ tone: 'info', title: 'Model saved', description: `Restart ${agent.id} to apply.` });
+      }
+      onChange();
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Model change failed', description: err?.message || String(err) });
+      onChange();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <select
+      value={agent.model}
+      disabled={busy}
+      title={`Model · provider: ${providerLabel(agent.provider)}`}
+      onChange={(e) => save((e.target as HTMLSelectElement).value)}
+      class={cls}
+    >
+      {!known && agent.model && <option value={agent.model}>{modelLabel(agent.model)}</option>}
+      {catalog.map((o) => (
+        <option key={o.id} value={o.id}>{o.label}</option>
+      ))}
+      <option value="__custom__">Custom…</option>
+    </select>
+  );
+}
+
+// Inline effort / thinking pills beside the model pill, so the common tweak
+// doesn't require opening the provider modal. One <select> per option list the
+// model actually advertises — a model with no lists renders nothing.
+function RuntimeDropdowns({ agent, onChange }: { agent: Agent; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const opts = agent.runtimeOptions;
+  if (!opts) return null;
+
+  const fields: Array<{ field: 'runtimeMode' | 'thinkingMode'; label: string; options: RuntimeOption[]; current: string }> = [];
+  if (opts.modeOptions?.length) {
+    fields.push({
+      field: 'runtimeMode',
+      label: opts.modeLabel || 'Effort',
+      options: opts.modeOptions,
+      current: agent.runtimeMode || '',
+    });
+  }
+  if (opts.thinkingOptions?.length) {
+    fields.push({
+      field: 'thinkingMode',
+      label: opts.thinkingLabel || 'Thinking',
+      options: opts.thinkingOptions,
+      current: agent.thinkingMode || '',
+    });
+  }
+  if (!fields.length) return null;
+
+  async function save(field: 'runtimeMode' | 'thinkingMode', value: string) {
+    setBusy(field);
+    try {
+      const res = await apiPatch<{ changed?: boolean; newChatRequired?: boolean; sessionReset?: boolean; restartRequired: boolean }>(
+        `/api/agents/${agent.id}/runtime`,
+        { [field]: value },
+      );
+      if (res?.changed) {
+        pushToast({
+          tone: 'info',
+          title: 'Runtime setting applied',
+          description: 'Conversation continuity was preserved. The next Telegram footer will note the runtime change.',
+        });
+      }
+      onChange();
+    } catch (err: any) {
+      // The server rejects values the model doesn't support (e.g. xhigh on
+      // Sonnet 4.6) — surface that instead of leaving the select looking applied.
+      pushToast({ tone: 'error', title: 'Update failed', description: err?.message || String(err) });
+      onChange();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <>
+      {fields.map((f) => {
+        return (
+          <ControlField key={f.field} label={f.label}>
+            <select
+              value={f.options.some((o) => o.id === f.current) ? f.current : ''}
+              disabled={busy !== null}
+              title={`${f.label}: ${f.options.find((o) => o.id === f.current)?.label ?? 'Default'}`}
+              aria-label={f.label}
+              onChange={(e) => save(f.field, (e.target as HTMLSelectElement).value)}
+              class="h-8 w-full min-w-0 rounded font-medium border px-2 text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] border-[var(--color-border)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)] transition-colors disabled:opacity-40"
+            >
+              {f.options.map((o) => (
+                <option key={o.id} value={o.id}>{o.label}</option>
+              ))}
+            </select>
+          </ControlField>
+        );
+      })}
+    </>
+  );
+}
+
+function ControlField({ label, children }: { label: string; children: any }) {
+  return (
+    <label class="block min-w-0">
+      <span class="block mb-1 text-[9px] uppercase tracking-wider text-[var(--color-text-faint)] truncate" title={label}>
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function providerLabel(provider?: ProviderConfig): string {
+  if (!provider) return 'Provider';
+  if (provider.type === 'claude') return 'Claude';
+  if (provider.type === 'opencode') return 'OpenCode';
+  if (provider.type === 'gemini') return 'Gemini';
+  if (provider.type === 'acp-codex') return 'Codex';
+  if (provider.type === 'openai') return 'OpenAI';
+  if (provider.type === 'openrouter') return 'OpenRouter';
+  return 'ACP';
+}
+
+function AgentProviderModal({ agent, onClose, onChange }: { agent: Agent | null; onClose: () => void; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const providerStatus = useFetch<{ providers?: ProviderOption[] }>('/api/provider/status', 30_000);
+  if (!agent) return null;
+  const currentAgent = agent;
+
+  async function save(provider: ProviderConfig) {
+    if (provider.type === 'acp' && !provider.command?.trim()) {
+      pushToast({ tone: 'error', title: 'Command required', description: 'Custom ACP needs a command.' });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await apiPatch<{
+        changed?: boolean;
+        sessionReset?: boolean;
+        restartRequired: boolean;
+      }>(`/api/agents/${currentAgent.id}/provider`, { provider });
+      onChange();
+      if (res.changed === false) {
+        // Closing an unchanged dialog is a no-op, not a restart-worthy event.
+      } else if (res.restartRequired) {
+        pushToast({
+          tone: 'warn',
+          title: currentAgent.id + ' needs a restart',
+          description: 'Provider config saved. Restart this agent before it uses the new provider.',
+          durationMs: 0,
+          action: {
+            label: 'Restart now',
+            run: async () => {
+              await apiPost(`/api/agents/${currentAgent.id}/restart`);
+              pushToast({ tone: 'success', title: currentAgent.id + ' restarting', description: 'Should be live again in a few seconds.' });
+              setTimeout(onChange, 2500);
+            },
+          },
+        });
+      } else {
+        pushToast({
+          tone: 'success',
+          title: 'Provider saved',
+          description: res.sessionReset
+            ? 'The next message starts a new conversation with this provider.'
+            : 'Takes effect on the next message.',
+        });
+      }
+      onClose();
+    } catch (err: any) {
+      pushToast({ tone: 'error', title: 'Provider save failed', description: err?.message || String(err), durationMs: 7000 });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open={!!currentAgent} onClose={onClose} title={`${currentAgent.name || currentAgent.id} Provider Setup`} width={520}>
+      <ProviderConfigEditor
+        value={currentAgent.provider}
+        fallbackModel={currentAgent.model}
+        providers={providerStatus.data?.providers}
+        onSave={save}
+        busy={busy}
+      />
+    </Modal>
   );
 }
 
@@ -376,7 +613,8 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
   const [name, setName] = useState('');
   const [nameTouched, setNameTouched] = useState(false);
   const [description, setDescription] = useState('');
-  const [model, setModel] = useState('claude-sonnet-4-6');
+  const providerStatus = useFetch<{ provider?: ProviderConfig; model?: string; providers?: ProviderOption[] }>('/api/provider/status', 30_000);
+  const [provider, setProvider] = useState<ProviderConfig>({ type: 'claude', model: 'claude-sonnet-4-6' });
   const [template, setTemplate] = useState('');
   const [botToken, setBotToken] = useState('');
   const [createdId, setCreatedId] = useState<string | null>(null);
@@ -403,7 +641,7 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
   // Reset on close.
   function close() {
     setStep(1); setId(''); setName(''); setNameTouched(false); setDescription('');
-    setModel('claude-sonnet-4-6'); setTemplate(''); setBotToken('');
+    setProvider(providerStatus.data?.provider ?? { type: 'claude', model: 'claude-sonnet-4-6' }); setTemplate(''); setBotToken('');
     setCreatedId(null); setCreatedSummary(null); setError(null);
     onClose();
   }
@@ -427,6 +665,11 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
   // Templates list.
   const templates = useFetch<{ templates: Template[] }>('/api/agents/templates');
 
+  useEffect(() => {
+    if (!open || !providerStatus.data?.provider) return;
+    setProvider(providerStatus.data.provider);
+  }, [open, providerStatus.data?.provider?.type, providerStatus.data?.provider?.model]);
+
   // Sync auto name from id when user hasn't edited name.
   if (!nameTouched && id && !name) {
     const auto = id.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -442,7 +685,7 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
     setCreating(true); setError(null);
     try {
       const res = await apiPost<any>('/api/agents/create', {
-        id, name, description, model, template, botToken,
+        id, name, description, provider, template, botToken,
       });
       setCreatedId(res.agentId);
       setCreatedSummary({ envKey: res.envKey, agentDir: res.agentDir });
@@ -575,19 +818,7 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
             />
           </Field>
 
-          <div class="grid grid-cols-2 gap-3">
-            <Field label="Model">
-              <select
-                value={model}
-                onChange={(e) => setModel((e.target as HTMLSelectElement).value)}
-                class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
-              >
-                <option value="claude-opus-4-6">Opus 4.6</option>
-                <option value="claude-sonnet-4-6">Sonnet 4.6</option>
-                <option value="claude-sonnet-4-5">Sonnet 4.5</option>
-                <option value="claude-haiku-4-5">Haiku 4.5</option>
-              </select>
-            </Field>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Template">
               <select
                 value={template}
@@ -600,6 +831,15 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
                 ))}
               </select>
             </Field>
+          </div>
+
+          <div class="border border-[var(--color-border)] rounded-lg p-3 bg-[var(--color-card)]">
+            <ProviderConfigEditor
+              value={provider}
+              fallbackModel={providerStatus.data?.model}
+              providers={providerStatus.data?.providers}
+              onChange={setProvider}
+            />
           </div>
         </div>
       )}
@@ -689,4 +929,3 @@ function CopyButton({ text }: { text: string }) {
     </button>
   );
 }
-

@@ -6,7 +6,7 @@ import { execSync, spawn } from 'child_process';
 import yaml from 'js-yaml';
 
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
-import { ensureAgentsMdSymlink, listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster } from './agent-config.js';
+import { ensureAgentsMdSymlink, listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster, findAgentIdentityCollision } from './agent-config.js';
 import { refreshAgentRegistry } from './orchestrator.js';
 import { atomicEnvWrite } from './env-write.js';
 import { logger } from './logger.js';
@@ -239,6 +239,19 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
   // Validate ID
   const idCheck = validateAgentId(id);
   if (!idCheck.ok) throw new Error(idCheck.error);
+
+  // Uniqueness guard: the new id AND display name must not collide with any
+  // existing agent's id, display name, or alias. Runs before token validation
+  // (which hits the network) so a colliding create fails fast and writes
+  // nothing. Keeps the id/name/alias namespaces from ever overlapping.
+  const idCollision = findAgentIdentityCollision(id);
+  if (idCollision) {
+    throw new Error(`Agent id "${id}" collides with the ${idCollision.kind} "${idCollision.value}" of agent "${idCollision.agentId}"`);
+  }
+  const nameCollision = findAgentIdentityCollision(name);
+  if (nameCollision) {
+    throw new Error(`Display name "${name}" collides with the ${nameCollision.kind} "${nameCollision.value}" of agent "${nameCollision.agentId}"`);
+  }
 
   // Max agent limit
   const existing = listAgentIds();

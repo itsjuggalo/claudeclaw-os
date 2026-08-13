@@ -8,6 +8,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./config.js', () => ({
   PROJECT_ROOT: '/tmp/test-orchestrator',
   CLAUDECLAW_CONFIG: '/tmp/test-orchestrator/config',
+  CLAUDECLAW_OWNER_NAME: 'Michael',
+  DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
+  CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
+  CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
+  CLAUDE_MODEL_HAIKU: 'claude-haiku-4-5',
 }));
 
 vi.mock('./env.js', () => ({
@@ -63,8 +68,10 @@ vi.mock('./security.js', () => ({
 }));
 
 const {
+  buildWarRoomRuntimeToolOptions,
   pickSlashRoster,
   maybeLogWarRoomToHive,
+  meetingSpeakerLabel,
   SLASH_HARD_CAP,
 } = await import('./warroom-text-orchestrator.js');
 
@@ -81,6 +88,56 @@ beforeEach(() => {
   // pickSlashRoster keeps a module-level rotation offset map keyed by
   // meetingId. Each test that exercises rotation uses a fresh meetingId
   // so cases don't leak through that map.
+});
+
+describe('meetingSpeakerLabel', () => {
+  const roster = buildRoster(['main', 'amos']);
+
+  it('uses the configured owner identity for user transcript rows', () => {
+    expect(meetingSpeakerLabel('user', 'main', roster)).toBe('Michael');
+  });
+
+  it('keeps self and teammate labels distinct', () => {
+    expect(meetingSpeakerLabel('main', 'main', roster)).toBe('You');
+    expect(meetingSpeakerLabel('amos', 'main', roster)).toBe('Amos');
+  });
+
+  it('falls back to a neutral owner label when an override is blank', () => {
+    expect(meetingSpeakerLabel('user', 'main', roster, '  ')).toBe('User');
+  });
+});
+
+describe('war-room runtime tool boundary', () => {
+  it('forwards built-in policy and only opted-in MCP servers to the runtime', () => {
+    const options = buildWarRoomRuntimeToolOptions(
+      'comms',
+      ['Write', 'mcp:gmail'],
+      {
+        gmail: { command: 'gmail-server' },
+        slack: { command: 'slack-server' },
+      },
+    );
+
+    expect(options.allowedTools).toEqual(expect.arrayContaining(['Read', 'Write']));
+    expect(options.allowedTools).not.toContain('Bash');
+    expect(options.allowedTools).not.toContain('mcp:gmail');
+    expect(options.disallowedTools).toContain('Bash');
+    expect(options.mcpServers).toEqual({
+      gmail: { command: 'gmail-server' },
+    });
+  });
+
+  it('omits the runtime MCP field when no server is opted in', () => {
+    const options = buildWarRoomRuntimeToolOptions(
+      'ops',
+      [],
+      { gmail: { command: 'gmail-server' } },
+    );
+
+    expect(options).not.toHaveProperty('mcpServers');
+    expect(options.allowedTools).not.toContain('Bash');
+    expect(options.disallowedTools).toContain('Bash');
+  });
 });
 
 // ── SLASH_HARD_CAP ↔ UI MAX_CAP regression (F-03) ───────────────────

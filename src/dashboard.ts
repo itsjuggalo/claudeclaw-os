@@ -1,14 +1,50 @@
 import { Api, RawApi } from 'grammy';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { serve } from '@hono/node-server';
 
 import fs from 'fs';
+import { Readable } from 'node:stream';
 import os from 'os';
 import path from 'path';
+import zlib from 'zlib';
 import { spawnSync } from 'child_process';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_URL, ENABLE_ACP, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, updateAgentProvider } from './config.js';
+import { isDeepStrictEqual } from 'util';
+import { AGENT_ID, ENABLE_ACP, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_BIND, DASHBOARD_AUTH_DISABLED, DASHBOARD_TOKEN, DASHBOARD_URL, MC_ACCESS_SECRET, MC_ACCESS_DISABLED, PROJECT_ROOT, STORE_DIR, WARROOM_TMP_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel, CLAUDECLAW_CONFIG, AIME_SESSION_COOKIE, updateAgentProvider } from './config.js';
+import { MC_COOKIE, MASTER_TTL_SEC, verifyToken, masterToken, signToken, isLoopbackAddr, nowSec, mcLoginPage } from './mc-access.js';
 import crypto from 'crypto';
+import { getWallets } from './wallets.js';
+import { getMassageMonitor, keepAccount, deleteAccount, setReaper, massageAdmin, massageAdminSoft } from './massage.js';
+import { getMassageAdminOverview, updateMassageAdminClient } from './massage-admin.js';
+import { massageAdminLoginStart, massageAdminOauthCallback, isAllowlistedAdmin } from './massage-oauth.js';
+import { getSqlCatalog, getSqlTables, runSqlSelect, getModerationRows, updateRow, deleteRow, insertRow, getAuditLog as getSqlAuditLog, undoMutation } from './sqlmonitor.js';
+import { getEquity } from './equity.js';
+import { listReadings, readReadingHtml, getTodayTransits } from './astrology.js';
+import { getDailyPsychCard, getWeeklyReviews, getWeeklyReview, getDailyDrill, answerDailyDrill } from './coach.js';
+import { getTradeHistory } from './tradehistory.js';
+import { getTokenBurn } from './tokenburn.js';
+import { getCatalog, kbSearch, kbAsk, kbSources, kbAnatomy, kbExamBank, kbAnatomyImage, kbAnatomyFrame, kbAnatomyAudio, kbAnatomyClip, kbQuizBank, kbFramesIndex, kbVideoFrames, sqlMeta, sqlSelect, listSecrets, revealSecret, warmupDatabases } from './databases.js';
+import { daltonIndex, daltonMedia, daltonStream, parseRange } from './dalton.js';
+import { registerAccounts } from './accounts.js';
+import { getSignals, getFlowRank, getFlowWinners, getMomentum, getMacro, getTradeLedger, getBrief, queryAIME, getTradeDeskOverview } from './trade-desk.js';
+import { getSignalMonitor } from './signal-monitor.js';
+import { getLiveAppsStatus } from './live-apps.js';
+import { getGallery, resolveGalleryFile, galleryMime, invalidateGalleryCache, moveGalleryFile } from './gallery.js';
+import { getLewisIntegrations, readLewisFile } from './lewistrading.js';
+import { getSkoolBuilds, readSkoolArtifact } from './skoolbuilds.js';
+import { getHermesData, getHermesLogs, hermesRestartGateway, hermesSend, hermesOneshot, getHermesStatus, getHermesConfigRedacted, getHermesToolsets } from './hermes.js';
+import { listRapidApis, rapidApiSearch } from './rapidapi.js';
+import { generateImage } from './generate.js';
+import { generateLocalImage, generateLocalVideo, generateKeyframeVideo } from './localgen.js';
+import { generateHiggsfield, listHiggsfieldModels } from './higgsfield.js';
+import { preflightGate, comfyQueueDepth, comfyFree, notify } from './genguard.js';
+import { readManifest, metaFor, upsertMeta, mergeMeta, normalizeFamily, loraCompat, readCurated, enrichedMetaFor, familyFromFilename, ModelMeta } from './modelmeta.js';
+import { applyGenRules, loraStrength } from './genrules.js';
+import { listLooks, saveUserLook, deleteUserLook } from './looks.js';
+import { readControlPanel, applyControl } from './controls.js';
+import Database from 'better-sqlite3';
+import { listEntries as bunkerList, listArchived as bunkerArchivedList, setPinned as bunkerSetPinned, archiveEntry as bunkerArchive, promoteEntry as bunkerPromote, resolveArtifact as bunkerResolveArtifact, verifyArtifact as bunkerVerifyArtifact } from './bunker.js';
 import {
   getAllScheduledTasks,
   deleteScheduledTask,
@@ -25,8 +61,10 @@ import {
   getDashboardMemoriesList,
   getDashboardTokenStats,
   getDashboardCostTimeline,
+  getCacheTokens,
   getDashboardRecentTokenUsage,
   getSession,
+  clearAgentSessions,
   getSessionTokenUsage,
   getHiveMindEntries,
   getAgentTokenStats,
@@ -72,8 +110,12 @@ import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
 import {
   AGENT_ID_RE,
+  DEFAULT_MAIN_DESCRIPTION,
   agentExists,
   listAgentIds,
+  resolveAgentId,
+  knownAgentIds,
+  findAgentIdentityCollision,
   loadAgentConfig,
   resolveAgentDir,
   resolveAgentDisplayName,
@@ -107,12 +149,16 @@ import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_CODEX_MODEL,
   ProviderConfig,
+  ProviderType,
   getProviderDisplay,
   checkProviderAvailability,
   getMainProviderConfig,
   normalizeProviderConfig,
+  normalizeProviderType,
   setMainProviderConfig,
 } from './provider.js';
+import { PROVIDER_REGISTRY, providerDescriptor, providerRunnable, selectableProviders } from './provider-registry.js';
+import { getSelectedProviderConfig } from './active-provider.js';
 import { getMainModelOverride, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
@@ -130,19 +176,63 @@ import {
 } from './db.js';
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
-import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
-import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
+import { getIngestionQuotaStatus, extractViaProvider } from './memory-ingest.js';
+import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENAI_MODEL } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
 import { inspectAcpProviderRuntimeOptions, type AcpProviderRuntimeOptions } from './agent-engine/acp-adapter.js';
+import { listCharacters, getCharacter, configureCharacter, publishCharacter, trainCommandFor } from './character.js';
+import { reviewGen, qaSummary } from './qa.js';
 
-const CLAUDE_MODEL_OPTIONS = [
-  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-  { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
-];
+// Static-asset compression cache. Keyed by `${filePath}|${encoding}`; the
+// compressed buffer for an immutable content-hashed asset never changes, so
+// we compress once and reuse. Bounded naturally by the number of hashed
+// assets in dist/web (a new build = new filenames = new keys; stale keys just
+// go cold and cost a little memory until process restart).
+const _assetCompressCache = new Map<string, Buffer>();
+function getCompressedAsset(filePath: string, data: Buffer, enc: 'br' | 'gzip'): Buffer {
+  const key = `${filePath}|${enc}`;
+  const hit = _assetCompressCache.get(key);
+  if (hit) return hit;
+  const out = enc === 'br'
+    ? zlib.brotliCompressSync(data, {
+        params: {
+          [zlib.constants.BROTLI_PARAM_QUALITY]: 6,
+          [zlib.constants.BROTLI_PARAM_SIZE_HINT]: data.length,
+        },
+      })
+    : zlib.gzipSync(data, { level: 6 });
+  _assetCompressCache.set(key, out);
+  return out;
+}
+
+import {
+  CLAUDE_MODEL_OPTIONS,
+  OPENAI_MODEL_OPTIONS,
+  VALID_CLAUDE_MODELS as CATALOG_CLAUDE_MODELS,
+  modelDisplayLabel,
+  reconcileRuntimeOptions,
+  staticRuntimeOptionsFor,
+  validateProviderModelOptions,
+} from './model-catalog.js';
+
+// The catalog (model-catalog.ts) owns the canonical Claude lineup upstream.
+// Keep the fork's env-driven bump working: whatever CLAUDE_MODEL_* points at
+// stays selectable even before it lands in the catalog. Deduped.
+const VALID_CLAUDE_MODELS = Array.from(new Set([
+  CLAUDE_MODEL_OPUS,
+  CLAUDE_MODEL_SONNET,
+  CLAUDE_MODEL_HAIKU,
+  ...CATALOG_CLAUDE_MODELS,
+]));
+
+// Format gate for model ids on the set-model endpoints. The curated list
+// above feeds the dashboard pickers; anything matching this shape is
+// accepted as a custom id — the SDK 404s clearly on first use if the id
+// doesn't exist, which is the real (and always-current) validator. A
+// hard allowlist here went stale on every Anthropic model launch.
+const CLAUDE_MODEL_ID_RE = /^claude-[a-z0-9][a-z0-9.-]*$/;
 
 const GEMINI_MODEL_OPTIONS = [
   { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
@@ -151,30 +241,10 @@ const GEMINI_MODEL_OPTIONS = [
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ];
 
-const CODEX_MODEL_OPTIONS = [
-  { id: DEFAULT_CODEX_MODEL, label: 'GPT-5.5' },
-  { id: 'gpt-5.4', label: 'GPT-5.4' },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-  { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
-  { id: 'gpt-5.2', label: 'GPT-5.2' },
-];
+const CODEX_MODEL_OPTIONS = OPENAI_MODEL_OPTIONS;
 
 const CUSTOM_ACP_MODEL_OPTIONS = [
   { id: 'provider-default', label: 'Provider default' },
-];
-
-const CLAUDE_RUNTIME_OPTIONS = [
-  { id: 'fast', label: 'Low / fast' },
-  { id: 'normal', label: 'Medium / normal' },
-  { id: 'deep', label: 'High / deep' },
-  { id: 'max', label: 'Max' },
-];
-
-const CLAUDE_THINKING_OPTIONS = [
-  { id: 'auto', label: 'Auto' },
-  { id: 'off', label: 'Off' },
-  { id: 'on', label: 'On' },
 ];
 
 const CODEX_THINKING_FALLBACK_OPTIONS = [
@@ -185,7 +255,7 @@ const CODEX_THINKING_FALLBACK_OPTIONS = [
 ];
 
 function fallbackRuntimeOptions(provider: ProviderConfig): AcpProviderRuntimeOptions {
-  if (provider.type === 'codex') {
+  if (provider.type === 'acp-codex') {
     return {
       provider: provider.type,
       modeOptions: [],
@@ -221,13 +291,53 @@ function stripAnsi(s: string): string {
 }
 
 function getOpenCodeModels(): Array<{ id: string; label: string }> {
-  const result = spawnSync('opencode', ['models'], { stdio: 'pipe', encoding: 'utf-8' });
+  const result = spawnSync('opencode', ['models'], { stdio: 'pipe', encoding: 'utf-8', windowsHide: true });
   if (result.status !== 0) return [];
   return stripAnsi(result.stdout)
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => /^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(line))
     .map((id) => ({ id, label: id }));
+}
+
+// In-memory cache for OpenRouter /models (5-minute TTL). The dashboard hits
+// /api/providers/models on every Settings page load, so we don't want to call
+// OpenRouter for every poll. Cache survives only as long as the process.
+const openRouterModelsCache: { fetchedAt: number; models: Array<{ id: string; label: string }> } = {
+  fetchedAt: 0,
+  models: [],
+};
+const OPENROUTER_MODELS_TTL_MS = 5 * 60 * 1000;
+
+async function fetchOpenRouterModels(): Promise<Array<{ id: string; label: string }>> {
+  const now = Date.now();
+  if (openRouterModelsCache.models.length > 0 && now - openRouterModelsCache.fetchedAt < OPENROUTER_MODELS_TTL_MS) {
+    return openRouterModelsCache.models;
+  }
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: { Accept: 'application/json' },
+      // Keep this short — the dashboard shouldn't block on a slow network.
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return openRouterModelsCache.models; // serve stale on transient failure
+    const data = await res.json() as { data?: Array<{ id?: string; name?: string }> };
+    const models = (data.data ?? [])
+      .map((m) => ({ id: typeof m.id === 'string' ? m.id : '', label: typeof m.id === 'string' ? m.id : '' }))
+      .filter((m) => m.id.length > 0)
+      .sort((a, b) => {
+        // Free tier first for discoverability, then alphabetic.
+        const aFree = a.id.endsWith(':free');
+        const bFree = b.id.endsWith(':free');
+        if (aFree !== bFree) return aFree ? -1 : 1;
+        return a.id.localeCompare(b.id);
+      });
+    openRouterModelsCache.fetchedAt = now;
+    openRouterModelsCache.models = models;
+    return models;
+  } catch {
+    return openRouterModelsCache.models; // serve stale on error
+  }
 }
 
 function getOpenCodeDefaultModel(): string | undefined {
@@ -244,48 +354,169 @@ function getOpenCodeDefaultModel(): string | undefined {
   }
 }
 
+// Model persisted for main by PATCH /api/agents/main/model (main-config.json).
+// The bot's chat path reads this via agentProvider at startup, but
+// getSelectedProviderConfig() hides it behind the ENABLE_ACP=false gate
+// (returns DEFAULT_PROVIDER with the default model baked in). Read it
+// explicitly so the dashboard shows the model actually in use instead of
+// silently reverting to the default after a restart.
+function persistedMainClaudeModel(): string | undefined {
+  const persisted = getMainProviderConfig();
+  return persisted.type === 'claude' ? persisted.model : undefined;
+}
+
+// Turn the persisted effort/thinking dial into a short lowercase word for the
+// sidebar (e.g. "high", "extra high", "off"). Effort is the primary dial for
+// Claude (modeOptions); OpenAI exposes it as Reasoning effort (thinkingOptions).
+// Returns '' when the model has no dial (adaptive thinking) so the caller drops
+// the clause instead of inventing one.
+function resolveReasoningLabel(
+  provider: { type: string; runtimeMode?: string; thinkingMode?: string },
+  opts: { modeOptions: { id: string; label: string }[]; thinkingOptions: { id: string; label: string }[] } | null,
+): string {
+  if (!opts) return '';
+  const useMode = provider.type === 'claude';
+  const list = useMode ? opts.modeOptions : opts.thinkingOptions;
+  if (!list || list.length === 0) return '';
+  const current = (useMode ? provider.runtimeMode : provider.thinkingMode) ?? '';
+  const match = list.find((o) => o.id === current);
+  let label = match ? match.label : current;
+  if (!label) return '';
+  // Unwrap "Default (high)" -> "high" so the pill stays compact.
+  const defMatch = /^Default \((.+)\)$/.exec(label);
+  if (defMatch) label = defMatch[1];
+  return label.toLowerCase();
+}
+
 function getProviderStatus() {
-  const provider = getMainProviderConfig();
+  // Use getSelectedProviderConfig so the dashboard reflects the EFFECTIVE
+  // runtime engine, not the stored config. When ENABLE_ACP=false, the gate
+  // forces Claude regardless of what's in main-config.json, and the sidebar
+  // should show that truth instead of a stale Gemini/OpenCode label.
+  const provider = getSelectedProviderConfig();
   const model = provider.type === 'claude'
-    ? (getMainModelOverride() ?? provider.model ?? agentDefaultModel ?? DEFAULT_CLAUDE_MODEL)
+    ? (getMainModelOverride() ?? persistedMainClaudeModel() ?? provider.model ?? agentDefaultModel ?? DEFAULT_CLAUDE_MODEL)
     : provider.type === 'opencode'
       ? (provider.model ?? getOpenCodeDefaultModel() ?? 'OpenCode default')
       : provider.type === 'gemini'
         ? (provider.model ?? 'Gemini CLI default')
-        : provider.type === 'codex'
+        : provider.type === 'acp-codex'
           ? (provider.model ?? DEFAULT_CODEX_MODEL)
+          : provider.type === 'openai'
+            ? (provider.model ?? DEFAULT_OPENAI_MODEL)
       : (provider.model ?? (provider.command ? `${provider.command}${provider.args?.length ? ` ${provider.args.join(' ')}` : ''}` : 'Provider default'));
+
+  // Resolve a short reasoning descriptor for the sidebar's runtime summary.
+  // Reuses the same option lists the agent card renders from, so the label
+  // never drifts from what the model actually advertises. The primary dial is
+  // Effort for Claude and Reasoning effort for OpenAI; models that use adaptive
+  // thinking (empty option list) return '' so the caller omits the clause
+  // rather than printing a fake default.
+  const runtimeOpts = staticRuntimeOptionsFor(provider, model);
+  const reasoning = resolveReasoningLabel(provider, runtimeOpts);
 
   return {
     provider,
     providerType: provider.type,
-    label: provider.type === 'claude'
-      ? 'Claude'
-      : provider.type === 'opencode'
-        ? 'OpenCode'
-        : provider.type === 'gemini'
-          ? 'Gemini'
-          : provider.type === 'codex'
-            ? 'Codex'
-            : 'ACP',
+    label: providerDescriptor(provider.type).label,
     runtime: getProviderDisplay(provider),
     model,
-    // Surfaced so the dashboard can hide the provider picker when the
-    // beta ACP feature is off. Single source of truth for the UI.
+    // Raw persisted dials plus a display-ready descriptor (e.g. "high",
+    // "medium") for the sidebar. Empty string when the model has no dial.
+    runtimeMode: provider.runtimeMode ?? '',
+    thinkingMode: provider.thinkingMode ?? '',
+    reasoning,
+    // The provider picker renders from this registry-derived list (grouped by
+    // tier) instead of a per-provider boolean cascade: stable providers
+    // (Claude, OpenAI) are always present; experimental (ACP family) appear
+    // only under ENABLE_ACP.
+    providers: selectableProviders().map((p) => ({ type: p.type, label: p.label, tier: p.tier })),
+    // Retained for the legacy HTML dashboard / any external reader. The web UI
+    // uses `providers` above.
     acpEnabled: ENABLE_ACP,
   };
+}
+
+/**
+ * Per-type provider gate shared by the provider endpoints. Reads the single
+ * registry gate: stable providers (Claude, OpenAI) are always selectable;
+ * experimental (ACP family) require ENABLE_ACP. Returns the user-facing error
+ * message, or null when the type is currently selectable.
+ */
+function providerGateError(providerType: string): string | null {
+  const type = providerType as ProviderType;
+  if (!PROVIDER_REGISTRY[type]) return 'Unknown provider.';
+  if (providerRunnable(type)) return null;
+  return 'This provider is experimental. Set ENABLE_ACP=true in .env to enable (beta).';
 }
 
 function validateProviderConfig(provider: ProviderConfig): string | null {
   if (provider.type === 'acp' && !provider.command?.trim()) {
     return 'Custom ACP provider requires a command';
   }
-  return null;
+  return validateProviderModelOptions(provider);
+}
+
+/**
+ * Validates the provider type on an UNTRUSTED write body, before any
+ * normalization. Writes fail closed here.
+ *
+ * `normalizeProviderConfig` is built for TRUSTED persisted config, where an
+ * absent or unreadable type must degrade to Claude rather than brick the
+ * install. That fallback is right on read and wrong on write: a typo'd or
+ * malformed `type` would answer 200 OK and silently reconfigure the agent to
+ * Claude — a config change the caller never asked for and never sees. So the
+ * write endpoints reject instead, and the read fallback stays as it is.
+ *
+ * Returns the canonical type — migrating the legacy `codex` id to `acp-codex`
+ * exactly as persisted reads do — or a user-facing error for a missing,
+ * non-string, or unknown id.
+ */
+function validateInboundProviderType(raw: unknown): { type: ProviderType } | { error: string } {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { error: 'Provider type required.' };
+  }
+  const type = normalizeProviderType(raw);
+  if (!type) return { error: `Unknown provider "${raw.trim()}".` };
+  return { type };
+}
+
+/**
+ * Resolves the OPTIONAL `provider` field of a write body into the config that
+ * may be handed to `createAgent`.
+ *
+ * The distinction that matters is PRESENT vs ABSENT, not truthy vs falsy.
+ * `provider: null`, `false`, `0`, `''`, `'openai'`, and `[]` are all explicit
+ * statements by the caller — and all malformed. A truthiness check treats the
+ * falsy ones as "omitted", so the request would succeed while quietly creating
+ * an agent on a provider nobody chose. Hence `hasOwnProperty`: absence decides
+ * whether validation runs, and anything present must be a plain object (not
+ * null, not an array) carrying a known provider type.
+ *
+ * Returns `{ provider: undefined }` only for a genuinely absent field, so the
+ * caller can let the new agent inherit the main provider.
+ */
+function resolveInboundProvider(
+  body: unknown,
+  legacyModel?: string,
+): { provider: ProviderConfig | undefined } | { error: string } {
+  if (!body || typeof body !== 'object'
+    || !Object.prototype.hasOwnProperty.call(body, 'provider')) {
+    return { provider: undefined }; // absent → inherit the default provider
+  }
+  const raw = (body as { provider?: unknown }).provider;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'Provider must be an object with a provider type.' };
+  }
+  const inbound = validateInboundProviderType((raw as { type?: unknown }).type);
+  if ('error' in inbound) return { error: inbound.error };
+  // The type is proven good, so normalizeProviderConfig's Claude fallback is
+  // unreachable here — it only fills in the remaining optional fields.
+  return { provider: normalizeProviderConfig(raw, legacyModel) };
 }
 
 async function classifyTaskAgent(prompt: string): Promise<string | null> {
   const agentIds = listAgentIds();
-  const validAgents = ['main', ...agentIds];
   const agentDescriptions = agentIds.map((id) => {
     try {
       const config = loadAgentConfig(id);
@@ -305,9 +536,10 @@ Reply with JSON: {"agent": "agent_id"}`;
   // Primary path: selected provider via the agent engine. Gemini fallback
   // can hit 429 and surface a 500, blocking the auto-assign UI.
   try {
-    const raw = await extractViaClaude(classificationPrompt);
+    const raw = await extractViaProvider(classificationPrompt);
     const parsed = parseJsonResponse<{ agent: string }>(raw);
-    if (parsed?.agent && validAgents.includes(parsed.agent)) return parsed.agent;
+    const resolved = parsed?.agent ? resolveAgentId(parsed.agent) : null;
+    if (resolved) return resolved;
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : err }, 'selected-provider classify failed, falling back to Gemini');
   }
@@ -317,7 +549,8 @@ Reply with JSON: {"agent": "agent_id"}`;
   try {
     const response = await generateContent(classificationPrompt);
     const parsed = parseJsonResponse<{ agent: string }>(response);
-    if (parsed?.agent && validAgents.includes(parsed.agent)) return parsed.agent;
+    const resolved = parsed?.agent ? resolveAgentId(parsed.agent) : null;
+    if (resolved) return resolved;
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : err }, 'Gemini classify failed, defaulting to main');
   }
@@ -341,6 +574,27 @@ function safeTokenEqual(provided: string | null | undefined, expected: string | 
   return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
 }
 
+// ── mc-access (fleet password gate) helpers ─────────────────────────────────
+// Master passphrases are read from disk at REQUEST time so `mc-grant set-password`
+// takes effect with no rebuild/restart. /home/ubuntu → /home/itsju (symlink).
+// MULTIPLE values supported (newline / comma / semicolon separated) — ANY one
+// unlocks, so outsiders can't tell which of the N strings is "the" password.
+function readMasterPasswords(): string[] {
+  let raw = '';
+  for (const p of [
+    '/home/itsju/.openclaw/secrets/mc-access-password',
+    '/home/ubuntu/.openclaw/secrets/mc-access-password',
+  ]) {
+    try { const v = fs.readFileSync(p, 'utf-8').trim(); if (v) { raw = v; break; } } catch { /* next */ }
+  }
+  if (!raw) raw = (process.env.MC_ACCESS_PASSWORD || '').trim();
+  return raw.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
+}
+function safeStrEqual(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  try { return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b)); } catch { return false; }
+}
+
 /**
  * Build the dashboard Hono app without binding it to a port. Exported for
  * contract tests so the route surface can be exercised via `app.request()`
@@ -349,6 +603,26 @@ function safeTokenEqual(provided: string | null | undefined, expected: string | 
  */
 export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   const app = new Hono();
+
+  // Hosts always trusted for CORS reflection + CSRF, on top of the
+  // configured DASHBOARD_URL host. Loopback plus the Tailscale mesh
+  // (CGNAT IP + MagicDNS) — both tailnet-scoped, so a foreign web origin
+  // can never present them. This is how the dashboard is opened from phone/LAN.
+  const allowedOriginHost = (() => {
+    const raw = (DASHBOARD_URL || '').trim();
+    if (!raw) return '';
+    try { return new URL(raw).hostname; } catch { return ''; }
+  })();
+  const STATIC_TRUSTED_HOSTS = new Set([
+    'localhost',
+    '127.0.0.1',
+    '[::1]',
+    '100.91.39.122',              // Tailscale IP
+    'g59-wsl.taile1328b.ts.net',  // Tailscale MagicDNS
+  ]);
+  const isTrustedHost = (host: string): boolean =>
+    STATIC_TRUSTED_HOSTS.has(host) ||
+    (!!allowedOriginHost && host === allowedOriginHost);
 
   // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers).
   // Reflect Origin only when it matches a known-good host (audit fix A4E-3,
@@ -361,12 +635,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (origin) {
       try {
         const host = new URL(origin).hostname;
-        const dashHost = DASHBOARD_URL ? new URL(DASHBOARD_URL).hostname : '';
         const allowed =
-          host === 'localhost' ||
-          host === '127.0.0.1' ||
-          host === '[::1]' ||
-          (!!dashHost && host === dashHost) ||
+          isTrustedHost(host) ||
           host.endsWith('.trycloudflare.com');
         if (allowed) {
           c.header('Access-Control-Allow-Origin', origin);
@@ -468,29 +738,213 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // catch-all unless an earlier route matched. Legacy HTML routes that
   // DO embed the token (warroom?mode=picker|voice, /warroom/text,
   // / under DASHBOARD_LEGACY=true) call requireToken() inline.
+  // ── Fleet-wide password gate (mc-access) ──────────────────────────────────
+  // Was: gate /api/* by DASHBOARD_TOKEN only (SPA shell + deep links rendered
+  // unauthenticated, relying on the API 401 + re-auth overlay). Now the WHOLE
+  // surface is gated so a bookmark/deep-link can't render before auth, and the
+  // credential is the shared `mc_access` cookie — one login unlocks missionctrl
+  // + aries + claudeclaw because cookies ignore port.
+  //
+  // Trust model: LOCAL = trusted, REMOTE = password. Loopback is judged by the
+  // real socket peer (c.env.incoming.socket.remoteAddress) — NOT headers, which
+  // are spoofable here since Hono sits behind no trusted proxy. So the laptop on
+  // localhost is never prompted and local automation/cron keep working; a phone
+  // over Tailscale gets the password once, then the cookie remembers it.
+  //
+  // Authorized if: gate disabled / no secret (fail-open so a misconfig can't
+  // brick local use) OR loopback OR a valid mc_access cookie OR a valid
+  // claudeclaw_token (query or cookie — keeps existing scripts + the ?token=
+  // bookmark working and bridges the legacy token into an mc_access session).
   app.use('*', async (c, next) => {
     const path = new URL(c.req.url).pathname;
-    // Only gate the API surface. Static and HTML pass through.
-    if (!path.startsWith('/api/')) {
-      await next();
-      return;
+    // The mc-access gate is INDEPENDENT of the legacy DASHBOARD_AUTH_DISABLED flag
+    // (which only ever governed the old token-only /api/* check). It's currently
+    // 'true' in .env, so honoring it here would leave claudeclaw wide open — the
+    // gate's only off-switches are MC_ACCESS_DISABLED or a missing secret.
+    const gateOff = MC_ACCESS_DISABLED || !MC_ACCESS_SECRET;
+
+    const remoteAddr = (c.env as { incoming?: { socket?: { remoteAddress?: string } } })
+      ?.incoming?.socket?.remoteAddress;
+    // Behind the Tailscale Serve HTTPS proxy the upstream socket is ALWAYS 127.0.0.1,
+    // so a bare socket check would treat every phone/remote request as local and skip
+    // the password gate. Serve forwards the real client (tailnet) IP in x-forwarded-for,
+    // so only count a loopback socket as LOCAL when there's no non-loopback forwarded
+    // client. A DIRECT LAN hit has a non-loopback SOCKET (unspoofable) → still gated.
+    const socketLocal = isLoopbackAddr(remoteAddr);
+    const xffClient = (c.req.header('x-forwarded-for') || '').split(',')[0].trim();
+    const proxiedRemote = socketLocal && !!xffClient && !isLoopbackAddr(xffClient);
+    const local = socketLocal && !proxiedRemote;
+
+    const mc = MC_ACCESS_SECRET
+      ? await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET)
+      : null;
+
+    // The mc_access cookie (set after entering any one of the fleet master
+    // passwords — see readMasterPasswords) is the SOLE credential (Mike's call
+    // 06-17). The legacy DASHBOARD_TOKEN no longer authenticates the site. Local
+    // scripts reach claudeclaw over loopback, which stays open.
+    const authed = gateOff || local || !!mc;
+
+    // Slide the master cookie so the device stays remembered.
+    if (MC_ACCESS_SECRET && mc && mc.kind === 'master') {
+      try {
+        setCookie(c, MC_COOKIE, await masterToken(MC_ACCESS_SECRET), {
+          httpOnly: true, sameSite: 'Lax', path: '/', maxAge: MASTER_TTL_SEC,
+        });
+      } catch { /* maxAge pinned ≤400d; setCookie throws only above the ceiling */ }
     }
-    const token = c.req.query('token');
-    if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
-      return c.json({ error: 'Unauthorized' }, 401);
+
+    if (authed) { await next(); return; }
+
+    // Unauthorized: allow the login surface + static assets through so the
+    // password page (and, post-login, the SPA) can load; block everything else.
+    const isOpen =
+      path === '/favicon.ico' ||
+      path === '/login' ||
+      path.startsWith('/api/mc-login') ||
+      path.startsWith('/api/mc-logout') ||
+      // Massage Admin Google sign-in: the OAuth start + callback must be reachable
+      // WITHOUT an existing session (that's how a remote admin authenticates). The
+      // callback itself only mints a session for an allow-listed, verified email.
+      path === '/massage-admin/login' ||
+      path.startsWith('/massage-admin/oauth/') ||
+      // Bunker artifact files carry their OWN per-slug scoped capability
+      // (?t=&exp=, verified in the handler), so they must NOT require the
+      // master mc-access session — that's the whole point of not shipping the
+      // master credential inside artifact URLs.
+      path.startsWith('/api/bunker-files/') ||
+      path.startsWith('/assets/') ||
+      /\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico|css|js|map|woff2?|ttf)$/i.test(path);
+    if (isOpen) { await next(); return; }
+
+    if (path.startsWith('/api/')) return c.json({ error: 'Unauthorized' }, 401);
+    const back = encodeURIComponent(path + (new URL(c.req.url).search || ''));
+    return c.redirect(`/login?next=${back}`, 302);
+  });
+
+  // ── Login surface (allowlisted in the gate above) ─────────────────────────
+  app.get('/login', (c) => {
+    const nextUrl = c.req.query('next') || '/';
+    const err = c.req.query('error') ? 'Wrong password — try again.' : '';
+    return c.html(mcLoginPage(nextUrl, err));
+  });
+
+  // Fire-and-forget login audit → aries' shared LoginEvent table (Postgres) via its
+  // loopback /api/login-event sink. NEVER blocks the login. Same secret-guarded sink
+  // missionctrl uses; claudeclaw already holds MC_ACCESS_SECRET.
+  const logFleetLogin = (ev: Record<string, unknown>): void => {
+    try {
+      if (!MC_ACCESS_SECRET) return;
+      void fetch('http://127.0.0.1:1337/api/login-event', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-mc-secret': MC_ACCESS_SECRET },
+        body: JSON.stringify({ appName: 'claudeclaw', ...ev }),
+      }).catch(() => {});
+    } catch { /* never block login on audit */ }
+  };
+
+  // Accepts: POST form (password page), POST JSON (programmatic), or GET with
+  // ?guest=<signed-token> (tap-to-unlock guest links). On success sets mc_access.
+  app.on(['GET', 'POST'], '/api/mc-login', async (c) => {
+    let password = c.req.query('password') || '';
+    let nextUrl = c.req.query('next') || '/';
+    const guest = c.req.query('guest') || '';
+    const isJson = (c.req.header('content-type') || '').includes('application/json');
+    if (c.req.method === 'POST') {
+      if (isJson) {
+        const b = await c.req.json().catch(() => ({} as Record<string, string>));
+        password = b.password || password;
+        nextUrl = b.next || nextUrl;
+      } else {
+        const b = await c.req.parseBody().catch(() => ({} as Record<string, unknown>));
+        password = (b.password as string) || password;
+        nextUrl = (b.next as string) || nextUrl;
+      }
     }
-    await next();
+    // Same-origin path only (no open redirect).
+    if (!nextUrl.startsWith('/') || nextUrl.startsWith('//')) nextUrl = '/';
+
+    let kind: 'master' | 'guest' | null = null;
+    let exp = 0;
+    let label: string | undefined;
+    const candidate = guest || password;
+    if (MC_ACCESS_SECRET && candidate.includes('.')) {
+      const v = await verifyToken(candidate, MC_ACCESS_SECRET);
+      if (v && v.kind === 'guest') { kind = 'guest'; exp = v.exp; label = v.label; }
+    }
+    if (!kind && password) {
+      // Master passwords are case-INSENSITIVE by design (Mike's call) and MULTIPLE
+      // values are accepted — ANY one unlocks. Guest tokens above stay exact (HMAC).
+      // Lowercasing preserves length for the timing-safe cmp.
+      const pw = password.toLowerCase();
+      if (readMasterPasswords().some((m) => safeStrEqual(pw, m.toLowerCase()))) kind = 'master';
+    }
+
+    const ip = (c.req.header('x-forwarded-for') || '').split(',')[0].trim() || null;
+    const ua = c.req.header('user-agent') || null;
+
+    if (!kind) {
+      logFleetLogin({ authMethod: guest ? 'guest' : 'password', status: 'failure', failureReason: 'invalid_credentials', ipAddress: ip, userAgent: ua });
+      if (isJson) return c.json({ error: 'Access denied' }, 401);
+      return c.redirect(`/login?error=1&next=${encodeURIComponent(nextUrl)}`, 302);
+    }
+    logFleetLogin({ authMethod: kind === 'guest' ? 'guest' : 'password', accountId: kind === 'guest' ? (label ?? 'guest') : null, status: 'success', ipAddress: ip, userAgent: ua });
+
+    if (MC_ACCESS_SECRET) {
+      if (kind === 'master') {
+        setCookie(c, MC_COOKIE, await masterToken(MC_ACCESS_SECRET), {
+          httpOnly: true, sameSite: 'Lax', path: '/', maxAge: MASTER_TTL_SEC,
+        });
+      } else {
+        const ttl = Math.max(1, exp - nowSec());
+        setCookie(c, MC_COOKIE, await signToken({ exp, kind: 'guest', label }, MC_ACCESS_SECRET), {
+          httpOnly: true, sameSite: 'Lax', path: '/', maxAge: ttl,
+        });
+      }
+    }
+    if (isJson) return c.json({ ok: true, next: nextUrl });
+    return c.redirect(nextUrl, 302);
+  });
+
+  app.on(['GET', 'POST'], '/api/mc-logout', (c) => {
+    deleteCookie(c, MC_COOKIE, { path: '/' });
+    deleteCookie(c, 'claudeclaw_token', { path: '/' });
+    return c.redirect('/login', 302);
   });
 
   // Inline token check for handlers that USED to rely on the global
   // middleware but now serve a public SPA shell on the same path. Used
   // by legacy fallbacks that DO embed the token in the page source.
-  function requireToken(c: any): Response | null {
-    const token = c.req.query('token');
-    if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
-      return c.json({ error: 'Unauthorized' }, 401) as Response;
-    }
+  function requireToken(_c: any): Response | null {
+    // Auth is enforced upstream by the global mc-access gate (app.use('*')); any
+    // request reaching a legacy handler has already passed it. No-op kept for the
+    // legacy call sites (legacy GET / under DASHBOARD_LEGACY, warroom HTML routes).
     return null;
+  }
+
+  async function requireMassageAdmin(c: any): Promise<{ ok: true; adminUser: string } | { ok: false; status: number; error: string }> {
+    const remoteAddr = (c.env as { incoming?: { socket?: { remoteAddress?: string } } })
+      ?.incoming?.socket?.remoteAddress;
+    const socketLocal = isLoopbackAddr(remoteAddr);
+    const xffClient = (c.req.header('x-forwarded-for') || '').split(',')[0].trim();
+    const proxiedRemote = socketLocal && !!xffClient && !isLoopbackAddr(xffClient);
+    const local = socketLocal && !proxiedRemote;
+    if (local) return { ok: true, adminUser: 'local-loopback' };
+
+    if (!MC_ACCESS_SECRET) {
+      return { ok: false, status: 403, error: 'admin auth is not configured for remote writes' };
+    }
+    const mc = await verifyToken(getCookie(c, MC_COOKIE), MC_ACCESS_SECRET);
+    if (!mc) return { ok: false, status: 401, error: 'not authenticated' };
+    if (mc.kind !== 'master') return { ok: false, status: 403, error: 'admin access requires a master session' };
+    // "Both" mode (Mike's call 2026-07-02): a valid master session — which requires
+    // being ON the tailnet AND holding the fleet password — may edit. Signing in via
+    // Google (/massage-admin/login) is OPTIONAL and only upgrades the audit attribution
+    // from a generic 'mc_master(remote)' to the specific allow-listed admin email.
+    const adminUser = isAllowlistedAdmin(mc.user?.email)
+      ? (mc.user!.email as string)
+      : (mc.user?.name || mc.label || 'mc_master(remote)');
+    return { ok: true, adminUser };
   }
 
   // Mutation kill-switch middleware. When DASHBOARD_MUTATIONS_ENABLED is
@@ -543,11 +997,6 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // is empty under the production daemon — meaning every cross-origin
   // POST 403'd from the Cloudflare tunnel even though .env had the
   // right URL.
-  const allowedOriginHost = (() => {
-    const raw = (DASHBOARD_URL || '').trim();
-    if (!raw) return '';
-    try { return new URL(raw).hostname; } catch { return ''; }
-  })();
   app.use('*', async (c, next) => {
     const method = c.req.method;
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
@@ -561,17 +1010,362 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       // Note: 0.0.0.0 was previously in this allowlist but is a bind
       // address, never a valid Origin header any browser would send.
       // Removed (audit fix A4E-3 follow-on, ported from fork-side review).
-      const allowed =
-        host === 'localhost' ||
-        host === '127.0.0.1' ||
-        host === '[::1]' ||
-        (!!allowedOriginHost && host === allowedOriginHost);
+      const allowed = isTrustedHost(host);
       if (!allowed) {
         logger.warn({ origin, method, path: new URL(c.req.url).pathname }, 'CSRF: rejected cross-origin request');
         return c.json({ error: 'cross-origin request rejected' }, 403);
       }
+    } else {
+      // No Origin header. Browsers ALWAYS send Origin on cross-origin
+      // state-changing requests, so a missing Origin is normally a
+      // same-origin post or a non-browser client (curl/CLI). Honor
+      // Sec-Fetch-Site so a browser request that stripped Origin can't
+      // slip past: if the browser says this came cross-site, reject it.
+      // curl/CLI send no Sec-Fetch-Site, so they still pass.
+      const sfs = (c.req.header('sec-fetch-site') || '').toLowerCase();
+      if (sfs === 'cross-site' || sfs === 'cross-origin') {
+        logger.warn({ method, sfs, path: new URL(c.req.url).pathname }, 'CSRF: rejected cross-site request (no Origin)');
+        return c.json({ error: 'cross-origin request rejected' }, 403);
+      }
     }
     await next();
+  });
+
+  // Phone portal — a static landing page listing all services by Tailscale IP.
+  // Bookmark http://100.91.39.122:3141/portal on the phone.
+  app.get('/portal', (c) => {
+    const ts = '100.91.39.122';
+    const services = [
+      { name: 'ClaudeClaw',     port: 3141, path: '/',          desc: 'AI agent dashboard + gallery' },
+      { name: 'ARIES',          port: 1337, path: '/',          desc: 'Trading PWA — broker + strategy engine' },
+      { name: 'MissionCtrl V2', port: 3000, path: '/',          desc: 'Main MC trading dashboard' },
+      { name: 'Vibe Trading',   port: 8899, path: '/',          desc: 'AI trading research & backtesting' },
+      { name: 'n8n',            port: 5678, path: '/',          desc: 'Workflow automation' },
+      // Plain HTTP despite the port number: :8443 is an nginx vhost that never
+      // got a TLS cert, so the old `https: true` produced a link that could only
+      // ever fail. It also binds 127.0.0.1 only — reachable from the phone solely
+      // because `tailscale serve --http=8443` proxies the tailnet side to it.
+      { name: 'Mobile Hub',     port: 8443, path: '/',          desc: 'Mobile launchpad' },
+      { name: 'Uptime Kuma',    port: 3001, path: '/',          desc: 'Service health monitor' },
+      { name: 'Gallery',        port: 3141, path: '/#/gallery',      desc: 'Nano Banana generations' },
+      { name: 'Token Dashboard', port: 3141, path: '/token-dashboard', desc: 'Per-prompt cost analytics & cache stats' },
+      { name: 'CLI Tools',       port: 3141, path: '/cli-tools',       desc: 'Printing Press Library + CLI-Anything inventory' },
+      { name: 'Accounts',        port: 3141, path: '/accounts',        desc: 'Users per product (ARIES / MissionCtrl / Massage) — read-only' },
+    ];
+    const rows = services.map(s =>
+      `<a href="${(s as any).https ? 'https' : 'http'}://${ts}:${s.port}${s.path}" class="card">
+        <div class="name">${s.name} <span class="port">:${s.port}</span></div>
+        <div class="desc">${s.desc}</div>
+      </a>`
+    ).join('');
+    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Mission Control — Portal</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#080d12;color:#c9d1da;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;padding:20px}
+  h1{font-size:18px;font-weight:700;color:#7fd1ff;margin-bottom:4px;letter-spacing:.5px}
+  .sub{font-size:12px;color:#3d5a6e;margin-bottom:20px;font-family:monospace}
+  .grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .card{display:block;background:#0e1824;border:1px solid #1a2b38;border-radius:12px;padding:14px;text-decoration:none;transition:border-color .15s,transform .1s;-webkit-tap-highlight-color:transparent}
+  .card:active{transform:scale(.97);border-color:#7fd1ff}
+  .name{font-size:15px;font-weight:700;color:#e2e8f0;margin-bottom:4px}
+  .port{font-size:11px;color:#3d8fad;font-family:monospace;font-weight:400}
+  .desc{font-size:11px;color:#4a6070;line-height:1.4}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#22c55e;margin-right:6px;vertical-align:middle}
+  footer{margin-top:24px;font-size:11px;color:#1e3040;text-align:center;font-family:monospace}
+</style></head><body>
+<h1>&#127968; Mission Control</h1>
+<div class="sub"><span class="dot"></span>g59-wsl · ${ts} · ${new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',timeZone:'America/New_York'})} ET</div>
+<div class="grid">${rows}</div>
+<footer>Tailscale mesh · add to home screen for quick access</footer>
+</body></html>`;
+    return c.html(html);
+  });
+
+  // CLI Tools — Printing Press Library catalog + CLI-Anything inventory.
+  // Reads ~/printing-press-library/registry.json and detects installed CLIs.
+  app.get('/api/cli-tools', (c) => {
+    const HOME = os.homedir();
+    const registryPath = path.join(HOME, 'printing-press-library', 'registry.json');
+    const skillsDir = path.join(HOME, '.claude', 'skills');
+    const cliAnythingDir = path.join(HOME, 'CLI-Anything');
+
+    // Load registry
+    let entries: any[] = [];
+    try {
+      const raw = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+      entries = raw.entries || [];
+    } catch { /* repo not cloned */ }
+
+    // Installed skill names (lowercased)
+    const installedSkills = new Set<string>();
+    try {
+      fs.readdirSync(skillsDir).forEach(s => installedSkills.add(s.toLowerCase()));
+    } catch { /* ignore */ }
+
+    // Mark each entry installed if skill matches pp-<name> or <name>
+    const catalog = entries.map((e: any) => {
+      const key = (e.name || '').toLowerCase();
+      const installed = installedSkills.has(`pp-${key}`) || installedSkills.has(key);
+      return { ...e, installed };
+    });
+
+    // Scan CLI-Anything for generated CLIs (dirs with cli.py or main.py or README.md but not meta dirs)
+    const META_DIRS = new Set(['cli-anything-plugin','cli-hub','cli-hub-meta-skill','codex-skill',
+      'hermes-skill','qoder-plugin','skill_generation','skills','docs','assets','templates',
+      'commands','tests','scripts','guides','seaclip','macrocli']);
+    let cliAnythingCLIs: { name: string; hasReadme: boolean; hasCli: boolean }[] = [];
+    try {
+      cliAnythingCLIs = fs.readdirSync(cliAnythingDir)
+        .filter(d => {
+          if (META_DIRS.has(d)) return false;
+          const full = path.join(cliAnythingDir, d);
+          try { return fs.statSync(full).isDirectory(); } catch { return false; }
+        })
+        .map(d => {
+          const full = path.join(cliAnythingDir, d);
+          const hasCli = fs.existsSync(path.join(full, 'cli.py')) ||
+                         fs.existsSync(path.join(full, 'main.py')) ||
+                         fs.existsSync(path.join(full, 'cli'));
+          const hasReadme = fs.existsSync(path.join(full, 'README.md'));
+          return { name: d, hasReadme, hasCli };
+        });
+    } catch { /* ignore */ }
+
+    const installedCount = catalog.filter((e: any) => e.installed).length;
+    return c.json({ catalog, installedCount, cliAnythingCLIs });
+  });
+
+  app.get('/cli-tools', (c) => {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLI Tools — ClaudeClaw</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0f0f0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; min-height: 100vh; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #141414; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; position: sticky; top: 0; z-index: 20; }
+  .back-btn { background: none; border: 1px solid #2a2a2a; border-radius: 6px; color: #9ca3af; font-size: 12px; padding: 4px 10px; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s; }
+  .back-btn:hover { border-color: #4f46e5; color: #a5b4fc; }
+  .topbar-title { font-size: 13px; font-weight: 600; color: #e0e0e0; flex: 1; }
+  .stat-chip { font-size: 11px; color: #6b7280; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 8px; }
+  .stat-chip b { color: #a5b4fc; }
+  main { flex: 1; padding: 16px; max-width: 1200px; width: 100%; margin: 0 auto; }
+  .controls { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  .search { flex: 1; min-width: 200px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; color: #e0e0e0; font-size: 13px; padding: 8px 12px; outline: none; }
+  .search:focus { border-color: #4f46e5; }
+  .cat-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill { padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid #2a2a2a; background: #1a1a1a; color: #6b7280; transition: all 0.15s; user-select: none; }
+  .pill:hover, .pill.active { background: #312e81; border-color: #4f46e5; color: #a5b4fc; }
+  .pill.installed-filter.active { background: #064e3b; border-color: #10b981; color: #6ee7b7; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 12px; transition: border-color 0.15s; }
+  .card:hover { border-color: #3a3a4a; }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .card-name { font-size: 13px; font-weight: 700; color: #e0e0e0; }
+  .card-cat { font-size: 10px; color: #6b7280; background: #111; border: 1px solid #222; border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+  .card-desc { font-size: 11px; color: #9ca3af; line-height: 1.5; margin-bottom: 8px; }
+  .card-footer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge-mcp { font-size: 10px; background: #1e3a5f; color: #60a5fa; border-radius: 4px; padding: 2px 6px; }
+  .badge-installed { font-size: 10px; background: #064e3b; color: #6ee7b7; border-radius: 4px; padding: 2px 6px; }
+  .badge-api { font-size: 10px; background: #2a1a3a; color: #a78bfa; border-radius: 4px; padding: 2px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .install-cmd { font-size: 10px; font-family: monospace; color: #6b7280; background: #111; border: 1px solid #1e1e1e; border-radius: 4px; padding: 2px 6px; cursor: pointer; transition: color 0.15s, border-color 0.15s; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .install-cmd:hover { color: #a5b4fc; border-color: #4f46e5; }
+  .install-cmd.copied { color: #6ee7b7; border-color: #10b981; }
+  .section-title { font-size: 12px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+  .divider { border: none; border-top: 1px solid #1e1e1e; margin: 24px 0; }
+  .cli-anything-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cli-chip { background: #1a1a2a; border: 1px solid #2a2a3a; border-radius: 6px; padding: 4px 10px; font-size: 11px; color: #a5b4fc; }
+  .cli-chip.has-cli { border-color: #3a2a5a; color: #c4b5fd; }
+  .empty { text-align: center; color: #6b7280; padding: 40px; grid-column: 1/-1; font-size: 13px; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/" class="back-btn">&#8592; ClaudeClaw</a>
+  <span class="topbar-title">CLI Tools</span>
+  <span class="stat-chip" id="stat-showing"></span>
+  <span class="stat-chip"><b id="stat-installed">-</b> installed</span>
+  <span class="stat-chip"><b id="stat-total">-</b> total</span>
+</div>
+<main>
+  <div class="controls">
+    <input class="search" id="search" placeholder="Search CLIs…" oninput="applyFilters()" autocomplete="off">
+    <div class="cat-pills" id="cat-pills"></div>
+    <span class="pill installed-filter" id="pill-installed" onclick="toggleInstalled()">Installed only</span>
+  </div>
+  <div class="grid" id="grid"></div>
+  <hr class="divider">
+  <div class="section-title">CLI-Anything — locally generated CLIs</div>
+  <div class="cli-anything-grid" id="cli-anything-grid"></div>
+</main>
+<script>
+let ALL = [];
+let activeCat = 'all';
+let installedOnly = false;
+
+function copyCmd(el, cmd) {
+  navigator.clipboard.writeText(cmd).then(() => {
+    el.textContent = 'copied!';
+    el.classList.add('copied');
+    setTimeout(() => { el.textContent = cmd; el.classList.remove('copied'); }, 1500);
+  });
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderCard(e) {
+  const cmd = \`npx skills add mvanhorn/printing-press-library/cli-skills/pp-\${e.name} -g -y\`;
+  const mcp = e.mcp && e.mcp.tool_count ? \`<span class="badge-mcp">MCP \${e.mcp.tool_count} tools</span>\` : '';
+  const inst = e.installed ? '<span class="badge-installed">&#10003; installed</span>' : '';
+  const api = e.api ? \`<span class="badge-api" title="\${esc(e.api)}">\${esc(e.api)}</span>\` : '';
+  const desc = (e.description || '').length > 120 ? e.description.slice(0,117)+'…' : (e.description || '');
+  return \`<div class="card" data-name="\${esc(e.name)}" data-cat="\${esc(e.category)}" data-installed="\${e.installed}">
+  <div class="card-head">
+    <span class="card-name">\${esc(e.name)}</span>
+    <span class="card-cat">\${esc(e.category)}</span>
+  </div>
+  <div class="card-desc">\${esc(desc)}</div>
+  <div class="card-footer">
+    \${inst}\${mcp}\${api}
+    <span class="install-cmd" title="Click to copy install command" onclick="copyCmd(this, \${JSON.stringify(cmd)})">\${esc(cmd)}</span>
+  </div>
+</div>\`;
+}
+
+function applyFilters() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const grid = document.getElementById('grid');
+  let visible = 0;
+  const cards = grid.querySelectorAll('.card');
+  cards.forEach(card => {
+    const name = card.dataset.name || '';
+    const cat = card.dataset.cat || '';
+    const installed = card.dataset.installed === 'true';
+    const matchQ = !q || name.includes(q) || cat.includes(q) || card.querySelector('.card-desc').textContent.toLowerCase().includes(q);
+    const matchCat = activeCat === 'all' || cat === activeCat;
+    const matchInst = !installedOnly || installed;
+    const show = matchQ && matchCat && matchInst;
+    card.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  document.getElementById('stat-showing').innerHTML = '<b>' + visible + '</b> shown';
+}
+
+function setCat(cat) {
+  activeCat = cat;
+  document.querySelectorAll('.pill[data-cat]').forEach(p => p.classList.toggle('active', p.dataset.cat === cat));
+  applyFilters();
+}
+
+function toggleInstalled() {
+  installedOnly = !installedOnly;
+  document.getElementById('pill-installed').classList.toggle('active', installedOnly);
+  applyFilters();
+}
+
+async function init() {
+  const res = await fetch('/api/cli-tools');
+  const data = await res.json();
+  ALL = data.catalog || [];
+
+  document.getElementById('stat-total').textContent = ALL.length;
+  document.getElementById('stat-installed').textContent = data.installedCount || 0;
+  document.getElementById('stat-showing').innerHTML = '<b>' + ALL.length + '</b> shown';
+
+  // Build category pills
+  const cats = ['all', ...new Set(ALL.map(e => e.category).filter(Boolean))];
+  const pillsEl = document.getElementById('cat-pills');
+  pillsEl.innerHTML = cats.map(c =>
+    \`<span class="pill \${c==='all'?'active':''}" data-cat="\${c}" onclick="setCat('\${c}')">\${c==='all'?'All':c}</span>\`
+  ).join('');
+
+  // Render all cards
+  const grid = document.getElementById('grid');
+  grid.innerHTML = ALL.map(renderCard).join('') || '<div class="empty">Registry not found — clone mvanhorn/printing-press-library to ~/printing-press-library</div>';
+
+  // CLI-Anything chips
+  const cliGrid = document.getElementById('cli-anything-grid');
+  const clis = data.cliAnythingCLIs || [];
+  cliGrid.innerHTML = clis.length
+    ? clis.map(c => \`<span class="cli-chip \${c.hasCli?'has-cli':''}" title="\${c.hasReadme?'has README':''}">&#128295; \${esc(c.name)}</span>\`).join('')
+    : '<span style="color:#4b5563;font-size:12px">No generated CLIs found in ~/CLI-Anything</span>';
+}
+
+init();
+</script>
+</body>
+</html>`;
+    return c.html(html);
+  });
+
+  // Token Dashboard — embeds nateherkai/token-dashboard (:8080) in a full-page iframe.
+  // No auth required: the embedded service is reachable only on the tailnet/LAN.
+  //
+  // The iframe host is derived from the REQUEST host, never hardcoded. It used to
+  // be `http://localhost:8080`, which resolves to the *viewing device* — so on the
+  // phone it pointed the handset at itself and could never load, no matter what was
+  // running on the laptop. Same hostname the dashboard was reached on = same box.
+  app.get('/token-dashboard', (c) => {
+    const host = new URL(c.req.url).hostname;
+    const target = `http://${host}:8080`;
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Token Dashboard — ClaudeClaw</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0f0f0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #141414; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; }
+  .back-btn { background: none; border: 1px solid #2a2a2a; border-radius: 6px; color: #9ca3af; font-size: 12px; padding: 4px 10px; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s; }
+  .back-btn:hover { border-color: #4f46e5; color: #a5b4fc; }
+  .title { font-size: 13px; font-weight: 600; color: #e0e0e0; }
+  .badge { font-size: 11px; color: #6b7280; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 7px; }
+  iframe { flex: 1; border: none; width: 100%; }
+  .down { flex: 1; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; }
+  .down .msg { font-size: 13px; color: #e0e0e0; }
+  .down .hint { font-size: 12px; color: #6b7280; }
+  .down code { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 6px; font-size: 12px; color: #a5b4fc; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/" class="back-btn">&#8592; ClaudeClaw</a>
+  <span class="title">Token Dashboard</span>
+  <span class="badge">:8080</span>
+</div>
+<iframe id="td" src="${target}" title="Token Dashboard"></iframe>
+<!-- An unreachable :8080 renders as a silent black rectangle that reads as
+     "loaded, but empty". Say the service is down instead of implying no data. -->
+<div class="down" id="down">
+  <div class="msg">Token Dashboard isn't running.</div>
+  <div class="hint">The <code>token-dashboard</code> service on :8080 is stopped. Start it with <code>pm2 start token-dashboard</code>.</div>
+</div>
+<script>
+  (function () {
+    var f = document.getElementById('td'), d = document.getElementById('down'), ok = false;
+    f.addEventListener('load', function () { ok = true; });
+    // Cross-origin iframes don't fire 'error' on connection refused, so fall
+    // back to a deadline: no load event by then means nothing answered.
+    setTimeout(function () {
+      if (ok) return;
+      f.style.display = 'none';
+      d.style.display = 'flex';
+    }, 4000);
+  })();
+</script>
+</body>
+</html>`;
+    return c.html(html);
   });
 
   // Serve dashboard HTML.
@@ -600,6 +1394,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Static asset serving for the Vite-built frontend.
   // Vite emits hashed files under dist/web/assets/.
+  //
+  // Compression: text assets (js/css/map/svg) are brotli/gzip-compressed on the
+  // fly and cached in memory keyed by filePath+encoding. Filenames are content-
+  // hashed and immutable, so a compressed buffer never goes stale — compress
+  // once, serve forever. This cuts the JS/CSS transfer ~4× (the main bundle
+  // ~1.3MB → ~0.3MB), a big win on the phone/cellular path. Already-compressed
+  // types (woff2) are passed through untouched.
   app.get('/assets/*', (c) => {
     const url = new URL(c.req.url);
     const rel = url.pathname.replace(/^\//, '');
@@ -616,25 +1417,54 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       : ext === '.svg' ? 'image/svg+xml'
       : ext === '.woff2' ? 'font/woff2'
       : 'application/octet-stream';
-    return new Response(new Uint8Array(data), {
-      headers: { 'Content-Type': ctype, 'Cache-Control': 'public, max-age=31536000, immutable' },
-    });
+
+    const compressible = ext === '.js' || ext === '.css' || ext === '.map' || ext === '.svg';
+    const accept = c.req.header('accept-encoding') || '';
+    const enc = compressible && /\bbr\b/.test(accept) ? 'br'
+      : compressible && /\bgzip\b/.test(accept) ? 'gzip'
+      : null;
+
+    const headers: Record<string, string> = {
+      'Content-Type': ctype,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      Vary: 'Accept-Encoding',
+    };
+
+    if (enc) {
+      const body = getCompressedAsset(filePath, data, enc);
+      headers['Content-Encoding'] = enc;
+      return new Response(new Uint8Array(body), { headers });
+    }
+    return new Response(new Uint8Array(data), { headers });
   });
 
   // Top-level static files copied from web/public/ at build time
   // (e.g. /brain.glb for the 3D Hive Mind view). These have stable
   // names so they sit at the root rather than under /assets/.
-  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm)}', (c) => {
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|webmanifest|png|ico|json)}', (c, next) => {
     const filename = c.req.param('filename');
+    // The pattern's `.+` swallows slashes, so any API path ending in one of these
+    // extensions (e.g. /api/databases/kb/erikdalton/anatomy/img/psoas-front.png)
+    // was being answered here as a missing static file — an empty 404 that made
+    // every anatomy plate render broken. Let API routes handle themselves.
+    if (filename.startsWith('api/')) return next();
     const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
     const root = path.join(PROJECT_ROOT, 'dist', 'web');
     if (!filePath.startsWith(root + path.sep)) return c.text('', 403);
-    if (!fs.existsSync(filePath)) return c.text('', 404);
+    // Fall THROUGH when there's no such static file — `.json` in particular is an
+    // extension real routes use, and a hard 404 here would shadow them (that's the
+    // same class of bug as the /api/*.png one guarded above).
+    if (!fs.existsSync(filePath)) return next();
     const data = fs.readFileSync(filePath);
     const ext = path.extname(filePath).toLowerCase();
     const ctype = ext === '.glb' ? 'model/gltf-binary'
+      : ext === '.json' ? 'application/json'
       : ext === '.gltf' ? 'model/gltf+json'
       : ext === '.wasm' ? 'application/wasm'
+      : ext === '.svg' ? 'image/svg+xml'
+      : ext === '.webmanifest' ? 'application/manifest+json'
+      : ext === '.png' ? 'image/png'
+      : ext === '.ico' ? 'image/x-icon'
       : 'application/octet-stream';
     return new Response(new Uint8Array(data), {
       headers: {
@@ -772,6 +1602,68 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // unified resolver in avatars.ts.
 
   // War Room API: meeting state management.
+  // ── Bunker (ad-hoc report surface) ─────────────────────────────
+  // Drop an HTML artifact into ~/.claudeclaw/bunker/<slug>/ (helper:
+  // scripts/bunker-add.mjs) and it appears here, served from the
+  // dashboard origin — no throwaway localhost ports to hunt down. Gated by
+  // the /api token middleware; mutations respect the kill-switch.
+  app.get('/api/bunker', (c) => {
+    // DASHBOARD_TOKEN keys the per-entry scoped artifact capabilities.
+    return c.json({ entries: bunkerList(DASHBOARD_TOKEN), archived: bunkerArchivedList(DASHBOARD_TOKEN) });
+  });
+
+  app.post('/api/bunker/:slug/pin', async (c) => {
+    const body: { pinned?: boolean } = await c.req.json().catch(() => ({}));
+    if (!bunkerSetPinned(c.req.param('slug'), body.pinned !== false)) {
+      return c.json({ error: 'Bunker entry not found' }, 404);
+    }
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/bunker/:slug/archive', (c) => {
+    if (!bunkerArchive(c.req.param('slug'))) {
+      return c.json({ error: 'Bunker entry not found' }, 404);
+    }
+    return c.json({ ok: true });
+  });
+
+  // Promote: copy the artifact into the vault as a searchable markdown note.
+  app.post('/api/bunker/:slug/promote', (c) => {
+    const result = bunkerPromote(c.req.param('slug'));
+    if (!result) return c.json({ error: 'Bunker entry not found' }, 404);
+    return c.json({ ok: true, vaultPath: result.vaultPath });
+  });
+
+  // Serve the artifact files themselves. NOT gated by the master /api token
+  // (exempted above); instead each request must carry a per-slug scoped
+  // capability (?t=&exp=) minted by the list endpoint. Opened in a NEW TAB —
+  // the global X-Frame-Options: DENY header makes inline framing impossible.
+  app.get('/api/bunker-files/*', (c) => {
+    const pathname = new URL(c.req.url).pathname;
+    const sub = pathname.replace(/^\/api\/bunker-files\//, '');
+
+    // Bind the capability to the slug: first path segment after an optional
+    // _archive/ prefix. Mirrors resolveArtifact's prefix handling so a token
+    // signed for slug A cannot read slug B (or _archive/A vs A).
+    let slugPath = sub.replace(/^\/+/, '');
+    if (slugPath === '_archive' || slugPath.startsWith('_archive/')) {
+      slugPath = slugPath.slice('_archive'.length).replace(/^\/+/, '');
+    }
+    const slug = decodeURIComponent(slugPath.split('/')[0] ?? '');
+
+    const t = c.req.query('t') ?? '';
+    const exp = Number(c.req.query('exp'));
+    if (!bunkerVerifyArtifact(slug, exp, t, DASHBOARD_TOKEN)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    const file = bunkerResolveArtifact(sub);
+    if (!file) return c.text('', 404);
+    return new Response(new Uint8Array(file.data), {
+      headers: { 'Content-Type': file.contentType },
+    });
+  });
+
   // We deliberately do NOT return a ws_url here. Older versions of this
   // route sent `ws://localhost:${WARROOM_PORT}`, which broke any
   // Cloudflare-tunneled access since the browser would try to connect to
@@ -850,6 +1742,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
     const agents = ids.map((id) => {
       try {
+        if (id === 'main') return { id: 'main', name: resolveAgentDisplayName('main'), description: getMainDescription() };
         const cfg = loadAgentConfig(id);
         return { id, name: cfg.name || resolveAgentDisplayName(id), description: cfg.description || '' };
       } catch {
@@ -857,6 +1750,1674 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       }
     });
     return c.json({ agents });
+  });
+
+  // ── ComfyUI — status + VRAM for the local image/video generation stack ──
+  app.get('/api/comfyui/status', async (c) => {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      // Check if ComfyUI is responding on port 8188 — native fetch; the old
+      // curl-via-execSync blocked the event loop for up to 2s per poll.
+      let running = false;
+      try {
+        const probe = await fetch('http://127.0.0.1:8188/system_stats', { signal: AbortSignal.timeout(2000) });
+        running = probe.ok;
+      } catch {}
+      // VRAM via nvidia-smi (async for the same reason)
+      let vram: { total: number; used: number; free: number } | null = null;
+      try {
+        const { stdout } = await execFileAsync(
+          '/usr/lib/wsl/lib/nvidia-smi',
+          ['--query-gpu=memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
+          { timeout: 5000 },
+        );
+        const [total, used, free] = stdout.trim().split(', ').map(Number);
+        vram = { total, used, free };
+      } catch {}
+      // Model inventory
+      const HOME = process.env.HOME || '/home/itsju';
+      const checkpointDir = `${HOME}/ComfyUI/models/checkpoints`;
+      const loraDir = `${HOME}/ComfyUI/models/loras`;
+      // Attach Civitai-sourced compatibility metadata (family/triggers/verified)
+      // plus the curated friendly layer (label/description/category) so the UI
+      // can show human names and lock incompatible LoRAs. Compatibility is
+      // computed HERE (single source of truth) — the client only does lookups
+      // on compatibleCheckpoints/unknownCheckpoints, it has no rule logic.
+      const manifest = readManifest();
+      const curated = readCurated();
+      const checkpoints = fs.existsSync(checkpointDir) ? fs.readdirSync(checkpointDir).filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf')).map(f => {
+        const md = enrichedMetaFor(f, manifest, curated);
+        return { name: f, sizeGB: +(fs.statSync(`${checkpointDir}/${f}`).size / 1e9).toFixed(2), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw, label: md.label, description: md.description, category: md.category };
+      }) : [];
+      const loras = fs.existsSync(loraDir) ? fs.readdirSync(loraDir).filter(f => f.endsWith('.safetensors')).map(f => {
+        const md = enrichedMetaFor(f, manifest, curated);
+        const loraFam = md.requiresCheckpointFamily || md.family;
+        const compatibleCheckpoints = checkpoints.filter(ck => loraCompat(loraFam, ck.family) === 'ok').map(ck => ck.name);
+        const unknownCheckpoints = checkpoints.filter(ck => loraCompat(loraFam, ck.family) === 'unknown').map(ck => ck.name);
+        return { name: f, sizeMB: +(fs.statSync(`${loraDir}/${f}`).size / 1e6).toFixed(1), family: md.family, baseModel: md.baseModel, triggers: md.triggers || [], verified: !!md.verified, thumb: md.thumb, thumbNsfw: md.thumbNsfw, label: md.label, description: md.description, category: md.category, recommendedStrength: md.recommendedStrength, compatibleCheckpoints, unknownCheckpoints };
+      }) : [];
+      return c.json({ running, vram, checkpoints, loras, url: running ? 'http://localhost:8188' : null });
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Master Control Panel (/control) — phone-first operator toggles ──
+  // Registry lives in src/controls.ts; add a control there and it shows up here.
+  // These routes sit behind the same mc-access gate as the rest of /api/* (remote
+  // needs the cookie; loopback open), so only an authed device can flip anything.
+  app.get('/api/control/state', async (c) => {
+    try {
+      return c.json({ controls: await readControlPanel() });
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+  app.post('/api/control/:id', async (c) => {
+    try {
+      const id = c.req.param('id');
+      const body = (await c.req.json().catch(() => ({}))) as { on?: boolean; confirm?: boolean };
+      const on = body.on !== false; // default true (actions / enable)
+      const result = await applyControl(id, on, body.confirm === true);
+      return c.json(result, result.ok ? 200 : (result.error === 'confirm required' ? 409 : 400));
+    } catch (e) {
+      return c.json({ ok: false, error: String(e) }, 500);
+    }
+  });
+
+  // ── ComfyUI remote control — start/stop from Tailscale or ClaudeClaw UI ──
+  app.post('/api/comfy/start', async (c) => {
+    try {
+      // B2: non-blocking fetch instead of execSync('curl …') so this route
+      // can't freeze the event loop for 2s while ComfyUI is cold.
+      let running = false;
+      try {
+        const probe = await fetch('http://127.0.0.1:8188/system_stats', { signal: AbortSignal.timeout(2500) });
+        running = probe.ok;
+      } catch {}
+      if (running) return c.json({ ok: false, error: 'already running' });
+      const { spawn } = await import('child_process');
+      const HOME = process.env.HOME || '/home/itsju';
+      // Spawn via `bash` so a missing execute bit on comfyui-start can't EACCES.
+      const child = spawn('bash', [`${HOME}/bin/comfyui-start`], {
+        detached: true, stdio: 'ignore', env: { ...process.env, HOME },
+      });
+      child.unref();
+      return c.json({ ok: true, pid: child.pid, message: 'ComfyUI launching — poll /api/comfyui/status for ready (30–60s)' });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/comfy/stop', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      let stopped = false;
+      try {
+        const pid = execSync('cat /tmp/comfyui.pid 2>/dev/null || true', { stdio: 'pipe' }).toString().trim();
+        if (pid) { execSync(`kill ${pid}`, { stdio: 'pipe' }); stopped = true; }
+      } catch {}
+      // ALWAYS sweep the real python child — the pidfile can be stale or (pre-fix)
+      // hold the wrong pid, which would leave ComfyUI orphaned holding VRAM on the
+      // 8GB GPU. Then clear the shared lock so the next gen isn't falsely blocked.
+      // Pattern covers both the legacy ~/ComfyUI path and the 2026-06-07
+      // restructure home /AIWorkWSL/tools/comfyui (case differs between them).
+      try { execSync("pkill -f '[Cc]omfy[Uu][Ii]/venv/bin/python.*main.py' 2>/dev/null || true", { stdio: 'pipe' }); stopped = true; } catch {}
+      try { execSync('rm -f /tmp/heavy-gpu-job.lock 2>/dev/null || true', { stdio: 'pipe' }); } catch {}
+      return c.json({ ok: stopped, message: stopped ? 'ComfyUI stopped' : 'ComfyUI was not running' });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── Live ComfyUI step progress (SSE) ─────────────────────────────────────────
+  // Relays ComfyUI's native /ws `progress` (step k of N) so the Create page can
+  // show a REAL progress bar instead of a guessed estimate. Only ONE GPU gen runs
+  // at a time (shared lock), so whatever ComfyUI emits is the user's current gen.
+  app.get('/api/comfy/progress', (c) => {
+    return streamSSE(c, async (stream) => {
+      const wsModule: any = await import('ws').catch(() => null);
+      const WS = wsModule ? (wsModule.default?.WebSocket ?? wsModule.WebSocket) : null;
+      let writeChain: Promise<void> = Promise.resolve();
+      const send = (obj: unknown) => {
+        writeChain = writeChain.then(async () => {
+          try { await stream.writeSSE({ event: 'message', data: JSON.stringify(obj) }); } catch {}
+        });
+      };
+      if (!WS) { send({ type: 'error', error: 'ws unavailable' }); return; }
+
+      let ws: any = null;
+      try {
+        ws = new WS('ws://127.0.0.1:8188/ws');
+        ws.on('message', (raw: Buffer, isBinary: boolean) => {
+          if (isBinary) return; // preview-image frames — ignore
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === 'progress' && msg.data) {
+              send({ type: 'progress', value: msg.data.value, max: msg.data.max, node: msg.data.node ?? null });
+            } else if (msg.type === 'executing') {
+              send({ type: 'executing', node: msg.data?.node ?? null });
+            } else if (msg.type === 'executed') {
+              send({ type: 'executed', node: msg.data?.node ?? null });
+            }
+          } catch { /* non-JSON frame */ }
+        });
+        ws.on('error', () => send({ type: 'error', error: 'comfy ws error' }));
+      } catch { send({ type: 'error', error: 'comfy ws connect failed' }); }
+
+      const ping = setInterval(async () => {
+        try { await stream.writeSSE({ event: 'ping', data: '' }); } catch { clearInterval(ping); }
+      }, 30_000);
+
+      try {
+        // B7: also resolve (not just reject) on ws 'close' so the WS is always
+        // released if the socket drops before the SSE stream fires onAbort.
+        // Without this, a WS that closes mid-gen leaks until the client
+        // eventually disconnects and onAbort fires (or never, on keep-alive).
+        await new Promise<void>((resolve, reject) => {
+          stream.onAbort(() => reject(new Error('aborted')));
+          ws?.on('close', () => resolve());
+        });
+      } catch { /* client disconnected */ }
+      finally { clearInterval(ping); try { ws?.close(); } catch {} }
+    });
+  });
+
+  app.post('/api/comfy/queue', async (c) => {
+    try {
+      // Safety gate — the raw passthrough is a bypass door for the high-level
+      // /api/comfy/generate gate, so it must enforce the same checks.
+      const gate = await preflightGate();
+      if (!gate.ok) { notify(`🛑 ComfyUI queue blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+      if (await comfyQueueDepth() >= 1) return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
+      const body = await c.req.json();
+      const res = await fetch('http://127.0.0.1:8188/prompt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (!res.ok) return c.json({ ok: false, error: `ComfyUI returned ${res.status}` }, 502);
+      return c.json({ ok: true, ...(await res.json() as object) });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.get('/api/comfy/queue/:id', async (c) => {
+    try {
+      const res = await fetch(`http://127.0.0.1:8188/history/${c.req.param('id')}`);
+      if (!res.ok) return c.json({ ok: false, error: `ComfyUI returned ${res.status}` }, 502);
+      return c.json({ ok: true, ...(await res.json() as object) });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // Server-side compatibility gate using the tri-state loraCompat() from
+  // modelmeta.ts (the single source of truth — the client only consumes
+  // precomputed arrays from /api/comfyui/status). 'mismatch' always rejects;
+  // 'unknown' rejects too UNLESS the caller passed allowUnknown (set by the
+  // Advanced-mode confirm dialog) — unknown-family combos were the source of
+  // deformed output when silently allowed. Returns the first offender.
+  function validateLoraFamilies(
+    checkpoint: string,
+    loras: Array<{ name: string }>,
+    manifest: Record<string, ModelMeta>,
+    allowUnknown = false,
+  ): { lora: string; loraFam: string; ckptFam: string; compat: 'mismatch' | 'unknown' } | null {
+    const ckptFam = metaFor(checkpoint, manifest).family;
+    for (const l of loras) {
+      const md = metaFor(l.name, manifest);
+      const compat = loraCompat(md.requiresCheckpointFamily || md.family, ckptFam);
+      if (compat === 'mismatch') return { lora: l.name, loraFam: md.family, ckptFam, compat };
+      if (compat === 'unknown' && !allowUnknown) return { lora: l.name, loraFam: md.family, ckptFam, compat };
+    }
+    return null;
+  }
+
+  // ── ComfyUI high-level generate — prompt → workflow → queue → job id ──
+  // This is the endpoint the Create page calls. Handles ComfyUI startup,
+  // workflow construction, and queueing, then returns a prompt_id the client
+  // polls via GET /api/comfy/generate/:prompt_id.
+  app.post('/api/comfy/generate', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    try {
+      const body = await c.req.json() as {
+        prompt?: string; negative_prompt?: string; steps?: number; cfg?: number;
+        width?: number; height?: number; checkpoint?: string; seed?: number;
+        loras?: Array<{ name: string; strength?: number }>;
+        allowUnknownCompat?: boolean;
+        fast?: boolean;        // DMD2 4-step distillation (SDXL-family checkpoints only)
+        detailer?: boolean;    // foot+hand FaceDetailer pass after VAEDecodeTiled (ported from verify_feet_gen.py)
+        detailer_strength?: number; // reserved for future per-pass strength override (unused in A2)
+      };
+      const prompt = (body.prompt || '').trim();
+      if (!prompt) return c.json({ ok: false, error: 'prompt is required' }, 400);
+
+      // ── 0a. Hardware guards — a custom combo must never OOM the 8GB GPU ──
+      // Cap stacked add-ons (each LoRA adds VRAM + can corrupt output) and total
+      // resolution (the real OOM/freeze vector on the shared 8GB card).
+      const MAX_LORAS = 3;
+      const nLoras = body.loras?.length ?? 0;
+      if (nLoras > MAX_LORAS) {
+        return c.json({ ok: false, error: `Too many add-ons (${nLoras}) — max ${MAX_LORAS} at once to stay within the 8GB GPU.` }, 400);
+      }
+      const reqW = body.width ?? 768, reqH = body.height ?? 1024;
+      const MAX_DIM = 1536, MAX_PX = 1024 * 1536;   // ~1.57M px ceiling for 8GB + detailer
+      if (reqW > MAX_DIM || reqH > MAX_DIM || reqW * reqH > MAX_PX) {
+        return c.json({ ok: false, error: `Resolution ${reqW}×${reqH} is too high for the 8GB GPU (max ${MAX_DIM}px per side / ~${MAX_PX.toLocaleString()} total pixels).` }, 400);
+      }
+
+      // ── 0. Safety gate — refuse if unsafe, no matter the trigger source ──
+      // (phone, dashboard, or raw API). Closes the warm-ComfyUI gap: cold start
+      // runs preflight via comfyui-start, but a warm instance had no gate.
+      //
+      // Auto-free recovery: if the only failure reason is stale VRAM/RAM held by
+      // a previous gen or idle ComfyUI model weights, call comfyFree() and retry
+      // once. Patterns matched:
+      //   "VRAM" / "GPU memory" / "already holds" — GPU-side stale allocation
+      //   "RAM only"  — idle ComfyUI holding 9–12 GB of model weights in system
+      //                 RAM (comfyFree() calls unload_models+free_memory which
+      //                 releases that too, so the retry will actually recover)
+      // Non-recoverable failures (low C: disk, concurrency lock) skip the retry.
+      let gate = await preflightGate();
+      if (!gate.ok && /VRAM|GPU memory|already holds|RAM only/i.test(gate.reason ?? '')) {
+        logger.info({ reason: gate.reason }, 'preflight blocked on memory — attempting comfyFree recovery');
+        await comfyFree();
+        await new Promise(r => setTimeout(r, 1500)); // give the driver 1.5s to release pages
+        gate = await preflightGate();
+        // comfyFree() releases VRAM, but ComfyUI keeps the model resident in CPU RAM
+        // (offload under --disable-pinned-memory). If we're STILL blocked on RAM and
+        // ComfyUI is idle (no job queued), recycling the process is the only thing that
+        // frees those 8–12 GB. Kill it, reset the cold-start cooldown, and hand back
+        // { starting:true } so the client re-kicks into a fresh, headroom-clean cold start.
+        if (!gate.ok && /RAM only/i.test(gate.reason ?? '') && (await comfyQueueDepth()) === 0) {
+          logger.warn({ reason: gate.reason }, 'RAM still low after comfyFree — recycling idle ComfyUI to release its CPU-resident model');
+          try {
+            const { spawn: spawnKill } = await import('child_process');
+            spawnKill('pkill', ['-TERM', '-f', 'venv/bin/python main.py'], { stdio: 'ignore' });
+          } catch { /* best-effort */ }
+          comfyStartedAt = 0;                              // allow an immediate cold start on the re-kick
+          await new Promise(r => setTimeout(r, 2500));     // let the process die + pages return
+          gate = await preflightGate();
+          if (gate.ok) {
+            notify('♻️ Recycled idle ComfyUI to free RAM — image gen will cold-start');
+            return c.json({ ok: true, starting: true });
+          }
+        }
+        // VRAM held by an idle, already-loaded model is REUSABLE by this sequential
+        // gen — it is not a real blocker. The downstream queue-depth gate (one job at
+        // a time) is the actual concurrency guard, so when ComfyUI is idle (queue 0)
+        // we proceed and let ComfyUI swap/reuse the model rather than hard-block.
+        if (!gate.ok && /already holds|GPU memory|VRAM/i.test(gate.reason ?? '') && (await comfyQueueDepth()) === 0) {
+          logger.info({ reason: gate.reason }, 'VRAM held by idle ComfyUI model — proceeding (reused; queue gate enforces single-job)');
+          gate = { ok: true, reason: 'idle-model-reuse' };
+        }
+        if (gate.ok) logger.info('preflight: retry passed after comfyFree');
+      }
+      if (!gate.ok) { notify(`🛑 Image gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+
+      // ── 0b. Resolve checkpoint + LoRAs and validate family compatibility BEFORE
+      // the (slow) ComfyUI startup, so a known-mismatched combo fails instantly
+      // regardless of whether ComfyUI is up.
+      const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
+      const ckptFiles = fs.existsSync(ckptDir)
+        ? fs.readdirSync(ckptDir).filter((f: string) => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf'))
+        : [];
+      const checkpoint = body.checkpoint || ckptFiles[0] || 'cyberrealisticPony_v170.safetensors';
+      const loraList = body.loras ?? [];
+      const manifest = readManifest();
+      const bad = validateLoraFamilies(checkpoint, loraList, manifest, !!body.allowUnknownCompat);
+      if (bad) {
+        const loraLabel = bad.lora.replace(/\.(safetensors|ckpt|gguf)$/i, '');
+        const msg = bad.compat === 'mismatch'
+          ? `Incompatible LoRA "${loraLabel}" (${bad.loraFam}) for a ${bad.ckptFam} checkpoint. Pick a ${bad.ckptFam} LoRA or a matching checkpoint.`
+          : `LoRA "${loraLabel}" has an unknown model family — it can produce broken images with this checkpoint. Use Advanced mode and confirm to run it anyway.`;
+        return c.json({ ok: false, error: msg }, 400);
+      }
+
+      const { spawn } = await import('child_process');
+
+      // ── 1. Ensure ComfyUI is up — but DON'T block the request for the full
+      // cold boot. A cold WSL ComfyUI takes ~30–90s to load; holding the HTTP
+      // request open that long is exactly what produced "failed to fetch". So
+      // we kick off startup (once per boot window), wait only a few seconds in
+      // case it's nearly ready, then hand back `{ starting: true }` and let the
+      // client re-kick. Each request stays short, so no intermediary can drop it.
+      //
+      // B2: replaced execSync('curl …') with non-blocking fetch so a cold/slow
+      // ComfyUI can't freeze all routes for up to 2s per probe.
+      const comfyHealthy = async (): Promise<boolean> => {
+        try {
+          const r = await fetch('http://127.0.0.1:8188/system_stats', { signal: AbortSignal.timeout(2500) });
+          return r.ok;
+        } catch { return false; }
+      };
+      let running = await comfyHealthy();
+      if (!running) {
+        if (Date.now() - comfyStartedAt > 180_000) {
+          comfyStartedAt = Date.now();
+          // Spawn via `bash` so a missing execute bit can't EACCES the cold start.
+          const child = spawn('bash', [`${HOME}/bin/comfyui-start`], {
+            detached: true, stdio: 'ignore', env: { ...process.env, HOME },
+          });
+          child.unref();
+          logger.info('ComfyUI cold start kicked off (async)');
+        }
+        const startMs = Date.now();
+        while (Date.now() - startMs < 8000) {
+          await new Promise(r => setTimeout(r, 2000));
+          if (await comfyHealthy()) { running = true; break; }
+        }
+        if (!running) return c.json({ ok: true, starting: true });
+      }
+
+      // ── 1b. Queue-depth cap — one heavy job at a time on the 8GB GPU ────
+      // B5 — TOCTOU guard: two concurrent POSTs can both pass comfyQueueDepth()
+      // in the same event-loop tick (both await the same async depth read, both
+      // see 0, both proceed). The module-scope boolean is set synchronously
+      // before the first await so any concurrent request sees it immediately.
+      if (comfySubmitting) {
+        return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
+      }
+      comfySubmitting = true;
+      try {
+      if (await comfyQueueDepth() >= 1) {
+        return c.json({ ok: false, blocked: true, error: 'blocked: a generation is already queued (one job at a time on the 8GB GPU)' }, 429);
+      }
+
+      // ── 2. Build workflow from template ─────────────────────────────────
+      const seed = body.seed ?? Math.floor(Math.random() * 2 ** 32);
+
+      // Build workflow — chain LoRA nodes between checkpoint and sampler
+      const workflow: Record<string, any> = {
+        "4": { inputs: { ckpt_name: checkpoint }, class_type: "CheckpointLoaderSimple" },
+      };
+      // ── Fast mode (DMD2 distillation): 4-8 steps at cfg 1.0 instead of
+      // 20 at cfg 7 — ~4x faster sampling, near-identical quality. Only valid
+      // on SDXL-architecture checkpoints (sdxl/pony/illustrious); the LoRA
+      // breaks sd15/flux, so fall back to the normal path for those. Requires
+      // models/loras/dmd2_sdxl_4step_lora_fp16.safetensors (tianweiy/DMD2).
+      const DMD2_LORA = 'dmd2_sdxl_4step_lora_fp16.safetensors';
+      const SDXL_ARCH = new Set(['sdxl', 'pony', 'illustrious']);
+      const ckptFamily = manifest[checkpoint]?.family || familyFromFilename(checkpoint);
+      const loraDir = `${HOME}/ComfyUI/models/loras`;
+      const fastMode = !!body.fast && SDXL_ARCH.has(ckptFamily) && fs.existsSync(`${loraDir}/${DMD2_LORA}`);
+
+      // LoRA chain: node ids 100, 101, 102... each feeds into the next
+      let modelRef: [string, number] = ["4", 0];
+      let clipRef:  [string, number] = ["4", 1];
+      for (let i = 0; i < loraList.length; i++) {
+        const nodeId = String(100 + i);
+        // Rule 5: character/identity LoRAs default to ~0.95 (never lower — drifts
+        // identity); style LoRAs keep the prior 0.8 default. Explicit values honored.
+        const lmeta = metaFor(loraList[i].name, manifest);
+        const strength = loraStrength(loraList[i].strength, lmeta.category === 'character', lmeta.recommendedStrength);
+        workflow[nodeId] = {
+          inputs: { lora_name: loraList[i].name, strength_model: strength, strength_clip: strength, model: modelRef, clip: clipRef },
+          class_type: "LoraLoader",
+        };
+        modelRef = [nodeId, 0];
+        clipRef  = [nodeId, 1];
+      }
+      if (fastMode) {
+        // DMD2 goes LAST in the chain at full strength so style LoRAs upstream
+        // keep their effect while DMD2 controls the denoising trajectory.
+        const nodeId = String(100 + loraList.length);
+        workflow[nodeId] = {
+          inputs: { lora_name: DMD2_LORA, strength_model: 1.0, strength_clip: 1.0, model: modelRef, clip: clipRef },
+          class_type: "LoraLoader",
+        };
+        modelRef = [nodeId, 0];
+        clipRef  = [nodeId, 1];
+      }
+      // ── Hard-rules pass (DaForgeLayer studio method): framing/lighting/cfg
+      // discipline applied to every gen so quality holds without the user
+      // remembering the footguns. cfg is 1.0 under fast/DMD2, else body.cfg.
+      const effCfg = fastMode ? 1.0 : (body.cfg ?? 7.0);
+      const baseNeg = body.negative_prompt || "deformed, ugly, blurry, low quality, bad anatomy, watermark, text";
+      const ruled = applyGenRules({ prompt, negative: baseNeg, cfg: effCfg, kind: 'image', hasLora: loraList.length > 0 });
+      if (ruled.notes.length) logger.info({ notes: ruled.notes }, 'gen hard-rules applied');
+      workflow["6"] = { inputs: { text: ruled.prompt, clip: clipRef }, class_type: "CLIPTextEncode" };
+      workflow["7"] = { inputs: { text: ruled.negative ?? "", clip: clipRef }, class_type: "CLIPTextEncode" };
+      workflow["5"] = { inputs: { width: body.width ?? 512, height: body.height ?? 768, batch_size: 1 }, class_type: "EmptyLatentImage" };
+      workflow["3"] = fastMode
+        // DMD2 contract: cfg MUST be 1.0 (no CFG), lcm sampler, 4-8 steps.
+        ? { inputs: { seed, steps: Math.min(Math.max(body.steps ?? 4, 4), 8), cfg: 1.0, sampler_name: "lcm", scheduler: "sgm_uniform", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" }
+        : { inputs: { seed, steps: body.steps ?? 20, cfg: body.cfg ?? 7.0, sampler_name: "euler", scheduler: "normal", denoise: 1.0, model: modelRef, positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }, class_type: "KSampler" };
+      // ── Node "8": VAEDecodeTiled — replaces plain VAEDecode for ALL gens.
+      // Tiled pinned allocs avoid the WSL2 "Pin error" hang that the old VAEDecode
+      // triggered under --disable-pinned-memory. Params match verify_feet_gen.py.
+      workflow["8"] = {
+        inputs: { samples: ["3", 0], vae: ["4", 2], tile_size: 512, overlap: 64, temporal_size: 64, temporal_overlap: 8 },
+        class_type: "VAEDecodeTiled",
+      };
+
+      // ── Detailer chain (nodes "30"–"33"): foot+hand FaceDetailer passes.
+      // Ported verbatim from verify_feet_gen.py::detailer() + build_workflow().
+      // Only appended when body.detailer === true; otherwise the graph ends at "8".
+      // "30" → foot bbox detector → "31" FaceDetailer on base image
+      // "32" → hand bbox detector → "33" FaceDetailer on foot-corrected image
+      // SaveImage ("9") points at the last Detailer output when on, else "8".
+      if (body.detailer) {
+        workflow["30"] = {
+          class_type: "UltralyticsDetectorProvider",
+          inputs: { model_name: "bbox/foot_yolov8.pt" },
+        };
+        workflow["31"] = {
+          class_type: "FaceDetailer",
+          inputs: {
+            image: ["8", 0], model: modelRef, clip: clipRef, vae: ["4", 2],
+            positive: ["6", 0], negative: ["7", 0], bbox_detector: ["30", 0],
+            wildcard: "",
+            guide_size: 384, guide_size_for: true, max_size: 768,
+            seed, steps: 20, cfg: 6.0, sampler_name: "euler", scheduler: "karras",
+            denoise: 0.45, feather: 5, noise_mask: true, force_inpaint: true,
+            bbox_threshold: 0.40, bbox_dilation: 10, bbox_crop_factor: 3.0,
+            sam_detection_hint: "center-1", sam_dilation: 0, sam_threshold: 0.93,
+            sam_bbox_expansion: 0, sam_mask_hint_threshold: 0.7,
+            sam_mask_hint_use_negative: "False", drop_size: 10, cycle: 1,
+            tiled_encode: true, tiled_decode: true,
+          },
+        };
+        workflow["32"] = {
+          class_type: "UltralyticsDetectorProvider",
+          inputs: { model_name: "bbox/hand_yolov8s.pt" },
+        };
+        workflow["33"] = {
+          class_type: "FaceDetailer",
+          inputs: {
+            image: ["31", 0], model: modelRef, clip: clipRef, vae: ["4", 2],
+            positive: ["6", 0], negative: ["7", 0], bbox_detector: ["32", 0],
+            wildcard: "",
+            guide_size: 384, guide_size_for: true, max_size: 768,
+            seed, steps: 20, cfg: 6.0, sampler_name: "euler", scheduler: "karras",
+            denoise: 0.40, feather: 5, noise_mask: true, force_inpaint: true,
+            bbox_threshold: 0.45, bbox_dilation: 10, bbox_crop_factor: 3.0,
+            sam_detection_hint: "center-1", sam_dilation: 0, sam_threshold: 0.93,
+            sam_bbox_expansion: 0, sam_mask_hint_threshold: 0.7,
+            sam_mask_hint_use_negative: "False", drop_size: 10, cycle: 1,
+            tiled_encode: true, tiled_decode: true,
+          },
+        };
+      }
+      // SaveImage: point at last Detailer output when active, else directly at VAEDecodeTiled.
+      workflow["9"] = {
+        inputs: { filename_prefix: "cc_gen", images: body.detailer ? ["33", 0] : ["8", 0] },
+        class_type: "SaveImage",
+      };
+
+      // ── 3. Queue ────────────────────────────────────────────────────────
+      // B3: 8s timeout so an unresponsive ComfyUI can't hang this route in
+      // 'settling' limbo until the TCP connection times out (minutes). The
+      // existing catch() below surfaces it as a transient error so the client
+      // retries on the next poll cycle.
+      const queueRes = await fetch('http://127.0.0.1:8188/prompt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!queueRes.ok) return c.json({ ok: false, error: `ComfyUI queue rejected: ${queueRes.status}` }, 502);
+      const { prompt_id } = await queueRes.json() as { prompt_id: string };
+
+      // ── 4. Register job + return immediately — client polls for the result ─
+      logger.info({ prompt_id, seed, checkpoint }, 'ComfyUI job queued (async)');
+      comfyJobs.set(prompt_id, { seed, checkpoint, done: false, queuedAt: Date.now() });
+      return c.json({ ok: true, prompt_id, seed });
+      } finally {
+        // B5 — always release the submit lock, whether the queue POST succeeded,
+        // failed, or threw (AbortError from B3 timeout lands here too).
+        comfySubmitting = false;
+      }
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── ComfyUI generate — poll one job by prompt_id ──────────────────────────
+  // Single (non-looping) history check. On a terminal state it moves the output
+  // into the gallery, surfaces real ComfyUI errors, and flushes VRAM exactly once.
+  app.get('/api/comfy/generate/:prompt_id', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const prompt_id = c.req.param('prompt_id');
+    const job = comfyJobs.get(prompt_id);
+    const seed = job?.seed;
+    if (job?.done) {
+      return job.error
+        ? c.json({ ok: false, done: true, error: job.error, seed })
+        : c.json({ ok: true, done: true, file: job.file, url: job.url, seed,
+                   notes: `checkpoint: ${(job.checkpoint||'').replace('.safetensors','')}` });
+    }
+    // Concurrency claim: if another poll for this id is already finalizing (moving
+    // the file / freeing VRAM), don't re-enter the terminal branch and double-free.
+    // The get→set below is synchronous (no await between), so it's atomic per tick.
+    if (job?.settling) return c.json({ ok: true, done: false });
+    if (job) job.settling = true;
+    const release = () => { const j = comfyJobs.get(prompt_id); if (j && !j.done) j.settling = false; };
+    const finish = (patch: { file?: string; url?: string; error?: string }) => {
+      const j = comfyJobs.get(prompt_id) || { seed: seed ?? 0, checkpoint: job?.checkpoint || '', done: false, queuedAt: Date.now() };
+      comfyJobs.set(prompt_id, { ...j, ...patch, done: true, settling: false });
+    };
+    try {
+      // B3: 8s timeout — history poll must not block forever if ComfyUI stalls.
+      const histRaw = await fetch(`http://127.0.0.1:8188/history/${prompt_id}`, { signal: AbortSignal.timeout(8000) }).then(r => r.json());
+      const entry = (histRaw as Record<string, any>)[prompt_id];
+      if (!entry) { release(); return c.json({ ok: true, done: false }); }
+      const statusMsgs: Array<[string, any]> = entry.status?.status_messages ?? [];
+      const errMsg = statusMsgs.find(([t]) => t === 'execution_error');
+      if (errMsg) {
+        const d = errMsg[1] || {};
+        const detail = [d.node_type, d.exception_type, d.exception_message].filter(Boolean).join(': ') || 'ComfyUI execution error';
+        finish({ error: detail });
+        void comfyFree();
+        return c.json({ ok: false, done: true, error: detail, seed });
+      }
+      if (entry.status?.completed === true) {
+        const comfyOutputDir = `${HOME}/ComfyUI/output`;
+        const galleryDir = `${HOME}/gallery-watched/comfyui`;
+        let filename: string | null = null; let subfolder = '';
+        const outputs = entry.outputs ?? {};
+        for (const nodeId of Object.keys(outputs)) {
+          const images: Array<{ filename: string; subfolder: string; type: string }> = outputs[nodeId]?.images ?? [];
+          if (images.length > 0) { filename = images[0].filename; subfolder = images[0].subfolder ?? ''; break; }
+        }
+        if (!filename) { finish({ error: 'ComfyUI completed but no output image found' }); void comfyFree(); return c.json({ ok: false, done: true, error: 'ComfyUI completed but no output image found', seed }); }
+        const srcPath = subfolder ? `${comfyOutputDir}/${subfolder}/${filename}` : `${comfyOutputDir}/${filename}`;
+        if (!fs.existsSync(galleryDir)) fs.mkdirSync(galleryDir, { recursive: true });
+        const dstPath = `${galleryDir}/${filename}`;
+        // Move output → gallery. A move failure is TERMINAL (don't leave the client
+        // polling forever): mark the job failed with the real error and free VRAM.
+        try {
+          try { fs.renameSync(srcPath, dstPath); }
+          catch { fs.copyFileSync(srcPath, dstPath); try { fs.unlinkSync(srcPath); } catch {} }
+        } catch (moveErr) {
+          logger.warn({ srcPath, dstPath, err: String(moveErr) }, 'ComfyUI output move to gallery failed');
+          finish({ error: `couldn't save the image to the gallery: ${String(moveErr)}` });
+          void comfyFree();
+          return c.json({ ok: false, done: true, error: `couldn't save the image to the gallery: ${String(moveErr)}`, seed });
+        }
+        // B6: the `if (!url)` guard that was here was unreachable — a template
+        // literal is never falsy, and `filename` is already null-checked above.
+        // Removed to eliminate dead code (the original comment was aspirational).
+        const url = `/api/gallery/file?root=comfyui&sub=&name=${encodeURIComponent(filename)}`;
+        finish({ file: filename, url });
+        void comfyFree();
+        notify(`✅ Image ready: ${filename} (${(job?.checkpoint||'').replace('.safetensors','')})`);
+        return c.json({ ok: true, done: true, file: filename, url, seed, notes: `checkpoint: ${(job?.checkpoint||'').replace('.safetensors','')}` });
+      }
+      release();
+      return c.json({ ok: true, done: false });
+    } catch (e) {
+      release();
+      return c.json({ ok: true, done: false, transient: String(e) });
+    }
+  });
+
+  // ── System disk — always report WSL virtual AND C: physical ──
+  // C: is the true ceiling: the WSL .vhdx file expands into C: space.
+  // "df /" returns 846 GB "free" (expandable virtual) but C: has ~133 GB.
+  app.get('/api/system/disk', async (c) => {
+    try {
+      const { execSync } = await import('child_process');
+      const parseDF = (raw: string) => {
+        const p = raw.trim().split(/\s+/);
+        return { fs: p[0], size: p[1], used: p[2], avail: p[3], pct: p[4] };
+      };
+      let wsl: ReturnType<typeof parseDF> | null = null;
+      let cdrive: ReturnType<typeof parseDF> | null = null;
+      try { wsl = parseDF(execSync('df -h / | tail -1', { stdio: 'pipe' }).toString()); } catch {}
+      try { cdrive = parseDF(execSync('df -h /mnt/c | tail -1', { stdio: 'pipe' }).toString()); } catch {}
+      const cPct = cdrive ? parseInt(cdrive.pct) : 0;
+      const warning = cPct >= 85 ? `C: drive ${cdrive!.pct} full — ${cdrive!.avail} free` : null;
+      return c.json({ wsl, cdrive, warning, critical: cPct >= 95, note: 'C: is the physical limit; WSL .vhdx expands into it.' });
+    } catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // ── System metrics for the phone — surfaces ~/metrics/metrics.db (cpu/ram/
+  //    gpu/disk/protection health, collected every 60s by metrics/collector.py)
+  //    PLUS a LIVE system-guardian preflight verdict, so the Create page can show
+  //    health and hard-disable Generate when unsafe. Read-only; never recollects.
+  app.get('/api/system/metrics', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const dbPath = `${HOME}/metrics/metrics.db`;
+    let metrics: Record<string, unknown> = {};
+    let staleness = -1;
+    try {
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        const hw = db.prepare('SELECT * FROM hw_metrics ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        const disk = db.prepare('SELECT * FROM disk_metrics ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        const prot = db.prepare('SELECT * FROM protection_health ORDER BY ts DESC LIMIT 1').get() as Record<string, number> | undefined;
+        metrics = { hw: hw ?? null, disk: disk ?? null, protection: prot ?? null };
+        const latestTs = Math.max(hw?.ts ?? 0, disk?.ts ?? 0, prot?.ts ?? 0);
+        if (latestTs > 0) staleness = Math.floor(Date.now() / 1000) - latestTs;
+      } finally { db.close(); }
+    } catch (e) { metrics = { error: String(e) }; }
+    // Live preflight = the exact gate the server enforces, so the UI verdict can
+    // never disagree with what the server will actually allow.
+    const preflight = await preflightGate();
+    return c.json({ metrics, preflight, staleness, stale: staleness < 0 || staleness > 180 });
+  });
+
+  // ── Model manager — download a Civitai model from the phone, disk-gated ──
+  //   Every download goes through model-cap-check (hard folder ceiling) and
+  //   safe-model-download (refuses if C: <= 30G), so models can never silently
+  //   refill C:. Progress is polled via GET /api/models/download/:id.
+  const comfyJobs = new Map<string, { seed: number; checkpoint: string; done: boolean;
+    settling?: boolean; file?: string; url?: string; error?: string; queuedAt: number }>();
+  // Sweep finished jobs (free RAM) and reclaim VRAM from abandoned ones (browser
+  // closed mid-gen → its poll never reached the terminal comfyFree). Runs every
+  // 10 min; unref'd so it never keeps the process alive on its own.
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, j] of comfyJobs) {
+      if (j.done && now - j.queuedAt > 30 * 60_000) comfyJobs.delete(id);
+      else if (!j.done && now - j.queuedAt > 20 * 60_000) { void comfyFree(); comfyJobs.delete(id); }
+    }
+  }, 10 * 60_000).unref?.();
+  // Last time we spawned comfyui-start, so a burst of "still starting" re-kicks
+  // from the client doesn't spawn a launcher storm during the cold-boot window.
+  let comfyStartedAt = 0;
+  // B5 — TOCTOU guard: two concurrent POSTs can both pass comfyQueueDepth()>=1
+  // in the same event-loop tick. This single-tick boolean prevents the double-
+  // submit. Set true before the async depth check, cleared in finally after the
+  // queue POST (or on any early return path that goes through finally).
+  let comfySubmitting = false;
+  const modelDownloads = new Map<string, { dest: string; name: string; status: 'downloading' | 'done' | 'failed'; pct: number; error?: string }>();
+  const MODEL_DEST_DIRS: Record<string, string> = { checkpoints: 'checkpoints', loras: 'loras', controlnet: 'controlnet', vae: 'vae' };
+
+  // Best-effort: after a Civitai download finishes, ask Civitai what it is and
+  // record family + trigger words in the manifest. Never throws / never blocks.
+  async function captureCivitaiMeta(url: string, token: string, name: string, dest: string) {
+    try {
+      const m = url.match(/models\/(\d+)/);
+      if (!m) return;
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      const r = await fetch(`https://civitai.com/api/v1/model-versions/${m[1]}`, { headers });
+      if (!r.ok) return;
+      const data = await r.json() as { baseModel?: string; trainedWords?: string[]; model?: { type?: string } };
+      if (!data?.baseModel) return;
+      // MERGE, don't replace — a re-download must never wipe user-set labels/
+      // categories or the cached sha256/thumb.
+      mergeMeta(name, {
+        family: normalizeFamily(data.baseModel),
+        baseModel: data.baseModel,
+        type: dest === 'loras' ? 'lora' : dest === 'checkpoints' ? 'checkpoint' : dest,
+        triggers: Array.isArray(data.trainedWords) ? data.trainedWords : [],
+        source: 'civitai',
+        verified: true,
+      });
+    } catch { /* metadata is a nicety; download already succeeded */ }
+  }
+
+  // ── Civitai thumbnails — look up each model's preview image by file hash ──
+  // Cards show a family-colored tile until this runs; it hashes each model file
+  // (sha256, cached so it never re-hashes the GBs) and asks Civitai for that
+  // version's images, storing the primary image URL + its nsfwLevel. NSFW images
+  // need a Civitai token (the same one used for downloads); without it Civitai
+  // returns only the SFW previews. One job at a time; progress polled via GET.
+  const thumbJobs = new Map<string, { total: number; processed: number; updated: number; current: string; done: boolean; error?: string }>();
+  async function fetchThumbForFile(absPath: string, name: string, type: 'checkpoint' | 'lora', token: string, force = false): Promise<boolean> {
+    const { execFileSync } = await import('child_process');
+    const manifest = readManifest();
+    const existing = manifest[name] || metaFor(name, manifest);
+    if (existing.thumb && !force) return false;             // already have one (force re-fetches, e.g. to pull NSFW previews with a token)
+    let sha = existing.sha256;
+    if (!sha) { try { sha = execFileSync('sha256sum', [absPath]).toString().split(' ')[0]; } catch { return false; } }
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    let data: any = null;
+    try {
+      const r = await fetch(`https://civitai.com/api/v1/model-versions/by-hash/${sha}`, { headers });
+      if (r.ok) data = await r.json();
+    } catch { /* offline / not found */ }
+    const imgs: any[] = (data?.images || []).filter((i: any) => (i?.type === 'image' || !i?.type) && i?.url);
+    // Cache the sha even on a miss so a re-run never re-hashes this file.
+    if (!imgs.length) { upsertMeta(name, { ...existing, sha256: sha }); return false; }
+    const primary = imgs[0];
+    // Normalize the Civitai transform segment to a light thumbnail width.
+    const thumb = String(primary.url).replace(/(\/[0-9a-f-]{36}\/)(?:[^/]*=[^/]*)\//i, '$1width=350,quality=80/');
+    upsertMeta(name, {
+      ...existing, sha256: sha, thumb, thumbNsfw: primary.nsfwLevel ?? 1,
+      // Opportunistically backfill family/triggers from the same response if we
+      // only had a filename guess before (gives 'other' LoRAs a real family).
+      ...(existing.verified ? {} : {
+        family: normalizeFamily(data.baseModel), baseModel: data.baseModel,
+        triggers: Array.isArray(data.trainedWords) ? data.trainedWords : [],
+        type, source: 'civitai', verified: true,
+      }),
+    });
+    return true;
+  }
+  app.post('/api/comfy/thumbs/refresh', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const token = String((body as any)?.token ?? '').trim();
+    const force = !!(body as any)?.force;
+    if ([...thumbJobs.values()].some(j => !j.done)) return c.json({ ok: false, error: 'a thumbnail refresh is already running' }, 429);
+    const ckptDir = `${HOME}/ComfyUI/models/checkpoints`;
+    const loraDir = `${HOME}/ComfyUI/models/loras`;
+    const list = (dir: string, type: 'checkpoint' | 'lora') => (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
+      .filter(f => f.endsWith('.safetensors') || f.endsWith('.ckpt') || f.endsWith('.gguf'))
+      .map(f => ({ name: f, abs: `${dir}/${f}`, type }));
+    const all = [...list(ckptDir, 'checkpoint'), ...list(loraDir, 'lora')];
+    const jobId = `thumbs-${Date.now()}`;
+    const job = { total: all.length, processed: 0, updated: 0, current: '', done: false };
+    thumbJobs.set(jobId, job);
+    void (async () => {
+      for (const f of all) {
+        job.current = f.name;
+        try { if (await fetchThumbForFile(f.abs, f.name, f.type, token, force)) job.updated++; } catch { /* skip */ }
+        job.processed++;
+      }
+      job.current = ''; job.done = true;
+      logger.info({ updated: job.updated, total: job.total }, 'Civitai thumbnail refresh complete');
+    })();
+    return c.json({ ok: true, jobId, total: all.length });
+  });
+  app.get('/api/comfy/thumbs/refresh/:id', (c) => {
+    const j = thumbJobs.get(c.req.param('id'));
+    return j ? c.json({ ok: true, ...j }) : c.json({ ok: false, error: 'unknown job' }, 404);
+  });
+
+  // ── Character Studio — trained, reusable character LoRAs (local, SDXL) ────
+  // Read/manage the Character Studio (/AIWorkWSL/tools/character-studio). Training
+  // is a heavy GPU step owned by the CLI (returned as a command); these routes are
+  // light: list/status, write the kohya config, publish (symlink, C:-safe), and QA.
+  app.get('/api/characters', (c) => {
+    try { return c.json({ ok: true, characters: listCharacters() }); }
+    catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+  app.get('/api/characters/:name', (c) => {
+    const ch = getCharacter(c.req.param('name'));
+    if (!ch) return c.json({ ok: false, error: 'unknown character' }, 404);
+    return c.json({ ok: true, character: ch, trainCommand: trainCommandFor(ch.name) });
+  });
+  app.post('/api/characters/:name/config', async (c) => {
+    const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const r = await configureCharacter(
+      c.req.param('name'),
+      typeof b.base === 'string' ? b.base : undefined,
+      Number(b.res) || 768,
+      Number(b.steps) || 0,
+    );
+    return c.json(r, r.ok ? 200 : 400);
+  });
+  app.post('/api/characters/:name/publish', async (c) => {
+    const r = await publishCharacter(c.req.param('name'));
+    return c.json(r, r.ok ? 200 : 400);
+  });
+  // Keyframe drift-free video: pin a clip to a locked keyframe (a gallery still)
+  // and let LTX add only motion (no character drift). One keyframe = subtle i2v;
+  // add an end keyframe for first-last-frame. Preflight-gated + 14G cgroup via
+  // generateKeyframeVideo (same crash-safety as t2v). Body: {init:{root,sub,name},
+  // end?:{root,sub,name}, prompt?, frames?, steps?, seed?}.
+  app.post('/api/comfy/keyframe-video', async (c) => {
+    const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const init = (b.init || {}) as { root?: string; sub?: string; name?: string };
+    const initPath = resolveGalleryFile(String(init.root || 'generated'), String(init.sub || ''), String(init.name || ''));
+    if (!initPath) return c.json({ ok: false, error: 'keyframe (init) not found' }, 404);
+    let endPath: string | undefined;
+    if (b.end && typeof b.end === 'object') {
+      const end = b.end as { root?: string; sub?: string; name?: string };
+      endPath = resolveGalleryFile(String(end.root || 'generated'), String(end.sub || ''), String(end.name || '')) || undefined;
+    }
+    const result = await generateKeyframeVideo({
+      initImage: initPath, endImage: endPath,
+      prompt: typeof b.prompt === 'string' ? b.prompt : undefined,
+      frames: Number(b.frames) || undefined, steps: Number(b.steps) || undefined,
+      seed: Number.isFinite(Number(b.seed)) ? Number(b.seed) : undefined,
+    });
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
+  // Auto-QA a generated still/clip. Accepts a gallery {root,sub,name} (resolved
+  // safely, same as /api/gallery/file) so it can't read arbitrary paths.
+  app.post('/api/qa/review', async (c) => {
+    const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const full = resolveGalleryFile(
+      String(b.root || 'generated'), String(b.sub || ''), String(b.name || ''),
+    );
+    if (!full) return c.json({ ok: false, error: 'file not found' }, 404);
+    const verdict = await reviewGen(full, b.vlm === true);
+    return c.json({ ok: true, verdict, summary: qaSummary(verdict) });
+  });
+
+  // ── Looks — curated checkpoint+LoRA presets for the Create page ──────────
+  // Builtins live in data/looks.json (repo), user-saved Looks in
+  // ~/.claudeclaw/looks.local.json. Validated against installed files at read
+  // time so a removed model shows as "needs <file>" instead of breaking.
+  app.get('/api/looks', (c) => {
+    try { return c.json({ ok: true, looks: listLooks() }); }
+    catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/looks', async (c) => {
+    try {
+      const body = await c.req.json();
+      const saved = saveUserLook(body);
+      return c.json({ ok: true, look: saved });
+    } catch (e) {
+      return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  app.delete('/api/looks/:id', (c) => {
+    try {
+      const removed = deleteUserLook(c.req.param('id'));
+      return removed ? c.json({ ok: true }) : c.json({ ok: false, error: 'unknown look (builtins cannot be deleted)' }, 404);
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  // ── Friendly model metadata — user-set label/description/category ────────
+  // Merge-upsert into the manifest (survives Civitai re-downloads since
+  // captureCivitaiMeta also merges). Powers the post-download "name this
+  // model" form and any future per-card edit affordance.
+  app.post('/api/models/meta', async (c) => {
+    try {
+      const body = await c.req.json() as { name?: string; label?: string; description?: string; category?: string; recommendedStrength?: number };
+      const name = String(body?.name ?? '').trim();
+      if (!name) return c.json({ ok: false, error: 'name is required' }, 400);
+      const patch: Partial<ModelMeta> = {};
+      if (typeof body.label === 'string') patch.label = body.label.trim() || undefined;
+      if (typeof body.description === 'string') patch.description = body.description.trim() || undefined;
+      if (typeof body.category === 'string') patch.category = body.category.trim() || undefined;
+      if (typeof body.recommendedStrength === 'number' && isFinite(body.recommendedStrength)) patch.recommendedStrength = body.recommendedStrength;
+      if (!Object.keys(patch).length) return c.json({ ok: false, error: 'nothing to update' }, 400);
+      const merged = mergeMeta(name, patch);
+      return c.json({ ok: true, meta: merged });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.post('/api/models/download', async (c) => {
+    const HOME = process.env.HOME || '/home/itsju';
+    try {
+      const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const url = String(body?.url ?? '').trim();
+      const token = String(body?.token ?? '').trim();
+      const dest = String(body?.dest ?? '').trim();
+      let name = String(body?.filename ?? '').trim();
+      let host = '';
+      try { host = new URL(url).host; } catch { return c.json({ ok: false, error: 'invalid url' }, 400); }
+      if (!/(^|\.)civitai\.com$/.test(host)) return c.json({ ok: false, error: 'only civitai.com downloads are allowed' }, 400);
+      if (!MODEL_DEST_DIRS[dest]) return c.json({ ok: false, error: `dest must be one of: ${Object.keys(MODEL_DEST_DIRS).join(', ')}` }, 400);
+      if (!name) { const m = url.match(/models\/(\d+)/); name = `civitai-${m ? m[1] : 'model'}.safetensors`; }
+      name = name.replace(/[^\w.\-]/g, '_');  // sanitize — block path traversal
+      if (!/\.(safetensors|ckpt|pt|gguf)$/i.test(name)) name += '.safetensors';
+
+      const { execSync, spawn } = await import('child_process');
+      // Hard model-folder cap — refuse before we even start.
+      try { execSync(`${HOME}/05_AUTOMATION/bin/model-cap-check`, { stdio: 'pipe' }); }
+      catch (e) {
+        const out = (e as { stdout?: Buffer }).stdout?.toString().trim() || 'model folder cap exceeded';
+        notify(`🛑 Model download refused (cap): ${out}`);
+        return c.json({ ok: false, blocked: true, error: out }, 409);
+      }
+
+      const destDir = `${HOME}/ComfyUI/models/${MODEL_DEST_DIRS[dest]}`;
+      const jobId = crypto.randomUUID();
+      modelDownloads.set(jobId, { dest, name, status: 'downloading', pct: 0 });
+      const args = ['aria2c', '-x8', '-s8', '--summary-interval=1', '--auto-file-renaming=false', '--allow-overwrite=false', '-d', destDir, '-o', name];
+      if (token) args.push(`--header=Authorization: Bearer ${token}`);
+      args.push(url);
+      const child = spawn(`${HOME}/05_AUTOMATION/bin/safe-model-download`, args, { env: { ...process.env, HOME } });
+      const onData = (buf: Buffer) => { const m = buf.toString().match(/\((\d+)%\)/); if (m) { const j = modelDownloads.get(jobId); if (j) j.pct = Number(m[1]); } };
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+      child.on('close', (code) => {
+        const j = modelDownloads.get(jobId); if (!j) return;
+        if (code === 0) {
+          j.status = 'done'; j.pct = 100; invalidateGalleryCache();
+          // Capture compatibility metadata straight from Civitai so the new model
+          // is correctly classified (family + triggers) with no hardcoding.
+          void captureCivitaiMeta(url, token, name, dest);
+        }
+        else { j.status = 'failed'; j.error = `download exited ${code} — safe-model-download may have refused (C: too low) or auth failed`; }
+        notify(j.status === 'done' ? `✅ Model downloaded: ${name} → ${dest}` : `⚠️ Model download failed: ${name} — ${j.error}`);
+      });
+      return c.json({ ok: true, jobId, name, dest });
+    } catch (e) { return c.json({ ok: false, error: String(e) }, 500); }
+  });
+
+  app.get('/api/models/download/:id', (c) => {
+    const j = modelDownloads.get(c.req.param('id'));
+    if (!j) return c.json({ ok: false, error: 'unknown job' }, 404);
+    return c.json({ ok: true, ...j });
+  });
+
+  // ── Wallets — aggregated brokerage/exchange balances (moved here from
+  //    MissionCtrl so sensitive balances stay on the local-only dashboard) ──
+  app.get('/api/wallets', async (c) => {
+    try {
+      const wallets = await getWallets();
+      return c.json(wallets);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Equity Management — per-agent Alpaca analytics (boba + jazzy):
+  //    equity curves, risk metrics, and trading-discipline guardrail flags.
+  //    Read-only; same local-only stance as /api/wallets. See src/equity.ts.
+  app.get('/api/equity', async (c) => {
+    try {
+      return c.json(await getEquity());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Astrology readings — Mike's delivered HTML readings library for the
+  //    /astrology page. List metadata + serve the raw HTML (opens in new tab).
+  //    Read-only, files in data/astrology/. See src/astrology.ts.
+  app.get('/api/astrology/readings', (c) => {
+    try { return c.json({ readings: listReadings() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+  app.get('/astrology/readings/:file', (c) => {
+    const html = readReadingHtml(c.req.param('file'));
+    if (html === null) return c.text('Reading not found', 404);
+    return c.html(html);
+  });
+  app.get('/api/astrology/today', async (c) => {
+    try { return c.json(await getTodayTransits()); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.get('/api/coach/weekly-review', (c) => {
+    try {
+      const week = c.req.query('week');
+      if (week) {
+        const text = getWeeklyReview(week);
+        if (text === null) return c.json({ error: 'review not found' }, 404);
+        return c.json({ week, text });
+      }
+      return c.json(getWeeklyReviews());
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  // ── Daily Coach — trading-discipline dailies (psych card, blind replay drill,
+  //    weekly graded review) for the /coach page. Deliberately separate from the
+  //    astrology routes — different subject, different sidebar section. The drill
+  //    answer is the only write (~/portfolio/replay_results.json, shared with the
+  //    missionctrl Replay page). See src/coach.ts.
+  app.get('/api/coach/drill', (c) => {
+    try {
+      const drill = getDailyDrill();
+      if (!drill) return c.json({ error: 'drill bank not found' }, 404);
+      return c.json(drill);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/coach/drill/answer', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      if (typeof body.choice !== 'string') return c.json({ error: 'choice required' }, 400);
+      const drill = answerDailyDrill(body.choice);
+      if (!drill) return c.json({ error: 'drill bank not found' }, 404);
+      return c.json(drill);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 400); }
+  });
+  app.get('/api/coach/psych-card', (c) => {
+    try {
+      const card = getDailyPsychCard();
+      if (!card) return c.json({ error: 'psych deck not found' }, 404);
+      return c.json(card);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+
+  // ── Massage By Mike — ops cockpit. Proxies the massage server's token-guarded admin API
+  //    (localhost:3003); the bearer token is injected server-side so it never reaches a browser.
+  //    See src/massage.ts. Read = account health + lifecycle countdowns; POST = keep/delete/reaper.
+  app.get('/api/massage/monitor', async (c) => {
+    try { return c.json(await getMassageMonitor(c.req.query('force') === '1')); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage/account/:id/keep', async (c) => {
+    try { return c.json(await keepAccount(c.req.param('id'))); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage/account/:id/delete', async (c) => {
+    try { return c.json(await deleteAccount(c.req.param('id'))); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage/reaper', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      return c.json(await setReaper(body));
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+
+  app.get('/api/massage-admin/session', async (c) => {
+    const admin = await requireMassageAdmin(c);
+    return c.json({
+      canEdit: admin.ok,
+      adminUser: admin.ok ? admin.adminUser : null,
+      reason: admin.ok ? null : admin.error,
+      roleTodo: 'Replace master-session/local admin-equivalent checks with real per-user admin roles.',
+    });
+  });
+  app.get('/api/massage-admin/clients', (c) => {
+    try { return c.json(getMassageAdminOverview()); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.patch('/api/massage-admin/clients/:id', async (c) => {
+    const admin = await requireMassageAdmin(c);
+    if (!admin.ok) return c.json({ error: admin.error }, admin.status as 401);
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const result = updateMassageAdminClient(c.req.param('id'), body, admin.adminUser);
+      return 'error' in result ? c.json(result, result.migration ? 409 : 400) : c.json(result);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+
+  // Two-admin Google sign-in (gives remote sessions a real, allow-listed identity).
+  app.get('/massage-admin/login', (c) => massageAdminLoginStart(c));
+  app.get('/massage-admin/oauth/callback', (c) => massageAdminOauthCallback(c));
+
+  // Full-admin actions — every one gated by requireMassageAdmin and proxied to the
+  // massage server (system of record) with the acting admin's email in x-admin-user.
+  const withAdmin = (fn: (c: any, adminUser: string) => Promise<Response>) => async (c: any) => {
+    const admin = await requireMassageAdmin(c);
+    if (!admin.ok) return c.json({ error: admin.error }, admin.status as 401);
+    try { return await fn(c, admin.adminUser); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  };
+  const body = async (c: any) => c.req.json().catch(() => ({}));
+  const enc = encodeURIComponent;
+
+  // account lifecycle
+  app.post('/api/massage-admin/clients/:id/delete', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/delete`, { method: 'POST', adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/reset-password', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/reset-password`, { method: 'POST', adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/set-password', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/set-password`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/verify', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/verify`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/clients/create', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/new/create`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/enhancement', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/enhancement`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/reward', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/reward`, { method: 'POST', body: await body(c), adminUser: u }))));
+
+  // appointments (read is loopback-safe via global gate; actions require admin)
+  app.get('/api/massage-admin/clients/:id/appointments', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/appointments`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/appointments/:id/:action', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/appointment/${enc(c.req.param('id'))}/${enc(c.req.param('action'))}`, { method: 'POST', adminUser: u }))));
+
+  // messaging
+  app.post('/api/massage-admin/appointments/:id/nudge-intake', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/appointment/${enc(c.req.param('id'))}/nudge-intake`, { method: 'POST', adminUser: u }))));
+  app.post('/api/massage-admin/appointments/:id/remind', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/appointment/${enc(c.req.param('id'))}/remind`, { method: 'POST', adminUser: u }))));
+  app.post('/api/massage-admin/clients/:id/message', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/account/${enc(c.req.param('id'))}/message`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.get('/api/massage-admin/messages', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/messages?limit=${enc(c.req.query('limit') || '50')}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.get('/api/massage-admin/schedule', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/schedule`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+
+  // coupons / promos
+  app.get('/api/massage-admin/codes', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/codes`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/codes', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/codes`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/codes/:code/toggle', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/codes/${enc(c.req.param('code'))}/toggle`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/gift/issue', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/gift/issue`, { method: 'POST', body: await body(c), adminUser: u }))));
+
+  // intake review + clinical SOAP notes (reads loopback-safe; writes require admin)
+  app.get('/api/massage-admin/intakes', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/intakes?limit=${enc(c.req.query('limit') || '200')}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.get('/api/massage-admin/intakes/:id', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/intakes/${enc(c.req.param('id'))}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/intakes/:id/reviewed', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/intakes/${enc(c.req.param('id'))}/reviewed`, { method: 'POST', adminUser: u }))));
+  app.get('/api/massage-admin/soap', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/soap?client=${enc(c.req.query('client') || '')}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.get('/api/massage-admin/soap/appt/:apptId', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/soap/appt/${enc(c.req.param('apptId'))}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/soap', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/soap`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.patch('/api/massage-admin/soap/:id', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/soap/${enc(c.req.param('id'))}`, { method: 'PATCH', body: await body(c), adminUser: u }))));
+
+  // intake form builder — edits the QUESTIONS clients are asked (config/intake.json
+  // on the massage side). Saves are live immediately there; every save snapshots
+  // the previous schema so a bad edit is one restore away.
+  app.get('/api/massage-admin/intake-schema', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/intake-schema`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  // Soft: a rejected edit comes back as a 400 { ok:false, error } that the builder
+  // shows verbatim — that's an answer, not a transport failure.
+  app.put('/api/massage-admin/intake-schema', withAdmin(async (c, u) =>
+    c.json(await massageAdminSoft(`/api/admin/intake-schema`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/intake-schema/validate', withAdmin(async (c, u) =>
+    c.json(await massageAdminSoft(`/api/admin/intake-schema/validate`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/intake-schema/restore', withAdmin(async (c, u) =>
+    c.json(await massageAdminSoft(`/api/admin/intake-schema/restore`, { method: 'POST', body: await body(c), adminUser: u }))));
+
+  // availability — days off, booking window, beyond-window approval queue (reads loopback-safe; writes require admin)
+  app.get('/api/massage-admin/availability', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/availability`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.get('/api/massage-admin/availability/pending', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/availability/pending`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.post('/api/massage-admin/availability/blackout', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/blackout`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.delete('/api/massage-admin/availability/blackout/:day', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/blackout/${enc(c.req.param('day'))}`, { method: 'DELETE', adminUser: u }))));
+  app.put('/api/massage-admin/availability/window', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/window`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.put('/api/massage-admin/availability/hours', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/hours`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.get('/api/massage-admin/availability/schedule', async (c) => {
+    try { return c.json(await massageAdmin(`/api/admin/availability/schedule?month=${enc(c.req.query('month') || '')}`, { method: 'GET', adminUser: 'reader' })); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 502); }
+  });
+  app.put('/api/massage-admin/availability/pause', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/pause`, { method: 'PUT', body: await body(c), adminUser: u }))));
+  app.post('/api/massage-admin/availability/timeblock', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/timeblock`, { method: 'POST', body: await body(c), adminUser: u }))));
+  app.delete('/api/massage-admin/availability/timeblock/:id', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/timeblock/${enc(c.req.param('id'))}`, { method: 'DELETE', adminUser: u }))));
+  app.post('/api/massage-admin/availability/pending/:id/:action', withAdmin(async (c, u) =>
+    c.json(await massageAdmin(`/api/admin/availability/pending/${enc(c.req.param('id'))}/${enc(c.req.param('action'))}`, { method: 'POST', adminUser: u }))));
+
+  // ── SQL Monitor — read-only inventory + browse for every operational SQLite DB
+  //    on the box (see src/sqlmonitor.ts). Self-contained; shares no code with the
+  //    /databases catalog. SELECT-only queries; no write/action routes. Localhost is
+  //    auto-authed by the global token middleware, so no extra auth wiring here.
+  app.get('/api/sql', async (c) => {
+    try { return c.json(await getSqlCatalog()); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.get('/api/sql/:id/meta', async (c) => {
+    try {
+      const result = await getSqlTables(c.req.param('id'));
+      if ('error' in result) return c.json(result, 404);
+      return c.json(result);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/:id/query', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({} as { sql?: string }));
+      const result = runSqlSelect(c.req.param('id'), (body as { sql?: string }).sql || '');
+      if ('error' in result) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+
+  // ── SQL MODERATION — single-row writes on `writable` DBs only. Each write is
+  //    auto-backed-up (file snapshot + before-image) and audited to a separate
+  //    moderation_audit.sqlite (one-click undo). Read-only DBs reject these.
+  const modIp = (c: { req: { header: (k: string) => string | undefined } }) =>
+    (c.req.header('x-forwarded-for') || '').split(',')[0].trim() || (c.req.header('x-real-ip') || '');
+
+  // Addressable rows (rowid + columns) for an editable table.
+  app.get('/api/sql/:id/rows', (c) => {
+    try {
+      const r = getModerationRows(c.req.param('id'), c.req.query('table') || '',
+        Number(c.req.query('limit')) || 200, Number(c.req.query('offset')) || 0);
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/:id/row/update', async (c) => {
+    try {
+      const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const r = await updateRow(c.req.param('id'), (b.table as string) || '',
+        (b.key as { rowid?: number | string; pk?: Record<string, unknown> }) || {},
+        (b.changes as Record<string, unknown>) || {}, modIp(c));
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/:id/row/delete', async (c) => {
+    try {
+      const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const r = await deleteRow(c.req.param('id'), (b.table as string) || '',
+        (b.key as { rowid?: number | string; pk?: Record<string, unknown> }) || {}, modIp(c));
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/:id/row/insert', async (c) => {
+    try {
+      const b = await c.req.json().catch(() => ({} as Record<string, unknown>));
+      const r = await insertRow(c.req.param('id'), (b.table as string) || '',
+        (b.values as Record<string, unknown>) || {}, modIp(c));
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.get('/api/sql/audit', (c) => {
+    try { return c.json(getSqlAuditLog(Number(c.req.query('limit')) || 100, c.req.query('db') || undefined)); }
+    catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+  app.post('/api/sql/audit/:auditId/undo', async (c) => {
+    try {
+      const r = await undoMutation(Number(c.req.param('auditId')), modIp(c));
+      return 'error' in r ? c.json(r, 400) : c.json(r);
+    } catch (e) { return c.json({ error: String(e instanceof Error ? e.message : e) }, 500); }
+  });
+
+  // ── Trade History & What-If — RH-crypto buy/sell ledger + "never sold"
+  //    counterfactual + forward compounding. See src/tradehistory.ts.
+  app.get('/api/trade-history', async (c) => {
+    try {
+      return c.json(await getTradeHistory());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Token Burn — normalised codeburn export (codeburn.export.v2).
+  //    Reads ~/.claudeclaw/token-burn.json written nightly by codeburn-daily.sh.
+  //    Drops sessions[]/shellCommands[] before sending to frontend. See src/tokenburn.ts.
+  app.get('/api/token-burn', async (c) => {
+    try {
+      return c.json(await getTokenBurn());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // ── Lewis Trading — integrations harvested from Lewis Jackson's "YouTube
+  //    Video Prompts" course (zero-one Skool). Kept separate from Skool Builds.
+  //    Read-only: manifest at ~/.claudeclaw/lewis-trading.json; only
+  //    manifest-declared files are readable (see src/lewistrading.ts).
+  app.get('/api/lewis-trading', (c) => {
+    try { return c.json(getLewisIntegrations()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+  app.get('/api/lewis-trading/file', (c) => {
+    const id = c.req.query('id') || '';
+    const name = c.req.query('name') || '';
+    const out = readLewisFile(id, name);
+    if (!out) return c.json({ error: 'not found' }, 404);
+    return c.json(out);
+  });
+
+  // ── Skool Builds — artifacts generated from running Skool classroom prompts.
+  //    Read-only; manifest at ~/.claudeclaw/skool-builds.json; only manifest-
+  //    declared files are readable (see src/skoolbuilds.ts).
+  app.get('/api/skool-builds', (c) => {
+    try { return c.json(getSkoolBuilds()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+  app.get('/api/skool-builds/file', (c) => {
+    const id = c.req.query('id') || '';
+    const name = c.req.query('name') || '';
+    const out = readSkoolArtifact(id, name);
+    if (!out) return c.json({ error: 'not found' }, 404);
+    return c.json(out);
+  });
+
+  // ── Trade Desk — unified trading intelligence panel (signals, flow rank,
+  //    winners, momentum, macro, brief, AIME). All read-only. Data comes from
+  //    the live pipeline DBs and firebase-signals on the laptop.
+
+  app.get('/api/trade-desk/overview', (c) => {
+    try { return c.json(getTradeDeskOverview()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/signals', (c) => {
+    const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 500);
+    try { return c.json(getSignals(limit)); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/flow-rank', (c) => {
+    try { return c.json(getFlowRank()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // Signal Monitor — live option/flow app feeds + headless-listener health.
+  app.get('/api/signal-monitor', (c) => {
+    const perApp = Math.min(parseInt(c.req.query('perApp') || '30', 10), 100);
+    try { return c.json(getSignalMonitor(perApp)); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // Live Apps — redroid + ws-scrcpy setup status / embed gate (B2).
+  app.get('/api/live-apps/status', async (c) => {
+    try { return c.json(await getLiveAppsStatus()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/flow-winners', (c) => {
+    const days = parseInt(c.req.query('days') || '7', 10);
+    const symbol = c.req.query('symbol') || undefined;
+    try { return c.json({ winners: getFlowWinners(days, symbol) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/momentum', (c) => {
+    try { return c.json({ momentum: getMomentum() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/macro', (c) => {
+    try { return c.json({ macro: getMacro() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/ledger', (c) => {
+    const hours = parseInt(c.req.query('hours') || '48', 10);
+    try { return c.json({ ledger: getTradeLedger(hours) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/trade-desk/brief', (c) => {
+    try { return c.json(getBrief()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.post('/api/trade-desk/aime', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const prompt = String(body.prompt || '').trim();
+      if (!prompt) return c.json({ error: 'prompt required' }, 400);
+      const cookie = AIME_SESSION_COOKIE;
+      if (!cookie) return c.json({ response: '', status: 'no_cookie', message: 'Set AIME_SESSION_COOKIE in .env to activate' });
+      const result = await queryAIME(prompt, cookie);
+      return c.json(result);
+    } catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  // ── Gallery — generated images/videos, surfaced from the same local source
+  //    folders as the :8090 BobaCatTrades + Nano gallery (see src/gallery.ts).
+  //    Served here so it's same-origin (no CORS) and works even if :8090 is down.
+  app.get('/api/gallery', (c) => {
+    try {
+      return c.json(getGallery());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+  app.get('/api/gallery/file', (c) => {
+    const full = resolveGalleryFile(
+      c.req.query('root') || '',
+      c.req.query('sub') || '',
+      c.req.query('name') || '',
+    );
+    if (!full) return c.text('', 404);
+    let data: Buffer;
+    try {
+      data = fs.readFileSync(full);
+    } catch {
+      return c.text('', 404); // file vanished between stat and read (live folders)
+    }
+    return new Response(new Uint8Array(data), {
+      headers: { 'Content-Type': galleryMime(full), 'Cache-Control': 'public, max-age=300' },
+    });
+  });
+
+  // POST a prompt → run the Nano Banana generator (banana-maker skill). The image
+  // saves into its output/ dir, which is the gallery "Generated" section, so it
+  // appears in /gallery automatically. Returns {ok,file,url,notes} or {ok:false,error}.
+  app.post('/api/gallery/generate', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const prompt = String(body?.prompt ?? '');
+    const source = typeof body?.source === 'string' ? body.source : 'banana';
+    let result;
+    if (source === 'higgsfield') {
+      result = await generateHiggsfield({
+        kind: 'image',
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        resolution: typeof body?.resolution === 'string' ? body.resolution : undefined,
+      });
+    } else if (source === 'local') {
+      result = await generateLocalImage({
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        steps: typeof body?.steps === 'number' ? body.steps : undefined,
+        seed: typeof body?.seed === 'number' ? body.seed : undefined,
+      });
+    } else {
+      result = await generateImage({
+        prompt,
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        size: typeof body?.size === 'string' ? body.size : undefined,
+      });
+    }
+    if (result.ok) invalidateGalleryCache();
+    return c.json(result);
+  });
+
+  // Photo Studio EDIT (img2img) — upload a photo + an instruction and Nano Banana
+  // Pro transforms it while keeping the subject ("make me half-wolf", "bionic",
+  // "film-noir filter"). Multipart form: photo (file) + prompt + optional
+  // model/aspectRatio/size. The result lands in the gallery "Generated" section
+  // exactly like /generate, so it shows up in the Media & Gens view automatically.
+  // This is the upload-from-phone path the Create page (text→image) can't do.
+  app.post('/api/gallery/edit', async (c) => {
+    let tmp = '';
+    try {
+      const form = await c.req.parseBody();
+      const prompt = String(form?.prompt ?? '').trim();
+      const photo = form?.photo;
+      if (!prompt) return c.json({ ok: false, error: 'Describe the edit — e.g. "make me half-wolf with glowing amber eyes".' }, 400);
+      if (!photo || typeof photo === 'string') return c.json({ ok: false, error: 'No photo uploaded.' }, 400);
+
+      const buf = Buffer.from(await photo.arrayBuffer());
+      if (buf.length > 12 * 1024 * 1024) return c.json({ ok: false, error: 'Photo too large (max 12 MB).' }, 400);
+      if (buf.length < 64) return c.json({ ok: false, error: 'Photo is empty or unreadable.' }, 400);
+      // Magic-byte sniff so a renamed non-image can't reach the generator.
+      const isJpg = buf[0] === 0xFF && buf[1] === 0xD8;
+      const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47;
+      const isWebp = buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+                     buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50;
+      if (!isJpg && !isPng && !isWebp) return c.json({ ok: false, error: 'Unsupported image — use JPG, PNG, or WebP.' }, 400);
+
+      const ext = isPng ? 'png' : isWebp ? 'webp' : 'jpg';
+      tmp = `/tmp/cc-studio-${Date.now()}-${Math.floor(Math.random() * 1e6)}.${ext}`;
+      fs.writeFileSync(tmp, buf);
+
+      // Default to Nano Banana PRO for edits — it holds the subject's likeness far
+      // better than Flash, which matters for "turn ME into X" transforms.
+      const model = typeof form?.model === 'string' && form.model ? String(form.model) : 'pro';
+      const result = await generateImage({
+        prompt,
+        model,
+        references: [tmp],
+        aspectRatio: typeof form?.aspectRatio === 'string' ? String(form.aspectRatio) : undefined,
+        // Default edits to 1K: Pro img2img at 2K can blow past the timeout (~145s
+        // at 1K vs >180s at 2K). 1K is plenty for a phone-viewed transform.
+        size: typeof form?.size === 'string' ? String(form.size) : '1K',
+      });
+      if (result.ok) {
+        invalidateGalleryCache();
+        notify(`✅ Photo edit ready: ${result.file}`);
+      }
+      return c.json(result);
+    } catch (e) {
+      return c.json({ ok: false, error: `Edit failed: ${String((e as Error)?.message || e).slice(0, 200)}` }, 500);
+    } finally {
+      if (tmp) { try { fs.unlinkSync(tmp); } catch { /* best-effort temp cleanup */ } }
+    }
+  });
+
+  // Batch generation — generate N images in one call.
+  // Banana: runs sequentially (Gemini rate-limited, up to 5).
+  // Local: runs sequentially (single GPU, up to 3).
+  app.post('/api/gallery/batch-generate', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const prompt = String(body?.prompt ?? '');
+    const source = typeof body?.source === 'string' ? body.source : 'local';
+    const rawCount = typeof body?.count === 'number' ? body.count : 1;
+
+    const maxCounts: Record<string, number> = { banana: 5, local: 3 };
+    const count = Math.max(1, Math.min(rawCount, maxCounts[source] || 5));
+
+    const results = [];
+
+    if (source === 'banana') {
+      // sequential — Gemini rate-limited
+      for (let i = 0; i < count; i++) {
+        const r = await generateImage({
+          prompt,
+          model: typeof body?.model === 'string' ? body.model : undefined,
+          aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+          size: typeof body?.size === 'string' ? body.size : undefined,
+        });
+        results.push(r);
+      }
+    } else {
+      // local — single GPU, serialize
+      for (let i = 0; i < count; i++) {
+        const r = await generateLocalImage({
+          prompt,
+          model: typeof body?.model === 'string' ? body.model : undefined,
+          steps: typeof body?.steps === 'number' ? body.steps : undefined,
+        });
+        results.push(r);
+      }
+    }
+
+    if (results.some((r) => r.ok)) invalidateGalleryCache();
+    return c.json({ results });
+  });
+
+  // Move a gallery file between declared sections (rename with cross-fs copy+delete fallback).
+  app.post('/api/gallery/move', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const result = moveGalleryFile(
+      String(body?.srcRoot ?? ''), String(body?.srcSub ?? ''), String(body?.name ?? ''),
+      String(body?.dstRoot ?? ''), String(body?.dstSub ?? ''),
+    );
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
+  // Local FREE video (diffusers LTX-Video on the GPU) → renders/ = gallery video section.
+  app.post('/api/gallery/generate-video', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    // Higgsfield is CLOUD — it never touches the local GPU, so skip the GPU
+    // preflight gate (which only guards the local LTX subprocess).
+    if (body?.source === 'higgsfield') {
+      const result = await generateHiggsfield({
+        kind: 'video',
+        prompt: String(body?.prompt ?? ''),
+        model: typeof body?.model === 'string' ? body.model : undefined,
+        aspectRatio: typeof body?.aspectRatio === 'string' ? body.aspectRatio : undefined,
+        resolution: typeof body?.resolution === 'string' ? body.resolution : undefined,
+      });
+      if (result.ok) invalidateGalleryCache();
+      notify(result.ok ? `✅ Higgsfield video ready: ${result.file}` : `⚠️ Higgsfield video failed: ${result.error}`);
+      return c.json(result);
+    }
+    // Safety gate BEFORE spawning the long (up to 20-min) LTX subprocess so the
+    // phone gets an instant "blocked: <reason>" instead of waiting. LTX on the
+    // 8GB GPU is the box-freeze vector — localgen.ts also gates + locks it.
+    const gate = await preflightGate();
+    if (!gate.ok) { notify(`🛑 Video gen blocked: ${gate.reason}`); return c.json({ ok: false, blocked: true, error: `blocked: ${gate.reason}` }, 429); }
+    // LTX-Video RAM guard (verified 2026-06-14): the LTX model is ~13GB and is
+    // RAM-BOUND at LOAD — below ~14GB free it swap-thrashes for minutes and gets
+    // OOM-killed before reaching the GPU (util stays 0%). Fail fast with the truth
+    // instead of freezing the box. (Cloud/Higgsfield video skips this — handled above.)
+    try {
+      const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+      const m = meminfo.match(/MemAvailable:\s+(\d+)\s*kB/);
+      const freeMB = m ? Math.round(parseInt(m[1], 10) / 1024) : 99999;
+      if (freeMB < 14000) {
+        const msg = `Local video needs ~14GB free RAM (the LTX model is large) — only ${(freeMB / 1024).toFixed(1)}GB free right now. Close other gens / let ComfyUI idle-stop, then retry, or use cloud video.`;
+        notify(`🛑 Video gen blocked: low RAM (${(freeMB / 1024).toFixed(1)}GB free)`);
+        return c.json({ ok: false, blocked: true, error: msg }, 429);
+      }
+    } catch { /* if we can't read meminfo, fall through to the existing gates */ }
+    const result = await generateLocalVideo({
+      prompt: String(body?.prompt ?? ''),
+      frames: typeof body?.frames === 'number' ? body.frames : undefined,
+      steps: typeof body?.steps === 'number' ? body.steps : undefined,
+      seed: typeof body?.seed === 'number' ? body.seed : undefined,
+    });
+    if (result.ok) invalidateGalleryCache();
+    notify(result.ok ? `✅ Video ready: ${result.file}` : `⚠️ Video gen failed: ${result.error}`);
+    return c.json(result);
+  });
+
+  // Higgsfield model catalogue for the Create-page dropdowns (cached 5 min).
+  // Shells `higgsfield model list --json` (image + --video) via the CLI.
+  app.get('/api/higgsfield/models', async (c) => {
+    const r = await listHiggsfieldModels();
+    return c.json(r, r.ok ? 200 : 503);
+  });
+
+  // ── Hermes Agent workspace ────────────────────────────────────────────────
+  app.get('/api/hermes', async (c) => {
+    try { return c.json(getHermesData()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/hermes/logs', (c) => {
+    const n = parseInt(c.req.query('n') || '60', 10);
+    try { return c.json({ lines: getHermesLogs(Math.min(n, 200)) }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.post('/api/hermes/send', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const chatId = String(body?.chat_id ?? '7888676328');
+    const message = String(body?.message ?? '');
+    if (!message.trim()) return c.json({ ok: false, message: 'empty message' }, 400);
+    return c.json(hermesSend(chatId, message));
+  });
+
+  app.post('/api/hermes/restart', async (c) => {
+    return c.json(hermesRestartGateway());
+  });
+
+  app.get('/api/hermes/status', (c) => {
+    try { return c.json(getHermesStatus()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/hermes/config', (c) => {
+    // Redacted allowlist only — never emits .env/auth/token/key material.
+    try { return c.json(getHermesConfigRedacted()); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/hermes/toolsets', (c) => {
+    try { return c.json({ toolsets: getHermesToolsets() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.post('/api/hermes/oneshot', async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const prompt = String(body?.prompt ?? '');
+    if (!prompt.trim()) return c.json({ ok: false, output: '', message: 'empty prompt' }, 400);
+    return c.json(hermesOneshot(prompt));
+  });
+
+  // ── RapidAPI search console ───────────────────────────────────────────────
+  // Generic console over any RapidAPI the account subscribes to. Key is read
+  // server-side (config.ts) and never sent to the browser.
+  app.get('/api/rapidapi/apis', (c) => {
+    try { return c.json({ apis: listRapidApis() }); }
+    catch (e) { return c.json({ error: String(e) }, 500); }
+  });
+
+  app.get('/api/rapidapi/search', async (c) => {
+    const api = c.req.query('api') || '';
+    const q = c.req.query('q') || '';
+    try {
+      return c.json(await rapidApiSearch(api, q));
+    } catch (e: any) {
+      const status = (e && typeof e.status === 'number') ? e.status : 500;
+      return c.json({ error: e?.message || String(e) }, status);
+    }
   });
 
   // ── War Room meeting history & transcript persistence ──────────────
@@ -891,11 +3452,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   // ── War Room pin: route all voice utterances to a specific agent ──
-  // Lives in /tmp so the Python Pipecat server (a separate process) can
-  // read the state without needing an IPC bus. router.py checks this
-  // file's mtime and reloads only when it changes. Spoken agent prefixes
-  // (e.g. "research, find X") still take precedence over the pin.
-  const WARROOM_PIN_PATH = '/tmp/warroom-pin.json';
+  // Lives in store/tmp (WARROOM_TMP_DIR) so the Python Pipecat server (a
+  // separate process) can read the state without needing an IPC bus. router.py
+  // checks this file's mtime and reloads only when it changes. Spoken agent
+  // prefixes (e.g. "research, find X") still take precedence over the pin.
+  const WARROOM_PIN_PATH = path.join(WARROOM_TMP_DIR, 'warroom-pin.json');
   const VALID_PIN_MODES = new Set(['direct', 'auto']);
   // Recompute on every call so newly-created agents become pinnable
   // without a dashboard restart. listAgentIds() reads the agent-configs
@@ -959,6 +3520,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
 
     try {
+      fs.mkdirSync(WARROOM_TMP_DIR, { recursive: true });
       fs.writeFileSync(
         WARROOM_PIN_PATH,
         JSON.stringify({ agent: nextAgent, mode: nextMode, pinnedAt: Date.now() }),
@@ -1651,6 +4213,132 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
+  // ── peon-ping sound pack switcher ────────────────────────────────
+  const PEON_BIN = path.join(os.homedir(), '.local', 'bin', 'peon');
+
+  function runPeon(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+    return new Promise((resolve) => {
+      import('child_process').then(({ execFile }) => {
+        execFile(PEON_BIN, args, { timeout: 8000, env: process.env }, (err, stdout, stderr) => {
+          resolve({ stdout: stdout || '', stderr: stderr || '', code: (err as any)?.code ?? 0 });
+        });
+      });
+    });
+  }
+
+  function parsePeonPackList(raw: string): { name: string; label: string; active: boolean }[] {
+    // Strip ANSI escape codes then parse "  name   N sounds   Display Name  [<-- active]"
+    const stripped = raw.replace(/\x1b\[[0-9;]*m/g, '');
+    const packs: { name: string; label: string; active: boolean }[] = [];
+    for (const line of stripped.split('\n')) {
+      const m = line.match(/^\s{2}(\S+)\s+\d+ sounds\s{3}(.+?)(?:\s+<-- active)?\s*$/);
+      if (!m) continue;
+      packs.push({ name: m[1], label: m[2].trim(), active: line.includes('<-- active') });
+    }
+    return packs;
+  }
+
+  app.get('/api/peon/packs', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    const { stdout } = await runPeon(['packs', 'list']);
+    const packs = parsePeonPackList(stdout);
+    const active = packs.find((p) => p.active)?.name ?? null;
+    return c.json({ ok: true, packs, active });
+  });
+
+  app.post('/api/peon/packs/use', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { name?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const name = (body.name || '').trim();
+    if (!name || !/^[a-z0-9_-]+$/.test(name)) {
+      return c.json({ ok: false, error: 'invalid pack name' }, 400);
+    }
+    const { stdout, code } = await runPeon(['packs', 'use', name]);
+    if (code !== 0) return c.json({ ok: false, error: stdout.trim() || 'peon error' }, 500);
+    return c.json({ ok: true, active: name });
+  });
+
+  app.get('/api/peon/status', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    const [statusRes, mobileRes, volRes] = await Promise.all([
+      runPeon(['status']),
+      runPeon(['mobile', 'status']),
+      runPeon(['volume']),
+    ]);
+    const stripped = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    const statusLine = stripped(statusRes.stdout);
+    const mobileLine = stripped(mobileRes.stdout);
+    const volLine = stripped(volRes.stdout);
+    const paused = /paused/i.test(statusLine);
+    const volMatch = volLine.match(/[\d.]+/);
+    const volume = volMatch ? parseFloat(volMatch[0]) : null;
+
+    // Parse mobile channels: look for "ntfy" and "telegram" lines
+    const mobileLines = mobileLine.split('\n').map((l) => stripped(l));
+    const ntfyLine = mobileLines.find((l) => /ntfy/i.test(l)) ?? null;
+    const telegramLine = mobileLines.find((l) => /telegram/i.test(l)) ?? null;
+    const mobileEnabled = !/disabled|off/i.test(mobileLine) && (ntfyLine !== null || telegramLine !== null);
+
+    const ntfyTopic = ntfyLine ? (ntfyLine.match(/Topic:\s*(\S+)/i)?.[1] ?? ntfyLine) : null;
+    const telegramConfigured = telegramLine !== null && !/not configured/i.test(telegramLine);
+
+    return c.json({
+      ok: true,
+      paused,
+      volume,
+      mobileEnabled,
+      ntfyTopic,
+      telegramConfigured,
+      raw: { status: statusLine, mobile: mobileLine, volume: volLine },
+    });
+  });
+
+  app.post('/api/peon/pause', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    await runPeon(['pause']);
+    return c.json({ ok: true, paused: true });
+  });
+
+  app.post('/api/peon/resume', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    await runPeon(['resume']);
+    return c.json({ ok: true, paused: false });
+  });
+
+  app.post('/api/peon/volume', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { volume?: number } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const vol = body.volume;
+    if (vol === undefined || vol < 0 || vol > 1) return c.json({ ok: false, error: 'volume must be 0.0–1.0' }, 400);
+    await runPeon(['volume', String(vol)]);
+    return c.json({ ok: true, volume: vol });
+  });
+
+  app.post('/api/peon/mobile/test', async (c) => {
+    // peon mobile is off; relay script owns phone channels — call it directly
+    const relayScript = path.join(os.homedir(), '.claude', 'hooks', 'mobile-relay.sh');
+    const testPayload = JSON.stringify({ session_id: 'dashboard-test', message: 'Test from Mission Control — ntfy + Telegram relay live' });
+    const { execFile } = await import('child_process');
+    const err = await new Promise<Error | null>((resolve) => {
+      const proc = execFile(relayScript, [], { timeout: 12000, env: process.env }, (e) => resolve(e));
+      proc.stdin?.write(testPayload);
+      proc.stdin?.end();
+    });
+    if (err && (err as any).code !== 0) return c.json({ ok: false, error: String(err.message) }, 500);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/peon/mobile/toggle', async (c) => {
+    if (!fs.existsSync(PEON_BIN)) return c.json({ ok: false, error: 'peon not installed' }, 404);
+    let body: { enable?: boolean } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const cmd = body.enable ? 'on' : 'off';
+    await runPeon(['mobile', cmd]);
+    return c.json({ ok: true, mobileEnabled: body.enable });
+  });
+
   // Scheduled tasks
   app.get('/api/tasks', (c) => {
     const tasks = getAllScheduledTasks();
@@ -1744,17 +4432,19 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
     const title = body?.title?.trim();
     const prompt = body?.prompt?.trim();
-    const assignedAgent = body?.assigned_agent?.trim() || null;
+    const rawAgent = body?.assigned_agent?.trim() || null;
     const priority = Math.max(0, Math.min(10, body?.priority ?? 0));
 
     if (!title || title.length > 200) return c.json({ error: 'title required (max 200 chars)' }, 400);
     if (!prompt || prompt.length > 10000) return c.json({ error: 'prompt required (max 10000 chars)' }, 400);
 
-    // Validate agent if provided
-    if (assignedAgent) {
-      const validAgents = ['main', ...listAgentIds()];
-      if (!validAgents.includes(assignedAgent)) {
-        return c.json({ error: `Unknown agent: ${assignedAgent}. Valid: ${validAgents.join(', ')}` }, 400);
+    // Resolve display-name/alias -> canonical id, or 4xx. Only the canonical
+    // id is ever stored so a poller's `WHERE assigned_agent = ?` always matches.
+    let assignedAgent: string | null = null;
+    if (rawAgent) {
+      assignedAgent = resolveAgentId(rawAgent);
+      if (!assignedAgent) {
+        return c.json({ error: `Unknown agent: ${rawAgent}. Known: ${knownAgentIds().join(', ')}` }, 400);
       }
     }
 
@@ -1812,9 +4502,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const body = await c.req.json<{ assigned_agent?: string }>();
     const newAgent = body?.assigned_agent?.trim();
     if (!newAgent) return c.json({ error: 'assigned_agent required' }, 400);
-    const validAgents = ['main', ...listAgentIds()];
-    if (!validAgents.includes(newAgent)) return c.json({ error: 'Unknown agent' }, 400);
-    const ok = reassignMissionTask(id, newAgent);
+    const resolvedAgent = resolveAgentId(newAgent);
+    if (!resolvedAgent) {
+      return c.json({ error: `Unknown agent: ${newAgent}. Known: ${knownAgentIds().join(', ')}` }, 400);
+    }
+    const ok = reassignMissionTask(id, resolvedAgent);
     return c.json({ ok });
   });
 
@@ -1960,7 +4652,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Memory stats
   app.get('/api/memories', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const stats = getDashboardMemoryStats(chatId);
     const fading = getDashboardLowSalienceMemories(chatId, 10);
     const topAccessed = getDashboardTopAccessedMemories(chatId, 5);
@@ -1971,7 +4663,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Memory list (for drill-down drawer)
   app.get('/api/memories/pinned', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const memories = getDashboardPinnedMemories(chatId);
     return c.json({ memories });
   });
@@ -1990,6 +4682,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const sessionId = getSession(chatId);
     let contextPct = 0;
+    let contextUsedTokens = 0;
+    let contextWindowTokens = CONTEXT_LIMIT;
+    let contextLeftTokens = CONTEXT_LIMIT;
+    let contextUpdatedAt: number | null = null;
     let turns = 0;
     let compactions = 0;
     let sessionAge = '-';
@@ -1999,8 +4695,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       if (summary) {
         turns = summary.turns;
         compactions = summary.compactions;
-        const contextTokens = (summary.lastContextTokens || 0) + (summary.lastCacheRead || 0);
-        contextPct = contextTokens > 0 ? Math.round((contextTokens / CONTEXT_LIMIT) * 100) : 0;
+        contextUsedTokens = Math.max(0, summary.lastContextTokens || summary.lastCacheRead || 0);
+        // Size the gauge against the model's real window when the SDK reported
+        // one (e.g. Opus 4.8 = 1M, Sonnet 4.6 = 200k); fall back to CONTEXT_LIMIT.
+        contextWindowTokens = summary.lastContextWindow || CONTEXT_LIMIT;
+        contextLeftTokens = Math.max(0, contextWindowTokens - contextUsedTokens);
+        contextPct = contextUsedTokens > 0 ? Math.round((contextUsedTokens / contextWindowTokens) * 100) : 0;
+        contextUpdatedAt = summary.lastContextUpdatedAt;
         const ageSec = Math.floor(Date.now() / 1000) - summary.firstTurnAt;
         if (ageSec < 3600) sessionAge = Math.floor(ageSec / 60) + 'm';
         else if (ageSec < 86400) sessionAge = Math.floor(ageSec / 3600) + 'h';
@@ -2021,9 +4722,17 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
     return c.json({
       contextPct,
+      contextUsedTokens,
+      contextWindowTokens,
+      contextLeftTokens,
+      contextUpdatedAt,
+      healthRefreshedAt: Math.floor(Date.now() / 1000),
       turns,
       compactions,
       sessionAge,
+      // Process uptime (whole seconds) so the sidebar can show how long the
+      // runtime has been alive, independent of the conversation session age.
+      uptimeSeconds: Math.floor(process.uptime()),
       ...getProviderStatus(),
       telegramConnected: getTelegramConnected(),
       waConnected: WHATSAPP_ENABLED,
@@ -2059,6 +4768,19 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return c.json({ stats, costTimeline, recentUsage });
   });
 
+  // Per-agent cache token usage over a selectable window (own endpoint so the
+  // dashboard panel's timeframe toggle re-fetches independently of the rest
+  // of the Usage page). days clamped to 1..365, default 30.
+  app.get('/api/cache-tokens', (c) => {
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
+    const days = Math.min(365, Math.max(1, Number.parseInt(c.req.query('days') || '', 10) || 30));
+    const cacheTokens = getCacheTokens(chatId, days).map((r) => ({
+      ...r,
+      displayName: resolveAgentDisplayName(r.agentId),
+    }));
+    return c.json({ days, cacheTokens });
+  });
+
   // Bot info (name, PID, chatId) — reads dynamically from state
   app.get('/api/info', (c) => {
     const chatId = c.req.query('chatId') || '';
@@ -2092,24 +4814,54 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         }
         const stats = getAgentTokenStats(id);
         const mainOverride = id === 'main' ? getMainModelOverride() : undefined;
-        const provider = id === 'main' ? getMainProviderConfig() : config.provider;
+        // For main, prefer the model persisted in main-config.json over the
+        // ENABLE_ACP-gated default from getSelectedProviderConfig() — the
+        // persisted value is what the bot actually runs after a restart, and
+        // the gated default silently shadowed dashboard model changes.
+        const mainPersistedModel = id === 'main' ? persistedMainClaudeModel() : undefined;
+        const provider = id === 'main' ? getSelectedProviderConfig() : config.provider;
         const model = provider.type === 'claude'
-          ? (mainOverride ?? provider.model ?? config.model ?? DEFAULT_CLAUDE_MODEL)
-          : provider.model;
+          ? (mainOverride ?? mainPersistedModel ?? provider.model ?? config.model ?? DEFAULT_CLAUDE_MODEL)
+          : provider.type === 'openai'
+            ? (provider.model ?? DEFAULT_OPENAI_MODEL)
+            : provider.model;
+        // Report the effective model inside provider too so the dashboard
+        // picker highlights the right entry.
+        const reportedProvider = (provider.type === 'claude' || provider.type === 'openai') && model
+          ? { ...provider, model }
+          : provider;
+        // Old configs can carry effort/thinking values from a previously
+        // selected model. Reconcile the response so cards never advertise a
+        // stranded "(unsupported)" control. Persistence is normalized on the
+        // next real save; this read path stays non-mutating.
+        const displayProvider = reconcileRuntimeOptions(reportedProvider).provider;
         return {
           id,
           name: config.name || resolveAgentDisplayName(id),
-          description: id === 'main' ? getMainDescription() : config.description,
+          // main is normalized — its description comes from agents/main/agent.yaml
+          // (config.description) like every other agent, not a special store.
+          description: config.description,
           model,
-          provider,
+          modelLabel: modelDisplayLabel(model),
+          provider: displayProvider,
+          // Per-model effort/thinking option lists so the agent card renders
+          // one dropdown per list the model actually supports (Opus 5 =
+          // effort only; Opus 4.8 = effort + thinking; Sonnet 4.5 = thinking
+          // only). Null for providers that own this in their CLI config.
+          runtimeOptions: staticRuntimeOptionsFor(displayProvider, model),
+          runtimeMode: displayProvider.runtimeMode ?? '',
+          thinkingMode: displayProvider.thinkingMode ?? '',
           running,
           todayTurns: stats.todayTurns,
           todayCost: stats.todayCost,
+          // Cache-bust token for <img> URLs across all surfaces. Derived
+          // from filesystem mtime+size of the resolved avatar — changes
+          // the moment a user upload or Telegram fetch lands.
           avatar_etag: avatarEtagForId(id),
         };
       } catch {
         const fallbackName = resolveAgentDisplayName(id);
-        return { id, name: fallbackName, description: '', model: 'unknown', provider: { type: 'opencode' }, running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
+        return { id, name: fallbackName, description: '', model: 'unknown', modelLabel: 'unknown', provider: { type: 'opencode' }, runtimeOptions: null, runtimeMode: '', thinkingMode: '', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
       }
     });
 
@@ -2133,13 +4885,19 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       }
       const mainStats = getAgentTokenStats('main');
       const mainProvider = getMainProviderConfig();
+      const mainModel = getProviderStatus().model;
+      const displayMainProvider = reconcileRuntimeOptions({ ...mainProvider, model: mainModel }).provider;
       allAgents = [
         {
           id: 'main',
           name: resolveAgentDisplayName('main'),
           description: getMainDescription(),
-          model: getProviderStatus().model,
-          provider: mainProvider,
+          model: mainModel,
+          modelLabel: modelDisplayLabel(mainModel),
+          provider: displayMainProvider,
+          runtimeOptions: staticRuntimeOptionsFor(displayMainProvider, mainModel),
+          runtimeMode: displayMainProvider.runtimeMode ?? '',
+          thinkingMode: displayMainProvider.thinkingMode ?? '',
           running: mainRunning,
           todayTurns: mainStats.todayTurns,
           todayCost: mainStats.todayCost,
@@ -2149,7 +4907,14 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       ];
     }
 
-    return c.json({ agents: allAgents });
+    // Ship the model catalog alongside the agents so the dashboard renders
+    // ids and labels from src/model-catalog.ts instead of keeping its own
+    // hardcoded copy that silently drifts.
+    return c.json({
+      agents: allAgents,
+      claudeModels: CLAUDE_MODEL_OPTIONS,
+      openaiModels: OPENAI_MODEL_OPTIONS,
+    });
   });
 
   // Agent-specific recent conversation
@@ -2185,22 +4950,30 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    const validModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
-    if (!validModels.includes(model)) return c.json({ error: `Invalid model` }, 400);
+    if (!CLAUDE_MODEL_ID_RE.test(model)) {
+      return c.json({ error: `Invalid model id format. Expected e.g. claude-opus-4-8 (known: ${VALID_CLAUDE_MODELS.join(', ')})` }, 400);
+    }
 
-    const agentIds = listAgentIds();
+    const agentIds = [...new Set(['main', ...listAgentIds()])];
     const updated: string[] = [];
-    const restartRequired: string[] = [];
+    const changed: string[] = [];
     for (const id of agentIds) {
       try {
-        setAgentProvider(id, { type: 'claude', model });
+        const current = id === 'main' ? getMainProviderConfig() : loadAgentConfig(id).provider;
+        const next = { type: 'claude', model } as ProviderConfig;
         updated.push(id);
-        if (id !== 'main') restartRequired.push(id);
+        if (isDeepStrictEqual(current, next)) continue;
+        if (id === 'main') {
+          setMainProviderConfig(next);
+          updateAgentProvider(next);
+        } else {
+          setAgentProvider(id, next);
+        }
+        clearAgentSessions(id);
+        changed.push(id);
       } catch {}
     }
-    setMainProviderConfig({ type: 'claude', model });
-    updated.unshift('main');
-    return c.json({ ok: true, model, updated, restartRequired });
+    return c.json({ ok: true, model, updated, changed, restartRequired: [] });
   });
 
   // Update agent model
@@ -2210,35 +4983,153 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const model = body?.model?.trim();
     if (!model) return c.json({ error: 'model required' }, 400);
 
-    const validModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
-    if (!validModels.includes(model)) return c.json({ error: `Invalid model. Valid: ${validModels.join(', ')}` }, 400);
+    // Preserve the agent's existing provider instead of assuming claude. The
+    // previous version wrote { type: 'claude', model } unconditionally, so a
+    // model change on a native-OpenAI agent silently switched its provider to
+    // Claude and dropped its command/args.
+    let current: ProviderConfig;
+    try {
+      current = agentId === 'main' ? getMainProviderConfig() : loadAgentConfig(agentId).provider;
+    } catch {
+      return c.json({ error: `Unknown agent "${agentId}"` }, 404);
+    }
+
+    if (current.type === 'openai') {
+      if (!OPENAI_MODEL_OPTIONS.some((option) => option.id === model)) {
+        return c.json({ error: `Unknown OpenAI model "${model}" (known: ${OPENAI_MODEL_OPTIONS.map((o) => o.id).join(', ')})` }, 400);
+      }
+    } else if (current.type === 'claude') {
+      if (!CLAUDE_MODEL_ID_RE.test(model)) {
+        return c.json({ error: `Invalid model id format. Expected e.g. claude-opus-4-8 (known: ${VALID_CLAUDE_MODELS.join(', ')})` }, 400);
+      }
+    } else {
+      return c.json({ error: `Provider "${current.type}" manages its model in its own CLI config` }, 400);
+    }
+
+    // Auto-clear any effort/thinking value the new model doesn't support, and
+    // report it so the caller can say what changed rather than leaving a config
+    // that would be rejected at turn start.
+    const { provider: merged, cleared } = reconcileRuntimeOptions({ ...current, model });
+
+    const changed = !isDeepStrictEqual(current, merged);
+    if (!changed) {
+      return c.json({
+        ok: true,
+        agent: agentId,
+        model,
+        cleared,
+        changed: false,
+        sessionReset: false,
+        restartRequired: false,
+      });
+    }
 
     try {
       if (agentId === 'main') {
-        // Main applies in-memory immediately — no restart needed.
-        const { setMainModelOverride } = await import('./bot.js');
-        setMainModelOverride(model);
-        setMainProviderConfig({ type: 'claude', model });
-        return c.json({ ok: true, agent: agentId, model, restartRequired: false });
+        setMainProviderConfig(merged);
+        updateAgentProvider(merged);
+      } else {
+        setAgentProvider(agentId, merged);
       }
-      // Sub-agents read agentDefaultModel into config.ts module state once
-      // at process startup. Yaml change takes effect only after the agent
-      // process restarts. We don't auto-restart because that would kill any
-      // in-flight mission task or Telegram turn — surface the requirement
-      // so the UI can prompt deliberately.
-      setAgentProvider(agentId, { type: 'claude', model });
-      return c.json({ ok: true, agent: agentId, model, restartRequired: true });
+
+      // A model is fixed when a Claude/Codex thread starts. Drop all stored
+      // sessions for this agent so the next message starts on the selected
+      // model. The target bot re-reads agent.yaml per turn, including when it
+      // runs in a separate process from this dashboard.
+      clearAgentSessions(agentId);
+      return c.json({
+        ok: true,
+        agent: agentId,
+        model,
+        cleared,
+        changed: true,
+        sessionReset: true,
+        restartRequired: false,
+      });
     } catch (err) {
       return c.json({ error: 'Failed to update model' }, 500);
     }
   });
 
-  app.get('/api/providers/models', (c) => {
-    const provider = (c.req.query('provider') || '').toLowerCase();
-    const current = getMainProviderConfig();
-    if (!ENABLE_ACP && provider !== 'claude') {
-      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+  // Update an agent's effort / thinking selection without touching the rest
+  // of its provider config. The agent card's secondary dropdowns POST here.
+  // An empty string clears the field back to the provider default rather than
+  // persisting a literal "" that would fail validation on the next read.
+  app.patch('/api/agents/:id/runtime', async (c) => {
+    const agentId = c.req.param('id');
+    const body = await c.req.json<{ runtimeMode?: string; thinkingMode?: string }>();
+    if (body?.runtimeMode === undefined && body?.thinkingMode === undefined) {
+      return c.json({ error: 'runtimeMode or thinkingMode required' }, 400);
     }
+
+    let current: ProviderConfig;
+    try {
+      current = agentId === 'main' ? getMainProviderConfig() : loadAgentConfig(agentId).provider;
+    } catch {
+      return c.json({ error: `Unknown agent "${agentId}"` }, 404);
+    }
+
+    const merged: ProviderConfig = { ...current };
+    if (body.runtimeMode !== undefined) {
+      const value = body.runtimeMode.trim();
+      if (value) merged.runtimeMode = value; else delete merged.runtimeMode;
+    }
+    if (body.thinkingMode !== undefined) {
+      const value = body.thinkingMode.trim();
+      if (value) merged.thinkingMode = value; else delete merged.thinkingMode;
+    }
+
+    // Reject a value the selected model doesn't actually support (e.g. xhigh
+    // on Sonnet 4.6) instead of persisting it and failing at turn start.
+    const validationError = validateProviderModelOptions(merged);
+    if (validationError) return c.json({ error: validationError }, 400);
+
+    const changed = !isDeepStrictEqual(current, merged);
+    if (!changed) {
+      return c.json({
+        ok: true,
+        agent: agentId,
+        runtimeMode: merged.runtimeMode ?? '',
+        thinkingMode: merged.thinkingMode ?? '',
+        changed: false,
+        newChatRequired: false,
+        sessionReset: false,
+        restartRequired: false,
+      });
+    }
+
+    try {
+      if (agentId === 'main') {
+        setMainProviderConfig(merged);
+        updateAgentProvider(merged);
+      } else {
+        setAgentProvider(agentId, merged);
+      }
+
+      return c.json({
+        ok: true,
+        agent: agentId,
+        runtimeMode: merged.runtimeMode ?? '',
+        thinkingMode: merged.thinkingMode ?? '',
+        changed: true,
+        newChatRequired: false,
+        sessionReset: false,
+        restartRequired: false,
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to update runtime options' }, 500);
+    }
+  });
+
+  app.get('/api/providers/models', async (c) => {
+    // Normalize first so a legacy `codex` query from a stale client resolves to
+    // acp-codex (and the response echoes the canonical id), while an unknown
+    // type still falls through to providerGateError's "Unknown provider."
+    const requestedProvider = (c.req.query('provider') || '').toLowerCase();
+    const provider = normalizeProviderType(requestedProvider) ?? requestedProvider;
+    const current = getMainProviderConfig();
+    const gateError = providerGateError(provider);
+    if (gateError) return c.json({ error: gateError }, 403);
     if (provider === 'claude') {
       return c.json({
         provider,
@@ -2273,11 +5164,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         note: 'Gemini model selection is sent through ACP session/set_model when supported.',
       });
     }
-    if (provider === 'codex') {
+    if (provider === 'acp-codex') {
       return c.json({
         provider,
         models: CODEX_MODEL_OPTIONS,
-        defaultModel: current.type === 'codex' ? (current.model ?? DEFAULT_CODEX_MODEL) : DEFAULT_CODEX_MODEL,
+        defaultModel: current.type === 'acp-codex' ? (current.model ?? DEFAULT_CODEX_MODEL) : DEFAULT_CODEX_MODEL,
         selectable: true,
         allowCustom: true,
         note: 'Codex model selection is sent through the codex-acp adapter via ACP session/set_model when supported.',
@@ -2293,34 +5184,78 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         note: 'Custom ACP model ids are provider-specific. Use provider-default to skip session/set_model.',
       });
     }
+    if (provider === 'openai') {
+      return c.json({
+        provider,
+        models: OPENAI_MODEL_OPTIONS,
+        defaultModel: current.type === 'openai' ? (current.model ?? DEFAULT_OPENAI_MODEL) : DEFAULT_OPENAI_MODEL,
+        selectable: true,
+        allowCustom: true,
+        note: 'Native Codex provider. App Server supports incremental streaming and verified policy; SDK remains the rollback transport. Auth via `codex login` (ChatGPT subscription) or OPENAI_API_KEY. Costs shown for GPT turns are estimates computed from token counts.',
+      });
+    }
+    if (provider === 'openrouter') {
+      const models = await fetchOpenRouterModels();
+      const fallback = [{ id: DEFAULT_OPENROUTER_MODEL, label: DEFAULT_OPENROUTER_MODEL }];
+      const list = models.length > 0 ? models : fallback;
+      const currentModel = current.type === 'openrouter' ? current.model : undefined;
+      const defaultModel = currentModel && list.some((m) => m.id === currentModel)
+        ? currentModel
+        : list[0]?.id ?? DEFAULT_OPENROUTER_MODEL;
+      return c.json({
+        provider,
+        models: list,
+        defaultModel,
+        selectable: true,
+        allowCustom: true,
+        note: 'Single-turn chat only — each message is an independent exchange with no prior-turn context (memory injection still applies). Free models (suffix :free) rotate and may be upstream-rate-limited; if one hangs or 429s, try another.',
+      });
+    }
     return c.json({ error: 'Invalid provider' }, 400);
   });
 
   app.get('/api/providers/runtime-options', async (c) => {
-    const providerType = (c.req.query('provider') || '').toLowerCase();
-    if (!ENABLE_ACP && providerType !== 'claude') {
-      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    const requestedType = (c.req.query('provider') || '').toLowerCase();
+    const providerType = normalizeProviderType(requestedType) ?? requestedType;
+    {
+      const gateError = providerGateError(providerType);
+      if (gateError) return c.json({ error: gateError }, 403);
     }
     const current = getMainProviderConfig();
-    const hasCommandOverride = c.req.query('command') !== undefined || c.req.query('args') !== undefined;
-    const base: ProviderConfig = providerType === current.type && !hasCommandOverride
+    const requestedModel = c.req.query('model')?.trim() || undefined;
+    const hasOverride = requestedModel !== undefined
+      || c.req.query('command') !== undefined
+      || c.req.query('args') !== undefined;
+    const base: ProviderConfig = providerType === current.type && !hasOverride
       ? current
       : normalizeProviderConfig({
         type: providerType,
+        model: requestedModel,
         command: c.req.query('command'),
         args: parseProviderArgsQuery(c.req.query('args')),
       });
 
-    if (base.type === 'claude') {
+    const staticOptions = staticRuntimeOptionsFor(base, requestedModel);
+    if (staticOptions) {
       return c.json({
         provider: base.type,
-        modeOptions: CLAUDE_RUNTIME_OPTIONS,
-        thinkingOptions: CLAUDE_THINKING_OPTIONS,
+        ...staticOptions,
         rawConfigOptions: [],
         source: 'static',
       });
     }
-    if (base.type !== 'opencode' && base.type !== 'gemini' && base.type !== 'codex' && base.type !== 'acp') {
+    if (base.type === 'openrouter') {
+      // OpenRouter is a plain OpenAI-compatible HTTP gateway — no ACP-style
+      // session/configuration. No mode/thinking dropdowns to surface.
+      return c.json({
+        provider: base.type,
+        modeOptions: [],
+        thinkingOptions: [],
+        rawConfigOptions: [],
+        source: 'static',
+      });
+    }
+    if (base.type !== 'opencode' && base.type !== 'gemini' && base.type !== 'acp-codex' && base.type !== 'acp') {
       return c.json({ error: 'Invalid provider' }, 400);
     }
     if (base.type === 'acp' && !base.command?.trim()) {
@@ -2352,9 +5287,14 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       command: body.command,
       args: body.args,
     };
+    // Fail closed on a bad type instead of letting the read-oriented Claude
+    // fallback in normalizeProviderConfig silently reconfigure the agent.
+    const inbound = validateInboundProviderType((candidate as { type?: unknown } | null)?.type);
+    if ('error' in inbound) return c.json({ error: inbound.error }, 400);
     const provider = normalizeProviderConfig(candidate);
-    if (!ENABLE_ACP && provider.type !== 'claude') {
-      return c.json({ error: 'Provider selection is disabled. Set ENABLE_ACP=true in .env to enable (beta).' }, 403);
+    {
+      const gateError = providerGateError(provider.type);
+      if (gateError) return c.json({ error: gateError }, 403);
     }
     const validationError = validateProviderConfig(provider);
     if (validationError) return c.json({ error: validationError }, 400);
@@ -2372,6 +5312,25 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       }, 400);
     }
 
+    let current: ProviderConfig;
+    try {
+      current = agentId === 'main' ? getMainProviderConfig() : loadAgentConfig(agentId).provider;
+    } catch {
+      return c.json({ error: `Unknown agent "${agentId}"` }, 404);
+    }
+
+    const changed = !isDeepStrictEqual(current, provider);
+    if (!changed) {
+      return c.json({
+        ok: true,
+        agent: agentId,
+        provider,
+        changed: false,
+        sessionReset: false,
+        restartRequired: false,
+      });
+    }
+
     try {
       if (agentId === 'main') {
         setMainProviderConfig(provider);
@@ -2379,7 +5338,17 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       } else {
         setAgentProvider(agentId, provider);
       }
-      return c.json({ ok: true, agent: agentId, provider, restartRequired: agentId !== 'main' });
+      // Provider transitions cannot resume a thread owned by the previous
+      // engine. Start clean on the next message without restarting the bot.
+      clearAgentSessions(agentId);
+      return c.json({
+        ok: true,
+        agent: agentId,
+        provider,
+        changed: true,
+        sessionReset: true,
+        restartRequired: false,
+      });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Failed to update provider' }, 500);
     }
@@ -2450,37 +5419,14 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return { claudeMd, agentYaml, agentYamlRedacted };
   }
 
-  // Main is the host process — it has no agents/main/ directory and no
-  // agent.yaml (its config lives in .env). Its CLAUDE.md is loaded from
-  // CLAUDECLAW_CONFIG/CLAUDE.md (preferred) or PROJECT_ROOT/CLAUDE.md
-  // (legacy fallback). The editor exposes only the persona for main.
-  function resolveMainClaudeMdPath(): string {
-    const external = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
-    if (fs.existsSync(external)) return external;
-    const repo = path.join(PROJECT_ROOT, 'CLAUDE.md');
-    if (fs.existsSync(repo)) return repo;
-    // Neither exists — write goes to the external path (the canonical
-    // location). Read returns empty.
-    return external;
-  }
-
+  // Disk + runtime already normalized `main` into the standard per-agent
+  // shape: agents/main/agent.yaml (full config) and agents/main/CLAUDE.md
+  // (persona the runtime reads from cwd). So main uses the same read/write
+  // path as every other agent — no special-casing, no hidden Config tab, and
+  // persona edits land where the runtime actually reads them.
   app.get('/api/agents/:id/files', (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
-
-    if (agentId === 'main') {
-      const mainClaude = resolveMainClaudeMdPath();
-      const claudeMd = fs.existsSync(mainClaude) ? fs.readFileSync(mainClaude, 'utf-8') : '';
-      return c.json({
-        agent_id: 'main',
-        claude_md: claudeMd,
-        agent_yaml: '',
-        bot_token_redacted: false,
-        // Tells the UI to hide the Config tab — main has no agent.yaml.
-        config_editable: false,
-        claude_md_path: mainClaude,
-      });
-    }
 
     let agentDir: string;
     try { agentDir = resolveAgentDir(agentId); }
@@ -2506,21 +5452,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       return c.json({ error: 'CLAUDE.md exceeds 200KB' }, 400);
     }
 
-    // Resolve target path — main's CLAUDE.md lives outside the agents/
-    // tree. For sub-agents, the file goes into the agent's resolved dir
-    // (which respects CLAUDECLAW_CONFIG override).
-    let target: string;
-    if (agentId === 'main') {
-      target = resolveMainClaudeMdPath();
-      // Make sure the parent dir exists — fresh installs may not have
-      // created CLAUDECLAW_CONFIG yet.
-      try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
-    } else {
-      let agentDir: string;
-      try { agentDir = resolveAgentDir(agentId); }
-      catch { return c.json({ error: 'agent not found' }, 404); }
-      target = path.join(agentDir, 'CLAUDE.md');
-    }
+    // Every agent — main included — stores its persona at
+    // <agentDir>/CLAUDE.md, which is exactly where the runtime reads it from
+    // cwd. (Previously main wrote to CLAUDECLAW_CONFIG/CLAUDE.md, a path the
+    // runtime never reads, so a persona edit silently never reached the bot.)
+    let agentDir: string;
+    try { agentDir = resolveAgentDir(agentId); }
+    catch { return c.json({ error: 'agent not found' }, 404); }
+    const target = path.join(agentDir, 'CLAUDE.md');
+    // Fresh installs may not have created the agent dir yet.
+    try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
     try {
       snapshotPriorVersion(agentId, 'claudemd', target);
       const atomicEnvWrite = await getAtomicWriter();
@@ -2554,10 +5495,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.put('/api/agents/:id/files/agent-yaml', async (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
-    if (agentId === 'main') {
-      // Main is the host process — its config lives in .env, not yaml.
-      return c.json({ error: 'main agent has no agent.yaml; edit .env directly' }, 400);
-    }
+    // `main` is normalized to the standard per-agent shape (agents/main/
+    // agent.yaml), so it saves through the same path as every other agent.
     const body = await c.req.json().catch(() => null) as { content?: string } | null;
     if (!body || typeof body.content !== 'string') {
       return c.json({ error: 'expected { content: string }' }, 400);
@@ -2570,10 +5509,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     catch { return c.json({ error: 'agent not found' }, 404); }
 
     // Validate as YAML before writing — no point poisoning the file.
+    const yamlMod = await import('js-yaml');
     let parsed: any;
     try {
-      const yaml = await import('js-yaml');
-      parsed = yaml.load(body.content);
+      parsed = yamlMod.load(body.content);
     } catch (err: any) {
       return c.json({ error: 'YAML parse error: ' + (err?.message || err) }, 400);
     }
@@ -2589,18 +5528,63 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       return c.json({ error: 'agent.yaml requires name and telegram_bot_token_env fields' }, 400);
     }
 
+    // Uniqueness guard: the new display name (and any aliases) must not collide
+    // with another agent's id, display name, or alias. Keeps the namespaces
+    // from ever overlapping so resolveAgentId is never ambiguous.
+    const nameCollision = findAgentIdentityCollision(String(parsed.name), { ignoreAgentId: agentId });
+    if (nameCollision) {
+      return c.json({ error: `Display name "${parsed.name}" collides with the ${nameCollision.kind} "${nameCollision.value}" of agent "${nameCollision.agentId}"` }, 409);
+    }
+    const incomingAliases: string[] = Array.isArray(parsed.aliases)
+      ? parsed.aliases.filter((a: unknown): a is string => typeof a === 'string')
+      : [];
+    for (const alias of incomingAliases) {
+      const aliasCollision = findAgentIdentityCollision(alias, { ignoreAgentId: agentId });
+      if (aliasCollision) {
+        return c.json({ error: `Alias "${alias}" collides with the ${aliasCollision.kind} "${aliasCollision.value}" of agent "${aliasCollision.agentId}"` }, 409);
+      }
+    }
+
+    const yamlPath = path.join(agentDir, 'agent.yaml');
+
+    // Rename-append: if the display name changed, retain the outgoing name as
+    // an alias so historical references (--agent <oldName>) keep resolving to
+    // this canonical id forever.
+    let outgoingName: string | undefined;
+    try {
+      if (fs.existsSync(yamlPath)) {
+        const onDiskYaml = yamlMod.load(fs.readFileSync(yamlPath, 'utf-8')) as Record<string, unknown> | null;
+        if (typeof onDiskYaml?.['name'] === 'string') outgoingName = onDiskYaml['name'] as string;
+      }
+    } catch { /* unreadable on-disk yaml — treat as no prior name */ }
+    const renamed = !!outgoingName
+      && outgoingName.trim().toLowerCase() !== String(parsed.name).trim().toLowerCase();
+
     // If the client posted back the redacted token, splice in the real
     // value from the file currently on disk. Means partial edits don't
     // require the user to know the real token.
     let content = body.content;
     if (/bot_token\s*:\s*"?\*\*\*REDACTED\*\*\*"?/.test(content)) {
-      const yamlPath = path.join(agentDir, 'agent.yaml');
       const onDisk = fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf-8') : '';
       const tokenMatch = onDisk.match(/^\s*bot_token\s*:\s*([^\n#]+?)\s*(?:#.*)?$/m);
       const realToken = tokenMatch ? tokenMatch[1] : '';
       if (realToken && realToken !== '"***REDACTED***"') {
         content = content.replace(/^(\s*bot_token\s*:\s*)"?\*\*\*REDACTED\*\*\*"?(\s*(?:#.*)?)$/m, `$1${realToken}$2`);
+        // Keep the parsed object in sync for the rename re-serialization below.
+        if (typeof parsed.bot_token === 'string') parsed.bot_token = realToken.replace(/^"|"$/g, '');
       }
+    }
+
+    if (renamed) {
+      const mergedAliases = [...incomingAliases];
+      if (!mergedAliases.some((a) => a.trim().toLowerCase() === outgoingName!.trim().toLowerCase())) {
+        mergedAliases.push(outgoingName!);
+      }
+      parsed.aliases = mergedAliases;
+      // Re-serialize from the parsed object so the appended alias persists.
+      // (agent.yaml is machine-managed; setAgentModel/Provider/Description
+      // already round-trip it through yaml.dump the same way.)
+      content = yamlMod.dump(parsed, { lineWidth: -1 });
     }
 
     const target = path.join(agentDir, 'agent.yaml');
@@ -2658,17 +5642,14 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!row || row.agent_id !== agentId) return c.json({ error: 'version not found' }, 404);
 
     // Resolve target path with the same rules the GET/PUT endpoints use.
-    let target: string;
-    if (agentId === 'main') {
-      if (row.file_kind !== 'claudemd') return c.json({ error: 'main has no agent.yaml' }, 400);
-      target = resolveMainClaudeMdPath();
-      try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
-    } else {
-      let agentDir: string;
-      try { agentDir = resolveAgentDir(agentId); }
-      catch { return c.json({ error: 'agent not found' }, 404); }
-      target = path.join(agentDir, row.file_kind === 'claudemd' ? 'CLAUDE.md' : 'agent.yaml');
-    }
+    // main is normalized to the standard per-agent shape, so it restores
+    // through the same path as every other agent (both CLAUDE.md and
+    // agent.yaml).
+    let agentDir: string;
+    try { agentDir = resolveAgentDir(agentId); }
+    catch { return c.json({ error: 'agent not found' }, 404); }
+    const target = path.join(agentDir, row.file_kind === 'claudemd' ? 'CLAUDE.md' : 'agent.yaml');
+    try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
 
     try {
       snapshotPriorVersion(agentId, row.file_kind as AgentFileKind, target);
@@ -2712,125 +5693,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   app.post('/api/agents/suggestions/refresh', async (c) => {
-    const liveAgents = ['main', ...listAgentIds()];
-    const agentMeta: Array<{ id: string; description: string; rawCount: number; recentSummaries: string[] }> = [];
-    for (const id of liveAgents) {
-      let description = '';
-      if (id !== 'main') {
-        try { description = loadAgentConfig(id).description || ''; } catch { /* skip */ }
-      } else {
-        description = 'Primary ClaudeClaw bot — general triage and routing';
-      }
-      const entries = getHiveMindEntries(200, id);
-      const allFiltered = entries
-        .map((e) => `[${e.action}] ${e.summary}`)
-        .filter((s) => s.length > 0);
-      // Sample evenly across the agent's last 200 entries, picking 12
-      // representative summaries. We want diversity (different domains,
-      // not just the latest cluster) without bloating the prompt — total
-      // prompt with 6 agents × 12 summaries × ~80 chars stays under ~2 KB
-      // and typically completes in 15–25s.
-      const target = 12;
-      const recentSummaries = allFiltered.length <= target
-        ? allFiltered
-        : allFiltered.filter((_, i) => i % Math.ceil(allFiltered.length / target) === 0).slice(0, target);
-      agentMeta.push({ id, description, rawCount: allFiltered.length, recentSummaries });
-    }
-
-    // Skip agents with too little signal — splitting an agent that's done
-    // 5 things isn't useful, and small classifier prompts can hallucinate
-    // splits.
-    const eligible = agentMeta.filter((a) => a.rawCount >= 20);
-    if (eligible.length === 0) {
-      return c.json({ ok: true, suggestions: [], reason: 'not enough hive_mind activity to analyze' });
-    }
-
-    const recentlySuggested = new Set(
-      getRecentlySuggestedSplits(30).map((r) => `${r.from_agent}::${r.suggested_id}`),
-    );
-
-    // Prompt: "for each agent, is one doing many distinct domains?"
-    // Constrain the model to suggest AT MOST one split per agent and
-    // require activity_share_pct so the user knows whether the
-    // suggestion is meaningful (a 5%-share split isn't worth doing).
-    const promptParts = [
-      'You analyze a multi-agent system to spot when an agent has drifted into doing many distinct things and should be split.',
-      '',
-      'For each agent below, decide: is there ONE coherent sub-domain handling >= 25% of their recent activity that would benefit from being its own specialized agent? Only suggest a split when the new agent would have a clean scope and the parent agent would be more focused after the split.',
-      '',
-      'Return JSON with this exact shape:',
-      '{ "suggestions": [{ "from_agent": "<id>", "suggested_id": "<lowercase-id>", "suggested_name": "<Title Case>", "suggested_description": "<one-sentence scope, 80 chars max>", "reasoning": "<why now, 200 chars max>", "activity_share_pct": <integer 0-100> }] }',
-      '',
-      'Rules:',
-      '- suggested_id must be lowercase letters, numbers, hyphens; not match an existing agent.',
-      '- Suggest at most one split per from_agent.',
-      '- Skip suggestions where activity_share_pct < 25.',
-      '- If no agent needs splitting, return { "suggestions": [] }.',
-      '',
-      'Agents:',
-    ];
-    for (const a of eligible) {
-      promptParts.push('');
-      promptParts.push(`AGENT: ${a.id}`);
-      promptParts.push(`DESCRIPTION: ${a.description || '(no description)'}`);
-      promptParts.push('RECENT ACTIVITY:');
-      for (const s of a.recentSummaries) {
-        promptParts.push(`  - ${s}`);
-      }
-    }
-    const existingIds = new Set(liveAgents);
-
-    let raw = '';
-    const promptStr = promptParts.join('\n');
-    logger.info({ promptBytes: promptStr.length, agentCount: eligible.length }, 'agent suggestion: starting analysis');
-    const t0 = Date.now();
+    // Analysis logic lives in src/agent-suggestions.ts so the same code
+    // path serves both this manual trigger and the 24h periodic job.
+    const { refreshAgentSuggestions } = await import('./agent-suggestions.js');
     try {
-      // 120s timeout — the dashboard process spawns the SDK subprocess
-      // alongside its own busy event loop (war-room polling, memory
-      // ingest, scheduler). Cold-starts under load have measured up to
-      // 90s in practice, vs 4–5s for a standalone CLI call with the
-      // same prompt size. Better to wait than fail spuriously.
-      raw = await extractViaClaude(promptStr, 120_000);
-      logger.info({ elapsedMs: Date.now() - t0, responseBytes: raw.length }, 'agent suggestion: selected provider replied');
+      const result = await refreshAgentSuggestions();
+      return c.json(result);
     } catch (err) {
-      logger.warn({ err: err instanceof Error ? err.message : err, elapsedMs: Date.now() - t0 }, 'agent suggestion analysis failed');
+      logger.warn({ err: err instanceof Error ? err.message : err }, 'agent suggestion analysis failed');
       return c.json({ error: 'analysis failed (selected provider unavailable)' }, 503);
     }
-    const parsed = parseJsonResponse<{ suggestions: any[] }>(raw);
-    const list = Array.isArray(parsed?.suggestions) ? parsed!.suggestions : [];
-
-    let inserted = 0;
-    let skipped = 0;
-    for (const s of list) {
-      if (!s || typeof s !== 'object') { skipped++; continue; }
-      const fromAgent = String(s.from_agent || '').trim();
-      const suggestedId = String(s.suggested_id || '').trim().toLowerCase();
-      const suggestedName = String(s.suggested_name || '').trim();
-      const suggestedDescription = String(s.suggested_description || '').trim();
-      const reasoning = String(s.reasoning || '').trim();
-      const sharePct = Math.max(0, Math.min(100, Math.round(Number(s.activity_share_pct) || 0)));
-
-      if (!fromAgent || !existingIds.has(fromAgent)) { skipped++; continue; }
-      if (!/^[a-z0-9-]{2,32}$/.test(suggestedId)) { skipped++; continue; }
-      if (existingIds.has(suggestedId)) { skipped++; continue; }
-      if (!suggestedName || !suggestedDescription || !reasoning) { skipped++; continue; }
-      if (sharePct < 25) { skipped++; continue; }
-      // Don't re-suggest the exact same split we already proposed in
-      // the last 30 days (whether dismissed or still active).
-      if (recentlySuggested.has(`${fromAgent}::${suggestedId}`)) { skipped++; continue; }
-
-      insertAgentSuggestion({
-        from_agent: fromAgent,
-        suggested_id: suggestedId,
-        suggested_name: suggestedName,
-        suggested_description: suggestedDescription.slice(0, 200),
-        reasoning: reasoning.slice(0, 500),
-        activity_share_pct: sharePct,
-      });
-      inserted++;
-    }
-    insertAuditLog('main', '', 'agent_suggestion_refresh', `inserted=${inserted} skipped=${skipped}`, false);
-    return c.json({ ok: true, inserted, skipped, suggestions: listActiveAgentSuggestions() });
   });
 
   app.post('/api/agents/suggestions/:id/dismiss', (c) => {
@@ -2898,12 +5770,33 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!botToken) return c.json({ error: 'botToken required' }, 400);
 
     try {
+      // Same fail-closed rule as PATCH: a supplied-but-malformed provider is a
+      // 400, never a silent downgrade to Claude. Only a genuinely ABSENT
+      // `provider` field is valid-and-empty — see resolveInboundProvider.
+      const resolved = resolveInboundProvider(body, body?.model?.trim() || undefined);
+      if ('error' in resolved) return c.json({ error: resolved.error }, 400);
+      const provider = resolved.provider;
+      if (provider) {
+        const gateError = providerGateError(provider.type);
+        if (gateError) return c.json({ error: gateError }, 403);
+        const validationError = validateProviderConfig(provider);
+        if (validationError) return c.json({ error: validationError }, 400);
+        const availability = checkProviderAvailability(provider);
+        if (!availability.ok) {
+          return c.json({
+            error: availability.error,
+            installCommand: availability.installCommand,
+            setupHint: availability.setupHint,
+            docsUrl: availability.docsUrl,
+          }, 400);
+        }
+      }
       const result = await createAgent({
         id,
         name,
         description,
         model: body?.model?.trim() || undefined,
-        provider: body?.provider,
+        provider,
         template: body?.template?.trim() || undefined,
         botToken,
       });
@@ -3111,6 +6004,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     'workspace_name',
     'hotkey_mod', // 'meta' | 'ctrl' | 'auto'
     'sidebar_collapsed_sections', // JSON array of section ids
+    'sidebar_runtime_collapsed', // '1' | '0' — footer runtime detail rows collapsed
     'mission_column_order', // JSON array of agent ids
     'mission_column_widths', // JSON object { id: px }
     // JSON {agents: [{id, enabled}], maxSpeakers}. Drives /standup
@@ -3213,8 +6107,15 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     try {
       const envPath = path.join(PROJECT_ROOT, '.env');
       const { setEnvKey } = await import('./env-write.js');
+      // Capture the previous state so the audit row records old→new, which
+      // is what an operator actually wants during incident reconstruction.
+      const { isEnabled } = await import('./kill-switches.js');
+      const prev = isEnabled(key as Parameters<typeof isEnabled>[0]);
       setEnvKey(envPath, key, enabled ? 'true' : 'false');
-      logger.info({ key, enabled }, 'Kill switch toggled via dashboard');
+      logger.info({ key, enabled, prev }, 'Kill switch toggled via dashboard');
+      // Pack 03 audit: flips are blocked=1 because they represent a
+      // safety-relevant state change. The detail captures the transition.
+      insertAuditLog('main', '', 'kill_switch_flip', `${key}: ${prev} -> ${enabled}`, true);
       return c.json({ ok: true, key, enabled });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -3242,6 +6143,276 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const limit = parseInt(c.req.query('limit') || '20', 10);
     const entries = getHiveMindEntries(limit, agentId || undefined);
     return c.json({ entries });
+  });
+
+  // ── mc-kb proxy (laptop's RAG layer on localhost:8091) ─────────────
+  // Sidesteps CORS by proxying server-side. mc-kb-server.service must be running locally.
+  const MCKB_BASE = 'http://127.0.0.1:8091';
+
+  app.get('/api/mckb/health', async (c) => {
+    try {
+      const r = await fetch(`${MCKB_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+      const body = await r.json();
+      return c.json(body, r.status as 200);
+    } catch (e) {
+      return c.json({ status: 'offline', error: String((e as Error).message || e) }, 503);
+    }
+  });
+
+  // ── /journal — daily agent decision journal (Boba/Jazzy/stock/crypto) ──
+  app.get('/api/journal/list', async (c) => {
+    try {
+      const dir = path.join(os.homedir(), 'mc-kb', 'notes', 'agent-journal');
+      if (!fs.existsSync(dir)) return c.json({ days: [] });
+      const days = fs.readdirSync(dir)
+        .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+        .map((f) => f.replace(/\.md$/, ''))
+        .sort()
+        .reverse();
+      return c.json({ days });
+    } catch (e) {
+      return c.json({ days: [], error: String((e as Error).message || e) }, 500);
+    }
+  });
+
+  app.get('/api/journal/get', async (c) => {
+    const date = c.req.query('date') || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return c.json({ error: 'date must be YYYY-MM-DD' }, 400);
+    }
+    try {
+      const filePath = path.join(os.homedir(), 'mc-kb', 'notes', 'agent-journal', `${date}.md`);
+      if (!fs.existsSync(filePath)) {
+        return c.json({ date, content: '', missing: true });
+      }
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const stat = fs.statSync(filePath);
+      return c.json({ date, content, mtime: stat.mtime.toISOString(), bytes: stat.size });
+    } catch (e) {
+      return c.json({ error: String((e as Error).message || e) }, 500);
+    }
+  });
+
+  app.get('/api/mckb/query', async (c) => {
+    const q = c.req.query('q');
+    if (!q) return c.json({ error: 'missing q' }, 400);
+    const top = c.req.query('top') || '5';
+    const tier = c.req.query('tier') || '';
+    const params = new URLSearchParams({ q, top });
+    if (tier) params.set('tier', tier);
+    try {
+      const r = await fetch(`${MCKB_BASE}/query?${params}`, { signal: AbortSignal.timeout(15_000) });
+      const body = await r.json();
+      return c.json(body, r.status as 200);
+    } catch (e) {
+      return c.json({ error: 'mc-kb server unreachable', detail: String((e as Error).message || e) }, 503);
+    }
+  });
+
+  // ── Databases — read-only catalog + query surface (KB RAG, SQL DBs,
+  //    RAG/FTS indexes, masked secrets). All local-only. ──
+  app.get('/api/databases', async (c) => {
+    try {
+      return c.json(await getCatalog());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // Prime all database caches on boot so the operator's first load is warm
+  // (no cold catalog du-walk, no cold KB-sources subprocess). Fire-and-forget.
+  void warmupDatabases();
+
+  app.get('/api/databases/kb/:id/search', async (c) => {
+    const id = c.req.param('id');
+    const q = c.req.query('q') || '';
+    const top = parseInt(c.req.query('top') || '8', 10);
+    try {
+      return c.json(await kbSearch(id, q, top));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/sources', async (c) => {
+    const id = c.req.param('id');
+    try {
+      return c.json(await kbSources(id));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/exam-bank', (c) => {
+    try {
+      return c.json(kbExamBank(c.req.param('id')) as Record<string, unknown>);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/anatomy', (c) => {
+    try {
+      return c.json(kbAnatomy(c.req.param('id')));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/kb/:id/anatomy/img/:file', (c) => {
+    const res = kbAnatomyImage(c.req.param('id'), c.req.param('file'));
+    if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+    const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
+    return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  // Serve extracted DVD frames: /api/databases/kb/:id/anatomy/frames/:videoId/:file
+  app.get('/api/databases/kb/:id/anatomy/frames/:videoId/:file', (c) => {
+    const res = kbAnatomyFrame(c.req.param('id'), c.req.param('videoId'), c.req.param('file'));
+    if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+    const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
+    return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  // Serve per-segment technique audio (Erik's real voice): /api/databases/kb/:id/anatomy/audio/:videoId/:file
+  app.get('/api/databases/kb/:id/anatomy/audio/:videoId/:file', (c) => {
+    const res = kbAnatomyAudio(c.req.param('id'), c.req.param('videoId'), c.req.param('file'));
+    if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+    const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
+    return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  // Serve a curated quiz mini-clip (motion + Erik's voice): /api/databases/kb/:id/anatomy/clip/:file
+  app.get('/api/databases/kb/:id/anatomy/clip/:file', (c) => {
+    const res = kbAnatomyClip(c.req.param('id'), c.req.param('file'));
+    if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+    const ab = res.data.buffer.slice(res.data.byteOffset, res.data.byteOffset + res.data.byteLength) as ArrayBuffer;
+    return c.body(ab, 200, { 'Content-Type': res.mime, 'Cache-Control': 'public, max-age=86400' });
+  });
+
+  // ── Erik Dalton video library ────────────────────────────────────────────
+  // Serves the same generated index nginx serves, plus range-streamed playback
+  // of the full 510-video library. The page reads its media base off
+  // location.origin, so one build works here and on the nginx route.
+  app.get('/dalton', (c) => c.redirect('/dalton/'));
+  app.get('/dalton/', (c) => {
+    const res = daltonIndex();
+    if ('error' in res) return c.text(res.error, 503);
+    return c.html(res.html);
+  });
+
+  app.get('/dalton/media/*', (c) => {
+    const rel = c.req.path.replace(/^\/dalton\/media\//, '');
+    const f = daltonMedia(rel);
+    if ('error' in f) return c.json(f, f.error === 'not found' ? 404 : 403);
+
+    const head = {
+      'Content-Type': f.mime,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'private, max-age=3600',
+    };
+    const range = parseRange(c.req.header('range'), f.size);
+    if (!range) {
+      // Unsatisfiable range (vs. absent) still deserves a 416, not a full body.
+      if (c.req.header('range')) {
+        return c.body(null, 416, { ...head, 'Content-Range': `bytes */${f.size}` });
+      }
+      const s = Readable.toWeb(daltonStream(f.path)) as unknown as ReadableStream;
+      return c.body(s, 200, { ...head, 'Content-Length': String(f.size) });
+    }
+    const { start, end } = range;
+    const s = Readable.toWeb(daltonStream(f.path, start, end)) as unknown as ReadableStream;
+    return c.body(s, 206, {
+      ...head,
+      'Content-Range': `bytes ${start}-${end}/${f.size}`,
+      'Content-Length': String(end - start + 1),
+    });
+  });
+
+  // Curated quiz bank (vision-filtered hands-on moments) with media URLs rewritten.
+  app.get('/api/databases/kb/:id/quiz-bank', (c) => {
+    try {
+      return c.json(kbQuizBank(c.req.param('id')));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // Return the frames _index.json for a KB.
+  app.get('/api/databases/kb/:id/frames-index', (c) => {
+    try {
+      return c.json(kbFramesIndex(c.req.param('id')));
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // Return a single video's frames.json.
+  app.get('/api/databases/kb/:id/frames/:videoId', (c) => {
+    try {
+      const res = kbVideoFrames(c.req.param('id'), c.req.param('videoId'));
+      if ('error' in res) return c.json(res, res.error === 'not found' ? 404 : 400);
+      return c.json(res);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.post('/api/databases/kb/:id/ask', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const body = await c.req.json().catch(() => ({} as { question?: string }));
+      const question = (body as { question?: string }).question || '';
+      const result = await kbAsk(id, question);
+      if (result.error) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/sql/:id/meta', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const result = await sqlMeta(id);
+      if ('error' in result) return c.json(result, 404);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.post('/api/databases/sql/:id/query', async (c) => {
+    const id = c.req.param('id');
+    try {
+      const body = await c.req.json().catch(() => ({} as { sql?: string }));
+      const sql = (body as { sql?: string }).sql || '';
+      const result = sqlSelect(id, sql);
+      if ('error' in result) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/secrets', (c) => {
+    try {
+      return c.json(listSecrets());
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.get('/api/databases/secrets/reveal', (c) => {
+    const source = c.req.query('source') || '';
+    const name = c.req.query('name') || '';
+    try {
+      const result = revealSecret(source, name);
+      if (result.error) return c.json(result, 403);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
   });
 
   // ── Chat endpoints ─────────────────────────────────────────────────
@@ -3340,6 +6511,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // /hive, /usage, /audit, /settings work without a token: the page
   // loads the SPA, which reads ?token= from the URL or sessionStorage
   // before making any API call.
+  // Accounts — read-only cross-product user inventory (ARIES / MissionCtrl /
+  // Massage). MUST be registered BEFORE the SPA catch-all below, or app.get('*')
+  // swallows /accounts + /api/accounts. See src/accounts.ts.
+  registerAccounts(app);
+
   app.get('*', (c) => {
     const path = new URL(c.req.url).pathname;
     // /api/* would have been gated earlier, but if it slipped through
@@ -3371,7 +6547,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // dashboard-token leak away from full mutation access. Operators who
   // want Cloudflare-tunneled or LAN access opt in via DASHBOARD_BIND in
   // .env (e.g. `DASHBOARD_BIND=0.0.0.0`).
-  const bindHost = (process.env.DASHBOARD_BIND || '127.0.0.1').trim() || '127.0.0.1';
+  const bindHost = (process.env.DASHBOARD_BIND || DASHBOARD_BIND || '127.0.0.1').trim() || '127.0.0.1';
   if (bindHost !== '127.0.0.1' && bindHost !== 'localhost') {
     logger.warn(
       { bindHost, port: DASHBOARD_PORT },
@@ -3427,7 +6603,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         // Without this, anyone who can reach the dashboard port could
         // proxy into the local Pipecat War Room socket with no auth.
         const token = url.searchParams.get('token');
-        if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
+        if (!DASHBOARD_AUTH_DISABLED && !safeTokenEqual(token, DASHBOARD_TOKEN)) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
           return;

@@ -1,6 +1,6 @@
-import { CronExpressionParser } from 'cron-parser';
-
 import { AGENT_ID, ALLOWED_CHAT_ID, agentMcpAllowlist, agentDefaultModel } from './config.js';
+import { isEnabled } from './kill-switches.js';
+import { computeNextRun } from './cron.js';
 import { ingestConversationTurn } from './memory-ingest.js';
 import {
   getDueTasks,
@@ -13,12 +13,20 @@ import {
   completeMissionTask,
   resetStuckMissionTasks,
   getMissionTask,
+  insertAuditLog,
+  areAllGroupChildrenTerminal,
+  getGroupChildren,
+  getJoinMission,
+  releaseJoinMission,
+  updateMissionPrompt,
+  type MissionTask,
 } from './db.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
 import { getSelectedProviderConfig } from './active-provider.js';
+import { evaluateAcceptance } from './acceptance.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -26,6 +34,38 @@ type Sender = (text: string) => Promise<void>;
 const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 let sender: Sender;
+
+/**
+ * Tier 3 gather/join: when a group-tagged 'task' mission reaches a terminal
+ * status, check whether every sibling in its group is now terminal too. If
+ * so, assemble the children's results into the parked 'waiting' join
+ * mission's prompt and atomically release it (waiting -> queued). Defensive:
+ * a non-grouped mission, or a group with no join mission, is a no-op.
+ */
+function maybeReleaseJoinForMission(mission: MissionTask): void {
+  if (!mission.group_id || mission.role !== 'task') return;
+  if (!areAllGroupChildrenTerminal(mission.group_id)) return;
+
+  const join = getJoinMission(mission.group_id);
+  if (!join) {
+    logger.warn({ groupId: mission.group_id }, 'Gather group has no join mission to release');
+    return;
+  }
+
+  const children = getGroupChildren(mission.group_id);
+  const assembled = children
+    .map((c) => `=== ${c.title} (@${c.assigned_agent ?? 'unassigned'}) ===\n${c.result ?? c.error ?? '(no output)'}`)
+    .join('\n\n');
+  updateMissionPrompt(join.id, `${join.prompt}\n\n--- Collected results ---\n${assembled}`);
+
+  const released = releaseJoinMission(mission.group_id);
+  if (released) {
+    logger.info({ groupId: mission.group_id, joinId: join.id }, 'Released join mission for gather group');
+  }
+  // If released === false, another completing sibling already won the race;
+  // this caller does nothing further (the prompt write above is idempotent-safe
+  // since it re-derives from current child state each time it runs).
+}
 
 /**
  * In-memory set of task IDs currently being executed.
@@ -60,7 +100,21 @@ export function initScheduler(send: Sender, agentId = 'main'): void {
   logger.info({ agentId }, 'Scheduler started (checking every 60s)');
 }
 
+// Logged once per disable window so the journal shows a single line, not
+// one per 60s tick while an incident is in progress.
+let _scheduledTasksDisabledLogged = false;
+let _missionTasksDisabledLogged = false;
+
 async function runDueTasks(): Promise<void> {
+  if (!isEnabled('SCHEDULER_ENABLED')) {
+    if (!_scheduledTasksDisabledLogged) {
+      logger.warn('SCHEDULER_ENABLED=false — skipping due scheduled tasks (set to true in .env to resume)');
+      _scheduledTasksDisabledLogged = true;
+    }
+    return;
+  }
+  _scheduledTasksDisabledLogged = false;
+
   const tasks = getDueTasks(schedulerAgentId);
 
   if (tasks.length > 0) {
@@ -91,7 +145,11 @@ async function runDueTasks(): Promise<void> {
       const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
       try {
-        await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
+        // 2026-07-29: this used to announce every scheduled task by echoing its raw PROMPT
+        // ("Scheduled task running: \"[brief:premarket] You are Boba, lead AI t...\""). That is
+        // plumbing, not information — Mike gets the finished output a minute later either way.
+        // The fire is still recorded in the log line above and in the audit table; only the
+        // phone notification is gone. Failures and timeouts below still speak.
 
         // Run as a fresh agent call (no session — scheduled tasks are autonomous)
         const result = await runAgent(
@@ -109,14 +167,23 @@ async function runDueTasks(): Promise<void> {
 
         if (result.aborted) {
           updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
+          insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'scheduled_task_run', `${task.id}: timeout (10m)`, true);
           await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
           logger.warn({ taskId: task.id }, 'Task timed out');
           return;
         }
 
         const text = result.text?.trim() || 'Task completed with no output.';
+        const acceptancePassed = evaluateAcceptance(task.acceptance_check, result.text ?? '');
+        const lastStatus: 'success' | 'failed' = acceptancePassed ? 'success' : 'failed';
+        const resultText = acceptancePassed
+          ? text
+          : `Acceptance check not met: output did not contain "${task.acceptance_check}".\n\n${text}`;
         for (const chunk of splitMessage(formatForTelegram(text))) {
           await sender(chunk);
+        }
+        if (!acceptancePassed) {
+          await sender(`⚠ Acceptance check not met: expected output to contain "${task.acceptance_check}".`);
         }
 
         // Inject task output into the active chat session so user replies have context
@@ -135,13 +202,15 @@ async function runDueTasks(): Promise<void> {
           logger.error({ err, taskId: task.id }, 'Memory ingestion fire-and-forget failed (scheduled task)');
         });
 
-        updateTaskAfterRun(task.id, nextRun, text, 'success');
+        updateTaskAfterRun(task.id, nextRun, resultText, lastStatus);
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'scheduled_task_run', `${task.id}: ${lastStatus} (${text.length} chars)`, !acceptancePassed);
 
         logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
       } catch (err) {
         clearTimeout(timeout);
         const errMsg = err instanceof Error ? err.message : String(err);
         updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'scheduled_task_run', `${task.id}: failed — ${errMsg.slice(0, 200)}`, true);
 
         logger.error({ err, taskId: task.id }, 'Scheduled task failed');
         try {
@@ -160,6 +229,15 @@ async function runDueTasks(): Promise<void> {
 }
 
 async function runDueMissionTasks(): Promise<void> {
+  if (!isEnabled('SCHEDULER_ENABLED')) {
+    if (!_missionTasksDisabledLogged) {
+      logger.warn('SCHEDULER_ENABLED=false — skipping mission task claims');
+      _missionTasksDisabledLogged = true;
+    }
+    return;
+  }
+  _missionTasksDisabledLogged = false;
+
   const mission = claimNextMissionTask(schedulerAgentId);
   if (!mission) return;
 
@@ -204,9 +282,12 @@ async function runDueMissionTasks(): Promise<void> {
       if (result.aborted) {
         if (cancelledByUser) {
           // Status is already 'cancelled' from the dashboard write — leave it.
+          insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: cancelled-by-user`, false);
           logger.info({ missionId: mission.id }, 'Mission task cancelled by user');
         } else {
           completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
+          insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: timeout (10m)`, true);
+          maybeReleaseJoinForMission({ ...mission, status: 'failed' });
           logger.warn({ missionId: mission.id }, 'Mission task timed out');
           try {
             await sender('Mission task timed out: "' + mission.title + '"');
@@ -217,17 +298,32 @@ async function runDueMissionTasks(): Promise<void> {
           }
         }
       } else {
-        const text = result.text?.trim() || 'Task completed with no output.';
+        // A mission can finish with nothing to say — most often an FYI handback
+        // that landed on this agent's board (e.g. a report routed back to the
+        // originator). We still want a closure signal (silence reads as an
+        // unresponsive bot), but not the noisy "Task completed with no output."
+        // wall. So: real output goes through as-is; an empty turn gets a compact
+        // completion marker, and doesn't pollute conversation context/memory.
+        const rawText = result.text?.trim() ?? '';
+        const hasOutput = rawText.length > 0;
+        const text = hasOutput ? rawText : 'Task completed with no output.';
         completeMissionTask(mission.id, text, 'completed');
-        logger.info({ missionId: mission.id }, 'Mission task completed');
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: completed (${text.length} chars)`, false);
+        maybeReleaseJoinForMission({ ...mission, status: 'completed' });
+        logger.info({ missionId: mission.id, hasOutput }, 'Mission task completed');
 
-        // Send result to Telegram
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
+        // Always give a closure signal: full output when there is any,
+        // otherwise a compact one-line marker instead of the noisy placeholder.
+        if (hasOutput) {
+          for (const chunk of splitMessage(formatForTelegram(text))) {
+            await sender(chunk);
+          }
+        } else {
+          await sender(`✓ ${mission.title} — done`);
         }
 
-        // Inject into conversation context so agent can reference it
-        if (ALLOWED_CHAT_ID) {
+        // Inject into conversation context so agent can reference it (skip empty turns).
+        if (ALLOWED_CHAT_ID && hasOutput) {
           const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
           logConversationTurn(ALLOWED_CHAT_ID, 'user', '[Mission task: ' + mission.title + ']: ' + mission.prompt, activeSession ?? undefined, schedulerAgentId);
           logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
@@ -236,19 +332,25 @@ async function runDueMissionTasks(): Promise<void> {
         // Fire-and-forget memory extraction. Synthetic chat_id when this agent has no
         // user-facing Telegram chat (specialists usually don't). Mission tasks produce
         // content worth remembering, grouped under a per-agent synthetic thread.
-        const ingestChatId = ALLOWED_CHAT_ID || `mission-${schedulerAgentId}`;
-        void ingestConversationTurn(ingestChatId, '[Mission task: ' + mission.title + ']: ' + mission.prompt, text, schedulerAgentId).catch((err) => {
-          logger.error({ err, missionId: mission.id }, 'Memory ingestion fire-and-forget failed (mission task)');
-        });
+        // Skip when there was no output — nothing worth remembering.
+        if (hasOutput) {
+          const ingestChatId = ALLOWED_CHAT_ID || `mission-${schedulerAgentId}`;
+          void ingestConversationTurn(ingestChatId, '[Mission task: ' + mission.title + ']: ' + mission.prompt, text, schedulerAgentId).catch((err) => {
+            logger.error({ err, missionId: mission.id }, 'Memory ingestion fire-and-forget failed (mission task)');
+          });
+        }
       }
     } catch (err) {
       clearTimeout(timeout);
       clearInterval(cancelPoll);
       const errMsg = err instanceof Error ? err.message : String(err);
       if (cancelledByUser) {
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: cancelled-by-user (threw on abort)`, false);
         logger.info({ missionId: mission.id }, 'Mission task cancelled by user (threw on abort)');
       } else {
         completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
+        insertAuditLog(schedulerAgentId, ALLOWED_CHAT_ID || '', 'mission_task_run', `${mission.id}: failed — ${errMsg.slice(0, 200)}`, true);
+        maybeReleaseJoinForMission({ ...mission, status: 'failed' });
         logger.error({ err, missionId: mission.id }, 'Mission task failed');
       }
     } finally {
@@ -258,7 +360,7 @@ async function runDueMissionTasks(): Promise<void> {
   });
 }
 
-export function computeNextRun(cronExpression: string): number {
-  const interval = CronExpressionParser.parse(cronExpression);
-  return Math.floor(interval.next().getTime() / 1000);
-}
+// Re-exported from the leaf `cron.ts` so the historical `./scheduler.js` import
+// path (dashboard.ts, etc.) keeps working while the single implementation lives
+// in a module the dispatch action layer can import without a cycle.
+export { computeNextRun } from './cron.js';

@@ -4,7 +4,7 @@ import { getDueTasks } from './db.js';
 import { messageQueue } from './message-queue.js';
 
 const state = vi.hoisted(() => ({
-  provider: { type: 'codex' as const, model: 'gpt-5.3-codex' },
+  provider: { type: 'acp-codex' as const, model: 'gpt-5.3-codex' },
   dueTasks: [] as Array<{ id: string; prompt: string; schedule: string }>,
   runAgentCalls: [] as unknown[][],
   enqueued: [] as Array<() => Promise<void>>,
@@ -45,6 +45,7 @@ vi.mock('./db.js', () => ({
   completeMissionTask: vi.fn(),
   resetStuckMissionTasks: vi.fn(() => 0),
   getMissionTask: vi.fn(() => null),
+  insertAuditLog: vi.fn(),
 }));
 
 vi.mock('./bot.js', () => ({
@@ -88,6 +89,6 @@ describe('scheduler provider selection', () => {
     await state.enqueued[0]();
     expect(send).toHaveBeenCalled();
     expect(state.runAgentCalls).toHaveLength(1);
-    expect(state.runAgentCalls[0][8]).toEqual({ type: 'codex', model: 'gpt-5.3-codex' } satisfies ProviderConfig);
+    expect(state.runAgentCalls[0][8]).toEqual({ type: 'acp-codex', model: 'gpt-5.3-codex' } satisfies ProviderConfig);
   });
 });

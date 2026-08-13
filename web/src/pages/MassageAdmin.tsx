@@ -1,0 +1,2664 @@
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import {
+  Activity,
+  CalendarClock,
+  Check,
+  ClipboardList,
+  Copy,
+  Download,
+  Gift,
+  History,
+  LockKeyhole,
+  Mail,
+  MessageSquareText,
+  Mic,
+  Plus,
+  Printer,
+  RefreshCw,
+  Save,
+  Send,
+  ShieldAlert,
+  Stethoscope,
+  Ticket,
+  Trash2,
+  UserPlus,
+  UserRound,
+  X,
+} from 'lucide-preact';
+import { PageHeader, Tab } from '@/components/PageHeader';
+import { PageState } from '@/components/PageState';
+import { NestedSquaresSpinner } from '@/components/NestedSquaresSpinner';
+import { useFetch, invalidateFetchCache } from '@/lib/useFetch';
+import { useSpin } from '@/lib/useSpin';
+import { ScheduleCalendar, isoLocalDate } from '@/components/massage/ScheduleCalendar';
+import { FormBuilder } from '@/components/massage/FormBuilder';
+import { apiPatch, apiPost, apiGet, apiPut, apiDelete } from '@/lib/api';
+import { formatRelativeTime } from '@/lib/format';
+
+interface MigrationState {
+  required: boolean;
+  missingUserColumns: string[];
+  missingTables: string[];
+  sqlFile: string;
+}
+
+interface MassageClient {
+  id: string;
+  name: string;
+  phone: string;
+  email: string;
+  notes: string;
+  nextVisitFreeEnhancement: string;
+  enhancementExpirationDate: string;
+  emailOptIn: boolean;
+  smsOptIn: boolean;
+  accountStatus: string;
+  createdAt: string;
+  emailVerifiedAt: string | null;
+  appointmentCount: number;
+  upcomingAppointmentCount: number;
+  rewardBalance: number;
+  lastVisitMs: number | null;
+}
+
+interface AdminAction {
+  id: number;
+  adminUser: string;
+  clientId: string;
+  field: string;
+  oldValue: string | null;
+  newValue: string | null;
+  timestamp: string;
+}
+
+interface Overview {
+  dbPath: string;
+  migration: MigrationState;
+  clients: MassageClient[];
+  actionLog: AdminAction[];
+}
+
+interface AdminSession {
+  canEdit: boolean;
+  adminUser: string | null;
+  reason: string | null;
+  roleTodo: string;
+}
+
+interface Appointment {
+  id: string;
+  appt_date: string;
+  appt_time: string;
+  service_name: string;
+  // Booked service length — the SOAP note derives its duration from this
+  // instead of asking (the server's appointmentsForUser does SELECT *).
+  duration_min?: number | null;
+  status: string;
+  start_ms: number;
+  client_email: string;
+  enhancement_applied?: string | null;
+}
+
+type Draft = Pick<
+  MassageClient,
+  | 'name'
+  | 'phone'
+  | 'email'
+  | 'notes'
+  | 'nextVisitFreeEnhancement'
+  | 'enhancementExpirationDate'
+  | 'emailOptIn'
+  | 'smsOptIn'
+  | 'accountStatus'
+>;
+
+const agoFromIso = (iso: string | null) => (iso ? formatRelativeTime(Math.floor(Date.parse(iso) / 1000)) : '-');
+const agoFromMs = (ms: number | null) => (ms ? formatRelativeTime(Math.floor(ms / 1000)) : 'never');
+
+function toDraft(client: MassageClient): Draft {
+  return {
+    name: client.name,
+    phone: client.phone,
+    email: client.email,
+    notes: client.notes,
+    nextVisitFreeEnhancement: client.nextVisitFreeEnhancement,
+    enhancementExpirationDate: client.enhancementExpirationDate,
+    emailOptIn: client.emailOptIn,
+    smsOptIn: client.smsOptIn,
+    accountStatus: client.accountStatus || 'active',
+  };
+}
+
+// A form field. Optionally shows a compact "↺ reuse…" picker in the label row, populated
+// with values this SAME client had in earlier SOAP notes — pick one to autofill the field
+// (cuts repetitive typing for regulars). The underlying input/textarea is never changed.
+function Field({ label, children, prior, onPick }: {
+  label: string; children: preact.ComponentChildren; prior?: string[]; onPick?: (v: string) => void;
+}) {
+  const hasPrior = !!(prior && prior.length && onPick);
+  return (
+    <div class="block">
+      <div class="mb-1 flex items-center justify-between gap-2">
+        <div class="text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+        {hasPrior && (
+          <select
+            class="max-w-[55%] shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1 py-0.5 text-[13px] text-[var(--color-text-muted)] outline-none focus:border-[var(--color-accent)]"
+            title="Reuse a value you wrote before for this client"
+            value=""
+            onChange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) onPick!(v); (e.currentTarget as HTMLSelectElement).value = ''; }}
+          >
+            <option value="">↺ reuse…</option>
+            {prior!.map((p, i) => <option key={i} value={p}>{p.length > 60 ? p.slice(0, 57) + '…' : p}</option>)}
+          </select>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+const inputClass = 'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[15px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] disabled:opacity-60';
+const btnGhost = 'inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[14px] font-medium text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)] disabled:opacity-40';
+const btnAccent = 'inline-flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-[15px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40';
+
+// ── SOAP fast-entry toolkit (tap-first, <5-minute notes) ──────────────────────
+// Web Speech API dictation. onText appends each final transcript. Chrome-only; the
+// mic button hides itself where speech recognition is unavailable.
+function useDictation(onText: (t: string) => void) {
+  const recRef = useRef<any>(null);
+  const [listening, setListening] = useState(false);
+  const SR = typeof window !== 'undefined' ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+  const supported = !!SR;
+  const toggle = () => {
+    if (!supported) return;
+    if (listening) { try { recRef.current?.stop(); } catch { /* noop */ } setListening(false); return; }
+    const rec = new SR();
+    rec.lang = 'en-US'; rec.interimResults = false; rec.continuous = true;
+    rec.onresult = (e: any) => {
+      let t = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript;
+      if (t.trim()) onText(t.trim());
+    };
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    recRef.current = rec;
+    try { rec.start(); setListening(true); } catch { setListening(false); }
+  };
+  useEffect(() => () => { try { recRef.current?.stop(); } catch { /* noop */ } }, []);
+  return { listening, toggle, supported };
+}
+
+// Append a phrase/transcript to a field, tidying separators.
+const appendText = (cur: string, add: string) => {
+  const c = (cur || '').trimEnd();
+  if (!c) return add;
+  return /[.,;:]$/.test(c) ? `${c} ${add}` : `${c}, ${add}`;
+};
+
+// Tap-to-insert canned phrases per SOAP field, and quick finding chips per body region.
+const SOAP_PHRASES: Record<string, string[]> = {
+  subjective: ['Client reports', 'Pain worse with', 'Pain better with', 'No new concerns', 'Sleeping poorly', 'Stress / tension'],
+  assessment: ['Myofascial restriction', 'Muscle tension / spasm', 'Postural strain', 'Responding well', 'Chronic holding pattern'],
+  plan: ['Continue current plan', 'Increase frequency', 'Focus next session', '4–6 week plan', 'Reassess next visit'],
+  home_care: ['Hydrate', 'Daily stretching', 'Heat before / ice after', 'Rest the area', 'Self-massage'],
+  referrals: ['None', 'Physician follow-up', 'Chiropractic'],
+  adverse_reactions: ['None', 'Mild soreness expected', 'Tolerated well'],
+};
+const FINDING_CHIPS = ['Tight', 'Knotted', 'Spasm', 'Tender', 'Trigger pt', 'Adhesions', 'ROM↓', 'Inflamed', 'Hypertonic'];
+// Region-specific quick findings shown FIRST (before the common chips) so a tapped
+// region offers its most-likely findings in one tap. Additive — common chips still follow.
+const REGION_FINDING_CHIPS: Record<string, string[]> = {
+  'Neck': ['Stiff', 'Reduced rotation'],
+  'Shoulders': ['Impinged', 'Elevated'],
+  'Back': ['Erector tension', 'SI tightness'],
+  'Arms & Hands': ['Forearm tight', 'Grip fatigue'],
+  'Legs': ['Hamstring tight', 'Calf knots'],
+  'Scalp': ['Tension band'],
+  'Face': ['Jaw / TMJ'],
+  'Pectoral Muscles': ['Rounded posture'],
+  'Abdomen': ['Guarding'],
+  'Gluteal Region': ['Piriformis', 'Glute med'],
+  'Feet': ['Plantar tension', 'Arch strain'],
+};
+// Default severity for a freshly-tapped region: a real, mild baseline (not 0) so the
+// flag immediately shows a color AND lands on the trend charts; therapist adjusts up/down.
+const DEFAULT_SEVERITY = 3;
+
+function Chip({ label, onClick, on }: { label: string; onClick: () => void; on?: boolean }) {
+  return (
+    <button type="button" onClick={onClick}
+      class={`rounded-full border px-2 py-0.5 text-[13px] leading-none transition ${on
+        ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-[var(--color-text)]'
+        : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
+      {label}
+    </button>
+  );
+}
+
+function MicButton({ onText }: { onText: (t: string) => void }) {
+  const { listening, toggle, supported } = useDictation(onText);
+  if (!supported) return null;
+  return (
+    <button type="button" title={listening ? 'Stop dictation' : 'Dictate (voice to text)'} onClick={toggle}
+      class={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[13px] ${listening
+        ? 'border-[var(--color-status-failed)] text-[var(--color-status-failed)] animate-pulse'
+        : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>
+      <Mic size={14} /> {listening ? 'listening…' : 'voice'}
+    </button>
+  );
+}
+
+// Objective findings, tap-only, grouped by the documentation framework an LMT
+// is taught to chart with: the Four T's of palpation (Tone, Texture,
+// Tenderness, Temperature) + ROM/posture observations + response to treatment
+// (refined with research 2026-08-11 — massagetherapyreference.com/palpation,
+// AMTA journal "Effective Palpation", MBLExGuide SOAP notes). Every phrase is
+// an observation inside the LMT scope — felt, seen or measured, no diagnosis.
+// Location/side detail belongs to the Body Chart below; response chips make
+// the note show change, which is what an auditor or referring provider reads for.
+const OBJECTIVE_GROUPS: Array<{ group: string; options: string[] }> = [
+  { group: 'Tone', options: ['Hypertonic', 'Muscle guarding', 'Muscle spasm', 'Low tone'] },
+  { group: 'Texture', options: ['Taut bands', 'Ropy / fibrous', 'Trigger point (local)', 'Trigger point w/ referral', 'Adhesions — reduced glide', 'Fascial restriction', 'Boggy / edema'] },
+  { group: 'Tenderness', options: ['Tender — light pressure', 'Tender — deep pressure only', 'Referred pain on pressure', 'No tenderness reported'] },
+  // Vagaro's charting guide (learn/soap-notes-massage-therapists) adds visible
+  // signs (redness/swelling) and side-to-side comparison to the objective
+  // vocabulary — their worked example: "ROM limited turning right, compared to
+  // the left". Side chips give that comparison without a free-text detour.
+  { group: 'Temperature · Visible', options: ['Localized warmth', 'Cool to touch', 'Redness noted', 'Swelling noted'] },
+  { group: 'ROM · Posture', options: ['Restricted ROM', 'Painful at end-range', 'ROM improved after work', 'Guarded movement', 'Forward head posture', 'Rounded shoulders', 'Elevated shoulder', 'Uneven hips'] },
+  { group: 'Side', options: ['Left side', 'Right side', 'Bilateral', 'R > L', 'L > R'] },
+  { group: 'Response', options: ['Released w/ sustained pressure', 'Guarding eased during session', 'Tolerated deep pressure well', 'Client relaxed during session'] },
+];
+// Toggle-chip editor over a comma-joined string field, with a REDUCED free-text
+// row underneath (Mike's ask 2026-08-11: reduce the box, not remove it). Chips
+// carry the findings; the small box is for a brief in-scope extra only. Both
+// live in the same string: chip-matching fragments drive the chip state, and
+// everything else (including old typed notes) is the free text.
+function FindingChips({ label, value, onChange, groups, input = true, placeholder }: {
+  label: string; value: string; onChange: (v: string) => void; groups: Array<{ group: string; options: string[] }>; input?: boolean; placeholder?: string;
+}) {
+  const options = groups.flatMap((g) => g.options);
+  const parts = value.split(',').map((x) => x.trim()).filter(Boolean);
+  const selected = new Set(parts.filter((x) => options.includes(x)));
+  // Local text so a trailing comma isn't eaten mid-keystroke by the round-trip
+  // through the composed value; seeded once from the non-chip fragments.
+  const [freeText, setFreeText] = useState(() => parts.filter((x) => !options.includes(x)).join(', '));
+  const compose = (sel: Set<string>, free: string) => {
+    const extra = free.split(',').map((x) => x.trim()).filter(Boolean);
+    return [...options.filter((o) => sel.has(o)), ...extra].join(', ');
+  };
+  return (
+    <div class="block">
+      <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+      {groups.map((g) => (
+        <div key={g.group} class="mb-2">
+          {g.group && <div class="mb-1 text-[12px] uppercase tracking-wider text-[var(--color-text-faint)] opacity-80">{g.group}</div>}
+          <div class="flex flex-wrap gap-1.5">
+            {g.options.map((o) => (
+              <button key={o} type="button" onClick={() => { const next = new Set(selected); if (next.has(o)) next.delete(o); else next.add(o); onChange(compose(next, freeText)); }}
+                class={`rounded-md border px-2 py-1.5 text-[14px] ${selected.has(o)
+                  ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]'
+                  : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+                {o}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+      {input && <input type="text" class={`${inputClass} mt-1.5`} placeholder={placeholder || 'Anything else felt/observed (optional, stays in scope)…'}
+        value={freeText} onInput={(e) => { const v = (e.currentTarget as HTMLInputElement).value; setFreeText(v); onChange(compose(selected, v)); }} />}
+    </div>
+  );
+}
+
+const btnDanger = 'inline-flex items-center gap-1.5 rounded-md border border-[var(--color-status-failed)] px-3 py-1.5 text-[14px] font-semibold text-[var(--color-status-failed)] transition-colors hover:bg-[color-mix(in_srgb,var(--color-status-failed)_12%,transparent)] disabled:opacity-40';
+
+export function MassageAdmin() {
+  const overview = useFetch<Overview>('/api/massage-admin/clients', 30000);
+  const session = useFetch<AdminSession>('/api/massage-admin/session', 30000);
+  const { busy: refreshing, spin } = useSpin();
+  const [tab, setTab] = useState<'today' | 'profile' | 'accounts' | 'intakes' | 'formbuilder' | 'soap' | 'messaging' | 'promos' | 'availability'>('today');
+  // Today-tab "SOAP note" quick-open: which client (and appointment) the SOAP tab
+  // should land on. Cleared when the SOAP tab is opened directly from the tab bar.
+  const [soapJump, setSoapJump] = useState<{ clientId: string; apptId?: string } | null>(null);
+  // Fetched here (not just in the tab) so the tab label can show a pending-request count badge.
+  const pendingReqs = useFetch<PendingResp>('/api/massage-admin/availability/pending', 30000);
+
+  const migration = overview.data?.migration;
+  const canEdit = Boolean(session.data?.canEdit && !migration?.required);
+
+  return (
+    <div class="flex h-full flex-col">
+      <PageHeader
+        title="Massage Admin"
+        tabs={
+          // One scrolling row instead of three wrapped rows on a phone — the
+          // tab strip was eating a third of the screen before any content.
+          <div class="mc-tabstrip flex w-full flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
+            <Tab label="Today" active={tab === 'today'} onClick={() => setTab('today')} />
+            <Tab label="Client Profile" active={tab === 'profile'} count={overview.data?.clients.length} onClick={() => setTab('profile')} />
+            <Tab label="Accounts" active={tab === 'accounts'} onClick={() => setTab('accounts')} />
+            <Tab label="Intake Forms" active={tab === 'intakes'} onClick={() => setTab('intakes')} />
+            <Tab label="Form Builder" active={tab === 'formbuilder'} onClick={() => setTab('formbuilder')} />
+            <Tab label="SOAP Notes" active={tab === 'soap'} onClick={() => { setSoapJump(null); setTab('soap'); }} />
+            <Tab label="Messaging" active={tab === 'messaging'} onClick={() => setTab('messaging')} />
+            <Tab label="Promos & Codes" active={tab === 'promos'} onClick={() => setTab('promos')} />
+            <Tab label="Availability" active={tab === 'availability'} count={pendingReqs.data?.pending?.length || undefined} onClick={() => setTab('availability')} />
+          </div>
+        }
+        actions={
+          <button type="button" onClick={() => void spin(() => { overview.refresh(); session.refresh(); })} disabled={refreshing} aria-busy={refreshing} class={btnGhost}>
+            {refreshing ? <NestedSquaresSpinner size={14} /> : <RefreshCw size={14} />} refresh
+          </button>
+        }
+      />
+
+      {overview.error && <PageState error={overview.error} />}
+      {overview.loading && !overview.data && <PageState loading />}
+
+      {overview.data && (
+        <div class="flex-1 overflow-y-auto px-4 py-4 md:px-6">
+          <AuthBanner session={session.data} sessionError={session.error} />
+
+          {migration?.required && (
+            <section class="mb-4 rounded-lg border border-[var(--color-warn)] px-4 py-3 text-[15px] text-[var(--color-warn)]">
+              <div class="flex items-start gap-2">
+                <ShieldAlert size={16} class="mt-0.5 shrink-0" />
+                <div>
+                  <div class="font-semibold">Migration required before editing</div>
+                  <div class="mt-1 text-[var(--color-text-muted)]">
+                    Apply <span class="font-mono">{migration.sqlFile}</span> to the massage database.
+                    Missing columns: {migration.missingUserColumns.join(', ') || 'none'}. Missing tables: {migration.missingTables.join(', ') || 'none'}.
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {tab === 'today' && <TodayTab overview={overview} pending={pendingReqs} onGoTo={setTab} onSoap={(j) => { setSoapJump(j); setTab('soap'); }} />}
+          {tab === 'profile' && <ClientProfileTab overview={overview} canEdit={canEdit} />}
+          {tab === 'accounts' && <AccountsTab overview={overview} canEdit={canEdit} />}
+          {tab === 'intakes' && <IntakesTab canEdit={canEdit} />}
+          {tab === 'formbuilder' && <FormBuilder canEdit={canEdit} />}
+          {tab === 'soap' && <SoapTab overview={overview} canEdit={canEdit} jump={soapJump} />}
+          {tab === 'messaging' && <MessagingTab />}
+          {tab === 'promos' && <PromosTab canEdit={canEdit} />}
+          {tab === 'availability' && <AvailabilityTab canEdit={canEdit} pending={pendingReqs} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuthBanner({ session, sessionError }: { session: AdminSession | null; sessionError: string | null }) {
+  return (
+    <section class="mb-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] px-4 py-3">
+      <div class="flex flex-wrap items-start gap-3">
+        <LockKeyhole size={18} class="mt-0.5 text-[var(--color-accent)]" />
+        <div class="min-w-0 flex-1">
+          <h2 class="text-[15px] font-semibold text-[var(--color-text)]">Admin console</h2>
+          <p class="mt-1 text-[15px] leading-relaxed text-[var(--color-text-muted)]">
+            {session?.canEdit
+              ? <>Signed in as <span class="font-semibold text-[var(--color-text)]">{session.adminUser}</span>. Every change is backed up and written to the audit log.</>
+              : 'Editing is disabled for this session. Local (loopback) use is trusted; remote access requires an authorized Google sign-in.'}
+          </p>
+          {!session?.canEdit && (
+            <div class="mt-2 flex items-center gap-3">
+              <a href="/massage-admin/login" class={btnAccent} style="background:var(--color-accent)">Sign in with Google</a>
+              <span class="text-[14px] text-[var(--color-warn)]">{session?.reason || sessionError || ''}</span>
+            </div>
+          )}
+          <p class="mt-2 text-[14px] text-[var(--color-text-faint)]">
+            Marketing email/SMS requires the client's explicit opt-in; transactional messages (reminders, intake, resets) always send.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────── Accounts tab ──
+function AccountsTab({ overview, canEdit }: { overview: ReturnType<typeof useFetch<Overview>>; canEdit: boolean }) {
+  const clients = overview.data?.clients ?? [];
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<'name' | 'created' | 'lastVisit' | 'upcoming'>('name');
+  const [showCreate, setShowCreate] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let rows = clients;
+    if (q) rows = rows.filter((c) => `${c.name} ${c.email} ${c.phone}`.toLowerCase().includes(q));
+    const by = {
+      name: (a: MassageClient, b: MassageClient) => (a.name || a.email).localeCompare(b.name || b.email),
+      created: (a: MassageClient, b: MassageClient) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''),
+      lastVisit: (a: MassageClient, b: MassageClient) => (b.lastVisitMs ?? 0) - (a.lastVisitMs ?? 0),
+      upcoming: (a: MassageClient, b: MassageClient) => b.upcomingAppointmentCount - a.upcomingAppointmentCount,
+    }[sort];
+    return [...rows].sort(by);
+  }, [clients, query, sort]);
+
+  const selected = useMemo(
+    () => clients.find((c) => c.id === selectedId) ?? filtered[0] ?? null,
+    [clients, filtered, selectedId],
+  );
+
+  useEffect(() => {
+    if (!selectedId && filtered[0]) setSelectedId(filtered[0].id);
+  }, [filtered, selectedId]);
+
+  return (
+    <div class="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[320px_minmax(0,1fr)]">
+      <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
+          <input
+            class={`${inputClass} py-1.5`}
+            placeholder="Search name / email / phone"
+            value={query}
+            onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
+          />
+        </div>
+        <div class="flex items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-1.5">
+          <select class={`${inputClass} py-1 w-auto`} value={sort} onChange={(e) => setSort((e.currentTarget as HTMLSelectElement).value as any)}>
+            <option value="name">Sort: Name</option>
+            <option value="created">Sort: Newest</option>
+            <option value="lastVisit">Sort: Last visit</option>
+            <option value="upcoming">Sort: Upcoming</option>
+          </select>
+          <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => setShowCreate(true)}>
+            <UserPlus size={14} /> New
+          </button>
+        </div>
+        <div class="max-h-[620px] overflow-y-auto">
+          {filtered.map((client) => (
+            <button
+              key={client.id}
+              type="button"
+              onClick={() => setSelectedId(client.id)}
+              class={`flex w-full items-center gap-3 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 ${
+                selected?.id === client.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'
+              }`}
+            >
+              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-elevated)]">
+                <UserRound size={15} class="text-[var(--color-accent)]" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="flex items-center gap-2">
+                  <span class="truncate text-[16px] font-semibold text-[var(--color-text)]">{client.name || client.email}</span>
+                  {client.accountStatus !== 'active' && (
+                    <span class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[12px] uppercase text-[var(--color-warn)]">{client.accountStatus}</span>
+                  )}
+                </span>
+                <span class="mt-0.5 block truncate text-[14px] text-[var(--color-text-muted)]">{client.email.endsWith('@noemail.local') ? 'no email on file' : client.email}</span>
+                <span class="mt-0.5 block text-[13px] text-[var(--color-text-faint)]">
+                  {client.appointmentCount} appts · {client.upcomingAppointmentCount} upcoming · ★{client.rewardBalance}
+                  {client.nextVisitFreeEnhancement ? ' · 🎁' : ''}
+                </span>
+              </span>
+            </button>
+          ))}
+          {filtered.length === 0 && <div class="px-3 py-6 text-center text-[15px] text-[var(--color-text-faint)]">No matching clients.</div>}
+        </div>
+      </aside>
+
+      <main class="space-y-4">
+        {showCreate && <CreateAccountCard onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); overview.refresh(); }} />}
+        {selected && <AccountDetail key={selected.id} client={selected} canEdit={canEdit} onChanged={() => overview.refresh()} />}
+        <ActionLog actionLog={overview.data?.actionLog ?? []} />
+      </main>
+    </div>
+  );
+}
+
+function CreateAccountCard({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [welcome, setWelcome] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function create() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string }>('/api/massage-admin/clients/create', { email, name, phone, sendWelcome: welcome });
+      if (r.error || r.ok === false) { setErr(r.error || 'failed'); return; }
+      onDone();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <section class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex items-center justify-between">
+        <h3 class="text-[15px] font-semibold text-[var(--color-text)]">New account</h3>
+        <button type="button" class={btnGhost} onClick={onClose}><X size={14} /></button>
+      </div>
+      <div class="grid gap-3 md:grid-cols-3">
+        <Field label="Name"><input class={inputClass} value={name} onInput={(e) => setName((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Email (optional)"><input class={inputClass} value={email} onInput={(e) => setEmail((e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Phone (optional)"><input class={inputClass} value={phone} onInput={(e) => setPhone((e.currentTarget as HTMLInputElement).value)} /></Field>
+      </div>
+      <div class="mt-3 flex items-center justify-between">
+        <label class="inline-flex items-center gap-2 text-[15px] text-[var(--color-text-muted)]">
+          <input type="checkbox" checked={welcome && email.includes('@')} disabled={!email.includes('@')} onChange={(e) => setWelcome((e.currentTarget as HTMLInputElement).checked)} /> Send welcome email
+        </label>
+        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !name.trim() || (email.trim() !== '' && !email.includes('@'))} onClick={create}>
+          {busy ? 'Creating…' : 'Create account'}
+        </button>
+      </div>
+      {err && <div class="mt-2 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
+    </section>
+  );
+}
+
+function AccountDetail({ client, canEdit, onChanged }: { client: MassageClient; canEdit: boolean; onChanged: () => void }) {
+  const [draft, setDraft] = useState<Draft>(toDraft(client));
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => { setDraft(toDraft(client)); setEditing(false); setMsg(null); setErr(null); }, [client.id]);
+
+  function up<K extends keyof Draft>(k: K, v: Draft[K]) { setDraft((d) => ({ ...d, [k]: v })); }
+  const flash = (m: string) => { setMsg(m); setErr(null); onChanged(); };
+
+  async function save() {
+    setSaving(true); setErr(null); setMsg(null);
+    try {
+      const r = await apiPatch<{ changed?: number; error?: string }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}`, draft);
+      if (r.error) { setErr(r.error); return; }
+      setEditing(false); flash(`Saved ${r.changed ?? 0} change${r.changed === 1 ? '' : 's'}.`);
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setSaving(false); }
+  }
+
+  async function action(path: string, confirmMsg?: string, bodyObj?: unknown) {
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    setErr(null); setMsg(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string; status?: string; results?: any }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/${path}`, bodyObj);
+      if (r.error || r.ok === false) { setErr(r.error || JSON.stringify(r.results || r)); return; }
+      flash(`Done: ${path}${r.status ? ` (${r.status})` : ''}.`);
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+  }
+
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      {/* header + summary */}
+      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-[17px] font-semibold text-[var(--color-text)]">{client.name || client.email}</h2>
+          <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[14px] text-[var(--color-text-faint)]">
+            <span>Created {agoFromIso(client.createdAt)}</span>
+            <span>· Verified {client.emailVerifiedAt ? agoFromIso(client.emailVerifiedAt) : <span class="text-[var(--color-warn)]">no</span>}</span>
+            <span>· {client.appointmentCount} visits · last {agoFromMs(client.lastVisitMs)}</span>
+            <span>· ★ {client.rewardBalance} rewards</span>
+            {client.nextVisitFreeEnhancement && <span class="text-[var(--color-accent)]">· 🎁 {client.nextVisitFreeEnhancement}{client.enhancementExpirationDate ? ` (exp ${client.enhancementExpirationDate})` : ''}</span>}
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          {editing ? (
+            <>
+              <button type="button" class={btnGhost} onClick={() => { setDraft(toDraft(client)); setEditing(false); setErr(null); }}><X size={15} /> Cancel</button>
+              <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={saving || !canEdit} onClick={save}><Save size={15} /> {saving ? 'Saving…' : 'Save'}</button>
+            </>
+          ) : (
+            <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit} onClick={() => setEditing(true)}>Edit account</button>
+          )}
+        </div>
+      </div>
+
+      {msg && <div class="mb-3 rounded-md border border-[var(--color-status-done)] px-3 py-2 text-[15px] text-[var(--color-status-done)]">{msg}</div>}
+      {err && <div class="mb-3 rounded-md border border-[var(--color-status-failed)] px-3 py-2 text-[15px] text-[var(--color-status-failed)]">{err}</div>}
+
+      {/* edit fields */}
+      <div class="grid gap-3 md:grid-cols-2">
+        <Field label="Client name"><input class={inputClass} disabled={!editing} value={draft.name} onInput={(e) => up('name', (e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Account status">
+          <select class={inputClass} disabled={!editing} value={draft.accountStatus} onChange={(e) => up('accountStatus', (e.currentTarget as HTMLSelectElement).value)}>
+            <option value="active">active</option><option value="inactive">inactive</option><option value="archived">archived</option><option value="blocked">blocked</option>
+          </select>
+        </Field>
+        <Field label="Phone"><input class={inputClass} disabled={!editing} value={draft.phone} onInput={(e) => up('phone', (e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Email"><input class={inputClass} disabled={!editing} value={draft.email} onInput={(e) => up('email', (e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Next-visit free enhancement"><input class={inputClass} disabled={!editing} value={draft.nextVisitFreeEnhancement} onInput={(e) => up('nextVisitFreeEnhancement', (e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Enhancement expiration date"><input type="date" class={inputClass} disabled={!editing} value={draft.enhancementExpirationDate} onInput={(e) => up('enhancementExpirationDate', (e.currentTarget as HTMLInputElement).value)} /></Field>
+        <Field label="Notes"><textarea class={`${inputClass} min-h-[88px] resize-y md:col-span-2`} disabled={!editing} value={draft.notes} onInput={(e) => up('notes', (e.currentTarget as HTMLTextAreaElement).value)} /></Field>
+      </div>
+      <div class="mt-4 flex flex-wrap gap-4">
+        <label class="inline-flex items-center gap-2 text-[15px] text-[var(--color-text-muted)]"><input type="checkbox" disabled={!editing} checked={draft.emailOptIn} onChange={(e) => up('emailOptIn', (e.currentTarget as HTMLInputElement).checked)} /><Mail size={15} /> Email opt-in</label>
+        <label class="inline-flex items-center gap-2 text-[15px] text-[var(--color-text-muted)]"><input type="checkbox" disabled={!editing} checked={draft.smsOptIn} onChange={(e) => up('smsOptIn', (e.currentTarget as HTMLInputElement).checked)} /><MessageSquareText size={15} /> SMS opt-in</label>
+      </div>
+
+      {/* lifecycle actions */}
+      <div class="mt-5 border-t border-[var(--color-border)] pt-4">
+        <div class="mb-2 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Account actions</div>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => action('reset-password')}>Send reset email</button>
+          <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => { const p = window.prompt('New temporary password (min 8 chars):'); if (p) action('set-password', undefined, { password: p }); }}>Set temp password</button>
+          <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => action('verify', undefined, { verified: !client.emailVerifiedAt })}>{client.emailVerifiedAt ? 'Un-verify email' : 'Force verify email'}</button>
+          <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => { const v = window.prompt('Free enhancement (blank clears):', client.nextVisitFreeEnhancement || ''); if (v !== null) { const exp = window.prompt('Expires (YYYY-MM-DD, blank = none):', client.enhancementExpirationDate || '') || ''; action('enhancement', undefined, { value: v, expires: exp }); } }}><Gift size={14} /> Grant enhancement</button>
+          <button type="button" class={btnDanger} disabled={!canEdit} onClick={() => action('delete', `Delete ${client.email}? Bookings survive as guest records. This cannot be undone.`)}><Trash2 size={14} /> Delete account</button>
+        </div>
+      </div>
+
+      <RewardPanel client={client} canEdit={canEdit} onDone={flash} />
+      <AppointmentsPanel client={client} canEdit={canEdit} onDone={flash} />
+      <MessagePanel client={client} canEdit={canEdit} onDone={flash} />
+    </section>
+  );
+}
+
+function RewardPanel({ client, canEdit, onDone }: { client: MassageClient; canEdit: boolean; onDone: (m: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  async function adjust(delta: number) {
+    setBusy(true);
+    try {
+      const reason = delta > 0 ? 'admin_grant' : 'admin_deduct';
+      await apiPost(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/reward`, { delta, reason });
+      onDone(`Reward ${delta > 0 ? '+' : ''}${delta} applied.`);
+    } finally { setBusy(false); }
+  }
+  return (
+    <div class="mt-5 border-t border-[var(--color-border)] pt-4">
+      <div class="mb-2 flex items-center justify-between">
+        <div class="text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Loyalty · balance {client.rewardBalance}</div>
+        <div class="flex gap-2">
+          <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => adjust(-1)}>−1</button>
+          <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => adjust(1)}>+1</button>
+          <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => adjust(6)}>+6 (full card)</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AppointmentsPanel({ client, canEdit, onDone }: { client: MassageClient; canEdit: boolean; onDone: (m: string) => void }) {
+  const appts = useFetch<{ appointments: Appointment[] }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/appointments`, 0);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function act(apptId: string, action: 'confirm' | 'decline' | 'cancel' | 'remind' | 'nudge-intake') {
+    if ((action === 'cancel' || action === 'decline') && !window.confirm(`${action} this appointment? The client is emailed.`)) return;
+    setBusy(apptId + action);
+    try {
+      const path = action === 'remind' ? 'remind' : action === 'nudge-intake' ? 'nudge-intake' : action;
+      await apiPost(`/api/massage-admin/appointments/${encodeURIComponent(apptId)}/${path}`, {});
+      onDone(`Appointment ${action} done.`); appts.refresh();
+    } finally { setBusy(null); }
+  }
+
+  const rows = appts.data?.appointments ?? [];
+  return (
+    <div class="mt-5 border-t border-[var(--color-border)] pt-4">
+      <div class="mb-2 flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">
+        <CalendarClock size={14} /> Appointments ({rows.length})
+      </div>
+      {appts.loading && !appts.data && <div class="text-[14px] text-[var(--color-text-faint)]">Loading…</div>}
+      {rows.length === 0 && !appts.loading && <div class="text-[14px] text-[var(--color-text-faint)]">No appointments.</div>}
+      <div class="space-y-1.5">
+        {rows.map((a) => (
+          <div key={a.id} class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--color-border)] px-3 py-2.5 text-[14px] transition-colors hover:bg-[var(--color-elevated)]">
+            <div class="text-[var(--color-text-muted)]">
+              <span class="font-semibold text-[var(--color-text)]">{a.appt_date} {a.appt_time}</span> · {a.service_name} ·{' '}
+              <span class={a.status === 'confirmed' ? 'text-[var(--color-status-done)]' : a.status === 'requested' ? 'text-[var(--color-warn)]' : 'text-[var(--color-text-faint)]'}>{a.status}</span>
+              {a.enhancement_applied && <span class="text-[var(--color-accent)]"> · 🎁 {a.enhancement_applied}</span>}
+            </div>
+            <div class="flex flex-wrap gap-1">
+              {a.status === 'requested' && <button type="button" class={btnGhost} disabled={!canEdit || !!busy} onClick={() => act(a.id, 'confirm')}>Confirm</button>}
+              {a.status === 'requested' && <button type="button" class={btnGhost} disabled={!canEdit || !!busy} onClick={() => act(a.id, 'decline')}>Decline</button>}
+              {a.status === 'confirmed' && <button type="button" class={btnGhost} disabled={!canEdit || !!busy} onClick={() => act(a.id, 'cancel')}>Cancel</button>}
+              {a.status === 'confirmed' && <button type="button" class={btnGhost} disabled={!canEdit || !!busy} onClick={() => act(a.id, 'remind')}>Remind</button>}
+              <button type="button" class={btnGhost} disabled={!canEdit || !!busy} onClick={() => act(a.id, 'nudge-intake')}>Intake nudge</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MessagePanel({ client, canEdit, onDone }: { client: MassageClient; canEdit: boolean; onDone: (m: string) => void }) {
+  const [channel, setChannel] = useState<'email' | 'sms' | 'both'>('email');
+  const [subject, setSubject] = useState('A note from Massage By Mike');
+  const [bodyText, setBodyText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function send() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ results?: any; error?: string }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/message`, { channel, subject, body: bodyText });
+      if (r.error) { setErr(r.error); return; }
+      onDone('Message queued (see Messaging tab for delivery).'); setBodyText('');
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  const optWarn = (channel !== 'sms' && !client.emailOptIn) || (channel !== 'email' && !client.smsOptIn);
+  return (
+    <div class="mt-5 border-t border-[var(--color-border)] pt-4">
+      <div class="mb-2 flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]"><Send size={14} /> Custom message</div>
+      <div class="mb-2 text-[14px] text-[var(--color-text-faint)]">Sends as <span class="font-semibold text-[var(--color-text-muted)]">Massage By Mike &lt;MassageByMike92@gmail.com&gt;</span> — your login is for attribution only, never the sender.</div>
+      <div class="grid gap-2 md:grid-cols-[120px_1fr]">
+        <select class={inputClass} value={channel} onChange={(e) => setChannel((e.currentTarget as HTMLSelectElement).value as any)}>
+          <option value="email">Email</option><option value="sms">SMS</option><option value="both">Both</option>
+        </select>
+        <input class={inputClass} placeholder="Subject" value={subject} onInput={(e) => setSubject((e.currentTarget as HTMLInputElement).value)} />
+      </div>
+      <textarea class={`${inputClass} mt-2 min-h-[80px] resize-y`} placeholder="Message body" value={bodyText} onInput={(e) => setBodyText((e.currentTarget as HTMLTextAreaElement).value)} />
+      <div class="mt-2 flex items-center justify-between">
+        <span class="text-[14px] text-[var(--color-text-faint)]">{optWarn ? '⚠ client is not opted in for that channel — send will be skipped' : 'client is opted in'}</span>
+        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !bodyText.trim()} onClick={send}>{busy ? 'Sending…' : 'Send now'}</button>
+      </div>
+      {err && <div class="mt-2 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
+    </div>
+  );
+}
+
+function ActionLog({ actionLog }: { actionLog: AdminAction[] }) {
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+      <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2 text-[15px] font-semibold text-[var(--color-text)]">
+        <History size={14} class="text-[var(--color-accent)]" /> Admin action log
+      </div>
+      {actionLog.length === 0 ? (
+        <div class="px-3 py-5 text-center text-[15px] text-[var(--color-text-faint)]">No admin edits logged yet.</div>
+      ) : (
+        <div class="max-h-[300px] overflow-y-auto">
+          <div class="sticky top-0 z-10 hidden gap-1 border-b border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-[13px] font-medium uppercase tracking-wider text-[var(--color-text-faint)] md:grid md:grid-cols-[170px_150px_1fr_90px]">
+            <div>Admin</div><div>Field</div><div>Change</div><div class="text-right">When</div>
+          </div>
+          {actionLog.map((e) => (
+            <div key={e.id} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2.5 text-[14px] transition-colors last:border-b-0 hover:bg-[var(--color-elevated)] md:grid-cols-[170px_150px_1fr_90px]">
+              <div class="truncate text-[var(--color-text-muted)]">{e.adminUser}</div>
+              <div class="font-mono text-[var(--color-accent)]">{e.field}</div>
+              <div class="truncate font-mono text-[var(--color-text-faint)]">{e.oldValue ?? 'null'} {'->'} {e.newValue ?? 'null'}</div>
+              <div class="text-right text-[var(--color-text-faint)]">{agoFromIso(e.timestamp)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ────────────────────────────────────────────────────────── Messaging tab ──
+interface Schedule {
+  schedule: { reminder36h: { on: boolean; leadHours: number }; sameDay2h: { on: boolean; leadHours: number }; reviewRequest: { on: boolean; live: boolean }; intakeNudge: { on: boolean } };
+  mail: { live: boolean; from: string };
+  sms: { mode: string; live: boolean; label: string };
+}
+interface MessageRow { id: number; channel: string; template: string; recipient: string | null; subject: string | null; status: string; detail: string | null; admin_user: string; sent_at: string }
+
+function MessagingTab() {
+  const sched = useFetch<Schedule>('/api/massage-admin/schedule', 60000);
+  const log = useFetch<{ messages: MessageRow[] }>('/api/massage-admin/messages', 30000);
+  const { busy: logRefreshing, spin: spinLog } = useSpin();
+  const s = sched.data;
+  const pill = (on: boolean, label: string) => (
+    <span class={`rounded px-2 py-0.5 text-[14px] font-semibold ${on ? 'bg-[color-mix(in_srgb,var(--color-status-done)_18%,transparent)] text-[var(--color-status-done)]' : 'bg-[var(--color-elevated)] text-[var(--color-text-faint)]'}`}>{label}</span>
+  );
+  return (
+    <div class="space-y-4">
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-3 text-[15px] font-semibold text-[var(--color-text)]">Automated schedule</h3>
+        {s ? (
+          <div class="flex flex-wrap gap-2">
+            {pill(s.schedule.reminder36h.on, `36h reminder ${s.schedule.reminder36h.on ? 'ON' : 'off'}`)}
+            {pill(s.schedule.sameDay2h.on, `2h reminder ${s.schedule.sameDay2h.on ? 'ON' : 'off'}`)}
+            {pill(s.schedule.intakeNudge.on, `intake nudge ${s.schedule.intakeNudge.on ? 'ON' : 'off'}`)}
+            {pill(s.schedule.reviewRequest.on && s.schedule.reviewRequest.live, `review request ${s.schedule.reviewRequest.on ? (s.schedule.reviewRequest.live ? 'LIVE' : 'dry-run') : 'off'}`)}
+            {pill(s.mail.live, `email ${s.mail.live ? 'LIVE' : 'dry-run'}`)}
+            {pill(s.sms.live, `SMS ${s.sms.label}`)}
+          </div>
+        ) : <div class="text-[15px] text-[var(--color-text-faint)]">Loading…</div>}
+        <p class="mt-3 text-[14px] text-[var(--color-text-faint)]">Schedules are set on the massage server (env flags). SMS stays dry-run until a free provider is enabled. Per-appointment manual sends live on each account's Appointments panel.</p>
+      </section>
+
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
+          <div class="text-[15px] font-semibold text-[var(--color-text)]">Send log</div>
+          <button type="button" class={btnGhost} onClick={() => void spinLog(log.refresh)} disabled={logRefreshing} aria-busy={logRefreshing}>{logRefreshing ? <NestedSquaresSpinner size={13} /> : <RefreshCw size={13} />} refresh</button>
+        </div>
+        {(log.data?.messages ?? []).length === 0 ? (
+          <div class="px-3 py-5 text-center text-[15px] text-[var(--color-text-faint)]">No messages sent yet.</div>
+        ) : (
+          <div class="max-h-[520px] overflow-y-auto">
+            <div class="sticky top-0 z-10 hidden gap-1 border-b border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-[13px] font-medium uppercase tracking-wider text-[var(--color-text-faint)] md:grid md:grid-cols-[70px_130px_1fr_110px_90px]">
+              <div>Channel</div><div>Template</div><div>Recipient · subject</div><div>Status</div><div class="text-right">When</div>
+            </div>
+            {(log.data?.messages ?? []).map((m) => (
+              <div key={m.id} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2.5 text-[14px] transition-colors last:border-b-0 hover:bg-[var(--color-elevated)] md:grid-cols-[70px_130px_1fr_110px_90px]">
+                <div class="font-mono text-[var(--color-accent)]">{m.channel}</div>
+                <div class="text-[var(--color-text-muted)]">{m.template}</div>
+                <div class="truncate text-[var(--color-text-faint)]">{m.recipient} · {m.subject}</div>
+                <div class={m.status === 'sent' ? 'text-[var(--color-status-done)]' : m.status === 'error' ? 'text-[var(--color-status-failed)]' : 'text-[var(--color-text-faint)]'}>{m.status}</div>
+                <div class="text-right text-[var(--color-text-faint)]">{agoFromIso(m.sent_at)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────── Promos tab ──
+interface CodeRow { code: string; type: string; value: number; balance: number; label: string | null; active: number; uses: number; max_uses: number | null; expires_at: string | null }
+
+function PromosTab({ canEdit }: { canEdit: boolean }) {
+  const codes = useFetch<{ codes: CodeRow[] }>('/api/massage-admin/codes', 30000);
+  const [code, setCode] = useState('');
+  const [type, setType] = useState<'percent' | 'fixed'>('percent');
+  const [value, setValue] = useState('10');
+  const [label, setLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [giftAmt, setGiftAmt] = useState('50');
+
+  async function upsert() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; message?: string }>('/api/massage-admin/codes', { code, type, value: Number(value), label });
+      if (r.ok === false) { setErr(r.message || 'failed'); return; }
+      setCode(''); setLabel(''); codes.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function toggle(c: CodeRow) { await apiPost(`/api/massage-admin/codes/${encodeURIComponent(c.code)}/toggle`, { active: !c.active }); codes.refresh(); }
+  async function issueGift() { setBusy(true); try { await apiPost('/api/massage-admin/gift/issue', { amount: Number(giftAmt) }); codes.refresh(); } finally { setBusy(false); } }
+
+  const rows = codes.data?.codes ?? [];
+  return (
+    <div class="space-y-4">
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-3 flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text)]"><Ticket size={14} class="text-[var(--color-accent)]" /> Create / edit promo</h3>
+        <div class="grid gap-2 md:grid-cols-[1fr_110px_100px_1fr_auto]">
+          <input class={inputClass} placeholder="CODE" value={code} onInput={(e) => setCode((e.currentTarget as HTMLInputElement).value.toUpperCase())} />
+          <select class={inputClass} value={type} onChange={(e) => setType((e.currentTarget as HTMLSelectElement).value as any)}><option value="percent">% off</option><option value="fixed">$ off</option></select>
+          <input class={inputClass} type="number" value={value} onInput={(e) => setValue((e.currentTarget as HTMLInputElement).value)} />
+          <input class={inputClass} placeholder="Label (optional)" value={label} onInput={(e) => setLabel((e.currentTarget as HTMLInputElement).value)} />
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !code} onClick={upsert}>Save</button>
+        </div>
+        <div class="mt-3 flex items-center gap-2 border-t border-[var(--color-border)] pt-3">
+          <Gift size={14} class="text-[var(--color-accent)]" />
+          <span class="text-[15px] text-[var(--color-text-muted)]">Mint gift certificate $</span>
+          <input class={`${inputClass} w-24`} type="number" value={giftAmt} onInput={(e) => setGiftAmt((e.currentTarget as HTMLInputElement).value)} />
+          <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={issueGift}>Issue gift</button>
+        </div>
+        {err && <div class="mt-2 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
+      </section>
+
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[15px] font-semibold text-[var(--color-text)]">{rows.length} codes</div>
+        {rows.length === 0 ? <div class="px-3 py-5 text-center text-[15px] text-[var(--color-text-faint)]">No codes yet.</div> : (
+          <div class="max-h-[520px] overflow-y-auto">
+            <div class="sticky top-0 z-10 hidden gap-1 border-b border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-[13px] font-medium uppercase tracking-wider text-[var(--color-text-faint)] md:grid md:grid-cols-[130px_90px_1fr_120px_80px]">
+              <div>Code</div><div>Value</div><div>Label · usage</div><div>Status</div><div></div>
+            </div>
+            {rows.map((c) => (
+              <div key={c.code} class="grid items-center gap-1 border-b border-[var(--color-border)] px-3 py-2.5 text-[14px] transition-colors last:border-b-0 hover:bg-[var(--color-elevated)] md:grid-cols-[130px_90px_1fr_120px_80px]">
+                <div class="font-mono font-semibold text-[var(--color-text)]">{c.code}</div>
+                <div class="text-[var(--color-text-muted)]">{c.type === 'percent' ? `${c.value}%` : c.type === 'gift' ? `$${c.balance}/${c.value}` : `$${c.value}`}</div>
+                <div class="truncate text-[var(--color-text-faint)]">{c.label || '—'} · {c.uses} used{c.max_uses ? `/${c.max_uses}` : ''}{c.expires_at ? ` · exp ${c.expires_at.slice(0, 10)}` : ''}</div>
+                <div>{c.active ? <span class="text-[var(--color-status-done)]">active</span> : <span class="text-[var(--color-text-faint)]">disabled</span>}</div>
+                <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => toggle(c)}>{c.active ? 'Disable' : 'Enable'}</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────── Availability ──
+interface AvailabilityResp {
+  ok: boolean;
+  hours: Record<string, [string, string][]>;
+  bookingWindowDays: number;
+  maxAdvanceDays: number;
+  slotIncrementMin?: number;
+  bufferMin?: number;
+  leadTimeHours?: number;
+  blackouts: string[];
+  timeBlocks?: TimeBlock[];
+  bookingsPaused?: boolean;
+}
+interface TimeBlock { id: string; day: string; start_hm: string; end_hm: string }
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+type Week = Record<string, [string, string][]>;
+// Ensure every weekday key (0..6) exists as an array of [open,close] pairs.
+function normalizeWeek(h?: Record<string, [string, string][]>): Week {
+  const w: Week = {};
+  for (let d = 0; d <= 6; d++) {
+    const r = h?.[String(d)];
+    w[String(d)] = Array.isArray(r) ? r.map((x) => [String(x[0]), String(x[1])] as [string, string]) : [];
+  }
+  return w;
+}
+interface PendingAppt {
+  id: string; client_name: string; client_email: string;
+  service_name: string; appt_date: string; appt_time: string; created_at: string;
+}
+interface PendingResp { ok: boolean; pending: PendingAppt[] }
+
+// Friendly "Mon, Jul 20" from a YYYY-MM-DD string (local, no TZ drift).
+function fmtDay(d: string): string {
+  try { return new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }
+  catch { return d; }
+}
+
+// Owner availability: block days off, set the self-serve booking window, and approve/decline
+// the beyond-window request queue. Reads/writes the massage backend via the ClaudeClaw proxy.
+function AvailabilityTab({ canEdit, pending }: { canEdit: boolean; pending: { data: PendingResp | null; refresh: () => void } }) {
+  const avail = useFetch<AvailabilityResp>('/api/massage-admin/availability', 30000);
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [windowDays, setWindowDays] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const [week, setWeek] = useState<Week | null>(null);
+  const [slotInc, setSlotInc] = useState('');
+  const [buffer, setBuffer] = useState('');
+  const [lead, setLead] = useState('');
+
+  const cfg = avail.data;
+  // Seed the window input from the loaded value once (leave user edits alone).
+  useEffect(() => { if (cfg && windowDays === '') setWindowDays(String(cfg.bookingWindowDays)); }, [cfg?.bookingWindowDays]);
+  // Seed the weekly-hours editor from the loaded config once.
+  useEffect(() => {
+    if (cfg && week === null) {
+      setWeek(normalizeWeek(cfg.hours));
+      setSlotInc(String(cfg.slotIncrementMin ?? 30));
+      setBuffer(String(cfg.bufferMin ?? 15));
+      setLead(String(cfg.leadTimeHours ?? 12));
+    }
+  }, [cfg]);
+
+  function mutRange(d: number, i: number, idx: 0 | 1, val: string) {
+    setWeek((w) => { if (!w) return w; const nw: Week = { ...w }; const rows = nw[String(d)].map((r) => [...r] as [string, string]); rows[i][idx] = val; nw[String(d)] = rows; return nw; });
+  }
+  function addRange(d: number) { setWeek((w) => { if (!w) return w; const nw: Week = { ...w }; nw[String(d)] = [...nw[String(d)], ['10:00', '17:00']]; return nw; }); }
+  function removeRange(d: number, i: number) { setWeek((w) => { if (!w) return w; const nw: Week = { ...w }; nw[String(d)] = nw[String(d)].filter((_, j) => j !== i); return nw; }); }
+  async function saveHours() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPut<{ ok?: boolean; error?: string }>('/api/massage-admin/availability/hours', { week, slotIncrementMin: Number(slotInc), bufferMin: Number(buffer), leadTimeHours: Number(lead) });
+      if (r.ok === false) { setErr(r.error || 'failed'); return; }
+      avail.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  async function addBlackout() {
+    if (!start) return;
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string; count?: number }>('/api/massage-admin/availability/blackout', { start, end: end || undefined });
+      if (r.ok === false) { setErr(r.error || 'failed'); return; }
+      setStart(''); setEnd(''); avail.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function removeDay(day: string) {
+    setBusy(true); setErr(null);
+    try { await apiDelete(`/api/massage-admin/availability/blackout/${day}`); avail.refresh(); }
+    catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function saveWindow() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPut<{ ok?: boolean; error?: string }>('/api/massage-admin/availability/window', { bookingWindowDays: Number(windowDays) });
+      if (r.ok === false) { setErr(r.error || 'failed'); return; }
+      avail.refresh();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function decide(id: string, action: 'approve' | 'decline') {
+    setBusy(true); setErr(null);
+    try { await apiPost(`/api/massage-admin/availability/pending/${id}/${action}`, {}); pending.refresh(); avail.refresh(); }
+    catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  // The schedule calendar (Month / Week / 3-day / Day) owns its own fetching; any
+  // mutation here just drops its cached months so it repaints with the new truth.
+  const refreshSchedule = () => invalidateFetchCache('/api/massage-admin/availability/schedule');
+
+  // Partial-day block inputs.
+  const [tbDay, setTbDay] = useState('');
+  const [tbStart, setTbStart] = useState('12:00');
+  const [tbEnd, setTbEnd] = useState('13:00');
+
+  const paused = !!cfg?.bookingsPaused;
+  async function togglePause() {
+    setBusy(true); setErr(null);
+    try { await apiPut('/api/massage-admin/availability/pause', { paused: !paused }); avail.refresh(); }
+    catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function quickBlock(range: 'today' | 'week') {
+    setBusy(true); setErr(null);
+    try {
+      const today = new Date();
+      const start = isoLocalDate(today);
+      let end: string | undefined;
+      if (range === 'week') { const s = new Date(today); s.setDate(s.getDate() + ((7 - s.getDay()) % 7)); end = isoLocalDate(s); } // through the coming Sunday
+      await apiPost('/api/massage-admin/availability/blackout', { start, end });
+      avail.refresh(); refreshSchedule();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function addTimeBlock() {
+    if (!tbDay) return;
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string }>('/api/massage-admin/availability/timeblock', { day: tbDay, start: tbStart, end: tbEnd });
+      if (r.ok === false) { setErr(r.error || 'failed'); return; }
+      setTbDay(''); avail.refresh(); refreshSchedule();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+  async function removeTimeBlock(id: string) {
+    setBusy(true); setErr(null);
+    try { await apiDelete(`/api/massage-admin/availability/timeblock/${id}`); avail.refresh(); refreshSchedule(); }
+    catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  const blackouts = cfg?.blackouts ?? [];
+  const timeBlocks = cfg?.timeBlocks ?? [];
+  const reqs = pending.data?.pending ?? [];
+
+  return (
+    <div class="space-y-4">
+      {/* Quick actions */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Quick actions</h3>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => quickBlock('today')}><Plus size={14} /> Out today</button>
+          <button type="button" class={btnGhost} disabled={!canEdit || busy} onClick={() => quickBlock('week')}><Plus size={14} /> Block rest of this week</button>
+          <button type="button" class={paused ? btnAccent : btnGhost} style={paused ? 'background:var(--color-accent)' : ''} disabled={!canEdit || busy} onClick={togglePause}>{paused ? '▶ Resume online bookings' : '⏸ Pause all new bookings'}</button>
+        </div>
+        {paused && <div class="mt-2 text-[14px] font-semibold text-[var(--color-status-failed)]">Online booking is PAUSED — clients can’t submit new requests until you resume.</div>}
+      </section>
+
+      {/* Schedule — Month / Week / 3-day / Day */}
+      <ScheduleCalendar selectedDay={tbDay} onPickDay={setTbDay} />
+
+      {/* Booking window */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Booking window</h3>
+        <p class="mb-3 text-[15px] leading-relaxed text-[var(--color-text-muted)]">
+          Clients can book any open day within this many days. Beyond it (up to {cfg?.maxAdvanceDays ?? 365} days) they can only
+          <span class="font-semibold text-[var(--color-text)]"> request</span> a date — it lands in the queue below for you to approve.
+        </p>
+        <div class="flex items-center gap-2">
+          <input class={`${inputClass} w-24`} type="number" min={1} max={365} value={windowDays} onInput={(e) => setWindowDays((e.currentTarget as HTMLInputElement).value)} />
+          <span class="text-[15px] text-[var(--color-text-muted)]">days self-serve</span>
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !windowDays} onClick={saveWindow}><Save size={14} /> Save window</button>
+        </div>
+      </section>
+
+      {/* Weekly working hours */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Weekly hours</h3>
+        <p class="mb-3 text-[15px] leading-relaxed text-[var(--color-text-muted)]">Your normal working days &amp; hours. A day with no time ranges is closed. Add a range to open a day (e.g. a Saturday); add two ranges for a lunch break. Changes apply immediately.</p>
+        <div class="space-y-1.5">
+          {week && DAY_NAMES.map((name, d) => {
+            const ranges = week[String(d)] || [];
+            return (
+              <div key={d} class="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 last:border-b-0">
+                <span class="w-9 text-[15px] font-semibold text-[var(--color-text)]">{name}</span>
+                {ranges.length === 0 && <span class="text-[14px] text-[var(--color-text-faint)]">Closed</span>}
+                {ranges.map((r, i) => (
+                  <span key={i} class="inline-flex items-center gap-1">
+                    <input class={`${inputClass} w-24`} type="time" value={r[0]} onInput={(e) => mutRange(d, i, 0, (e.currentTarget as HTMLInputElement).value)} />
+                    <span class="text-[14px] text-[var(--color-text-faint)]">–</span>
+                    <input class={`${inputClass} w-24`} type="time" value={r[1]} onInput={(e) => mutRange(d, i, 1, (e.currentTarget as HTMLInputElement).value)} />
+                    <button type="button" title="Remove range" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeRange(d, i)}><X size={14} /></button>
+                  </span>
+                ))}
+                <button type="button" class="inline-flex items-center gap-0.5 text-[14px] text-[var(--color-accent)] hover:underline disabled:opacity-40" disabled={!canEdit || busy} onClick={() => addRange(d)}><Plus size={13} /> hours</button>
+              </div>
+            );
+          })}
+        </div>
+        <div class="mt-3 flex flex-wrap items-end gap-3 border-t border-[var(--color-border)] pt-3">
+          <label class="text-[14px] text-[var(--color-text-muted)]">Slot step (min)<br /><input class={`${inputClass} w-20`} type="number" min={5} max={240} value={slotInc} onInput={(e) => setSlotInc((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[14px] text-[var(--color-text-muted)]">Buffer (min)<br /><input class={`${inputClass} w-20`} type="number" min={0} max={120} value={buffer} onInput={(e) => setBuffer((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[14px] text-[var(--color-text-muted)]">Lead time (hrs)<br /><input class={`${inputClass} w-20`} type="number" min={0} max={168} value={lead} onInput={(e) => setLead((e.currentTarget as HTMLInputElement).value)} /></label>
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !week} onClick={saveHours}><Save size={14} /> Save hours</button>
+        </div>
+      </section>
+
+      {/* Days off */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text)]"><CalendarClock size={14} class="text-[var(--color-accent)]" /> Days off</h3>
+        <p class="mb-3 text-[15px] leading-relaxed text-[var(--color-text-muted)]">Blocked days show no open times to clients. Leave the end date empty for a single day, or set it for a range (vacation).</p>
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="text-[14px] text-[var(--color-text-muted)]">From <input class={inputClass} type="date" value={start} onInput={(e) => setStart((e.currentTarget as HTMLInputElement).value)} /></label>
+          <label class="text-[14px] text-[var(--color-text-muted)]">To (optional) <input class={inputClass} type="date" value={end} onInput={(e) => setEnd((e.currentTarget as HTMLInputElement).value)} /></label>
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !start} onClick={addBlackout}><Plus size={14} /> Block</button>
+        </div>
+        {err && <div class="mt-2 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
+        <div class="mt-3 border-t border-[var(--color-border)] pt-3">
+          {blackouts.length === 0 ? <div class="text-[15px] text-[var(--color-text-faint)]">No days off scheduled.</div> : (
+            <div class="flex flex-wrap gap-2">
+              {blackouts.map((d) => (
+                <span key={d} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[14px] text-[var(--color-text)]">
+                  {fmtDay(d)}
+                  <button type="button" title="Remove" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeDay(d)}><X size={14} /></button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Partial-day blocks — block a time range within a day (day stays otherwise bookable). */}
+        <div class="mt-3 border-t border-[var(--color-border)] pt-3">
+          <div class="mb-2 text-[15px] font-semibold text-[var(--color-text)]">Partial-day blocks</div>
+          <p class="mb-2 text-[14px] text-[var(--color-text-muted)]">Block just part of a day (e.g. an errand 2–5pm) — the rest of the day stays bookable.</p>
+          <div class="flex flex-wrap items-end gap-2">
+            <label class="text-[14px] text-[var(--color-text-muted)]">Day<br /><input class={inputClass} type="date" value={tbDay} onInput={(e) => setTbDay((e.currentTarget as HTMLInputElement).value)} /></label>
+            <label class="text-[14px] text-[var(--color-text-muted)]">From<br /><input class={`${inputClass} w-24`} type="time" value={tbStart} onInput={(e) => setTbStart((e.currentTarget as HTMLInputElement).value)} /></label>
+            <label class="text-[14px] text-[var(--color-text-muted)]">To<br /><input class={`${inputClass} w-24`} type="time" value={tbEnd} onInput={(e) => setTbEnd((e.currentTarget as HTMLInputElement).value)} /></label>
+            <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy || !tbDay} onClick={addTimeBlock}><Plus size={14} /> Block time</button>
+          </div>
+          {timeBlocks.length > 0 && (
+            <div class="mt-2 flex flex-wrap gap-2">
+              {timeBlocks.map((t) => (
+                <span key={t.id} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[14px] text-[var(--color-text)]">
+                  {fmtDay(t.day)} {t.start_hm}–{t.end_hm}
+                  <button type="button" title="Remove" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] disabled:opacity-40" disabled={!canEdit || busy} onClick={() => removeTimeBlock(t.id)}><X size={14} /></button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Beyond-window request queue */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[15px] font-semibold text-[var(--color-text)]">Requests awaiting approval ({reqs.length})</div>
+        {reqs.length === 0 ? <div class="px-3 py-5 text-center text-[15px] text-[var(--color-text-faint)]">No beyond-window requests right now.</div> : (
+          <div class="max-h-[420px] overflow-y-auto">
+            {reqs.map((r) => (
+              <div key={r.id} class="grid items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5 text-[14px] transition-colors last:border-b-0 hover:bg-[var(--color-elevated)] md:grid-cols-[1fr_150px_auto]">
+                <div>
+                  <div class="font-semibold text-[var(--color-text)]">{r.client_name} <span class="font-normal text-[var(--color-text-faint)]">· {r.client_email}</span></div>
+                  <div class="text-[var(--color-text-muted)]">{r.service_name}</div>
+                </div>
+                <div class="text-[var(--color-text-muted)]">{fmtDay(r.appt_date)} at {r.appt_time}</div>
+                <div class="flex items-center gap-2">
+                  <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit || busy} onClick={() => decide(r.id, 'approve')}><Check size={14} /> Approve</button>
+                  <button type="button" class={btnDanger} disabled={!canEdit || busy} onClick={() => decide(r.id, 'decline')}><X size={14} /> Decline</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────── Intake + SOAP data ──
+// Region vocabulary reused from the public intake body-map (config/intake.json):
+// general always-worked regions first, then the consent-gated ones.
+const SOAP_REGIONS = ['Neck', 'Shoulders', 'Back', 'Arms & Hands', 'Legs', 'Scalp', 'Face', 'Pectoral Muscles', 'Abdomen', 'Gluteal Region', 'Feet'];
+const SOAP_TECHNIQUES = ['Swedish', 'Deep tissue', 'Trigger point', 'Myofascial release', 'Cupping', 'Hot stone', 'Stretching', 'Sports', 'Prenatal', 'Lymphatic'];
+const SOAP_PRESSURES = ['light', 'medium', 'deep'];
+
+interface IntakeRow {
+  id: string; appointment_id: string | null; submitted_at: string;
+  reviewed_at: string | null; reviewed_by: string | null; has_signature: number;
+  client_name: string | null; client_email: string | null; user_id: string | null;
+  service_name: string | null; appt_date: string | null; appt_time: string | null;
+}
+interface IntakeFlag { label: string; value: string }
+interface IntakeDetail {
+  ok: boolean; error?: string;
+  intake: IntakeRow; html: string; flags: Record<string, IntakeFlag>;
+}
+interface AreaConcern { region: string; severity: number; findings?: string; focus?: boolean }
+interface NextFocus { region: string; note?: string }
+interface SoapNote {
+  id: string; appointment_id: string | null; user_id: string | null; client_email: string | null;
+  session_date: string | null; created_at: string; updated_at: string | null; author: string | null;
+  pain_before: number | null; pain_after: number | null; position: string | null; pressure: string | null;
+  duration_min: number | null; techniques: string[]; areas_concern: AreaConcern[];
+  subjective: string | null; objective: string | null; assessment: string | null; plan: string | null;
+  home_care: string | null; next_focus: NextFocus[]; referrals: string | null;
+  adverse_reactions: string | null; flags: Record<string, IntakeFlag> | unknown;
+}
+interface CarryForward { next_focus: NextFocus[]; last_note_id: string | null; flags: Record<string, IntakeFlag> }
+interface SoapClientResp {
+  ok: boolean; notes: SoapNote[];
+  trend: { regions: Record<string, { date: string; severity: number; note_id: string }[]>; pain: { date: string; before: number | null; after: number | null; note_id: string }[] };
+  carry_forward: CarryForward;
+}
+
+// ─────────────────────────────────────────────────────────── Intake Forms ──
+function IntakesTab({ canEdit }: { canEdit: boolean }) {
+  const list = useFetch<{ intakes: IntakeRow[] }>('/api/massage-admin/intakes', 30000);
+  const [query, setQuery] = useState('');
+  const [onlyUnreviewed, setOnlyUnreviewed] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const intakes = list.data?.intakes ?? [];
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let rows = intakes;
+    if (q) rows = rows.filter((i) => `${i.client_name ?? ''} ${i.client_email ?? ''} ${i.service_name ?? ''}`.toLowerCase().includes(q));
+    if (onlyUnreviewed) rows = rows.filter((i) => !i.reviewed_at);
+    return rows;
+  }, [intakes, query, onlyUnreviewed]);
+
+  useEffect(() => { if (!selectedId && filtered[0]) setSelectedId(filtered[0].id); }, [filtered, selectedId]);
+
+  return (
+    <div class="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[340px_minmax(0,1fr)]">
+      <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
+          <input class={`${inputClass} py-1.5`} placeholder="Search client / email / service" value={query} onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
+        </div>
+        <div class="flex items-center justify-between gap-2 border-b border-[var(--color-border)] px-3 py-1.5">
+          <label class="inline-flex items-center gap-2 text-[14px] text-[var(--color-text-muted)]">
+            <input type="checkbox" checked={onlyUnreviewed} onChange={(e) => setOnlyUnreviewed((e.currentTarget as HTMLInputElement).checked)} /> Unreviewed only
+          </label>
+          <span class="text-[13px] text-[var(--color-text-faint)]">{filtered.length} of {intakes.length}</span>
+        </div>
+        {list.loading && !list.data && <div class="px-3 py-6 text-center text-[15px] text-[var(--color-text-faint)]">Loading…</div>}
+        <div class="max-h-[620px] overflow-y-auto">
+          {filtered.map((i) => (
+            <button key={i.id} type="button" onClick={() => setSelectedId(i.id)}
+              class={`flex w-full items-center gap-3 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 ${selectedId === i.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
+              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-elevated)]">
+                <ClipboardList size={15} class="text-[var(--color-accent)]" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="flex items-center gap-2">
+                  <span class="truncate text-[16px] font-semibold text-[var(--color-text)]">{i.client_name || i.client_email || '(guest)'}</span>
+                  {i.reviewed_at
+                    ? <span class="ml-auto rounded bg-[color-mix(in_srgb,var(--color-status-done)_18%,transparent)] px-1.5 py-0.5 text-[12px] uppercase text-[var(--color-status-done)]">reviewed</span>
+                    : <span class="ml-auto rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[12px] uppercase text-[var(--color-warn)]">new</span>}
+                </span>
+                <span class="mt-0.5 block truncate text-[14px] text-[var(--color-text-muted)]">{i.client_email || '—'}</span>
+                <span class="mt-0.5 block text-[13px] text-[var(--color-text-faint)]">
+                  {i.service_name || 'intake'}{i.appt_date ? ` · ${i.appt_date} ${i.appt_time ?? ''}` : ''} · submitted {agoFromIso(i.submitted_at)}
+                </span>
+              </span>
+            </button>
+          ))}
+          {!list.loading && filtered.length === 0 && <div class="px-3 py-6 text-center text-[15px] text-[var(--color-text-faint)]">No intake forms.</div>}
+        </div>
+      </aside>
+      <main>{selectedId ? <IntakeViewer id={selectedId} canEdit={canEdit} onReviewed={() => list.refresh()} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[15px] text-[var(--color-text-faint)]">Select an intake to review.</div>}</main>
+    </div>
+  );
+}
+
+function IntakeViewer({ id, canEdit, onReviewed }: { id: string; canEdit: boolean; onReviewed: () => void }) {
+  const [detail, setDetail] = useState<IntakeDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setErr(null); setDetail(null);
+    apiGet<IntakeDetail>(`/api/massage-admin/intakes/${encodeURIComponent(id)}`)
+      .then((d) => { if (!cancelled) setDetail(d); })
+      .catch((e) => { if (!cancelled) setErr(e?.message || String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [id]);
+
+  async function markReviewed() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string; reviewed_at?: string; reviewed_by?: string }>(`/api/massage-admin/intakes/${encodeURIComponent(id)}/reviewed`);
+      if (r.error || r.ok === false) { setErr(r.error || 'failed'); return; }
+      setDetail((d) => d ? { ...d, intake: { ...d.intake, reviewed_at: r.reviewed_at ?? new Date().toISOString(), reviewed_by: r.reviewed_by ?? null } } : d);
+      onReviewed();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  if (loading) return <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[15px] text-[var(--color-text-faint)]">Loading intake…</div>;
+  if (err && !detail) return <div class="rounded-lg border border-[var(--color-status-failed)] px-4 py-4 text-[15px] text-[var(--color-status-failed)]">{err}</div>;
+  if (!detail) return null;
+  const flags = Object.values(detail.flags || {});
+  const i = detail.intake;
+
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-[17px] font-semibold text-[var(--color-text)]">{i.client_name || i.client_email || '(guest intake)'}</h2>
+          <div class="mt-1 flex flex-wrap gap-x-3 text-[14px] text-[var(--color-text-faint)]">
+            <span>{i.service_name || 'intake'}{i.appt_date ? ` · ${i.appt_date} ${i.appt_time ?? ''}` : ''}</span>
+            <span>· submitted {agoFromIso(i.submitted_at)}</span>
+            {i.reviewed_at
+              ? <span class="text-[var(--color-status-done)]">· reviewed {agoFromIso(i.reviewed_at)}{i.reviewed_by ? ` by ${i.reviewed_by}` : ''}</span>
+              : <span class="text-[var(--color-warn)]">· not reviewed</span>}
+          </div>
+        </div>
+        <button type="button" class={i.reviewed_at ? btnGhost : btnAccent} style={i.reviewed_at ? '' : 'background:var(--color-accent)'} disabled={busy || !canEdit || !!i.reviewed_at} onClick={markReviewed}>
+          <Check size={15} /> {i.reviewed_at ? 'Reviewed' : busy ? 'Marking…' : 'Mark reviewed'}
+        </button>
+      </div>
+      {flags.length > 0 && (
+        <div class="mb-3 rounded-md border border-[var(--color-warn)] px-3 py-2 text-[14px] text-[var(--color-warn)]">
+          <span class="font-semibold">⚠ Safety flags:</span> {flags.map((f) => `${f.label}: ${f.value}`).join(' · ')}
+        </div>
+      )}
+      {err && <div class="mb-3 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
+      {/* Rendered intake (reuses the massage server's reviewHtml). */}
+      <div class="intake-review overflow-x-auto text-[15px] text-[var(--color-text)]" dangerouslySetInnerHTML={{ __html: detail.html }} />
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────── SOAP tab ──
+function SoapTab({ overview, canEdit, jump }: { overview: ReturnType<typeof useFetch<Overview>>; canEdit: boolean; jump?: { clientId: string; apptId?: string } | null }) {
+  const clients = overview.data?.clients ?? [];
+  const [query, setQuery] = useState('');
+  // A Today-tab quick-open lands directly on that client (and straight into a
+  // new note for that appointment via autoNew below).
+  const [clientId, setClientId] = useState<string | null>(jump?.clientId ?? null);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const rows = q ? clients.filter((c) => `${c.name} ${c.email}`.toLowerCase().includes(q)) : clients;
+    return [...rows].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+  }, [clients, query]);
+
+  const selected = clients.find((c) => c.id === clientId) ?? null;
+
+  return (
+    <div class="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[320px_minmax(0,1fr)]">
+      <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
+          <input class={`${inputClass} py-1.5`} placeholder="Find client for notes" value={query} onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
+        </div>
+        <div class="max-h-[640px] overflow-y-auto">
+          {filtered.map((c) => (
+            <button key={c.id} type="button" onClick={() => setClientId(c.id)}
+              class={`flex w-full items-center gap-3 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 ${clientId === c.id ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]'}`}>
+              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-elevated)]">
+                <Stethoscope size={15} class="text-[var(--color-accent)]" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-[16px] font-semibold text-[var(--color-text)]">{c.name || c.email}</span>
+                <span class="mt-0.5 block truncate text-[14px] text-[var(--color-text-muted)]">{c.email}</span>
+              </span>
+            </button>
+          ))}
+          {filtered.length === 0 && <div class="px-3 py-6 text-center text-[15px] text-[var(--color-text-faint)]">No matching clients.</div>}
+        </div>
+      </aside>
+      <main>{selected ? <SoapClientPanel key={selected.id} client={selected} canEdit={canEdit} autoNew={jump?.clientId === selected.id ? jump : null} /> : <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[15px] text-[var(--color-text-faint)]">Select a client to view their SOAP notes over time.</div>}</main>
+    </div>
+  );
+}
+
+function SoapClientPanel({ client, canEdit, autoNew }: { client: MassageClient; canEdit: boolean; autoNew?: { apptId?: string } | null }) {
+  const soap = useFetch<SoapClientResp>(`/api/massage-admin/soap?client=${encodeURIComponent(client.id)}`, 0);
+  const appts = useFetch<{ appointments: Appointment[] }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/appointments`, 0);
+  // A Today-tab quick-open goes straight into a new note (appointment pre-picked).
+  const [mode, setMode] = useState<'timeline' | 'new' | { edit: SoapNote } | { dup: SoapNote }>(autoNew && canEdit ? 'new' : 'timeline');
+
+  const notes = soap.data?.notes ?? [];
+  const trend = soap.data?.trend;
+  const cf = soap.data?.carry_forward;
+
+  const refreshAll = () => { soap.refresh(); setMode('timeline'); };
+
+  if (mode !== 'timeline') {
+    const existing = typeof mode === 'object' && 'edit' in mode ? mode.edit : null;
+    const seed = typeof mode === 'object' && 'dup' in mode ? mode.dup : null;
+    return (
+      <SoapForm
+        client={client}
+        appointments={appts.data?.appointments ?? []}
+        initialApptId={autoNew?.apptId}
+        existing={existing}
+        seed={seed}
+        history={notes}
+        carryForward={existing ? null : (cf ?? null)}
+        canEdit={canEdit}
+        onCancel={() => setMode('timeline')}
+        onSaved={refreshAll}
+      />
+    );
+  }
+
+  return (
+    <section class="space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-[17px] font-semibold text-[var(--color-text)]">{client.name || client.email} · SOAP timeline</h2>
+        <div class="flex items-center gap-2">
+          {notes.length > 0 && <button type="button" class={btnGhost} disabled={!canEdit} onClick={() => setMode({ dup: notes[0] })}><Copy size={15} /> Duplicate last</button>}
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit} onClick={() => setMode('new')}><Plus size={15} /> New note</button>
+        </div>
+      </div>
+
+      {cf && (Object.keys(cf.flags || {}).length > 0 || (cf.next_focus?.length ?? 0) > 0) && (
+        <div class="rounded-lg border border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_6%,transparent)] px-4 py-3 text-[14px]">
+          {Object.keys(cf.flags || {}).length > 0 && (
+            <div class="text-[var(--color-warn)]"><span class="font-semibold">⚠ Intake safety flags:</span> {Object.values(cf.flags).map((f) => `${f.label}: ${f.value}`).join(' · ')}</div>
+          )}
+          {(cf.next_focus?.length ?? 0) > 0 && (
+            <div class="mt-1 text-[var(--color-text-muted)]"><span class="font-semibold text-[var(--color-accent)]">Focus next session:</span> {cf.next_focus.map((n) => n.region + (n.note ? ` (${n.note})` : '')).join(' · ')}</div>
+          )}
+        </div>
+      )}
+
+      {trend && (notes.length > 0) && <TissueTrend trend={trend} />}
+
+      <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+        <div class="border-b border-[var(--color-border)] px-3 py-2 text-[15px] font-semibold text-[var(--color-text)]">{notes.length} note{notes.length === 1 ? '' : 's'}</div>
+        {soap.loading && !soap.data && <div class="px-3 py-6 text-center text-[15px] text-[var(--color-text-faint)]">Loading…</div>}
+        {!soap.loading && notes.length === 0 && <div class="px-3 py-6 text-center text-[15px] text-[var(--color-text-faint)]">No SOAP notes yet. Create the first one.</div>}
+        <div class="max-h-[560px] overflow-y-auto">
+          {notes.map((n) => (
+            <button key={n.id} type="button" onClick={() => canEdit && setMode({ edit: n })}
+              class="block w-full border-b border-[var(--color-border)] px-3 py-3 text-left last:border-b-0 hover:bg-[var(--color-elevated)]">
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                <span class="text-[15px] font-semibold text-[var(--color-text)]">{n.session_date || (n.created_at || '').slice(0, 10)}</span>
+                {(n.pain_before != null || n.pain_after != null) && (
+                  <span class="text-[14px] text-[var(--color-text-muted)]">pain {n.pain_before ?? '—'} → <span class="text-[var(--color-status-done)]">{n.pain_after ?? '—'}</span></span>
+                )}
+                {n.pressure && <span class="text-[14px] text-[var(--color-text-faint)]">· {n.pressure}</span>}
+                {n.duration_min ? <span class="text-[14px] text-[var(--color-text-faint)]">· {n.duration_min}m</span> : null}
+                {n.author && <span class="ml-auto text-[13px] text-[var(--color-text-faint)]">{n.author}</span>}
+              </div>
+              {n.techniques?.length > 0 && <div class="mt-1 text-[14px] text-[var(--color-text-muted)]">{n.techniques.join(', ')}</div>}
+              {n.areas_concern?.length > 0 && (
+                <div class="mt-1 flex flex-wrap gap-1">
+                  {n.areas_concern.map((a, idx) => (
+                    <span key={idx} class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[13px] text-[var(--color-text-muted)]">{a.region} <span class="text-[var(--color-warn)]">{a.severity}</span>{a.focus ? ' ★' : ''}</span>
+                  ))}
+                </div>
+              )}
+              {n.assessment && <div class="mt-1 truncate text-[14px] text-[var(--color-text-faint)]">A: {n.assessment}</div>}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Per-region severity + pain before/after over time, drawn as compact inline bars.
+function TissueTrend({ trend }: { trend: SoapClientResp['trend'] }) {
+  const regions = Object.entries(trend.regions || {}).filter(([, pts]) => pts.length > 0);
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]"><Activity size={14} /> Tissue trend over time</div>
+      {trend.pain.length > 0 && (
+        <div class="mb-3">
+          <div class="mb-1 text-[14px] font-semibold text-[var(--color-text-muted)]">Pain before → after</div>
+          <div class="flex flex-wrap gap-2">
+            {trend.pain.map((p, i) => (
+              <div key={i} class="rounded border border-[var(--color-border)] px-2 py-1 text-[13px] text-[var(--color-text-muted)]">
+                <span class="text-[var(--color-text-faint)]">{p.date}</span>{' '}
+                <span>{p.before ?? '—'}</span> → <span class="text-[var(--color-status-done)]">{p.after ?? '—'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {regions.length > 0 && (
+        <div class="space-y-1.5">
+          {regions.map(([region, pts]) => (
+            <div key={region} class="flex items-center gap-2">
+              <div class="w-28 shrink-0 truncate text-[14px] text-[var(--color-text-muted)]">{region}</div>
+              <div class="flex flex-1 items-end gap-1" style="height:28px">
+                {pts.map((pt, i) => (
+                  <div key={i} class="flex flex-col items-center justify-end" title={`${pt.date}: ${pt.severity}/10`}>
+                    <div class="w-3 rounded-t bg-[var(--color-accent)]" style={`height:${Math.max(2, (Number(pt.severity) || 0) * 2.4)}px`} />
+                  </div>
+                ))}
+              </div>
+              <div class="w-8 shrink-0 text-right text-[13px] text-[var(--color-text-faint)]">{pts[pts.length - 1]?.severity ?? '—'}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {regions.length === 0 && trend.pain.length === 0 && <div class="text-[14px] text-[var(--color-text-faint)]">Trend appears once notes carry per-region severity.</div>}
+    </section>
+  );
+}
+
+// The structured SOAP form (create or edit). Areas-of-concern body-map + carry-forward.
+function SoapForm({ client, appointments, initialApptId, existing, seed, carryForward, canEdit, onCancel, onSaved }: {
+  client: MassageClient; appointments: Appointment[]; initialApptId?: string; existing: SoapNote | null;
+  seed?: SoapNote | null; history?: SoapNote[]; carryForward: CarryForward | null; canEdit: boolean; onCancel: () => void; onSaved: () => void;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  // Clinical content is seeded from the note being edited OR the note being duplicated.
+  // Session-specific fields (date, appointment) always start fresh for a duplicate.
+  const src = existing ?? seed ?? null;
+  const [apptId, setApptId] = useState<string>(existing?.appointment_id || initialApptId || '');
+  const [sessionDate, setSessionDate] = useState<string>(existing?.session_date || today);
+  // Pain before/after: no longer asked (removed 2026-08-11), but values on an
+  // existing note are preserved through edits — the payload echoes them back.
+  const painBefore = src?.pain_before != null ? String(src.pain_before) : '';
+  const painAfter = src?.pain_after != null ? String(src.pain_after) : '';
+  // Position + subjective: no longer asked (removed 2026-08-11); values on an
+  // existing note survive edits — the payload echoes them back.
+  const position = src?.position || '';
+  const [pressure, setPressure] = useState<string>(src?.pressure || '');
+  const [duration, setDuration] = useState<string>(src?.duration_min != null ? String(src.duration_min) : '');
+  const [techniques, setTechniques] = useState<string[]>(src?.techniques || []);
+  // Seed the body-map from the source note, else from the carry-forward focus regions.
+  const [areas, setAreas] = useState<AreaConcern[]>(() => {
+    if (src?.areas_concern?.length) return src.areas_concern.map((a) => ({ ...a }));
+    if (carryForward?.next_focus?.length) return carryForward.next_focus.map((n) => ({ region: n.region, severity: 0, findings: n.note || '', focus: false }));
+    return [];
+  });
+  const subjective = src?.subjective || '';
+  const [objective, setObjective] = useState(src?.objective || '');
+  const [assessment, setAssessment] = useState(src?.assessment || '');
+  const [plan, setPlan] = useState(src?.plan || '');
+  const [homeCare, setHomeCare] = useState(src?.home_care || '');
+  const [referrals, setReferrals] = useState(src?.referrals || '');
+  const [adverse, setAdverse] = useState(src?.adverse_reactions || '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  function toggleTechnique(t: string) {
+    setTechniques((cur) => cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]);
+  }
+  const flags = (existing ? existing.flags : (seed?.flags ?? carryForward?.flags)) as Record<string, IntakeFlag> || {};
+
+  // When an appointment is chosen, the session date AND duration come from the
+  // booking — the note never asks for a length the calendar already knows.
+  function pickAppt(id: string) {
+    setApptId(id);
+    const a = appointments.find((x) => x.id === id);
+    if (a && !existing) {
+      setSessionDate(a.appt_date || today);
+      if (a.duration_min != null) setDuration(String(a.duration_min));
+    }
+  }
+
+  async function save() {
+    setBusy(true); setErr(null);
+    const nextFocus = areas.filter((a) => a.focus).map((a) => ({ region: a.region, note: a.findings || '' }));
+    const payload: Record<string, unknown> = {
+      appointment_id: apptId || null,
+      session_date: sessionDate || today,
+      pain_before: painBefore === '' ? null : Number(painBefore),
+      pain_after: painAfter === '' ? null : Number(painAfter),
+      position: position || null,
+      pressure: pressure || null,
+      duration_min: duration === '' ? null : Number(duration),
+      techniques,
+      areas_concern: areas,
+      subjective, objective, assessment, plan,
+      home_care: homeCare, next_focus: nextFocus,
+      referrals, adverse_reactions: adverse,
+      flags,
+    };
+    if (!existing) { payload.user_id = client.id; payload.client_email = client.email; }
+    try {
+      const r = existing
+        ? await apiPatch<{ ok?: boolean; error?: string }>(`/api/massage-admin/soap/${encodeURIComponent(existing.id)}`, payload)
+        : await apiPost<{ ok?: boolean; error?: string }>('/api/massage-admin/soap', payload);
+      if (r.error || r.ok === false) { setErr(r.error || 'save failed'); return; }
+      onSaved();
+    } catch (e: any) { setErr(e?.body?.error || e?.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <section class="rounded-lg border border-[var(--color-accent)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex items-center justify-between">
+        <h3 class="text-[16px] font-semibold text-[var(--color-text)]">
+          {existing ? 'Edit SOAP note' : seed ? 'Duplicate note' : 'New SOAP note'} · {client.name || client.email}
+        </h3>
+        <button type="button" class={btnGhost} onClick={onCancel}><X size={15} /> Close</button>
+      </div>
+      <div class="mb-3 text-[14px] text-[var(--color-text-faint)]">Private clinical note — the client never sees this.</div>
+
+      {Object.keys(flags || {}).length > 0 && (
+        <div class="mb-3 rounded-md border border-[var(--color-warn)] px-3 py-2 text-[14px] text-[var(--color-warn)]">
+          <span class="font-semibold">⚠ Intake safety flags:</span> {Object.values(flags).map((f) => `${f.label}: ${f.value}`).join(' · ')}
+        </div>
+      )}
+      {seed && (
+        <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[14px] text-[var(--color-text-muted)]">
+          <span class="font-semibold text-[var(--color-accent)]">Duplicated from</span> the {seed.session_date || (seed.created_at || '').slice(0, 10)} note — clinical fields pre-filled; date reset to today. Adjust what changed and save as a new note.
+        </div>
+      )}
+      {!existing && !seed && (carryForward?.next_focus?.length ?? 0) > 0 && (
+        <div class="mb-3 rounded-md border border-[var(--color-accent)] px-3 py-2 text-[14px] text-[var(--color-text-muted)]">
+          <span class="font-semibold text-[var(--color-accent)]">Carried forward:</span> {carryForward!.next_focus.map((n) => n.region + (n.note ? ` (${n.note})` : '')).join(' · ')} — pre-loaded into the Body Chart step.
+        </div>
+      )}
+
+      {/* One-page form (Mike's ask, 2026-08-11): no wizard tabs — everything in
+          one scroll. Tap-first: pain before/after, position and the subjective
+          note are gone; duration comes from the booked appointment. */}
+      <div>
+        <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Session</div>
+        <div class="flex flex-wrap gap-1.5">
+          <button type="button" onClick={() => { setApptId(''); if (!existing) setSessionDate(today); }}
+            class={`rounded-md border px-2 py-1.5 text-[14px] ${apptId === '' ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+            No booking
+          </button>
+          {appointments.map((a) => (
+            <button key={a.id} type="button" onClick={() => pickAppt(a.id)}
+              class={`rounded-md border px-2 py-1.5 text-[14px] ${apptId === a.id ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+              {a.appt_date} {a.appt_time} · {a.service_name}{a.duration_min ? ` · ${a.duration_min}m` : ''}
+            </button>
+          ))}
+        </div>
+        <div class="mt-1.5 text-[13px] text-[var(--color-text-faint)]">
+          {sessionDate || today}{duration !== '' ? ` · ${duration} min (from booking)` : ''}
+          {apptId === '' && (
+            <input type="date" class="ml-2 rounded-md border border-[var(--color-border)] bg-transparent px-1.5 py-0.5 text-[13px] text-[var(--color-text-muted)]"
+              value={sessionDate} onInput={(e) => setSessionDate((e.currentTarget as HTMLInputElement).value)} />
+          )}
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Pressure</div>
+        <div class="flex flex-wrap gap-1.5">
+          {SOAP_PRESSURES.map((p) => (
+            <button key={p} type="button" onClick={() => setPressure((cur) => cur === p ? '' : p)}
+              class={`rounded-md border px-2 py-1.5 text-[14px] ${pressure === p ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+              {p}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <div class="mb-1.5 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Techniques</div>
+        <div class="flex flex-wrap gap-1.5">
+          {SOAP_TECHNIQUES.map((t) => (
+            <button key={t} type="button" onClick={() => toggleTechnique(t)}
+              class={`rounded-md border px-2 py-1 text-[14px] ${techniques.includes(t) ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div class="mt-4"><FindingChips label="Objective (findings)" value={objective} onChange={setObjective} groups={OBJECTIVE_GROUPS} input={false} /></div>
+
+      <div class="mt-4"><BodyMapPicker areas={areas} onChange={setAreas} /></div>
+
+      <div class="mt-4 grid gap-3 md:grid-cols-2">
+        <FindingChips label="Plan" value={plan} onChange={setPlan} groups={[{ group: '', options: SOAP_PHRASES.plan }]} input={false} />
+        <FindingChips label="Home care (self-care given)" value={homeCare} onChange={setHomeCare} groups={[{ group: '', options: SOAP_PHRASES.home_care }]} input={false} />
+        <FindingChips label="Referrals" value={referrals} onChange={setReferrals} groups={[{ group: '', options: SOAP_PHRASES.referrals }]} input={false} />
+        <FindingChips label="Adverse reactions" value={adverse} onChange={setAdverse} groups={[{ group: '', options: SOAP_PHRASES.adverse_reactions }]} input={false} />
+      </div>
+
+      <div class="mt-4"><FindingChips label="Assessment — plus anything else" value={assessment} onChange={setAssessment}
+        groups={[{ group: '', options: SOAP_PHRASES.assessment }]} placeholder="Anything else about this session (optional)…" /></div>
+
+      {err && <div class="mt-3 text-[14px] text-[var(--color-status-failed)]">{err}</div>}
+      <div class="mt-4 flex flex-wrap items-center justify-end gap-2">
+        <button type="button" class={btnGhost} onClick={onCancel}>Cancel</button>
+        <span class="flex-1" />
+        <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={busy || !canEdit} onClick={save}><Save size={15} /> {busy ? 'Saving…' : existing ? 'Save changes' : 'Save note'}</button>
+      </div>
+    </section>
+  );
+}
+
+// Areas-of-concern body-map: add regions, set 0-10 severity + findings, flag "focus next session".
+// Marker placement (% of the 848×1264 figure art, center-anchored) + short labels. Bilateral
+// regions (arms/legs/shoulders) sit on a representative side so the dots don't pile up center.
+const SOAP_REGION_POS: Record<string, { front?: [number, number]; back?: [number, number] }> = {
+  'Scalp':            { front: [50, 6],  back: [50, 6] },
+  'Face':             { front: [50, 12] },
+  'Neck':             { front: [50, 17], back: [50, 15] },
+  'Shoulders':        { front: [69, 20], back: [69, 21] },
+  'Pectoral Muscles': { front: [50, 27] },
+  'Back':             { back: [50, 33] },
+  'Arms & Hands':     { front: [24, 44], back: [78, 45] },
+  'Abdomen':          { front: [50, 39] },
+  'Gluteal Region':   { back: [50, 47] },
+  'Legs':             { front: [42, 70], back: [58, 66] },
+  'Feet':             { front: [50, 90], back: [50, 91] },
+};
+// Labeled pill buttons flank the figures (Massage Envy "My Body Care" style),
+// tied to their body spot by a leader line. Single-view splits pills per side;
+// "both" view puts the front figure's pills on the left, the back's on the right.
+const SOAP_REGION_SIDE: Record<'front' | 'back', Record<'left' | 'right', string[]>> = {
+  front: { left: ['Face', 'Neck', 'Pectoral Muscles', 'Abdomen', 'Legs'], right: ['Scalp', 'Shoulders', 'Arms & Hands', 'Feet'] },
+  back: { left: ['Neck', 'Back', 'Gluteal Region', 'Legs'], right: ['Scalp', 'Shoulders', 'Arms & Hands', 'Feet'] },
+};
+const SOAP_REGION_SHORT: Record<string, string> = { 'Pectoral Muscles': 'Pecs', 'Gluteal Region': 'Glutes', 'Arms & Hands': 'Arms', 'Shoulders': 'Shoulder' };
+
+// Marker key for the body chart. Picking a marker makes the body figure a
+// stamp: tap a region and it records that finding at a sensible starting
+// severity, instead of "flag region, then type what you found". The finding
+// text is the same free-text field as before, so nothing new has to be stored.
+const BODY_MARKERS = [
+  { key: 'knot',    label: 'Knot',          glyph: '★', color: '#c026d3', finding: 'Knotted',      severity: 6 },
+  { key: 'tight',   label: 'Tight muscle',  glyph: '✕', color: '#2563eb', finding: 'Tight',        severity: 4 },
+  { key: 'trigger', label: 'Trigger point', glyph: '◍', color: '#ca8a04', finding: 'Trigger pt',   severity: 5 },
+  { key: 'pain1',   label: 'Pain — mild',   glyph: '●', color: '#fda4af', finding: 'Tender',       severity: 3 },
+  { key: 'pain2',   label: 'Pain — moderate', glyph: '●', color: '#f43f5e', finding: 'Painful',    severity: 6 },
+  { key: 'pain3',   label: 'Pain — severe', glyph: '●', color: '#be123c', finding: 'Severe pain',  severity: 9 },
+] as const;
+type BodyMarker = typeof BODY_MARKERS[number];
+
+// Which marker a flagged region is showing — inferred from its findings text so
+// an existing note (written before the key existed) still renders correctly.
+function markerFor(a: AreaConcern): BodyMarker | null {
+  const f = (a.findings || '').toLowerCase();
+  for (const m of [...BODY_MARKERS].reverse()) if (f.includes(m.finding.toLowerCase())) return m;
+  return null;
+}
+
+function BodyMapPicker({ areas, onChange }: { areas: AreaConcern[]; onChange: (a: AreaConcern[]) => void }) {
+  const used = new Set(areas.map((a) => a.region));
+  const [marker, setMarker] = useState<BodyMarker | null>(null);
+  const [show, setShow] = useState<'both' | 'front' | 'back'>('both');
+  // Undo stack of prior `areas` snapshots — mis-taps on a body figure are easy.
+  const [history, setHistory] = useState<AreaConcern[][]>([]);
+  const commit = (next: AreaConcern[]) => { setHistory((h) => [...h.slice(-19), areas]); onChange(next); };
+  const undo = () => setHistory((h) => { if (!h.length) return h; onChange(h[h.length - 1]); return h.slice(0, -1); });
+
+  const addRegion = (region: string) => { if (region && !used.has(region)) commit([...areas, { region, severity: DEFAULT_SEVERITY, findings: '', focus: false }]); };
+  // With a marker armed, tapping stamps that finding (adding the region if new).
+  // With no marker armed this is the original add/remove toggle.
+  const toggleRegion = (region: string) => {
+    if (marker) {
+      const at = areas.findIndex((a) => a.region === region);
+      if (at < 0) commit([...areas, { region, severity: marker.severity, findings: marker.finding, focus: false }]);
+      else commit(areas.map((a, i) => i === at
+        ? { ...a, severity: marker.severity, findings: (a.findings || '').toLowerCase().includes(marker.finding.toLowerCase()) ? a.findings : appendText(a.findings || '', marker.finding) }
+        : a));
+      return;
+    }
+    if (used.has(region)) commit(areas.filter((a) => a.region !== region));
+    else commit([...areas, { region, severity: DEFAULT_SEVERITY, findings: '', focus: false }]);
+  };
+  const update = (i: number, patch: Partial<AreaConcern>) => onChange(areas.map((a, idx) => idx === i ? { ...a, ...patch } : a));
+  const remove = (i: number) => commit(areas.filter((_, idx) => idx !== i));
+
+  const countIn = (view: 'front' | 'back') =>
+    areas.filter((a) => SOAP_REGION_POS[a.region]?.[view]).length;
+
+  const chart = () => {
+    const both = show === 'both';
+    const views: Array<'front' | 'back'> = both ? ['front', 'back'] : [show];
+    const pillW = both ? 28 : 26;                      // % width of each pill column
+    const imgW = both ? 22 : 48;                       // % width of each figure image
+    const imgH = imgW * (1264 / 848);                  // figure height in width-units
+    const H = both ? Math.max(imgH, 78) : imgH;        // extra room in both-view so 9 pills never overlap
+    const imgLeft = (v: 'front' | 'back') => pillW + (both && v === 'back' ? imgW : 0);
+    const inView = (v: 'front' | 'back') => (r: string) => !!SOAP_REGION_POS[r]?.[v];
+    const sortByY = (v: 'front' | 'back') => (a: string, b: string) => SOAP_REGION_POS[a]![v]![1] - SOAP_REGION_POS[b]![v]![1];
+    const cols: Array<{ side: 'left' | 'right'; items: Array<{ region: string; view: 'front' | 'back' }> }> = both
+      ? [
+          { side: 'left', items: SOAP_REGIONS.filter(inView('front')).sort(sortByY('front')).map((region) => ({ region, view: 'front' as const })) },
+          { side: 'right', items: SOAP_REGIONS.filter(inView('back')).sort(sortByY('back')).map((region) => ({ region, view: 'back' as const })) },
+        ]
+      : (['left', 'right'] as const).map((side) => ({
+          side,
+          items: SOAP_REGION_SIDE[show][side].filter(inView(show)).sort(sortByY(show)).map((region) => ({ region, view: show as 'front' | 'back' })),
+        }));
+    // y values below are in width-units (0..H), converted to % via /H.
+    const slotY = (i: number, n: number) => (n <= 1 ? H / 2 : 3 + (i * (H - 6)) / (n - 1));
+    const target = (region: string, v: 'front' | 'back') => {
+      const [px, py] = SOAP_REGION_POS[region]![v]!;
+      return { x: imgLeft(v) + (px / 100) * imgW, y: (py / 100) * imgH };
+    };
+    const stateOf = (region: string) => {
+      const area = areas.find((a) => a.region === region);
+      const m = area ? markerFor(area) : null;
+      return { area, m, color: area ? (m ? m.color : 'var(--color-accent)') : null };
+    };
+
+    return (
+      <div class="mx-auto w-full max-w-[620px]">
+        <div class="relative" style={`aspect-ratio:100/${H}`}>
+          <div class="flex items-start">
+            <div style={`width:${pillW}%`} />
+            {views.map((v) => (
+              <img key={v} src={`/bodymap-${v}.png`} width={848} height={1264} alt={`${v} of the body`}
+                class="rounded-md border border-[var(--color-border)] bg-white" style={`width:${imgW}%`} />
+            ))}
+          </div>
+
+          <svg class="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 100 ${H}`} preserveAspectRatio="none" aria-hidden="true">
+            {cols.map((col) => col.items.map(({ region, view }, i) => {
+              const t = target(region, view);
+              const { color } = stateOf(region);
+              return <line key={`${col.side}-${view}-${region}`} x1={col.side === 'left' ? pillW - 1 : 100 - pillW + 1} y1={slotY(i, col.items.length)}
+                x2={t.x} y2={t.y} stroke={color || 'rgba(148,163,184,.55)'} stroke-width="1" vector-effect="non-scaling-stroke" />;
+            }))}
+          </svg>
+
+          {cols.map((col) => col.items.map(({ region, view }, i) => {
+            const { area, m, color } = stateOf(region);
+            const label = both ? (SOAP_REGION_SHORT[region] || region) : region;
+            return (
+              <button key={`pill-${col.side}-${view}-${region}`} type="button"
+                title={`${region}${area ? ` — ${area.findings || 'flagged'} (sev ${area.severity})` : marker ? ` — tap to mark ${marker.label}` : ''}`}
+                aria-pressed={!!area} onClick={() => toggleRegion(region)}
+                class={'absolute truncate rounded-md border text-center font-semibold uppercase leading-none shadow-sm transition ' + (both ? 'px-0 py-0.5 text-[8px] tracking-tighter' : 'px-1.5 py-2.5 text-[12px] tracking-wide')}
+                style={`line-height:1;font-size:${both ? 8 : 12}px;letter-spacing:${both ? '-0.3px' : 'normal'};left:${col.side === 'left' ? 0 : 100 - pillW}%;width:${pillW - (both ? 0.5 : 1.5)}%;top:${(slotY(i, col.items.length) / H) * 100}%;transform:translateY(-50%);${area
+                  ? `background:${color};color:#fff;border-color:${color}`
+                  : 'background:#fff;color:#334155;border-color:#cbd5e1'}`}>
+                {area && m ? `${m.glyph} ` : ''}{label}
+              </button>
+            );
+          }))}
+
+          {views.map((v) => SOAP_REGIONS.filter(inView(v)).map((r) => {
+            const t = target(r, v);
+            const { color } = stateOf(r);
+            return (
+              <button key={`dot-${v}-${r}`} type="button" title={r} aria-pressed={!!color} onClick={() => toggleRegion(r)}
+                class="absolute rounded-full border border-white/80 transition"
+                style={`left:${t.x}%;top:${(t.y / H) * 100}%;width:12px;height:12px;transform:translate(-50%,-50%);background:${color || 'rgba(100,116,139,.7)'}`} />
+            );
+          }))}
+        </div>
+
+        <div class="mt-1 flex">
+          <div style={`width:${pillW}%`} />
+          {views.map((v) => (
+            <div key={v} class="text-center text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]" style={`width:${imgW}%`}>
+              {v}{countIn(v) > 0 && <span class="ml-1 text-[var(--color-accent)]">{countIn(v)}</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div class="mt-4 rounded-lg border border-[var(--color-border)] p-3">
+      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div class="text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">
+          Body chart — {marker ? <span style={`color:${marker.color}`}>marking “{marker.label}” · tap a region</span> : 'tap the body to flag a region'}
+        </div>
+        <select class={`${inputClass} w-auto py-1`} value="" onChange={(e) => { addRegion((e.currentTarget as HTMLSelectElement).value); (e.currentTarget as HTMLSelectElement).value = ''; }}>
+          <option value="">+ add region…</option>
+          {SOAP_REGIONS.filter((r) => !used.has(r)).map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+      </div>
+
+      {/* Marker key + view switch + undo */}
+      <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2">
+        <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Key</span>
+        {BODY_MARKERS.map((m) => (
+          <button key={m.key} type="button" onClick={() => setMarker(marker?.key === m.key ? null : m)} aria-pressed={marker?.key === m.key}
+            class={'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[13px] leading-none transition '
+              + (marker?.key === m.key ? 'border-transparent text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}
+            style={marker?.key === m.key ? `background:color-mix(in srgb, ${m.color} 20%, transparent)` : ''}>
+            <span style={`color:${m.color}`}>{m.glyph}</span> {m.label}
+          </button>
+        ))}
+        <div class="ml-auto flex items-center gap-1.5">
+          {(['both', 'front', 'back'] as const).map((v) => (
+            <button key={v} type="button" onClick={() => setShow(v)} aria-pressed={show === v}
+              class={'rounded px-1.5 py-0.5 text-[13px] capitalize transition '
+                + (show === v ? 'bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] text-[var(--color-accent)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}>{v}</button>
+          ))}
+          <button type="button" onClick={undo} disabled={history.length === 0} title="Undo the last body-chart change"
+            class="inline-flex items-center gap-1 rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40">
+            ↺ Undo
+          </button>
+        </div>
+      </div>
+
+      <div class="mb-3">{chart()}</div>
+      {areas.length === 0 && <div class="py-2 text-center text-[14px] text-[var(--color-text-faint)]">No regions flagged. Tap a spot on the body (or use the dropdown) to record severity + findings.</div>}
+      <div class="space-y-2">
+        {areas.map((a, i) => (
+          <div key={a.region} class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span class="min-w-[78px] text-[15px] font-semibold text-[var(--color-text)]">{a.region}</span>
+              <span class="text-[12px] uppercase tracking-wider text-[var(--color-text-faint)]">sev</span>
+              <div class="flex flex-wrap gap-0.5">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                  <button key={n} type="button" title={`severity ${n}`} onClick={() => update(i, { severity: n })}
+                    class={`h-7 w-7 rounded text-[13px] font-bold leading-none transition ${a.severity === n ? 'text-white' : 'border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}
+                    style={a.severity === n ? `background:hsl(${Math.round(120 - (n - 1) * 12)} 68% 42%)` : ''}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <label class="ml-auto inline-flex items-center gap-1 text-[13px] text-[var(--color-accent)]">
+                <input type="checkbox" checked={!!a.focus} onChange={(e) => update(i, { focus: (e.currentTarget as HTMLInputElement).checked })} /> focus next
+              </label>
+              <button type="button" title="Remove region" class="text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)]" onClick={() => remove(i)}><X size={15} /></button>
+            </div>
+            <div class="mt-1.5 flex flex-wrap items-center gap-1">
+              {[...(REGION_FINDING_CHIPS[a.region] || []), ...FINDING_CHIPS].map((f) => (
+                <Chip key={f} label={`+ ${f}`} onClick={() => update(i, { findings: appendText(a.findings || '', f) })} />
+              ))}
+              <MicButton onText={(t) => update(i, { findings: appendText(a.findings || '', t) })} />
+            </div>
+            <input class={`${inputClass} mt-1.5 py-1`} placeholder="findings — tap chips above, dictate, or type" value={a.findings || ''} onInput={(e) => update(i, { findings: (e.currentTarget as HTMLInputElement).value })} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────── Client Profile tab ──
+// One place per client instead of hunting the same person across Accounts →
+// Intake Forms → SOAP Notes. Picks a client, then shows a clinical timeline
+// (intakes + SOAP notes + bookings merged, newest first), their editable
+// details, and their submitted forms — with the at-a-glance vitals on top.
+
+type TimelineKind = 'soap' | 'intake' | 'appt';
+interface TimelineEvent {
+  key: string;
+  kind: TimelineKind;
+  /** YYYY-MM-DD used for sorting + the rail label. */
+  date: string;
+  title: string;
+  subtitle?: string;
+  soap?: SoapNote;
+  intake?: IntakeRow;
+  appt?: Appointment;
+}
+
+const KIND_TONE: Record<TimelineKind, { label: string; color: string }> = {
+  intake: { label: 'Intake', color: 'var(--color-warn)' },
+  soap: { label: 'SOAP', color: 'var(--color-accent)' },
+  appt: { label: 'Booking', color: 'var(--color-text-muted)' },
+};
+
+function ProfileStat({ label, value, tone, hint }: { label: string; value: string | number; tone?: string; hint?: string }) {
+  return (
+    <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] px-3 py-2.5">
+      <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+      <div class="mt-0.5 truncate text-[17px] font-semibold" style={tone ? `color:${tone}` : 'color:var(--color-text)'} title={hint || String(value)}>{value}</div>
+    </div>
+  );
+}
+
+function ClientProfileTab({ overview, canEdit }: { overview: ReturnType<typeof useFetch<Overview>>; canEdit: boolean }) {
+  const clients = overview.data?.clients ?? [];
+  const [clientId, setClientId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  // "New client" lives here too (not just Accounts) — this is the tab Mike
+  // actually works from. Same CreateAccountCard, same create endpoint.
+  const [showCreate, setShowCreate] = useState(false);
+
+  const selected = clients.find((c) => c.id === clientId) ?? null;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const rows = q ? clients.filter((c) => `${c.name} ${c.email} ${c.phone}`.toLowerCase().includes(q)) : clients;
+    // Most recently seen first — the people you're actually working with float up.
+    return [...rows].sort((a, b) => (b.lastVisitMs ?? 0) - (a.lastVisitMs ?? 0));
+  }, [clients, query]);
+
+  // Practice vitals across the whole book — the numbers worth seeing before you
+  // start searching for one person. Fetched above the early return so the hook
+  // order stays identical whether or not a client is open.
+  const todayIso = isoLocalDate(new Date());
+  const todaySched = useFetch<{ appts: ScheduleApptLite[] }>(`/api/massage-admin/availability/schedule?month=${todayIso.slice(0, 7)}`, 60000);
+
+  if (selected) {
+    return <ClientProfile key={selected.id} client={selected} canEdit={canEdit} onBack={() => setClientId(null)} onChanged={() => overview.refresh()} />;
+  }
+
+  const now = Date.now();
+  const DAY = 86_400_000;
+  // Same date-string comparison as the weekly card — SQLite datetimes ("YYYY-MM-DD
+  // HH:MM:SS") don't parse reliably through Date, and would silently read as NaN.
+  const cutoff = isoLocalDate(new Date(now - 30 * DAY));
+  const newClients = clients.filter((c) => (c.createdAt || '').slice(0, 10) >= cutoff).length;
+  const staleClients = clients.filter((c) => c.lastVisitMs && now - c.lastVisitMs > 30 * DAY).length;
+  const todayCount = (todaySched.data?.appts ?? []).filter((a) => a.appt_date === todayIso).length;
+
+  return (
+    <section>
+      <div class="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <ProfileStat label="Total clients" value={clients.length} />
+        <ProfileStat label="Today's appointments" value={todayCount} tone={todayCount ? 'var(--color-accent)' : undefined} />
+        <ProfileStat label="New clients (30d)" value={newClients} tone={newClients ? 'var(--color-status-done)' : undefined} />
+        <ProfileStat label="No visit in 30+ days" value={staleClients} tone={staleClients ? 'var(--color-warn)' : undefined} />
+      </div>
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <input class={`${inputClass} max-w-[320px] py-1.5`} placeholder="Search name / email / phone" value={query}
+          onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)} />
+        <span class="text-[14px] text-[var(--color-text-faint)]">{filtered.length} client{filtered.length === 1 ? '' : 's'}</span>
+        <button type="button" class={`${btnAccent} ml-auto`} style="background:var(--color-accent)" disabled={!canEdit}
+          onClick={() => setShowCreate((v) => !v)}>
+          <Plus size={15} /> New client
+        </button>
+        <button type="button" class={btnGhost} title="Download the whole client book as CSV"
+          onClick={() => exportClientsCsv(filtered)}>
+          <Download size={15} /> Export CSV
+        </button>
+      </div>
+      {showCreate && <div class="mb-3"><CreateAccountCard onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); overview.refresh(); }} /></div>}
+      <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {filtered.map((c) => (
+          <button key={c.id} type="button" onClick={() => setClientId(c.id)}
+            class="flex items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-3 text-left transition-colors hover:border-[var(--color-accent)] hover:bg-[var(--color-elevated)]">
+            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--color-elevated)]">
+              <UserRound size={16} class="text-[var(--color-accent)]" />
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-[16px] font-semibold text-[var(--color-text)]">{c.name || c.email}</span>
+              <span class="mt-0.5 block truncate text-[14px] text-[var(--color-text-muted)]">{c.email}</span>
+              <span class="mt-0.5 block text-[13px] text-[var(--color-text-faint)]">
+                last seen {agoFromMs(c.lastVisitMs)} · {c.appointmentCount} session{c.appointmentCount === 1 ? '' : 's'}
+                {c.upcomingAppointmentCount ? ` · ${c.upcomingAppointmentCount} upcoming` : ''}
+              </span>
+            </span>
+          </button>
+        ))}
+        {filtered.length === 0 && (
+          <div class="col-span-full rounded-lg border border-dashed border-[var(--color-border)] px-4 py-10 text-center text-[15px] text-[var(--color-text-faint)]">No matching clients.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ClientProfile({ client, canEdit, onBack, onChanged }: {
+  client: MassageClient; canEdit: boolean; onBack: () => void; onChanged: () => void;
+}) {
+  const soap = useFetch<SoapClientResp>(`/api/massage-admin/soap?client=${encodeURIComponent(client.id)}`, 0);
+  const appts = useFetch<{ appointments: Appointment[] }>(`/api/massage-admin/clients/${encodeURIComponent(client.id)}/appointments`, 0);
+  const intakes = useFetch<{ intakes: IntakeRow[] }>('/api/massage-admin/intakes', 0);
+
+  const [pane, setPane] = useState<'timeline' | 'general' | 'forms'>('timeline');
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // null = viewing; otherwise the SOAP editor is open (new note, or editing one).
+  const [editing, setEditing] = useState<null | { note: SoapNote | null }>(null);
+
+  const notes = soap.data?.notes ?? [];
+  const cf = soap.data?.carry_forward;
+  const appointments = appts.data?.appointments ?? [];
+  const myIntakes = useMemo(
+    () => (intakes.data?.intakes ?? []).filter((i) => i.user_id === client.id || (client.email && i.client_email === client.email)),
+    [intakes.data, client.id, client.email],
+  );
+
+  // Merge everything clinical into one chronological rail.
+  const events = useMemo<TimelineEvent[]>(() => {
+    const out: TimelineEvent[] = [];
+    for (const n of notes) {
+      out.push({
+        key: `soap:${n.id}`, kind: 'soap',
+        date: n.session_date || (n.created_at || '').slice(0, 10),
+        title: 'SOAP note',
+        subtitle: [
+          n.pain_before != null || n.pain_after != null ? `pain ${escHtml(String(n.pain_before ?? '—'))} → ${escHtml(String(n.pain_after ?? '—'))}` : '',
+          n.areas_concern?.map((a) => a.region).join(', ') || '',
+        ].filter(Boolean).join(' · '),
+        soap: n,
+      });
+    }
+    for (const i of myIntakes) {
+      out.push({
+        key: `intake:${i.id}`, kind: 'intake',
+        date: (i.submitted_at || '').slice(0, 10),
+        title: 'Patient intake',
+        subtitle: [i.service_name || '', i.reviewed_at ? 'reviewed' : 'not reviewed'].filter(Boolean).join(' · '),
+        intake: i,
+      });
+    }
+    for (const a of appointments) {
+      out.push({
+        key: `appt:${a.id}`, kind: 'appt',
+        date: a.appt_date,
+        title: a.service_name || 'Session',
+        subtitle: `${a.appt_time} · ${a.status}`,
+        appt: a,
+      });
+    }
+    return out.sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+  }, [notes, myIntakes, appointments]);
+
+  useEffect(() => { if (!selectedKey && events[0]) setSelectedKey(events[0].key); }, [events, selectedKey]);
+  const selectedEvent = events.find((e) => e.key === selectedKey) ?? null;
+
+  const flags = Object.values(cf?.flags ?? {});
+  const focusNext = cf?.next_focus ?? [];
+  const lastNote = notes[0];
+
+  const refreshClinical = () => { soap.refresh(); setEditing(null); };
+
+  return (
+    <section class="space-y-4">
+      {/* Header */}
+      <div class="flex flex-wrap items-start gap-3">
+        <button type="button" onClick={onBack} title="Back to client list"
+          class="mt-1 rounded-md border border-[var(--color-border)] px-2 py-1 text-[15px] text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]">←</button>
+        {/* min-w keeps the name readable on a phone — the action button wraps to
+            its own line instead of squeezing the name into an ellipsis. */}
+        <div class="min-w-[230px] flex-1">
+          <h2 class="truncate text-[21px] font-semibold text-[var(--color-text)]">{client.name || client.email}</h2>
+          <div class="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[14px] text-[var(--color-text-muted)]">
+            <span class="inline-flex items-center gap-1.5"><Mail size={14} /> {client.email}</span>
+            {client.phone && <span class="inline-flex items-center gap-1.5">☎ {client.phone}</span>}
+            {client.accountStatus !== 'active' && (
+              <span class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[12px] uppercase text-[var(--color-warn)]">{client.accountStatus}</span>
+            )}
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" class={btnGhost} title="Open a printable record — use the browser's Save as PDF"
+            onClick={() => printClientRecord(client, notes, myIntakes, flags)}>
+            <Printer size={15} /> PDF
+          </button>
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit}
+            onClick={() => { setPane('timeline'); setEditing({ note: null }); }}>
+            <Plus size={15} /> New session note
+          </button>
+        </div>
+      </div>
+
+      {/* Vitals */}
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+        <ProfileStat label="Last seen" value={agoFromMs(client.lastVisitMs)} />
+        <ProfileStat label="Sessions" value={client.appointmentCount} />
+        <ProfileStat label="Notes on file" value={notes.length} />
+        <ProfileStat label="Upcoming" value={client.upcomingAppointmentCount}
+          tone={client.upcomingAppointmentCount ? 'var(--color-accent)' : undefined} />
+        <ProfileStat label="Red flags" value={flags.length ? `${flags.length} flagged` : 'Clear'}
+          tone={flags.length ? 'var(--color-status-failed)' : 'var(--color-status-done)'}
+          hint={flags.map((f) => `${f.label}: ${f.value}`).join(' · ')} />
+        <ProfileStat label="Focus next" value={focusNext.length ? focusNext.map((f) => f.region).join(', ') : '—'}
+          tone={focusNext.length ? 'var(--color-accent)' : undefined}
+          hint={focusNext.map((f) => f.region + (f.note ? ` (${f.note})` : '')).join(' · ')} />
+      </div>
+
+      {flags.length > 0 && (
+        <div class="rounded-lg border border-[var(--color-warn)] px-3 py-2 text-[14px] text-[var(--color-warn)]">
+          <span class="font-semibold">⚠ Intake safety flags:</span> {flags.map((f) => `${f.label}: ${f.value}`).join(' · ')}
+        </div>
+      )}
+
+      {/* Panes */}
+      <div class="flex flex-wrap items-center gap-1 border-b border-[var(--color-border)]">
+        {([['timeline', 'Clinical Timeline'], ['general', 'General information'], ['forms', 'Forms']] as const).map(([k, label]) => (
+          <button key={k} type="button" onClick={() => setPane(k)} aria-pressed={pane === k}
+            class={'-mb-px border-b-2 px-3 py-1.5 text-[15px] font-medium transition-colors '
+              + (pane === k
+                ? 'border-[var(--color-accent)] text-[var(--color-text)]'
+                : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}>
+            {label}
+            {k === 'forms' && myIntakes.length > 0 && <span class="ml-1.5 text-[13px] text-[var(--color-text-faint)]">{myIntakes.length}</span>}
+          </button>
+        ))}
+      </div>
+
+      {pane === 'general' && <AccountDetail client={client} canEdit={canEdit} onChanged={onChanged} />}
+
+      {pane === 'forms' && (
+        <div class="space-y-3">
+          {myIntakes.length === 0
+            ? <div class="rounded-lg border border-dashed border-[var(--color-border)] px-4 py-8 text-center text-[15px] text-[var(--color-text-faint)]">No intake forms submitted by this client yet.</div>
+            : myIntakes.map((i) => <IntakeViewer key={i.id} id={i.id} canEdit={canEdit} onReviewed={() => intakes.refresh()} />)}
+        </div>
+      )}
+
+      {pane === 'timeline' && (editing
+        ? (
+          <SoapForm
+            client={client}
+            appointments={appointments}
+            existing={editing.note}
+            seed={null}
+            history={notes}
+            carryForward={editing.note ? null : (cf ?? null)}
+            canEdit={canEdit}
+            onCancel={() => setEditing(null)}
+            onSaved={refreshClinical}
+          />
+        )
+        : (
+          <div class="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[300px_minmax(0,1fr)]">
+            {/* Event rail */}
+            <aside class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+              <div class="border-b border-[var(--color-border)] px-3 py-2 text-[14px] font-semibold text-[var(--color-text)]">
+                {events.length} entr{events.length === 1 ? 'y' : 'ies'}
+              </div>
+              <div class="max-h-[620px] overflow-y-auto">
+                {events.map((e) => {
+                  const tone = KIND_TONE[e.kind];
+                  const on = e.key === selectedKey;
+                  return (
+                    <button key={e.key} type="button" onClick={() => setSelectedKey(e.key)}
+                      class={'flex w-full items-start gap-2.5 border-b border-[var(--color-border)] px-3 py-2.5 text-left transition-colors last:border-b-0 '
+                        + (on ? 'bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)]' : 'hover:bg-[var(--color-elevated)]')}>
+                      <span class="mt-1 h-2 w-2 shrink-0 rounded-full" style={`background:${tone.color}`} />
+                      <span class="min-w-0 flex-1">
+                        <span class="flex items-center justify-between gap-2">
+                          <span class="truncate text-[15px] font-semibold text-[var(--color-text)]">{e.date || '—'}</span>
+                          <span class="shrink-0 rounded px-1.5 py-0.5 text-[12px] font-medium"
+                            style={`color:${tone.color};background:color-mix(in srgb, ${tone.color} 14%, transparent)`}>{tone.label}</span>
+                        </span>
+                        <span class="mt-0.5 block truncate text-[14px] text-[var(--color-text-muted)]">{e.title}</span>
+                        {e.subtitle && <span class="mt-0.5 block truncate text-[13px] text-[var(--color-text-faint)]">{e.subtitle}</span>}
+                      </span>
+                    </button>
+                  );
+                })}
+                {events.length === 0 && (
+                  <div class="px-3 py-8 text-center text-[15px] text-[var(--color-text-faint)]">
+                    Nothing on file yet. Start with a session note.
+                  </div>
+                )}
+              </div>
+            </aside>
+
+            {/* Detail pane */}
+            <main class="space-y-4">
+              {selectedEvent?.kind === 'intake' && selectedEvent.intake && (
+                <IntakeViewer id={selectedEvent.intake.id} canEdit={canEdit} onReviewed={() => intakes.refresh()} />
+              )}
+              {selectedEvent?.kind === 'soap' && selectedEvent.soap && (
+                <SoapNoteDetail note={selectedEvent.soap} canEdit={canEdit} onEdit={() => setEditing({ note: selectedEvent.soap! })} />
+              )}
+              {selectedEvent?.kind === 'appt' && selectedEvent.appt && (
+                <AppointmentDetail appt={selectedEvent.appt} note={notes.find((n) => n.appointment_id === selectedEvent.appt!.id) ?? null}
+                  canEdit={canEdit} onWriteNote={() => setEditing({ note: null })} />
+              )}
+              {!selectedEvent && (
+                <div class="rounded-lg border border-[var(--color-border)] px-4 py-10 text-center text-[15px] text-[var(--color-text-faint)]">
+                  Select an entry on the left.
+                </div>
+              )}
+              {soap.data && notes.length > 0 && <TissueTrend trend={soap.data.trend} />}
+              {lastNote?.home_care && (
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4 text-[15px]">
+                  <div class="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Latest home care</div>
+                  <div class="text-[var(--color-text-muted)]">{lastNote.home_care}</div>
+                </div>
+              )}
+            </main>
+          </div>
+        ))}
+    </section>
+  );
+}
+
+// Read-only view of one SOAP note — the clinical record as written, with an
+// Edit jump into the same form the SOAP Notes tab uses.
+function SoapNoteDetail({ note, canEdit, onEdit }: { note: SoapNote; canEdit: boolean; onEdit: () => void }) {
+  const row = (label: string, value: string | null | undefined) => value
+    ? (
+      <div>
+        <div class="text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+        <div class="mt-0.5 whitespace-pre-wrap text-[15px] leading-relaxed text-[var(--color-text)]">{value}</div>
+      </div>
+    ) : null;
+
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 class="text-[17px] font-semibold text-[var(--color-text)]">Session {note.session_date || (note.created_at || '').slice(0, 10)}</h3>
+          <div class="mt-1 flex flex-wrap gap-x-3 text-[14px] text-[var(--color-text-faint)]">
+            {(note.pain_before != null || note.pain_after != null) && (
+              <span>pain {note.pain_before ?? '—'} → <span class="text-[var(--color-status-done)]">{note.pain_after ?? '—'}</span></span>
+            )}
+            {note.pressure && <span>· {note.pressure}</span>}
+            {note.position && <span>· {note.position}</span>}
+            {note.duration_min ? <span>· {note.duration_min} min</span> : null}
+            {note.author && <span>· {note.author}</span>}
+          </div>
+        </div>
+        <button type="button" class={btnGhost} disabled={!canEdit} onClick={onEdit}>Edit note</button>
+      </div>
+
+      {note.techniques?.length > 0 && (
+        <div class="mb-3 flex flex-wrap gap-1">
+          {note.techniques.map((t) => (
+            <span key={t} class="rounded bg-[var(--color-elevated)] px-1.5 py-0.5 text-[13px] text-[var(--color-text-muted)]">{t}</span>
+          ))}
+        </div>
+      )}
+
+      {note.areas_concern?.length > 0 && (
+        <div class="mb-3 space-y-1">
+          <div class="text-[13px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">Areas of concern</div>
+          {note.areas_concern.map((a, i) => (
+            <div key={i} class="flex flex-wrap items-baseline gap-2 text-[15px]">
+              <span class="font-semibold text-[var(--color-text)]">{a.region}</span>
+              <span class="rounded px-1.5 text-[13px] font-bold text-white"
+                style={`background:hsl(${Math.round(120 - ((a.severity || 1) - 1) * 12)} 68% 42%)`}>{a.severity}</span>
+              {a.focus && <span class="text-[13px] text-[var(--color-accent)]">★ focus next</span>}
+              {a.findings && <span class="text-[14px] text-[var(--color-text-muted)]">{a.findings}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div class="grid gap-3 md:grid-cols-2">
+        {row('Subjective', note.subjective)}
+        {row('Objective', note.objective)}
+        {row('Assessment', note.assessment)}
+        {row('Plan', note.plan)}
+        {row('Home care', note.home_care)}
+        {row('Referrals', note.referrals)}
+        {row('Adverse reactions', note.adverse_reactions)}
+      </div>
+    </section>
+  );
+}
+
+// A booking on the timeline — plus the "no note written" nudge that used to
+// require cross-checking the SOAP tab by hand.
+function AppointmentDetail({ appt, note, canEdit, onWriteNote }: {
+  appt: Appointment; note: SoapNote | null; canEdit: boolean; onWriteNote: () => void;
+}) {
+  const past = appt.start_ms ? appt.start_ms < Date.now() : false;
+  return (
+    <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 class="text-[17px] font-semibold text-[var(--color-text)]">{appt.service_name || 'Session'}</h3>
+          <div class="mt-1 flex flex-wrap gap-x-3 text-[14px] text-[var(--color-text-faint)]">
+            <span>{fmtDay(appt.appt_date)} · {appt.appt_time}</span>
+            <span>· {appt.status}</span>
+            {appt.enhancement_applied && <span class="text-[var(--color-accent)]">· 🎁 {appt.enhancement_applied}</span>}
+          </div>
+        </div>
+        {!note && past && (
+          <button type="button" class={btnAccent} style="background:var(--color-accent)" disabled={!canEdit} onClick={onWriteNote}>
+            <Plus size={15} /> Write the note
+          </button>
+        )}
+      </div>
+      <div class="mt-3 text-[15px]">
+        {note
+          ? <span class="text-[var(--color-status-done)]">✓ SOAP note on file for this session.</span>
+          : past
+            ? <span class="text-[var(--color-warn)]">No SOAP note written for this past session.</span>
+            : <span class="text-[var(--color-text-muted)]">Upcoming — the note can be written after the session.</span>}
+      </div>
+    </section>
+  );
+}
+
+// ───────────────────────────────────────────────────────────── Today tab ──
+// The owner's morning (or evening) glance: who's coming in today, and the short
+// list of things actually waiting on Mike. Everything here is derived from feeds
+// the console already loads — no new backend surface.
+
+interface MassageMonitorLite {
+  accounts: { total: number; verified: number; unverified: number };
+  appointments: { requested: number; confirmed_upcoming: number; total: number };
+  payments: { pending: number };
+}
+
+function greeting(d: Date): string {
+  const h = d.getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function TodayTab({ overview, pending, onGoTo, onSoap }: {
+  overview: ReturnType<typeof useFetch<Overview>>;
+  pending: { data: PendingResp | null; refresh: () => void };
+  onGoTo: (tab: 'profile' | 'intakes' | 'availability') => void;
+  onSoap: (jump: { clientId: string; apptId?: string }) => void;
+}) {
+  const now = new Date();
+  const todayIso = isoLocalDate(now);
+  const monthStr = todayIso.slice(0, 7);
+  const sched = useFetch<{ appts: ScheduleApptLite[] }>(`/api/massage-admin/availability/schedule?month=${monthStr}`, 60000);
+  const intakes = useFetch<{ intakes: IntakeRow[] }>('/api/massage-admin/intakes', 60000);
+  const monitor = useFetch<MassageMonitorLite>('/api/massage/monitor', 60000);
+
+  const clients = overview.data?.clients ?? [];
+  const todays = (sched.data?.appts ?? [])
+    .filter((a) => a.appt_date === todayIso)
+    .sort((a, b) => a.appt_time.localeCompare(b.appt_time));
+  const unreviewed = (intakes.data?.intakes ?? []).filter((i) => !i.reviewed_at);
+  const reqs = pending.data?.pending ?? [];
+  const DAY = 86_400_000;
+  const stale = clients.filter((c) => c.lastVisitMs && now.getTime() - c.lastVisitMs > 30 * DAY);
+  const paymentsPending = monitor.data?.payments?.pending ?? 0;
+
+  // Sun→Sat window around today, scored off the same schedule feed.
+  const week = useMemo(() => {
+    const start = new Date(now); start.setDate(start.getDate() - start.getDay());
+    const end = new Date(start); end.setDate(end.getDate() + 6);
+    const lo = isoLocalDate(start), hi = isoLocalDate(end);
+    const inWeek = (sched.data?.appts ?? []).filter((a) => a.appt_date >= lo && a.appt_date <= hi);
+    const cancelled = inWeek.filter((a) => /cancel|declin/i.test(a.status)).length;
+    const live = inWeek.filter((a) => !/cancel|declin/i.test(a.status));
+    const done = live.filter((a) => a.appt_date < todayIso).length;
+    const upcoming = live.length - done;
+    // createdAt arrives as either ISO or SQLite "YYYY-MM-DD HH:MM:SS" — compare
+    // on the leading date string so no Date parsing (or TZ shift) is involved.
+    const newClients = clients.filter((c) => (c.createdAt || '').slice(0, 10) >= lo).length;
+    const line = live.length === 0
+      ? 'No sessions on the book this week — a good week to chase the clients who have gone quiet.'
+      : `${done} done, ${upcoming} to come${cancelled ? `, ${cancelled} cancelled` : ''}${newClients ? ` · ${newClients} new client${newClients === 1 ? '' : 's'} signed up` : ''}.`;
+    return { done, upcoming, cancelled, newClients, line };
+  }, [sched.data, clients, todayIso]);
+
+  // Everything genuinely waiting on Mike, most-blocking first.
+  // `go` is optional on purpose: payments have no view in this console, so that
+  // row states the fact without promising a jump it can't make.
+  const todo: Array<{ label: string; count: number; tone: string; go?: () => void; note?: string }> = [
+    { label: 'booking request' + (reqs.length === 1 ? '' : 's') + ' awaiting approval', count: reqs.length, tone: 'var(--color-warn)', go: () => onGoTo('availability') },
+    { label: 'intake form' + (unreviewed.length === 1 ? '' : 's') + ' not reviewed', count: unreviewed.length, tone: 'var(--color-warn)', go: () => onGoTo('intakes') },
+    { label: 'payment' + (paymentsPending === 1 ? '' : 's') + ' pending', count: paymentsPending, tone: 'var(--color-status-failed)', note: 'settle on the massage site' },
+    { label: 'client' + (stale.length === 1 ? '' : 's') + ' not seen in 30+ days', count: stale.length, tone: 'var(--color-text-muted)', go: () => onGoTo('profile') },
+  ].filter((t) => t.count > 0);
+
+  return (
+    <div class="space-y-5">
+      <section>
+        <div class="text-[15px] font-semibold uppercase tracking-wider text-[var(--color-accent)]">
+          {now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}
+        </div>
+        <h2 class="mt-1 text-[28px] font-semibold leading-tight text-[var(--color-text)]">{greeting(now)}, Mike</h2>
+        <p class="mt-1 text-[16px] text-[var(--color-text-muted)]">
+          {todays.length === 0
+            ? 'A clear day on the calendar — nothing booked.'
+            : `${todays.length} session${todays.length === 1 ? '' : 's'} on the book today.`}
+          {todo.length === 0 ? ' Nothing waiting on you.' : ` ${todo.length} thing${todo.length === 1 ? '' : 's'} need${todo.length === 1 ? 's' : ''} a look.`}
+        </p>
+      </section>
+
+      {/* Today's bookings */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[17px] font-semibold text-[var(--color-text)]">
+          <CalendarClock size={16} class="text-[var(--color-accent)]" /> Today’s bookings
+        </h3>
+        {todays.length === 0 ? (
+          <div class="py-4 text-center text-[17px] text-[var(--color-text-faint)]">A clear day on the calendar — enjoy it.</div>
+        ) : (
+          <div class="divide-y divide-[var(--color-border)]">
+            {todays.map((a) => {
+              const soapClient = a.client_email ? clients.find((c) => c.email.toLowerCase() === a.client_email!.toLowerCase()) : undefined;
+              return (
+              <div key={a.id} class="flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5">
+                <span class="w-[92px] shrink-0 text-[16px] font-semibold tabular-nums text-[var(--color-accent)]">{a.appt_time}</span>
+                <span class="min-w-0 flex-1 truncate text-[16px] font-semibold text-[var(--color-text)]">{a.client_name}</span>
+                <span class="min-w-0 flex-1 truncate text-[16px] text-[var(--color-text-muted)]">{a.service_name}</span>
+                <span class="text-[15px] text-[var(--color-text-faint)]">{a.duration_min ? `${a.duration_min} min` : ''} · {a.status}</span>
+                {soapClient && (
+                  <button type="button" title="Write the SOAP note for this session"
+                    onClick={() => onSoap({ clientId: soapClient.id, apptId: a.id })}
+                    class="inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] px-2 py-1 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-text)]">
+                    <Stethoscope size={14} class="text-[var(--color-accent)]" /> SOAP note
+                  </button>
+                )}
+              </div>
+            ); })}
+          </div>
+        )}
+      </section>
+
+      {/* Needs attention */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[17px] font-semibold text-[var(--color-text)]">
+          <ShieldAlert size={16} class="text-[var(--color-accent)]" /> Needs your attention
+        </h3>
+        {todo.length === 0 ? (
+          <div class="py-4 text-center text-[17px] text-[var(--color-status-done)]">Nothing waiting — the console is clear. ✅</div>
+        ) : (
+          <div class="space-y-1.5">
+            {todo.map((t) => (
+              <button key={t.label} type="button" onClick={t.go} disabled={!t.go}
+                class={'flex w-full items-center gap-3 rounded-md border border-[var(--color-border)] px-3 py-2.5 text-left transition-colors '
+                  + (t.go ? 'hover:bg-[var(--color-elevated)]' : 'cursor-default')}>
+                <span class="min-w-[34px] text-[20px] font-semibold tabular-nums" style={`color:${t.tone}`}>{t.count}</span>
+                <span class="flex-1 text-[17px] text-[var(--color-text)]">{t.label}</span>
+                <span class="text-[16px] text-[var(--color-text-faint)]">{t.go ? 'open →' : t.note}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Weekly reflection — how the week actually went, not just what's next. */}
+      <section class="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface,var(--color-elevated))] p-4">
+        <h3 class="mb-2 flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text)]">
+          <Activity size={16} class="text-[var(--color-accent)]" /> This week
+        </h3>
+        <div class="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
+          {[
+            ['Sessions done', week.done, 'var(--color-status-done)'],
+            ['Still to come', week.upcoming, 'var(--color-accent)'],
+            ['Cancelled', week.cancelled, week.cancelled ? 'var(--color-status-failed)' : undefined],
+            ['New clients', week.newClients, week.newClients ? 'var(--color-status-done)' : undefined],
+          ].map(([label, value, tone]) => (
+            <div key={String(label)}>
+              <div class="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
+              <div class="text-[24px] font-semibold tabular-nums" style={tone ? `color:${tone}` : 'color:var(--color-text)'}>{value}</div>
+            </div>
+          ))}
+        </div>
+        <p class="mt-2 text-[14px] text-[var(--color-text-muted)]">{week.line}</p>
+      </section>
+
+      {/* Practice at a glance */}
+      <section class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <ProfileStat label="Total clients" value={clients.length} />
+        <ProfileStat label="Today's appointments" value={todays.length} tone={todays.length ? 'var(--color-accent)' : undefined} />
+        <ProfileStat label="Upcoming (all)" value={clients.reduce((n, c) => n + c.upcomingAppointmentCount, 0)} />
+        <ProfileStat label="No visit in 30+ days" value={stale.length} tone={stale.length ? 'var(--color-warn)' : undefined} />
+      </section>
+    </div>
+  );
+}
+
+interface ScheduleApptLite {
+  id: string; appt_date: string; appt_time: string; client_name: string;
+  client_email?: string;
+  service_name: string; status: string; duration_min: number;
+}
+
+// ── Client record export ───────────────────────────────────────────────────
+// Grafo's per-record PDF button. Same idiom the Erik cheat-sheet uses: build a
+// clean print document in a new window and let the browser's own "Save as PDF"
+// do the work — no dependency, no server round-trip, and it prints legibly on
+// paper for a physical client file.
+const escHtml = (s: string) => (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+
+function printClientRecord(client: MassageClient, notes: SoapNote[], intakes: IntakeRow[], flags: IntakeFlag[]): void {
+  const noteBlocks = notes.map((n) => {
+    const areas = (n.areas_concern || [])
+      .map((a) => `<span class="chip">${escHtml(a.region)} <b>${escHtml(String(a.severity))}</b>${a.focus ? ' ★' : ''}${a.findings ? ` — ${escHtml(a.findings)}` : ''}</span>`)
+      .join('');
+    const field = (label: string, v?: string | null) => (v ? `<div class="f"><span>${label}</span>${escHtml(v)}</div>` : '');
+    return `<div class="note">
+      <div class="nh"><b>${escHtml(n.session_date || (n.created_at || '').slice(0, 10))}</b>
+        <span class="meta">${[
+          n.pain_before != null || n.pain_after != null ? `pain ${escHtml(String(n.pain_before ?? '—'))} → ${escHtml(String(n.pain_after ?? '—'))}` : '',
+          n.pressure || '', n.position || '', n.duration_min ? `${escHtml(String(n.duration_min))} min` : '', n.author || '',
+        ].filter(Boolean).map(escHtml).join(' · ')}</span></div>
+      ${n.techniques?.length ? `<div class="tech">${n.techniques.map(escHtml).join(' · ')}</div>` : ''}
+      ${areas ? `<div class="chips">${areas}</div>` : ''}
+      ${field('S', n.subjective)}${field('O', n.objective)}${field('A', n.assessment)}${field('P', n.plan)}
+      ${field('Home care', n.home_care)}${field('Referrals', n.referrals)}${field('Adverse', n.adverse_reactions)}
+    </div>`;
+  }).join('');
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(client.name || client.email)} — client record</title>
+    <style>*{box-sizing:border-box}body{font:13px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:28px;max-width:800px}
+    h1{font-size:23px;margin:0 0 2px}.sub{color:#555;font-size:12px;margin-bottom:14px}
+    h2{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#4338ca;border-bottom:1px solid #ddd;padding-bottom:3px;margin:18px 0 8px}
+    .vitals{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px}
+    .v{border:1px solid #ddd;border-radius:6px;padding:6px 10px;min-width:120px}
+    .v span{display:block;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#777}
+    .v b{font-size:15px}
+    .flags{background:#fff5e6;border:1px solid #f0c074;border-radius:6px;padding:8px 10px;color:#7a4a00;margin-bottom:6px}
+    .note{border:1px solid #e2e2e2;border-radius:6px;padding:10px 12px;margin-bottom:10px;page-break-inside:avoid}
+    .nh{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:4px}
+    .nh b{font-size:15px}.meta{color:#666;font-size:11px}
+    .tech{color:#444;font-size:11px;margin-bottom:4px}
+    .chips{margin-bottom:6px}.chip{display:inline-block;border:1px solid #ddd;border-radius:10px;padding:1px 7px;font-size:11px;margin:0 4px 4px 0}
+    .f{margin:3px 0}.f span{display:inline-block;min-width:74px;font-weight:600;color:#4338ca;font-size:11px}
+    .foot{margin-top:20px;font-size:10px;color:#888;border-top:1px solid #eee;padding-top:8px}
+    @media print{body{margin:12mm}}</style></head><body>
+    <h1>${escHtml(client.name || client.email)}</h1>
+    <div class="sub">${escHtml(client.email)}${client.phone ? ` · ${escHtml(client.phone)}` : ''} · Massage By Mike clinical record</div>
+    <div class="vitals">
+      <div class="v"><span>Last seen</span><b>${escHtml(agoFromMs(client.lastVisitMs))}</b></div>
+      <div class="v"><span>Sessions</span><b>${client.appointmentCount}</b></div>
+      <div class="v"><span>Notes on file</span><b>${notes.length}</b></div>
+      <div class="v"><span>Intake forms</span><b>${intakes.length}</b></div>
+      <div class="v"><span>Upcoming</span><b>${client.upcomingAppointmentCount}</b></div>
+    </div>
+    ${flags.length ? `<div class="flags"><b>&#9888; Intake safety flags:</b> ${flags.map((f) => escHtml(`${f.label}: ${f.value}`)).join(' · ')}</div>` : ''}
+    ${client.notes ? `<h2>Admin notes</h2><div>${escHtml(client.notes)}</div>` : ''}
+    <h2>SOAP notes (${notes.length})</h2>
+    ${noteBlocks || '<i>No notes on file.</i>'}
+    <div class="foot">Private clinical record — printed ${escHtml(new Date().toLocaleString())}. Not for client distribution.</div>
+    <script>window.onload=function(){setTimeout(function(){window.print()},500)}</script></body></html>`;
+
+  const wnd = window.open('', '_blank');
+  if (wnd) { wnd.document.write(html); wnd.document.close(); return; }
+  // Popup blocked — fall back to a downloadable HTML file rather than doing
+  // nothing, so the click always produces the record one way or another.
+  const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `client-record-${(client.name || client.email).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.html`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Grafo's client-list export button. Plain CSV so it opens anywhere — a real
+// backup of the book that doesn't depend on this console being up.
+function exportClientsCsv(clients: MassageClient[]): void {
+  const cell = (v: unknown) => {
+    const s = v == null ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const head = ['Name', 'Email', 'Phone', 'Status', 'Sessions', 'Upcoming', 'Reward balance', 'Last visit', 'Created', 'Email opt-in', 'SMS opt-in', 'Admin notes'];
+  const rows = clients.map((c) => [
+    c.name, c.email, c.phone, c.accountStatus, c.appointmentCount, c.upcomingAppointmentCount, c.rewardBalance,
+    c.lastVisitMs ? new Date(c.lastVisitMs).toISOString().slice(0, 10) : '',
+    (c.createdAt || '').slice(0, 10), c.emailOptIn ? 'yes' : 'no', c.smsOptIn ? 'yes' : 'no', c.notes,
+  ].map(cell).join(','));
+  const blob = new Blob([[head.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `massage-clients-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

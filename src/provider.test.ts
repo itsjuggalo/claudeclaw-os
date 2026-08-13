@@ -12,6 +12,16 @@ vi.mock('child_process', () => ({
 
 vi.mock('./config.js', () => ({
   STORE_DIR: '/tmp/test',
+  DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
+  CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
+  CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
+  CLAUDE_MODEL_HAIKU: 'claude-haiku-4-5',
+}));
+
+// The openai/openrouter availability checks fall back to reading .env; return
+// an empty file so results don't depend on the developer's local .env.
+vi.mock('./env.js', () => ({
+  readEnvFile: () => ({}),
 }));
 
 import { checkProviderAvailability } from './provider.js';
@@ -32,12 +42,13 @@ describe('checkProviderAvailability', () => {
       expect(result.ok).toBe(true);
     });
 
-    it('returns install command and auth hint when missing', () => {
+    it('reports ok via the bundled SDK even when the claude CLI is not on PATH', () => {
+      // The claude-agent-sdk bundles its own Claude Code runtime, so the provider
+      // is available whenever the SDK package resolves (it does in this repo)
+      // regardless of whether a standalone `claude` is on PATH. This mirrors the
+      // realistic daemon case where PATH lacks the global CLI dir.
       const result = checkProviderAvailability({ type: 'claude' });
-      expect(result.ok).toBe(false);
-      expect(result.installCommand).toContain('@anthropic-ai/claude-code');
-      expect(result.setupHint).toMatch(/claude login|ANTHROPIC_API_KEY/);
-      expect(result.docsUrl).toBeTruthy();
+      expect(result.ok).toBe(true);
     });
   });
 
@@ -71,18 +82,53 @@ describe('checkProviderAvailability', () => {
     });
   });
 
-  describe('codex', () => {
+  describe('acp-codex (Codex over ACP)', () => {
     it('reports ok when codex CLI is on PATH', () => {
       state.installed.add('codex');
-      const result = checkProviderAvailability({ type: 'codex' });
+      const result = checkProviderAvailability({ type: 'acp-codex' });
       expect(result.ok).toBe(true);
     });
 
     it('returns install command and auth hint when missing', () => {
-      const result = checkProviderAvailability({ type: 'codex' });
+      const result = checkProviderAvailability({ type: 'acp-codex' });
       expect(result.ok).toBe(false);
       expect(result.installCommand).toContain('@openai/codex');
       expect(result.setupHint).toMatch(/codex/i);
+    });
+  });
+
+  describe('openai (native Codex SDK)', () => {
+    // The SDK package resolves in this repo (bundled dependency), so
+    // availability turns purely on auth: codex login state or OPENAI_API_KEY.
+    const savedCodexHome = process.env.CODEX_HOME;
+    const savedOpenAiKey = process.env.OPENAI_API_KEY;
+
+    beforeEach(() => {
+      delete process.env.OPENAI_API_KEY;
+      // Point CODEX_HOME at a directory with no auth.json so the developer's
+      // real ~/.codex login can't leak into the assertions.
+      process.env.CODEX_HOME = '/tmp/definitely-missing-codex-home';
+    });
+
+    afterEach(() => {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      if (savedOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedOpenAiKey;
+    });
+
+    it('reports ok when OPENAI_API_KEY is set', () => {
+      process.env.OPENAI_API_KEY = 'sk-test';
+      const result = checkProviderAvailability({ type: 'openai' });
+      expect(result.ok).toBe(true);
+    });
+
+    it('returns codex login / API key hints when unauthenticated', () => {
+      const result = checkProviderAvailability({ type: 'openai' });
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/not authenticated/i);
+      expect(result.setupHint).toContain('codex login');
+      expect(result.setupHint).toContain('OPENAI_API_KEY');
     });
   });
 

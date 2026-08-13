@@ -20,7 +20,7 @@ Usage:
 Environment variables:
     WARROOM_MODE         "live" (default) or "legacy"
     WARROOM_PORT         port to listen on (default: 7860)
-    WARROOM_LIVE_MODEL   Gemini Live model id (default: whatever Pipecat ships)
+    WARROOM_LIVE_MODEL   Gemini Live model id (default: gemini-2.5-flash-native-audio-latest)
     WARROOM_LIVE_VOICE   Gemini Live voice name (default: "Charon")
 
     GOOGLE_API_KEY       required for live mode
@@ -94,7 +94,7 @@ except ModuleNotFoundError as e:
     )
     sys.exit(1)
 
-from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT
+from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT, WARROOM_ROSTER_PATH, WARROOM_PIN_PATH
 
 
 logging.basicConfig(
@@ -135,8 +135,11 @@ def make_transport(port: int, audio_in_sr: int = 16000, audio_out_sr: int = 2400
     # first ("Sample rate changed from previously X to Y, which is not
     # supported"). Output stays at 24 kHz — Gemini Live emits 24 kHz audio
     # and Pipecat passes it through unchanged.
+    # Loopback by default: the websocket has no connection-level auth (the
+    # dashboard token only gates the Hono proxy, which a direct connection to
+    # this port bypasses entirely). Opt in to LAN exposure via WARROOM_BIND.
     return WebsocketServerTransport(
-        host="0.0.0.0",
+        host=os.environ.get("WARROOM_BIND", "127.0.0.1"),
         port=port,
         params=WebsocketServerParams(
             audio_in_enabled=True,
@@ -173,7 +176,7 @@ VOICE_BRIDGE = PROJECT_ROOT / "dist" / "agent-voice-bridge.js"
 # Load agent roster dynamically from the file Node writes on startup.
 # Falls back to the default 5 if the file doesn't exist.
 def _load_agent_roster():
-    roster_path = Path("/tmp/warroom-agents.json")
+    roster_path = WARROOM_ROSTER_PATH
     try:
         if roster_path.exists():
             agents = json.loads(roster_path.read_text())
@@ -331,9 +334,9 @@ async def list_agents_handler(params):
         "ops": "Master of War. Calendar, scheduling, internal tools, automations.",
     }
     roster = {}
-    # Start with dynamic roster from /tmp/warroom-agents.json
+    # Start with dynamic roster from the shared War Room scratch file
     try:
-        agents = json.loads(Path("/tmp/warroom-agents.json").read_text())
+        agents = json.loads(WARROOM_ROSTER_PATH.read_text())
         for a in agents:
             aid = a["id"]
             roster[aid] = _known_descriptions.get(aid, a.get("description", "Specialist agent"))
@@ -481,7 +484,7 @@ async def answer_as_agent_handler(params):
 # ─── Mode 1: Gemini Live (speech-to-speech + tools) ────────────────────────
 
 # Shared with the dashboard — any HTTP POST to /api/warroom/pin writes here.
-PIN_PATH = Path("/tmp/warroom-pin.json")
+PIN_PATH = WARROOM_PIN_PATH
 
 VALID_MODES = {"direct", "auto"}
 
@@ -518,6 +521,28 @@ def read_pinned_agent() -> str:
     return agent
 
 
+def is_unrecoverable_live_error(frame) -> bool:
+    """Decide whether an ErrorFrame reaching the pipeline task means the live
+    session is dead for good and the process should exit for a supervisor
+    respawn.
+
+    IMPORTANT: pipecat 0.0.108's GeminiLiveLLMService does NOT set fatal=True
+    even when it gives up. After MAX_CONSECUTIVE_FAILURES (repeated 1006
+    abnormal closures) it pushes a *non-fatal* ErrorFrame whose message reads
+    "Max consecutive failures (N) reached, treating as fatal error" and then
+    stops its receive loop — leaving the pipeline running with a permanently
+    dead Gemini connection (process alive, port held, War Room mute). pipecat
+    only auto-cancels the pipeline when fatal=True, so that terminal state would
+    otherwise go unnoticed. We therefore treat the connection-death signature as
+    unrecoverable in addition to honoring the fatal flag (forward-compatible
+    with a future pipecat that does set it).
+    """
+    if getattr(frame, "fatal", False):
+        return True
+    msg = (getattr(frame, "error", "") or "").lower()
+    return "consecutive failures" in msg
+
+
 async def run_live_mode():
     """Gemini Live native-audio pipeline with tool calling."""
     from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
@@ -531,7 +556,10 @@ async def run_live_mode():
     check_required_keys({"GOOGLE_API_KEY": "Google AI (Gemini Live native audio)"})
 
     port = int(os.environ.get("WARROOM_PORT", "7860"))
-    model = os.environ.get("WARROOM_LIVE_MODEL")  # None = use Pipecat's default
+    # Default to the stable GA "latest" pointer. Without this, pipecat 0.0.108
+    # falls back to a dated preview (gemini-2.5-flash-native-audio-preview-12-2025)
+    # that Google rotates and that drops live sessions with 1006 abnormal closure.
+    model = os.environ.get("WARROOM_LIVE_MODEL") or "gemini-2.5-flash-native-audio-latest"
 
     # Determine which agent + mode is active. Defaults: ("main", "direct").
     # If the user has clicked an agent card or a mode button on the
@@ -634,22 +662,20 @@ async def run_live_mode():
     context = LLMContext(messages=[], tools=tools)
 
     # Build the service -----------------------------------------------------
-    live_kwargs = dict(
+    # Pass model + voice through the Settings object — the canonical API as of
+    # pipecat 0.0.105. The old model=/voice_id= constructor kwargs still work
+    # but emit DeprecationWarnings and may be dropped in a future pipecat. model
+    # is always set (defaults to the stable GA pointer above) and voice is always
+    # passed so the configured agent voice takes effect even for main (Charon).
+    llm = GeminiLiveLLMService(
         api_key=os.environ["GOOGLE_API_KEY"],
         system_instruction=system_prompt,
         # inference_on_context_initialization=False prevents Gemini from
         # proactively speaking when the session opens; wait for the user to
         # say something first.
         inference_on_context_initialization=False,
+        settings=GeminiLiveLLMService.Settings(model=model, voice=voice),
     )
-    if model:
-        live_kwargs["model"] = model
-    # Always pass voice_id so the configured agent voice takes effect,
-    # even for main (Charon). Pipecat only warns about deprecation, not
-    # actively breaks.
-    live_kwargs["voice_id"] = voice
-
-    llm = GeminiLiveLLMService(**live_kwargs)
 
     # Register the tool handlers. register_function binds a Python async
     # callable to a named function on the LLM side; when Gemini emits a
@@ -711,10 +737,34 @@ async def run_live_mode():
         # into the pipeline. We seed it manually here, on every new client.
         await task.queue_frame(LLMContextFrame(context=context))
 
+    @task.event_handler("on_pipeline_error")
+    async def on_pipeline_error(task, frame):
+        # An ErrorFrame reached the pipeline task. If it represents an
+        # unrecoverable live-session death (see is_unrecoverable_live_error),
+        # pipecat leaves the process alive holding the port with a dead Gemini
+        # connection and the Node supervisor (src/index.ts) never notices War
+        # Room is mute. Exit non-zero so the supervisor's exit handler respawns
+        # a clean pipeline. Recoverable errors are logged and left to pipecat's
+        # own reconnection logic.
+        if is_unrecoverable_live_error(frame):
+            logger.error(
+                "Unrecoverable live pipeline error, exiting for supervisor respawn: %s",
+                getattr(frame, "error", frame),
+            )
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(1)
+        else:
+            logger.warning(
+                "Recoverable pipeline error (not exiting): %s",
+                getattr(frame, "error", frame),
+            )
+
     print_ready(port, "live")
     runner = PipelineRunner(handle_sigterm=True)
     logger.info(
-        "War Room LIVE mode on ws://0.0.0.0:%d (agent=%s mode=%s voice=%s model=%s tools=%d)",
+        "War Room LIVE mode on ws://%s:%d (agent=%s mode=%s voice=%s model=%s tools=%d)",
+        os.environ.get("WARROOM_BIND", "127.0.0.1"),
         port, active_agent, active_mode, voice, model or "pipecat-default", len(standard_tools),
     )
     await runner.run(task)
@@ -775,7 +825,7 @@ async def run_legacy_mode():
 
     print_ready(port, "legacy")
     runner = PipelineRunner(handle_sigterm=True)
-    logger.info("War Room LEGACY mode on ws://0.0.0.0:%d", port)
+    logger.info("War Room LEGACY mode on ws://%s:%d", os.environ.get("WARROOM_BIND", "127.0.0.1"), port)
     await runner.run(task)
     logger.info("War Room session ended.")
 

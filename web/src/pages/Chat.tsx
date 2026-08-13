@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { Send, Square, Sparkles, ArrowDown, CheckCircle2, AlertCircle, Loader2, ListChecks, Wrench } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
@@ -7,6 +7,7 @@ import { useFetch } from '@/lib/useFetch';
 import { apiGet, apiPost, chatId } from '@/lib/api';
 import { renderMarkdown } from '@/lib/markdown';
 import { formatCost, formatNumber } from '@/lib/format';
+import { contextDetail, contextSummary, type ContextHealth } from '@/lib/context-display';
 import { showCosts } from '@/lib/theme';
 import { subscribeChatStream, chatStreamConnected, resetUnread } from '@/lib/chat-stream';
 
@@ -25,13 +26,16 @@ interface ProgressItem {
 }
 
 interface AgentTokens { todayCost: number; todayTurns: number; allTimeCost: number; }
-interface Health { contextPct: number; turns: number; model: string; }
+interface Health extends ContextHealth { turns: number; model: string; }
 
 const QUICK_ACTIONS = [
-  { label: 'Status update', prompt: "Quick status update: what are you working on right now?" },
-  { label: "What's next", prompt: 'What should I focus on next based on context?' },
-  { label: 'Plan today', prompt: 'What does my day look like today? What are the priorities?' },
-  { label: 'Recent wins', prompt: 'What did I accomplish in the last 24 hours?' },
+  { label: 'Status update', prompt: "Quick status update: what are you working on right now?", send: true },
+  { label: "What's next", prompt: 'What should I focus on next based on context?', send: true },
+  { label: 'Plan today', prompt: 'What does my day look like today? What are the priorities?', send: true },
+  { label: 'Recent wins', prompt: 'What did I accomplish in the last 24 hours?', send: true },
+  // banana-maker prefills — user types prompt after the slash command then sends
+  { label: '/nano-banana', prompt: '/banana ', send: false },
+  { label: '/nano-banana-pro', prompt: '/banana-pro ', send: false },
 ];
 
 export function Chat() {
@@ -67,17 +71,45 @@ export function Chat() {
     30_000,
   );
 
-  // Load conversation history when active agent changes.
-  useEffect(() => {
+  // Load conversation history for the active agent. Extracted so the SSE
+  // reconnect handler below can re-fetch it too.
+  const loadHistory = useCallback(() => {
     setLoading(true);
     const path = activeAgent === 'all'
       ? `/api/chat/history?chatId=${encodeURIComponent(chatId)}&limit=50`
       : `/api/agents/${activeAgent}/conversation?chatId=${encodeURIComponent(chatId)}&limit=50`;
-    apiGet<{ turns: Turn[] }>(path)
-      .then((d) => setTurns(d.turns || []))
+    return apiGet<{ turns: Turn[] }>(path)
+      // The history endpoint returns turns newest-first (ORDER BY id DESC).
+      // The panel renders oldest-first (newest at the bottom) and live SSE
+      // events append to the end, so reverse to match. Without this a history
+      // reload (revisiting the page, or the SSE-reconnect backfill above)
+      // renders the conversation upside down.
+      .then((d) => setTurns((d.turns || []).slice().reverse()))
       .catch((e) => setError(e?.message || String(e)))
       .finally(() => setLoading(false));
   }, [activeAgent]);
+
+  // Load history on mount and whenever the active agent changes.
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  // Backfill on SSE reconnect. chat-stream.ts auto-reconnects after a drop
+  // (laptop sleep, network blip, backgrounded tab) and toggles
+  // chatStreamConnected, but messages exchanged during the gap were never
+  // streamed and would otherwise be a silent hole in the panel. On a
+  // reconnect — not the initial connect — re-fetch history. A ref holds the
+  // latest loader so this effect fires only on connectivity changes, never on
+  // agent changes (already handled by the mount effect), avoiding a double load.
+  const loadHistoryRef = useRef(loadHistory);
+  loadHistoryRef.current = loadHistory;
+  const hasConnectedOnce = useRef(false);
+  useEffect(() => {
+    if (!streamConnected) return;
+    if (hasConnectedOnce.current) {
+      loadHistoryRef.current();
+    } else {
+      hasConnectedOnce.current = true;
+    }
+  }, [streamConnected]);
 
   // Auto-scroll only when the user is already near the bottom. New
   // messages arriving while they're reading history shouldn't yank
@@ -174,9 +206,18 @@ export function Chat() {
     try { await apiPost('/api/chat/abort'); } catch {}
   }
 
-  function quick(prompt: string) {
-    void send(prompt);
-    inputRef.current?.focus();
+  function quick(prompt: string, sendNow = true) {
+    if (sendNow) {
+      void send(prompt);
+      inputRef.current?.focus();
+    } else {
+      // prefill mode — fill textarea + focus so user can append and send
+      setDraft(prompt);
+      setTimeout(() => {
+        const el = inputRef.current;
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      }, 0);
+    }
   }
 
   const agentList = agents.data?.agents ?? [];
@@ -210,6 +251,11 @@ export function Chat() {
 
       <SessionBar
         contextPct={health.data?.contextPct}
+        contextUsedTokens={health.data?.contextUsedTokens}
+        contextWindowTokens={health.data?.contextWindowTokens}
+        contextLeftTokens={health.data?.contextLeftTokens}
+        contextUpdatedAt={health.data?.contextUpdatedAt}
+        healthRefreshedAt={health.data?.healthRefreshedAt}
         turnsToday={todayTurns}
         costToday={todayCost}
         model={activeAgent === 'all' ? health.data?.model : undefined}
@@ -246,7 +292,7 @@ export function Chat() {
               <button
                 key={qa.label}
                 type="button"
-                onClick={() => quick(qa.prompt)}
+                onClick={() => quick(qa.prompt, qa.send !== false)}
                 disabled={processing || sending}
                 class="px-2 py-0.5 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -295,17 +341,41 @@ export function Chat() {
 }
 
 function SessionBar({
-  contextPct, turnsToday, costToday, model, agentLabel,
+  contextPct, contextUsedTokens, contextWindowTokens, contextLeftTokens, contextUpdatedAt, healthRefreshedAt, turnsToday, costToday, model, agentLabel,
 }: {
-  contextPct?: number; turnsToday: number; costToday: number; model?: string; agentLabel?: string;
+  contextPct?: number;
+  contextUsedTokens?: number;
+  contextWindowTokens?: number;
+  contextLeftTokens?: number;
+  contextUpdatedAt?: number | null;
+  healthRefreshedAt?: number | null;
+  turnsToday: number;
+  costToday: number;
+  model?: string;
+  agentLabel?: string;
 }) {
+  const context: ContextHealth = {
+    contextPct,
+    contextUsedTokens,
+    contextWindowTokens,
+    contextLeftTokens,
+    contextUpdatedAt,
+    healthRefreshedAt,
+  };
+  const pct = typeof contextPct === 'number' ? Math.max(0, Math.min(100, contextPct)) : 0;
   return (
     <div class="flex items-center gap-4 px-6 py-1.5 border-b border-[var(--color-border)] text-[10.5px] text-[var(--color-text-faint)] tabular-nums">
       {agentLabel && (
         <span><span class="uppercase tracking-wider">Agent</span> <span class="text-[var(--color-text-muted)] normal-case tracking-normal">{agentLabel}</span></span>
       )}
       {typeof contextPct === 'number' && (
-        <span><span class="uppercase tracking-wider">Ctx</span> <span class="text-[var(--color-text-muted)]">{contextPct}%</span></span>
+        <span class="inline-flex items-center gap-1.5" title={contextDetail(context)}>
+          <span class="uppercase tracking-wider">Ctx</span>
+          <span class="text-[var(--color-text-muted)]">{contextSummary(context)}</span>
+          <span class="h-1 w-14 rounded-full bg-[var(--color-elevated)] overflow-hidden">
+            <span class="block h-full bg-[var(--color-accent)]" style={{ width: `${pct}%` }} />
+          </span>
+        </span>
       )}
       <span><span class="uppercase tracking-wider">Turns today</span> <span class="text-[var(--color-text-muted)]">{formatNumber(turnsToday)}</span></span>
       {showCosts.value && (

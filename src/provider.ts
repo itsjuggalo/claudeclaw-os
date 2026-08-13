@@ -1,11 +1,49 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { createRequire } from 'module';
 import yaml from 'js-yaml';
 
-import { STORE_DIR } from './config.js';
+import { STORE_DIR, DEFAULT_CLAUDE_MODEL, getClaudeclawConfig, PROJECT_ROOT } from './config.js';
+import { readEnvFile } from './env.js';
 
-export type ProviderType = 'claude' | 'acp' | 'opencode' | 'gemini' | 'codex';
+/**
+ * Provider identities. Two of these reach the same Codex runtime by different
+ * routes, so the names say which route:
+ *  - `openai`    — STABLE native provider, drives the Codex runtime directly
+ *                  (Codex SDK or App Server, per CODEX_TRANSPORT).
+ *  - `acp-codex` — EXPERIMENTAL provider, reaches Codex over ACP via the
+ *                  bundled `codex-acp` adapter.
+ */
+export type ProviderType = 'claude' | 'acp' | 'opencode' | 'gemini' | 'acp-codex' | 'openrouter' | 'openai';
+
+const PROVIDER_TYPES: readonly string[] = ['claude', 'acp', 'opencode', 'gemini', 'acp-codex', 'openrouter', 'openai'];
+
+/**
+ * Legacy provider identifiers → their current name. The Codex-over-ACP provider
+ * was spelled `codex` before the native `openai` provider existed; once both
+ * shipped the two names read as interchangeable, so the ACP one became
+ * `acp-codex`. Configs saved before the rename (agent.yaml provider blocks,
+ * store/main-config.json) still carry the old spelling.
+ */
+const LEGACY_PROVIDER_TYPES: Readonly<Record<string, ProviderType>> = { codex: 'acp-codex' };
+
+/**
+ * Canonicalizes a persisted or inbound provider id, migrating legacy spellings
+ * forward. Returns undefined for anything unrecognized so callers can apply
+ * their own fallback (saved config → DEFAULT_PROVIDER; API request → 400).
+ *
+ * THE normalization boundary: every read of persisted provider config and every
+ * provider id arriving from the dashboard/API passes through here, so nothing
+ * downstream — engine factory, registry, model defaults, UI — ever sees `codex`.
+ */
+export function normalizeProviderType(value: unknown): ProviderType | undefined {
+  if (typeof value !== 'string') return undefined;
+  const lower = value.trim().toLowerCase();
+  return LEGACY_PROVIDER_TYPES[lower]
+    ?? (PROVIDER_TYPES.includes(lower) ? lower as ProviderType : undefined);
+}
 export type ProviderRuntimeMode = string;
 export type ProviderThinkingMode = string;
 
@@ -24,23 +62,27 @@ export interface ProviderConfig {
    * Opt-in flag to skip permission prompts and let the provider auto-execute tools.
    * When unset, defaults asymmetrically: Claude keeps its existing permissive
    * behavior (it has months of demonstrated good judgment on Telegram chat
-   * conversational vs. coding intent), while ACP providers (codex/gemini/opencode)
-   * default to false so a casual Telegram message can't trigger a coding session.
+   * conversational vs. coding intent), while ACP providers (acp-codex/gemini/
+   * opencode) default to false so a casual Telegram message can't trigger a
+   * coding session.
    * Resolve via effectiveSkipPermissions() rather than reading this directly.
    */
   dangerouslySkipPermissions?: boolean;
 }
 
-export const DEFAULT_PROVIDER: ProviderConfig = { type: 'claude', model: 'claude-opus-4-6' };
-export const DEFAULT_CLAUDE_MODEL = 'claude-opus-4-6';
+// DEFAULT_CLAUDE_MODEL is resolved from env/config (see config.ts) so model
+// upgrades land via .env + restart, not a code change. Re-exported here to keep
+// the historical import path (./provider.js) stable for existing call sites.
+export { DEFAULT_CLAUDE_MODEL };
+export const DEFAULT_PROVIDER: ProviderConfig = { type: 'claude', model: DEFAULT_CLAUDE_MODEL };
 export const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 
 export function normalizeProviderConfig(input: unknown, legacyModel?: string): ProviderConfig {
   const raw = input && typeof input === 'object' ? input as Record<string, unknown> : {};
-  const typeRaw = typeof raw.type === 'string' ? raw.type.toLowerCase() : undefined;
+  const type = normalizeProviderType(raw.type);
 
-  if (typeRaw === 'claude' || typeRaw === 'acp' || typeRaw === 'opencode' || typeRaw === 'gemini' || typeRaw === 'codex') {
-    const cfg: ProviderConfig = { type: typeRaw };
+  if (type) {
+    const cfg: ProviderConfig = { type };
     if (typeof raw.model === 'string' && raw.model.trim()) cfg.model = raw.model.trim();
     if (typeof raw.runtimeMode === 'string' && raw.runtimeMode.trim()) cfg.runtimeMode = raw.runtimeMode.trim();
     if (typeof raw.thinkingMode === 'string' && raw.thinkingMode.trim()) cfg.thinkingMode = raw.thinkingMode.trim();
@@ -73,7 +115,7 @@ export function providerToYaml(provider: ProviderConfig): Record<string, unknown
 /**
  * Asymmetric default: Claude keeps full tool access (load-bearing for
  * notify.sh, scheduling, mission tasks, memory queries, Obsidian, file
- * sending). ACP providers (codex/gemini/opencode) start locked down because
+ * sending). ACP providers (acp-codex/gemini/opencode) start locked down because
  * they have no track record on the conversational Telegram path and have
  * demonstrated a tendency to interpret casual prompts as coding tasks.
  * Set provider.dangerouslySkipPermissions explicitly to override.
@@ -101,16 +143,153 @@ function writeMainConfig(raw: Record<string, unknown>): void {
   fs.writeFileSync(mainConfigPath(), JSON.stringify(raw, null, 2) + '\n', 'utf-8');
 }
 
+// ── Main provider persistence ─────────────────────────────────────────
+// Main persists its provider/model in agents/main/agent.yaml — the SAME
+// provider block sub-agents use (setAgentProvider) — so there is one
+// persistence story for every agent. Historically main persisted to
+// store/main-config.json instead, and the `model:` field in main's
+// agent.yaml was dead config that index.ts never read. Reads migrate the
+// legacy main-config.json provider into agent.yaml once (creating the
+// file if it doesn't exist), then agent.yaml is the single source.
+
+function externalMainAgentYamlPath(): string {
+  return path.join(getClaudeclawConfig(), 'agents', 'main', 'agent.yaml');
+}
+
+// Reads honor a pre-existing legacy file in PROJECT_ROOT (from installs
+// created before this fallback was fixed, or a manually placed file) so
+// nothing already-written silently stops being read. Writes never target
+// PROJECT_ROOT — see writeMainAgentYaml below.
+function mainAgentYamlPath(): string {
+  const externalPath = externalMainAgentYamlPath();
+  if (fs.existsSync(externalPath)) return externalPath;
+  return path.join(PROJECT_ROOT, 'agents', 'main', 'agent.yaml');
+}
+
+function readMainAgentYaml(): Record<string, unknown> | undefined {
+  try {
+    const p = mainAgentYamlPath();
+    if (!fs.existsSync(p)) return undefined;
+    return (yaml.load(fs.readFileSync(p, 'utf-8')) as Record<string, unknown>) ?? {};
+  } catch {
+    return undefined;
+  }
+}
+
+function writeMainAgentYaml(raw: Record<string, unknown>): void {
+  // Always target the external config dir, fresh file or not — that's
+  // where agent yamls live on a configured install, and it's what keeps
+  // this out of the repo/install checkout (agents/*/agent.yaml is
+  // gitignored on purpose; see config.ts's CLAUDECLAW_CONFIG comment).
+  // A write also migrates any legacy PROJECT_ROOT file forward, since the
+  // next read call will find the external file first.
+  const p = externalMainAgentYamlPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, yaml.dump(raw, { lineWidth: -1 }), 'utf-8');
+}
+
+// Minimal main agent.yaml written for a truly fresh install. Mirrors what
+// step 6b of the setup wizard produces (scripts/setup.ts). Deliberately
+// carries NO provider/model block: main's provider defaults are resolved
+// from env/config (DEFAULT_CLAUDE_MODEL) until something explicitly sets a
+// provider, so baking one here would pin a model and defeat env-driven
+// model upgrades.
+const MINIMAL_MAIN_AGENT_YAML = [
+  '# Main agent configuration',
+  'name: Main',
+  '',
+  '# The main agent uses TELEGRAM_BOT_TOKEN from .env (no override needed).',
+  '# telegram_bot_token_env: TELEGRAM_BOT_TOKEN',
+  '',
+  '# The provider/model are persisted here once set (dashboard picker or',
+  '# /model). Until then main uses the env/config default.',
+  '',
+].join('\n');
+
+/**
+ * Idempotently ensure main's external config exists on boot, independent of
+ * whether the interactive setup wizard was ever run.
+ *
+ * The setup wizard's step 6b is the ONLY thing that historically created
+ * CLAUDECLAW_CONFIG/agents/main/agent.yaml. Headless/VPS deploys (clone,
+ * npm install, hand-written .env, pm2/systemd) skip the wizard, so the file
+ * never existed — leaving reads and (pre-#147) writes to fall through to
+ * PROJECT_ROOT, the exact virgin state behind the config-poisoning class of
+ * bugs (see issue #146/#148). Making the runtime bootstrap its own config
+ * removes that coupling: the invariant becomes "the process created the
+ * file," not "a human ran the wizard."
+ *
+ * Ordering preserves #147's self-heal:
+ *  - External file already present → nothing to do.
+ *  - A legacy PROJECT_ROOT/agents/main/agent.yaml exists (pre-#147 install) →
+ *    copy it forward VERBATIM so its provider (if any) and name are
+ *    preserved and it stops being the read source. Copying rather than
+ *    writing a stub avoids shadowing a legacy provider with an empty file.
+ *  - Truly virgin → write the minimal, provider-less template.
+ *
+ * Safe to call unconditionally on every main-process boot.
+ */
+export function ensureMainAgentConfig(): void {
+  const external = externalMainAgentYamlPath();
+  fs.mkdirSync(path.dirname(external), { recursive: true });
+  if (fs.existsSync(external)) return;
+
+  const legacyRoot = path.join(PROJECT_ROOT, 'agents', 'main', 'agent.yaml');
+  if (fs.existsSync(legacyRoot)) {
+    try {
+      const raw = fs.readFileSync(legacyRoot, 'utf-8');
+      fs.writeFileSync(external, raw, 'utf-8');
+      return;
+    } catch { /* unreadable legacy file — fall through to the minimal template */ }
+  }
+
+  fs.writeFileSync(external, MINIMAL_MAIN_AGENT_YAML, 'utf-8');
+}
+
 export function getMainProviderConfig(): ProviderConfig {
-  const raw = readMainConfig();
-  return normalizeProviderConfig(raw.provider, typeof raw.model === 'string' ? raw.model : undefined);
+  const agentYaml = readMainAgentYaml();
+
+  // agent.yaml provider block wins — it's the unified persistence.
+  if (agentYaml && agentYaml.provider !== undefined) {
+    return normalizeProviderConfig(agentYaml.provider);
+  }
+
+  // Legacy main-config.json provider: migrate it into agent.yaml once so
+  // future reads and writes converge on one file. Reads before the first
+  // dashboard write also converge here.
+  const legacy = readMainConfig();
+  if (legacy.provider !== undefined || typeof legacy.model === 'string') {
+    const provider = normalizeProviderConfig(legacy.provider, typeof legacy.model === 'string' ? legacy.model : undefined);
+    try {
+      setMainProviderConfig(provider);
+    } catch { /* read-only fs: keep serving the legacy value */ }
+    return provider;
+  }
+
+  // Legacy dead `model:` field in agent.yaml (never read by index.ts for
+  // main historically) — honor it now that agent.yaml is authoritative.
+  if (agentYaml && typeof agentYaml.model === 'string' && agentYaml.model.startsWith('claude-')) {
+    return { type: 'claude', model: agentYaml.model };
+  }
+
+  return { ...DEFAULT_PROVIDER };
 }
 
 export function setMainProviderConfig(provider: ProviderConfig): void {
-  const raw = readMainConfig();
-  raw.provider = providerToYaml(provider);
-  delete raw.model;
-  writeMainConfig(raw);
+  const raw = readMainAgentYaml() ?? { name: 'Main' };
+  if (typeof raw.name !== 'string' || !raw.name) raw.name = 'Main';
+  writeProviderToYaml(raw, provider); // sets provider block, removes legacy model:
+  writeMainAgentYaml(raw);
+
+  // Clean the superseded provider/model keys out of main-config.json so
+  // there's no second, stale copy to confuse anyone. Other keys
+  // (description etc.) stay.
+  const legacy = readMainConfig();
+  if (legacy.provider !== undefined || legacy.model !== undefined) {
+    delete legacy.provider;
+    delete legacy.model;
+    writeMainConfig(legacy);
+  }
 }
 
 export function getProviderDisplay(provider: ProviderConfig): string {
@@ -122,14 +301,36 @@ export function getProviderDisplay(provider: ProviderConfig): string {
   if (provider.type === 'claude') return `Claude${suffix ? ` (${suffix})` : ''}`;
   if (provider.type === 'opencode') return `OpenCode${suffix ? ` (${suffix})` : ' (model from OpenCode config)'}`;
   if (provider.type === 'gemini') return `Gemini CLI${suffix ? ` (${suffix})` : ' (ACP)'}`;
-  if (provider.type === 'codex') return `Codex${suffix ? ` (${suffix})` : ' (codex-acp adapter)'}`;
+  if (provider.type === 'acp-codex') return `Codex${suffix ? ` (${suffix})` : ' (codex-acp adapter)'}`;
+  if (provider.type === 'openrouter') return `OpenRouter${suffix ? ` (${suffix})` : ' (no model selected)'}`;
+  if (provider.type === 'openai') return `OpenAI${suffix ? ` (${suffix})` : ' (native Codex)'}`;
   return `ACP (${provider.command ?? 'custom command'}${provider.args?.length ? ` ${provider.args.join(' ')}` : ''}${suffix ? `; ${suffix}` : ''})`;
+}
+
+/**
+ * Session-id prefixes `type` answers to on READ, canonical first.
+ *
+ * Sessions are stored namespaced as `<providerType>:<id>`, so renaming a
+ * provider would orphan every thread already saved under its old id. Derived
+ * from LEGACY_PROVIDER_TYPES rather than hardcoded, so a future rename gets
+ * resumability for free — and, critically, the legacy prefix is offered ONLY to
+ * the type that legacy id migrated to: `codex:` resolves for `acp-codex` and for
+ * nothing else, so native `openai` can never adopt a Codex-over-ACP thread.
+ *
+ * Read-only by design. Writes always use the canonical type
+ * (`encodeProviderSession`), so legacy prefixes decay as threads roll over.
+ */
+function acceptedSessionPrefixes(type: ProviderType): string[] {
+  const legacy = Object.entries(LEGACY_PROVIDER_TYPES)
+    .filter(([, current]) => current === type)
+    .map(([old]) => `${old}:`);
+  return [`${type}:`, ...legacy];
 }
 
 export function sessionBelongsToProvider(sessionId: string | undefined, provider: ProviderConfig): boolean {
   if (!sessionId) return false;
   if (!sessionId.includes(':')) return provider.type === 'claude';
-  return sessionId.startsWith(`${provider.type}:`);
+  return acceptedSessionPrefixes(provider.type).some((prefix) => sessionId.startsWith(prefix));
 }
 
 export function encodeProviderSession(provider: ProviderConfig, sessionId: string | undefined): string | undefined {
@@ -139,8 +340,9 @@ export function encodeProviderSession(provider: ProviderConfig, sessionId: strin
 
 export function decodeProviderSession(provider: ProviderConfig, sessionId: string | undefined): string | undefined {
   if (!sessionId) return undefined;
-  const prefix = `${provider.type}:`;
-  if (sessionId.startsWith(prefix)) return sessionId.slice(prefix.length);
+  for (const prefix of acceptedSessionPrefixes(provider.type)) {
+    if (sessionId.startsWith(prefix)) return sessionId.slice(prefix.length);
+  }
   if (!sessionId.includes(':') && provider.type === 'claude') return sessionId;
   return undefined;
 }
@@ -175,7 +377,7 @@ export interface ProviderAvailability {
 
 function commandExists(command: string): boolean {
   const lookup = process.platform === 'win32' ? 'where' : 'which';
-  return spawnSync(lookup, [command], { stdio: 'pipe' }).status === 0;
+  return spawnSync(lookup, [command], { stdio: 'pipe', windowsHide: true }).status === 0;
 }
 
 /**
@@ -191,17 +393,31 @@ function commandExists(command: string): boolean {
  */
 export function checkProviderAvailability(provider: ProviderConfig): ProviderAvailability {
   switch (provider.type) {
-    case 'claude':
+    case 'claude': {
+      // The claude-agent-sdk bundles its own Claude Code runtime and resolves it
+      // internally — it does NOT require a standalone `claude` binary on PATH.
+      // Daemon deployments (launchd/systemd/docker) typically run with a minimal
+      // PATH that does not include the dir where a globally-installed CLI lives,
+      // so gating the claude provider on `which claude` produced false
+      // "Claude Code CLI not found on PATH" 400s when switching providers from
+      // the dashboard — even though agent turns run fine. Treat the claude
+      // provider as available whenever the SDK package resolves; fall back to the
+      // PATH check (and its install hint) only when the SDK itself is absent.
+      try {
+        createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk');
+        return { ok: true };
+      } catch { /* SDK not resolvable — fall through to the PATH-based check */ }
       if (!commandExists('claude')) {
         return {
           ok: false,
-          error: 'Claude Code CLI not found on PATH.',
-          installCommand: 'npm install -g @anthropic-ai/claude-code',
-          setupHint: 'Run `claude login` to authenticate (free, Pro, or Max plan), or set ANTHROPIC_API_KEY in .env for pay-per-token billing.',
+          error: 'Claude Code SDK not installed and `claude` CLI not found on PATH.',
+          installCommand: 'npm install',
+          setupHint: 'Run `npm install` to pull the bundled claude-agent-sdk, then `claude login` (free/Pro/Max) or set ANTHROPIC_API_KEY in .env for pay-per-token billing.',
           docsUrl: 'https://docs.claude.com/en/docs/claude-code/overview',
         };
       }
       return { ok: true };
+    }
     case 'opencode':
       if (!commandExists('opencode')) {
         return {
@@ -224,7 +440,7 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
         };
       }
       return { ok: true };
-    case 'codex':
+    case 'acp-codex':
       if (!commandExists('codex')) {
         return {
           ok: false,
@@ -247,6 +463,103 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
         };
       }
       return { ok: true };
+    }
+    case 'openai': {
+      // Native Codex SDK provider — the runtime binary ships with the bundled
+      // @openai/codex-sdk package (no PATH dependency). Auth comes from either
+      // `codex login` state (~/.codex/auth.json, ChatGPT subscription) or an
+      // OPENAI_API_KEY for API billing.
+      const req = createRequire(import.meta.url);
+      const sdkMissing = {
+        ok: false as const,
+        error: '@openai/codex-sdk is not installed.',
+        installCommand: 'npm install',
+        setupHint: 'Run `npm install` to pull the bundled Codex SDK, then authenticate with `codex login` or set OPENAI_API_KEY in .env.',
+        docsUrl: 'https://github.com/openai/codex',
+      };
+      try {
+        req.resolve('@openai/codex-sdk');
+      } catch (err) {
+        // The SDK is ESM-only (no `require` condition in its exports map), so
+        // require.resolve throws ERR_PACKAGE_PATH_NOT_EXPORTED even when the
+        // package IS installed — the exports map was found and parsed, which
+        // is proof of presence. Only a genuine module-not-found is a failure.
+        if ((err as NodeJS.ErrnoException)?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') return sdkMissing;
+      }
+      // The JS SDK is a thin wrapper around a platform-specific native binary
+      // shipped as an OPTIONAL dependency (@openai/codex-<platform>-<arch>). If
+      // optional deps were skipped or the arch is unsupported, the SDK resolves
+      // but every turn fails with "unable to locate binaries". Preflight the
+      // platform package so setup rejects OpenAI now rather than at first turn.
+      const platformPkgs: Record<string, string> = {
+        'win32-x64': '@openai/codex-win32-x64', 'win32-arm64': '@openai/codex-win32-arm64',
+        'darwin-x64': '@openai/codex-darwin-x64', 'darwin-arm64': '@openai/codex-darwin-arm64',
+        'linux-x64': '@openai/codex-linux-x64', 'linux-arm64': '@openai/codex-linux-arm64',
+      };
+      const platformPkg = platformPkgs[`${process.platform}-${process.arch}`];
+      if (!platformPkg) {
+        return {
+          ok: false,
+          error: `The native Codex runtime does not ship a binary for this platform/architecture (${process.platform}/${process.arch}).`,
+          setupHint: 'Use the Claude provider on this host, or run ClaudeClaw on a supported platform (win32/darwin/linux on x64/arm64).',
+          docsUrl: 'https://github.com/openai/codex',
+        };
+      }
+      try {
+        req.resolve(`${platformPkg}/package.json`);
+      } catch {
+        return {
+          ok: false,
+          error: `The native Codex runtime for this platform (${platformPkg}) is not installed.`,
+          installCommand: 'npm install --include=optional',
+          setupHint: 'Reinstall dependencies including optional packages so the platform-specific Codex binary is present.',
+          docsUrl: 'https://github.com/openai/codex',
+        };
+      }
+      // An API key is definitive (must be a non-empty string).
+      const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+      if (nonEmpty(process.env.OPENAI_API_KEY)) return { ok: true };
+      if (nonEmpty(readEnvFile(['OPENAI_API_KEY']).OPENAI_API_KEY)) return { ok: true };
+      // Otherwise require a parseable auth.json with a genuinely non-empty
+      // token — a bare {}, {"tokens":{}}, or empty-string field must NOT read as
+      // authenticated (the turn would then fail at call time). We don't shell
+      // out to `codex login status` here: preflight must stay fast and
+      // non-blocking, and a stale-but-present token still surfaces an actionable
+      // auth error at call time via the adapter.
+      const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
+      const authPath = path.join(codexHome, 'auth.json');
+      if (fs.existsSync(authPath)) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(authPath, 'utf-8')) as Record<string, unknown>;
+          const tokens = (raw.tokens && typeof raw.tokens === 'object') ? raw.tokens as Record<string, unknown> : undefined;
+          const hasApiKey = nonEmpty(raw.OPENAI_API_KEY);
+          const hasChatgptToken = !!tokens && (nonEmpty(tokens.access_token) || nonEmpty(tokens.id_token) || nonEmpty(tokens.refresh_token));
+          const hasTopLevelToken = nonEmpty(raw.access_token) || nonEmpty(raw.id_token) || nonEmpty(raw.refresh_token);
+          if (hasApiKey || hasChatgptToken || hasTopLevelToken) return { ok: true };
+        } catch { /* unreadable/malformed → treat as unauthenticated */ }
+      }
+      return {
+        ok: false,
+        error: 'Codex is not authenticated (no valid ~/.codex/auth.json) and OPENAI_API_KEY is not set.',
+        installCommand: 'npm install -g @openai/codex',
+        setupHint: 'Run `codex login` to sign in with your ChatGPT account (recommended), or add OPENAI_API_KEY=sk-... to .env and restart with `pm2 restart claudeclaw --update-env`.',
+        docsUrl: 'https://github.com/openai/codex/blob/main/docs/authentication.md',
+      };
+    }
+    case 'openrouter': {
+      // OpenRouter has no CLI — just check the env var is present.
+      // Read directly from process.env first (set by PM2 --update-env) with a
+      // fallback to the .env file via readEnvFile (same quote/comment handling
+      // used everywhere else) so the dashboard preflight matches runtime.
+      const fromProcess = process.env.OPENROUTER_API_KEY?.trim();
+      if (fromProcess) return { ok: true };
+      if (readEnvFile(['OPENROUTER_API_KEY']).OPENROUTER_API_KEY) return { ok: true };
+      return {
+        ok: false,
+        error: 'OPENROUTER_API_KEY is not set.',
+        setupHint: 'Get a key from https://openrouter.ai/keys, then add OPENROUTER_API_KEY=sk-or-v1-... to .env and restart with `pm2 restart claudeclaw --update-env`.',
+        docsUrl: 'https://openrouter.ai/docs',
+      };
     }
     default:
       return { ok: true };

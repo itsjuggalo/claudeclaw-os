@@ -93,7 +93,7 @@ export function Memories() {
         title="Memories"
         actions={
           <>
-            <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
+            <span class="hidden sm:inline text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
               {dq ? filtered.length + ' / ' : ''}{total} memories
             </span>
             <button
@@ -115,7 +115,7 @@ export function Memories() {
         }
         tabs={
           <>
-            <div class="flex-1 max-w-md mr-3 relative">
+            <div class="flex-1 min-w-[200px] max-w-md mr-0 sm:mr-3 relative">
               <Search size={12} class="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--color-text-faint)]" />
               <input
                 type="text"

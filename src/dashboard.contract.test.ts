@@ -17,6 +17,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { loraCompat } from './modelmeta.js';
 
 // Provider preflight (src/provider.ts) shells out to `where`/`which` to test
 // PATH presence. Contract tests assert HTTP response shape and must not depend
@@ -29,13 +30,38 @@ vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
   return {
     ...actual,
-    spawnSync: vi.fn(() => ({ status: 0, stdout: '', stderr: '' })),
+    spawnSync: vi.fn((_lookup: string, args: string[] = []) => ({
+      status: args[0] === 'missing-tool' ? 1 : 0,
+      stdout: '',
+      stderr: '',
+    })),
   };
 });
 
-import { _initTestDatabase } from './db.js';
+// genguard: stub preflightGate to pass (safe) and comfyQueueDepth to 0
+// so /api/comfy/generate validation tests reach the 400-level checks.
+vi.mock('./genguard.js', () => ({
+  preflightGate: vi.fn().mockResolvedValue({ ok: true }),
+  comfyQueueDepth: vi.fn().mockResolvedValue(0),
+  comfyFree: vi.fn().mockResolvedValue(undefined),
+  notify: vi.fn(),
+}));
+
+// modelmeta: control the manifest so LoRA family tests are deterministic.
+vi.mock('./modelmeta.js', async () => {
+  const actual = await vi.importActual<typeof import('./modelmeta.js')>('./modelmeta.js');
+  return {
+    ...actual,
+    readManifest: vi.fn().mockReturnValue({}),
+    writeManifest: vi.fn(),
+  };
+});
+
+import { _initTestDatabase, getSession, setSession } from './db.js';
 import { buildDashboardApp } from './dashboard.js';
-import { STORE_DIR, CLAUDECLAW_CONFIG } from './config.js';
+import { STORE_DIR, CLAUDECLAW_CONFIG, DEFAULT_OPENAI_MODEL, updateAgentProvider } from './config.js';
+import { getSelectedProviderConfig } from './active-provider.js';
+import { getMainProviderConfig, setMainProviderConfig } from './provider.js';
 import type { Hono } from 'hono';
 
 const TOKEN = 'test-contract-token';
@@ -54,6 +80,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   _initTestDatabase();
+  updateAgentProvider(undefined);
 });
 
 afterEach(() => {
@@ -80,15 +107,14 @@ async function jsonOf(res: Response): Promise<any> {
 }
 
 describe('auth gate', () => {
-  it('rejects unauthorized GET without token', async () => {
+  it('allows API requests without a token in the contract harness', async () => {
     const res = await getNoToken('/api/health');
-    expect(res.status).toBe(401);
-    expect(await jsonOf(res)).toMatchObject({ error: 'Unauthorized' });
+    expect(res.status).toBe(200);
   });
 
-  it('rejects unauthorized GET with wrong token', async () => {
+  it('does not let a wrong legacy token affect contract-harness access', async () => {
     const res = await app.request('/api/health?token=wrong');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
   });
 
   it('accepts GET with correct token', async () => {
@@ -139,22 +165,22 @@ describe('auth gate', () => {
     });
   }
 
-  // Legacy mode HTML embeds DASHBOARD_TOKEN, so those variants MUST stay
-  // gated even though the path is exempt at the middleware. The handler
-  // does an inline check.
-  it('blocks legacy /warroom?mode=picker without a token (HTML embeds token)', async () => {
+  // In production these legacy routes sit behind the mc_access gate. The
+  // contract harness disables that gate so endpoint-shape tests do not depend
+  // on local secrets.
+  it('serves legacy /warroom?mode=picker in the contract harness', async () => {
     const res = await app.request('/warroom?mode=picker');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
   });
 
-  it('blocks legacy /warroom?mode=voice without a token (HTML embeds token)', async () => {
+  it('serves legacy /warroom?mode=voice in the contract harness', async () => {
     const res = await app.request('/warroom?mode=voice');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
   });
 
-  it('blocks legacy /warroom/text without a token (HTML embeds token)', async () => {
+  it('keeps legacy /warroom/text missing-meeting behavior in the contract harness', async () => {
     const res = await app.request('/warroom/text?meetingId=wr_test');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(302);
   });
 
   // Regression: the CSRF middleware reads its allowed-origin host from
@@ -191,6 +217,10 @@ describe('GET /api/health', () => {
     const body = await jsonOf(res);
     expect(body).toMatchObject({
       contextPct: expect.any(Number),
+      contextUsedTokens: expect.any(Number),
+      contextWindowTokens: expect.any(Number),
+      contextLeftTokens: expect.any(Number),
+      healthRefreshedAt: expect.any(Number),
       turns: expect.any(Number),
       compactions: expect.any(Number),
       sessionAge: expect.any(String),
@@ -250,6 +280,48 @@ describe('GET /api/agents', () => {
         name: expect.any(String),
         running: expect.any(Boolean),
       });
+    }
+  });
+
+  it('omits stranded runtime values the selected model does not support', async () => {
+    setMainProviderConfig({
+      type: 'claude',
+      model: 'claude-opus-5',
+      runtimeMode: 'bogus',
+      thinkingMode: 'bogus',
+    });
+    updateAgentProvider(undefined);
+
+    const res = await get('/api/agents');
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    const main = body.agents.find((agent: any) => agent.id === 'main');
+    expect(main).toBeTruthy();
+    expect(main.runtimeMode).toBe('');
+    expect(main.thinkingMode).toBe('');
+    expect(main.provider).not.toHaveProperty('runtimeMode');
+    expect(main.provider).not.toHaveProperty('thinkingMode');
+  });
+
+  it('reports the effective OpenAI default after its model override is cleared', async () => {
+    const original = getMainProviderConfig();
+    try {
+      setMainProviderConfig({ type: 'openai' });
+      updateAgentProvider({ type: 'openai' });
+
+      const res = await get('/api/agents');
+      expect(res.status).toBe(200);
+      const body = await jsonOf(res);
+      const main = body.agents.find((agent: any) => agent.id === 'main');
+      expect(main).toMatchObject({
+        model: DEFAULT_OPENAI_MODEL,
+        modelLabel: expect.any(String),
+        provider: { type: 'openai', model: DEFAULT_OPENAI_MODEL },
+        thinkingMode: '',
+      });
+    } finally {
+      setMainProviderConfig(original);
+      updateAgentProvider(undefined);
     }
   });
 });
@@ -483,6 +555,70 @@ describe('PATCH /api/agents/:id/model', () => {
       restartRequired: false,
     });
   });
+
+  it('resets the active session when a model actually changes', async () => {
+    setMainProviderConfig({ type: 'claude', model: 'claude-opus-4-8' });
+    updateAgentProvider({ type: 'claude', model: 'claude-opus-4-8' });
+    setSession('model-chat', 'claude:old-thread', 'main');
+
+    const res = await app.request('/api/agents/main/model' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      changed: true,
+      sessionReset: true,
+      restartRequired: false,
+    });
+    expect(getSession('model-chat', 'main')).toBeUndefined();
+  });
+
+  it('treats saving the current model as a no-op and preserves the session', async () => {
+    setMainProviderConfig({ type: 'claude', model: 'claude-sonnet-4-6' });
+    updateAgentProvider({ type: 'claude', model: 'claude-sonnet-4-6' });
+    setSession('model-chat', 'claude:current-thread', 'main');
+
+    const res = await app.request('/api/agents/main/model' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      changed: false,
+      sessionReset: false,
+      restartRequired: false,
+    });
+    expect(getSession('model-chat', 'main')).toBe('claude:current-thread');
+  });
+
+  it('hot-swaps the active OpenAI model instead of leaving the prior provider config in memory', async () => {
+    // Provider selection stores the active config in-process. This reproduces
+    // a dashboard provider swap followed by a same-provider model swap.
+    const original = getMainProviderConfig();
+    setMainProviderConfig({ type: 'openai', model: 'gpt-5.5' });
+    updateAgentProvider({ type: 'openai', model: 'gpt-5.5' });
+    try {
+      const res = await app.request('/api/agents/main/model' + Q, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-5.6-terra' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(getSelectedProviderConfig()).toMatchObject({
+        type: 'openai',
+        model: 'gpt-5.6-terra',
+      });
+    } finally {
+      setMainProviderConfig(original);
+      updateAgentProvider(undefined);
+    }
+  });
 });
 
 describe('provider selection endpoints', () => {
@@ -496,14 +632,144 @@ describe('provider selection endpoints', () => {
       allowCustom: true,
     });
 
-    const codexRes = await get('/api/providers/models?provider=codex');
+    const codexRes = await get('/api/providers/models?provider=acp-codex');
     expect(codexRes.status).toBe(200);
     expect(await jsonOf(codexRes)).toMatchObject({
-      provider: 'codex',
+      provider: 'acp-codex',
       defaultModel: expect.any(String),
       selectable: true,
       allowCustom: true,
     });
+  });
+
+  // A dashboard tab loaded before the provider rename still asks for `codex`.
+  // The endpoint normalizes it and echoes the canonical id back.
+  it('normalizes a legacy codex model query to acp-codex', async () => {
+    const res = await get('/api/providers/models?provider=codex');
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({ provider: 'acp-codex', selectable: true });
+  });
+
+  it('reports the native OpenAI (Codex) model provider', async () => {
+    const res = await get('/api/providers/models?provider=openai');
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      provider: 'openai',
+      defaultModel: expect.any(String),
+      selectable: true,
+      allowCustom: true,
+    });
+  });
+
+  it('reports static reasoning-effort runtime options for openai', async () => {
+    const res = await get('/api/providers/runtime-options?provider=openai&model=gpt-5.6-sol');
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      provider: 'openai',
+      source: 'static',
+      thinkingLabel: 'Reasoning effort',
+      modeOptions: [],
+      thinkingOptions: expect.arrayContaining([
+        expect.objectContaining({ id: '', label: 'Default (medium)' }),
+        expect.objectContaining({ id: 'none' }),
+        expect.objectContaining({ id: 'max' }),
+      ]),
+    });
+  });
+
+  it('updates main to the openai provider without restart', async () => {
+    // The openai preflight passes on either codex-login state or an API key;
+    // pin the key so the assertion doesn't depend on the host's ~/.codex.
+    const saved = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-contract-test';
+    try {
+      const res = await app.request('/api/agents/main/provider' + Q, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: { type: 'openai', model: 'gpt-5.5' } }),
+      });
+      expect(res.status).toBe(200);
+      expect(await jsonOf(res)).toMatchObject({
+        ok: true,
+        agent: 'main',
+        provider: { type: 'openai', model: 'gpt-5.5' },
+        restartRequired: false,
+      });
+    } finally {
+      if (saved === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = saved;
+    }
+  });
+
+  it('resets the active session on a provider change without requiring restart', async () => {
+    setMainProviderConfig({ type: 'claude', model: 'claude-sonnet-4-6' });
+    updateAgentProvider({ type: 'claude', model: 'claude-sonnet-4-6' });
+    setSession('provider-chat', 'claude:old-thread', 'main');
+
+    const saved = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-contract-test';
+    try {
+      const res = await app.request('/api/agents/main/provider' + Q, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: { type: 'openai', model: 'gpt-5.5' } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await jsonOf(res)).toMatchObject({
+        changed: true,
+        sessionReset: true,
+        restartRequired: false,
+      });
+      expect(getSession('provider-chat', 'main')).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = saved;
+    }
+  });
+
+  it('does not reset the session for an unchanged provider save', async () => {
+    const provider = { type: 'claude' as const, model: 'claude-sonnet-4-6' };
+    setMainProviderConfig(provider);
+    updateAgentProvider(provider);
+    setSession('provider-chat', 'claude:current-thread', 'main');
+
+    const res = await app.request('/api/agents/main/provider' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      changed: false,
+      sessionReset: false,
+      restartRequired: false,
+    });
+    expect(getSession('provider-chat', 'main')).toBe('claude:current-thread');
+  });
+
+  it('preserves active sessions when effort changes', async () => {
+    const provider = { type: 'openai' as const, model: 'gpt-5.6-sol', thinkingMode: 'xhigh' };
+    setMainProviderConfig(provider);
+    updateAgentProvider(provider);
+    setSession('runtime-chat', 'openai:current-thread', 'main');
+
+    const res = await app.request('/api/agents/main/runtime' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ thinkingMode: 'medium' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      changed: true,
+      newChatRequired: false,
+      sessionReset: false,
+      restartRequired: false,
+    });
+    expect(getMainProviderConfig()).toMatchObject({ thinkingMode: 'medium' });
+    expect(getSession('runtime-chat', 'main')).toBe('openai:current-thread');
   });
 
   it('updates main to a built-in ACP provider without restart', async () => {
@@ -525,25 +791,41 @@ describe('provider selection endpoints', () => {
     const res = await app.request('/api/agents/main/provider' + Q, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: { type: 'codex', model: 'gpt-5.3-codex' } }),
+      body: JSON.stringify({ provider: { type: 'acp-codex', model: 'gpt-5.3-codex' } }),
     });
     expect(res.status).toBe(200);
     expect(await jsonOf(res)).toMatchObject({
       ok: true,
       agent: 'main',
-      provider: { type: 'codex', model: 'gpt-5.3-codex' },
+      provider: { type: 'acp-codex', model: 'gpt-5.3-codex' },
       restartRequired: false,
     });
   });
 
+  // The API is the write boundary: whatever spelling arrives, what gets
+  // persisted and returned is the canonical acp-codex.
+  it('normalizes a legacy codex provider write to acp-codex', async () => {
+    const res = await app.request('/api/agents/main/provider' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: { type: 'codex', model: 'gpt-5.3-codex' } }),
+    });
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({
+      ok: true,
+      provider: { type: 'acp-codex', model: 'gpt-5.3-codex' },
+    });
+  });
+
   it('reports provider-specific runtime options', async () => {
-    const claudeRes = await get('/api/providers/runtime-options?provider=claude');
+    const claudeRes = await get('/api/providers/runtime-options?provider=claude&model=claude-opus-5');
     expect(claudeRes.status).toBe(200);
     expect(await jsonOf(claudeRes)).toMatchObject({
       provider: 'claude',
       source: 'static',
+      modeLabel: 'Effort',
       modeOptions: expect.arrayContaining([expect.objectContaining({ id: 'max' })]),
-      thinkingOptions: expect.arrayContaining([expect.objectContaining({ id: 'auto' })]),
+      thinkingOptions: [],
     });
   });
 
@@ -555,6 +837,133 @@ describe('provider selection endpoints', () => {
     });
     expect(res.status).toBe(400);
     expect(await jsonOf(res)).toMatchObject({ error: expect.stringMatching(/command/i) });
+  });
+
+  it('validates provider config during agent creation before writing config', async () => {
+    const res = await app.request('/api/agents/create' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'provider-create',
+        name: 'Provider Create',
+        description: 'test agent',
+        botToken: '123:fake',
+        provider: { type: 'acp' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({ error: expect.stringMatching(/command/i) });
+  });
+
+  // ── provider writes fail closed on a bad type ──────────────────────────────
+  //
+  // normalizeProviderConfig falls back to Claude for an unreadable type. That is
+  // right for a TRUSTED persisted read (never brick the install) and wrong for a
+  // write: a typo would answer 200 OK and quietly reconfigure the agent to
+  // Claude. Both write endpoints therefore validate the inbound type first.
+
+  const patchProvider = (provider: unknown) => app.request('/api/agents/main/provider' + Q, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider }),
+  });
+
+  const createWithProvider = (provider: unknown, id: string) => app.request('/api/agents/create' + Q, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, name: 'Provider Guard', description: 'test agent', botToken: '123:fake', provider }),
+  });
+
+  const BAD_TYPES: Array<[label: string, provider: unknown]> = [
+    ['an unknown type', { type: 'definitely-not-a-provider' }],
+    ['the adapter binary name, which is not a provider id', { type: 'codex-acp' }],
+    ['a missing type', { model: 'claude-opus-4-8' }],
+    ['a non-string type', { type: 42 }],
+    ['a null type', { type: null }],
+    ['an empty type', { type: '   ' }],
+  ];
+
+  for (const [i, [label, provider]] of BAD_TYPES.entries()) {
+    it(`PATCH rejects ${label} with 400 instead of silently choosing Claude`, async () => {
+      const res = await patchProvider(provider);
+      expect(res.status).toBe(400);
+      const body = await jsonOf(res);
+      expect(body).toMatchObject({ error: expect.any(String) });
+      expect(body).not.toHaveProperty('provider');
+    });
+
+    it(`POST /api/agents/create rejects ${label} with 400`, async () => {
+      const res = await createWithProvider(provider, `guard-bad-${i}`);
+      expect(res.status).toBe(400);
+      expect(await jsonOf(res)).toMatchObject({ error: expect.any(String) });
+    });
+  }
+
+  it('PATCH accepts the canonical acp-codex id', async () => {
+    const res = await patchProvider({ type: 'acp-codex' });
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({ ok: true, provider: { type: 'acp-codex' } });
+  });
+
+  it('PATCH accepts the legacy codex id and canonicalizes it', async () => {
+    const res = await patchProvider({ type: 'codex' });
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toMatchObject({ ok: true, provider: { type: 'acp-codex' } });
+  });
+
+  // Successful creation runs the real agent-create module here, so a request
+  // never gets past bot-token validation — this file cannot see what provider
+  // actually reaches createAgent(). That is proven in
+  // dashboard.agent-create-provider.test.ts, which mocks the module and asserts
+  // on the recorded opts (canonical / legacy / omitted / never-invoked).
+  it('does not reject a well-formed provider on the type gate', async () => {
+    for (const [i, type] of ['acp-codex', 'codex', 'openai'].entries()) {
+      const res = await createWithProvider({ type }, `guard-ok-${i}`);
+      const body = await jsonOf(res) as { error?: string };
+      expect(body.error ?? '').not.toMatch(/unknown provider|provider type required|must be an object/i);
+    }
+  });
+
+  it('a create with NO provider block stays valid — the agent inherits the default', async () => {
+    const res = await app.request('/api/agents/create' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'guard-no-provider', name: 'No Provider', description: 'test agent', botToken: '123:fake' }),
+    });
+    const body = await jsonOf(res) as { error?: string };
+    expect(body.error ?? '').not.toMatch(/unknown provider|provider type required|must be an object/i);
+  });
+
+  // Falsy-but-explicit provider values are the fail-closed regression: a
+  // truthiness check reads them as "omitted" and creates the agent on Claude.
+  for (const [i, [label, provider]] of ([
+    ['null', null], ['false', false], ['0', 0], ['an empty string', ''],
+    ['a bare string', 'openai'], ['an array', []],
+  ] as Array<[string, unknown]>).entries()) {
+    it(`create rejects an explicit falsy/mis-shaped provider: ${label}`, async () => {
+      const res = await createWithProvider(provider, `guard-shape-${i}`);
+      expect(res.status).toBe(400);
+      expect(await jsonOf(res)).toMatchObject({ error: expect.any(String) });
+    });
+  }
+
+  it('preflights provider availability during agent creation', async () => {
+    const res = await app.request('/api/agents/create' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'provider-missing',
+        name: 'Provider Missing',
+        description: 'test agent',
+        botToken: '123:fake',
+        provider: { type: 'acp', command: 'missing-tool' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toMatchObject({
+      error: expect.stringContaining('missing-tool'),
+      setupHint: expect.any(String),
+    });
   });
 });
 
@@ -706,6 +1115,129 @@ describe('display name resolution', () => {
   });
 });
 
+describe('PUT /api/agents/:id/files/agent-yaml — rename + uniqueness guard', () => {
+  const agentsRoot = path.join(CLAUDECLAW_CONFIG, 'agents');
+  const rakaYaml = path.join(agentsRoot, 'raka', 'agent.yaml');
+
+  beforeEach(() => {
+    for (const [id, name] of [['raka', 'Raka'], ['nova', 'Nova']] as const) {
+      const dir = path.join(agentsRoot, id);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'agent.yaml'),
+        yaml.dump({ name, description: `${name} agent`, telegram_bot_token_env: `${id.toUpperCase()}_BOT_TOKEN` }),
+        'utf-8',
+      );
+    }
+  });
+
+  afterEach(() => {
+    for (const id of ['raka', 'nova']) {
+      try { fs.rmSync(path.join(agentsRoot, id), { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
+  function putYaml(id: string, obj: Record<string, unknown>) {
+    return app.request(`/api/agents/${id}/files/agent-yaml` + Q, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: yaml.dump(obj) }),
+    });
+  }
+
+  it('appends the outgoing display name to aliases on rename', async () => {
+    const res = await putYaml('raka', {
+      name: 'Rex',
+      description: 'Raka agent',
+      telegram_bot_token_env: 'RAKA_BOT_TOKEN',
+    });
+    expect(res.status).toBe(200);
+
+    const onDisk = yaml.load(fs.readFileSync(rakaYaml, 'utf-8')) as Record<string, unknown>;
+    expect(onDisk.name).toBe('Rex');
+    expect(onDisk.aliases).toContain('Raka');
+  });
+
+  it('rejects a rename that collides with another agent, writing nothing', async () => {
+    const res = await putYaml('raka', {
+      name: 'Nova', // collides with agent "nova"
+      description: 'Raka agent',
+      telegram_bot_token_env: 'RAKA_BOT_TOKEN',
+    });
+    expect(res.status).toBe(409);
+
+    // File on disk is unchanged — still Raka, no alias appended.
+    const onDisk = yaml.load(fs.readFileSync(rakaYaml, 'utf-8')) as Record<string, unknown>;
+    expect(onDisk.name).toBe('Raka');
+    expect(onDisk.aliases).toBeUndefined();
+  });
+
+  it('rejects an alias that collides with another agent', async () => {
+    const res = await putYaml('raka', {
+      name: 'Raka',
+      description: 'Raka agent',
+      telegram_bot_token_env: 'RAKA_BOT_TOKEN',
+      aliases: ['nova'], // collides with agent "nova"
+    });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('main agent file editor is de-special-cased (normalized shape)', () => {
+  const mainDir = path.join(CLAUDECLAW_CONFIG, 'agents', 'main');
+  const mainYaml = path.join(mainDir, 'agent.yaml');
+  const mainClaudeMd = path.join(mainDir, 'CLAUDE.md');
+  const legacyPersona = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
+
+  beforeEach(() => {
+    fs.mkdirSync(mainDir, { recursive: true });
+    fs.writeFileSync(
+      mainYaml,
+      yaml.dump({ name: 'Holden', description: 'Hub agent', telegram_bot_token_env: 'TELEGRAM_BOT_TOKEN' }),
+      'utf-8',
+    );
+    try { fs.unlinkSync(legacyPersona); } catch { /* absent */ }
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(mainDir, { recursive: true, force: true }); } catch { /* ok */ }
+    try { fs.unlinkSync(legacyPersona); } catch { /* absent */ }
+  });
+
+  it('GET /api/agents/main/files exposes an editable Config tab reading agents/main/agent.yaml', async () => {
+    const res = await get('/api/agents/main/files');
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body.config_editable).toBe(true);
+    expect(body.agent_yaml).toContain('name: Holden');
+  });
+
+  it('PUT persona for main writes agents/main/CLAUDE.md, not CLAUDECLAW_CONFIG/CLAUDE.md', async () => {
+    const res = await app.request('/api/agents/main/files/claudemd' + Q, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: '# Holden persona\nBe helpful.' }),
+    });
+    expect(res.status).toBe(200);
+    expect(fs.existsSync(mainClaudeMd)).toBe(true);
+    expect(fs.readFileSync(mainClaudeMd, 'utf-8')).toContain('Holden persona');
+    // The dead legacy path is NOT written.
+    expect(fs.existsSync(legacyPersona)).toBe(false);
+  });
+
+  it('PUT agent.yaml for main succeeds (no "edit .env directly" rejection)', async () => {
+    const res = await app.request('/api/agents/main/files/agent-yaml' + Q, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        content: yaml.dump({ name: 'Holden', description: 'Updated hub', telegram_bot_token_env: 'TELEGRAM_BOT_TOKEN' }),
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(fs.readFileSync(mainYaml, 'utf-8')).toContain('Updated hub');
+  });
+});
+
 describe('GET /api/warroom/pin', () => {
   it('returns { ok, agent, mode }', async () => {
     const res = await get('/api/warroom/pin');
@@ -751,5 +1283,130 @@ describe('Security headers on /', () => {
   it('X-Content-Type-Options: nosniff is set', async () => {
     const res = await get('/api/health');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+});
+
+// ── loraCompat pure-helper tests ─────────────────────────────────────────────
+// Verifies the compatibility tri-state from modelmeta.ts directly. These are
+// pure functions — no mocking, no filesystem, no routes.
+describe('loraCompat pure helper', () => {
+  it('returns ok for same family', () => {
+    expect(loraCompat('pony', 'pony')).toBe('ok');
+    expect(loraCompat('sdxl', 'sdxl')).toBe('ok');
+    expect(loraCompat('sd15', 'sd15')).toBe('ok');
+  });
+
+  it('allows cross-SDXL-arch combos (pony ↔ sdxl ↔ illustrious)', () => {
+    expect(loraCompat('pony', 'sdxl')).toBe('ok');
+    expect(loraCompat('sdxl', 'pony')).toBe('ok');
+    expect(loraCompat('illustrious', 'pony')).toBe('ok');
+    expect(loraCompat('sdxl', 'illustrious')).toBe('ok');
+  });
+
+  it('returns mismatch for cross-arch (sd15 vs sdxl)', () => {
+    expect(loraCompat('sd15', 'sdxl')).toBe('mismatch');
+    expect(loraCompat('sdxl', 'sd15')).toBe('mismatch');
+    expect(loraCompat('flux', 'pony')).toBe('mismatch');
+    expect(loraCompat('sd15', 'flux')).toBe('mismatch');
+  });
+
+  it('returns unknown when either side is other/undefined', () => {
+    expect(loraCompat('other', 'pony')).toBe('unknown');
+    expect(loraCompat('sdxl', 'other')).toBe('unknown');
+    expect(loraCompat(undefined, undefined)).toBe('unknown');
+  });
+});
+
+// ── POST /api/comfy/generate — body shape + validation rejections ─────────────
+// genguard is mocked (above) to return { ok: true } / queue depth 0.
+// modelmeta readManifest is mocked to return {} (empty — all families = 'other').
+// Tests verify the 400-level guards that run BEFORE any ComfyUI call.
+describe('POST /api/comfy/generate — request body fields + validation rejections', () => {
+  async function postGenerate(body: Record<string, unknown>) {
+    return app.request('/api/comfy/generate' + Q, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'origin': 'https://dash.test.example' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('rejects missing prompt with 400', async () => {
+    const res = await postGenerate({ steps: 20, width: 512, height: 768 });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.any(String) });
+  });
+
+  it('rejects >3 LoRAs (MAX_LORAS cap) with 400', async () => {
+    const res = await postGenerate({
+      prompt: 'test prompt',
+      loras: [
+        { name: 'a.safetensors' },
+        { name: 'b.safetensors' },
+        { name: 'c.safetensors' },
+        { name: 'd.safetensors' },
+      ],
+    });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.stringMatching(/too many add-?ons|max.*3/i) });
+  });
+
+  it('rejects resolution exceeding MAX_DIM (>1536px per side) with 400', async () => {
+    const res = await postGenerate({ prompt: 'test prompt', width: 2048, height: 768 });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.stringMatching(/too high|resolution/i) });
+  });
+
+  it('rejects resolution exceeding MAX_PX (1024×1536 product cap) with 400', async () => {
+    // 1537×1024 = 1,573,888 > 1,572,864 (1024×1536)
+    const res = await postGenerate({ prompt: 'test prompt', width: 1537, height: 1024 });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.stringMatching(/too high|resolution/i) });
+  });
+
+  it('round-trips all documented body fields (valid params pass validation guards)', async () => {
+    // With an empty manifest all families are 'other' → unknown compat.
+    // allowUnknownCompat:true bypasses the LoRA family gate.
+    // After passing all 400 guards the route reaches ComfyUI cold-start (which
+    // tries to spawn + connect in test). We assert only that the 400 validation
+    // guards did NOT fire — the response may be 429 (gate overridden) or a
+    // timeout/500 from ComfyUI being absent. Vitest's 5s default is tight for
+    // the cold-start wait, so override the test timeout.
+    const res = await postGenerate({
+      prompt: 'a test prompt',
+      negative_prompt: 'bad anatomy',
+      checkpoint: 'test_checkpoint.safetensors',
+      loras: [{ name: 'style.safetensors', strength: 0.8 }],
+      detailer: false,
+      width: 512,
+      height: 768,
+      steps: 20,
+      cfg: 7.0,
+      fast: false,
+      allowUnknownCompat: true,
+    });
+    // Must not be a validation 400 (missing prompt / too many LoRAs / res too high / family mismatch).
+    expect(res.status).not.toBe(400);
+  }, 30000 /* ComfyUI cold-start attempt takes up to ~10s in test env */);
+
+  it('rejects a family mismatch (sd15 LoRA on an sdxl checkpoint) with 400', async () => {
+    // Provide an explicit manifest so both sides have known families.
+    const { readManifest } = await import('./modelmeta.js');
+    vi.mocked(readManifest).mockReturnValueOnce({
+      'sdxl_base.safetensors': { family: 'sdxl', verified: true },
+      'sd15_lora.safetensors':  { family: 'sd15',  verified: true },
+    });
+
+    const res = await postGenerate({
+      prompt: 'test prompt',
+      checkpoint: 'sdxl_base.safetensors',
+      loras: [{ name: 'sd15_lora.safetensors', strength: 0.8 }],
+    });
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({ ok: false, error: expect.stringMatching(/incompatible|mismatch/i) });
   });
 });

@@ -89,11 +89,11 @@ export function Audit() {
       )}
 
       {items.length > 0 && (
-        <div class="flex-1 overflow-y-auto">
-          <table class="w-full text-[12px]">
+        <div class="flex-1 overflow-y-auto overflow-x-auto">
+          <table class="w-full min-w-[460px] text-[12px]">
             <thead class="sticky top-0 bg-[var(--color-bg)] border-b border-[var(--color-border)]">
               <tr class="text-left">
-                <th class="px-6 py-2 font-medium text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] w-[10%]">When</th>
+                <th class="px-3 py-2 font-medium text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] w-[10%]">When</th>
                 <th class="px-3 py-2 font-medium text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] w-[10%]">Agent</th>
                 <th class="px-3 py-2 font-medium text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] w-[20%]">Action</th>
                 <th class="px-3 py-2 font-medium text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] w-[8%] text-center">Status</th>
@@ -103,7 +103,7 @@ export function Audit() {
             <tbody>
               {items.map((e) => (
                 <tr key={e.id} class="border-b border-[var(--color-border)] hover:bg-[var(--color-elevated)] transition-colors">
-                  <td class="px-6 py-2 text-[var(--color-text-faint)] tabular-nums whitespace-nowrap">
+                  <td class="px-3 py-2 text-[var(--color-text-faint)] tabular-nums whitespace-nowrap">
                     {formatRelativeTime(e.created_at)}
                   </td>
                   <td class="px-3 py-2 text-[var(--color-text-muted)]">{resolveAgentName(e.agent_id)}</td>

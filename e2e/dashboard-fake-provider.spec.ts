@@ -1,6 +1,21 @@
 import { test, expect, type Page } from '@playwright/test';
 
-type ProviderType = 'opencode' | 'gemini' | 'codex' | 'claude' | 'acp';
+type ProviderType = 'opencode' | 'gemini' | 'acp-codex' | 'claude' | 'acp';
+
+// Mirrors src/provider-registry.ts with the experimental tier enabled. The
+// Settings provider section renders only when /api/health advertises more than
+// one provider, and the sidebar quick-switch only when /api/provider/status
+// does — so both fakes must carry it. `codex` is deliberately absent: the
+// renamed ACP provider is offered as acp-codex and nothing else.
+const PROVIDER_OPTIONS = [
+  { type: 'claude', label: 'Claude', tier: 'stable' },
+  { type: 'openai', label: 'OpenAI', tier: 'stable' },
+  { type: 'acp-codex', label: 'Codex (ACP)', tier: 'experimental' },
+  { type: 'gemini', label: 'Gemini', tier: 'experimental' },
+  { type: 'opencode', label: 'OpenCode', tier: 'experimental' },
+  { type: 'openrouter', label: 'OpenRouter', tier: 'experimental' },
+  { type: 'acp', label: 'Custom ACP', tier: 'experimental' },
+];
 
 async function installFakeDashboard(page: Page) {
   let provider: { type: ProviderType; command?: string; args?: string[]; model?: string; runtimeMode?: string; thinkingMode?: string } = { type: 'opencode' };
@@ -49,10 +64,11 @@ async function installFakeDashboard(page: Page) {
       return json({
         contextPct: 12,
         turns: 4,
-        model: provider.model || (provider.type === 'claude' ? 'claude-opus-4-6' : provider.type === 'codex' ? 'gpt-5.5' : provider.type),
+        model: provider.model || (provider.type === 'claude' ? 'claude-opus-4-6' : provider.type === 'acp-codex' ? 'gpt-5.5' : provider.type),
         provider,
         providerType: provider.type,
         runtime: provider.type === 'acp' ? `${provider.command} ${(provider.args || []).join(' ')}`.trim() : provider.type,
+        providers: PROVIDER_OPTIONS,
         killSwitches: {
           WARROOM_TEXT_ENABLED: true,
           WARROOM_VOICE_ENABLED: true,
@@ -68,9 +84,10 @@ async function installFakeDashboard(page: Page) {
       return json({
         provider,
         providerType: provider.type,
-        label: provider.type === 'claude' ? 'Claude' : provider.type === 'opencode' ? 'OpenCode' : provider.type === 'gemini' ? 'Gemini' : provider.type === 'codex' ? 'Codex' : 'ACP',
+        label: provider.type === 'claude' ? 'Claude' : provider.type === 'opencode' ? 'OpenCode' : provider.type === 'gemini' ? 'Gemini' : provider.type === 'acp-codex' ? 'Codex (ACP)' : 'ACP',
         runtime: provider.type === 'acp' ? `${provider.command} ${(provider.args || []).join(' ')}`.trim() : provider.type,
-        model: provider.model || (provider.type === 'claude' ? 'claude-opus-4-6' : provider.type === 'codex' ? 'gpt-5.5' : provider.type === 'gemini' ? 'Gemini CLI default' : 'OpenCode default'),
+        model: provider.model || (provider.type === 'claude' ? 'claude-opus-4-6' : provider.type === 'acp-codex' ? 'gpt-5.5' : provider.type === 'gemini' ? 'Gemini CLI default' : 'OpenCode default'),
+        providers: PROVIDER_OPTIONS,
       });
     }
     if (path === '/api/security/status') return json({});
@@ -84,28 +101,32 @@ async function installFakeDashboard(page: Page) {
     if (path === '/api/chat/history') return json({ turns: [] });
     if (path === '/api/agents/main/tokens') return json({ todayCost: 0, todayTurns: 0, allTimeCost: 0 });
     if (path === '/api/providers/models') {
-      const selected = url.searchParams.get('provider') || 'opencode';
+      // The real endpoint canonicalizes a legacy `codex` query to acp-codex and
+      // echoes the canonical id back; mirror that so the fake stays faithful.
+      const requested = url.searchParams.get('provider') || 'opencode';
+      const selected = requested === 'codex' ? 'acp-codex' : requested;
       return json({
         provider: selected,
-        models: selected === 'codex'
+        models: selected === 'acp-codex'
           ? [{ id: 'gpt-5.5', label: 'GPT-5.5' }, { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' }]
           : selected === 'claude'
             ? [{ id: 'claude-opus-4-6', label: 'Opus 4.6' }]
             : [{ id: selected + '-default', label: selected + ' default' }],
-        defaultModel: selected === 'codex' ? 'gpt-5.5' : selected + '-default',
+        defaultModel: selected === 'acp-codex' ? 'gpt-5.5' : selected + '-default',
         selectable: true,
         allowCustom: true,
       });
     }
     if (path === '/api/providers/runtime-options') {
-      const selected = url.searchParams.get('provider') || 'opencode';
+      const requested = url.searchParams.get('provider') || 'opencode';
+      const selected = requested === 'codex' ? 'acp-codex' : requested;
       return json({
         provider: selected,
         source: selected === 'claude' ? 'static' : 'provider',
-        modeOptions: selected === 'codex'
+        modeOptions: selected === 'acp-codex'
           ? []
           : [{ id: 'fast', label: 'Fast' }, { id: 'normal', label: 'Normal' }, { id: 'deep', label: 'Deep' }],
-        thinkingOptions: selected === 'codex'
+        thinkingOptions: selected === 'acp-codex'
           ? [{ id: 'low', label: 'Low' }, { id: 'medium', label: 'Medium' }, { id: 'high', label: 'High' }, { id: 'xhigh', label: 'Extra high' }]
           : [{ id: 'auto', label: 'Auto' }, { id: 'off', label: 'Off' }, { id: 'on', label: 'On' }],
       });
@@ -136,21 +157,112 @@ test.beforeEach(async ({ page }) => {
   await installFakeDashboard(page);
 });
 
+test('sidebar runtime is a read-only provider and model summary', async ({ page }) => {
+  await page.goto('/agents?token=test&chatId=e2e');
+
+  const runtime = page.getByLabel('Active runtime');
+  await expect(runtime).toBeVisible();
+  await expect(runtime.getByText('Runtime', { exact: true })).toBeVisible();
+  await expect(runtime.getByText('OpenCode', { exact: true })).toBeVisible();
+  await expect(runtime.getByText('Model', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Switch main provider')).toHaveCount(0);
+});
+
+test('agent card uses explicit detail buttons and keeps model details in the action row', async ({ page }) => {
+  await page.goto('/agents?token=test&chatId=e2e');
+
+  const agentDetails = page.getByRole('button', { name: 'Open details for Main' });
+  const modelDetails = page.getByRole('button', { name: 'Open model details for Main' });
+  await expect(agentDetails).toBeVisible();
+  await expect(modelDetails).toBeVisible();
+  await expect(
+    page.getByLabel('Agent activity summary').getByText('running', { exact: true }),
+  ).toBeVisible();
+
+  // Neutral card content is no longer a hidden modal trigger.
+  await page.getByText('Today turns', { exact: true }).click();
+  await expect(page.getByText('Set on Telegram')).toHaveCount(0);
+
+  await agentDetails.click();
+  const agentModalContent = page.getByText('Set on Telegram');
+  await expect(agentModalContent).toBeVisible();
+  await agentModalContent
+    .locator('xpath=ancestor::div[contains(@class, "fixed inset-0")][1]')
+    .getByRole('button')
+    .first()
+    .click();
+  await expect(agentModalContent).toHaveCount(0);
+
+  await modelDetails.click();
+  const providerModalTitle = page.getByText('Main Provider');
+  await expect(providerModalTitle).toBeVisible();
+  await providerModalTitle
+    .locator('xpath=ancestor::div[contains(@class, "fixed inset-0")][1]')
+    .getByRole('button')
+    .first()
+    .click();
+  await expect(providerModalTitle).toHaveCount(0);
+
+  // Model details belongs to the same selector row as the model control.
+  const modelBox = await modelDetails.boundingBox();
+  const modelControlBox = await page.getByTitle(/Configure provider and model/).boundingBox();
+  expect(modelBox).not.toBeNull();
+  expect(modelControlBox).not.toBeNull();
+  expect(Math.abs(modelBox!.y - modelControlBox!.y)).toBeLessThanOrEqual(3);
+  expect(Math.abs(modelBox!.height - modelControlBox!.height)).toBeLessThanOrEqual(1);
+
+  const agentDetailsBox = await agentDetails.boundingBox();
+  const fileBox = await page.getByTitle('Edit persona + config').boundingBox();
+  expect(agentDetailsBox).not.toBeNull();
+  expect(fileBox).not.toBeNull();
+  expect(Math.abs(agentDetailsBox!.height - fileBox!.height)).toBeLessThanOrEqual(1);
+});
+
+/**
+ * Clicks "Save provider" and resolves only when THIS save's PATCH has come
+ * back.
+ *
+ * The success toast is not a usable completion signal on its own: it stays
+ * mounted from the previous iteration, so `getByText('Provider saved')`
+ * resolves instantly against a stale toast. The loop would then move on while
+ * the in-flight save was still settling, and the previous save's refresh
+ * callback could clobber the selection that had just been made — which is
+ * exactly how this test flaked (the Model select stayed on Gemini and never
+ * loaded gpt-5.5 after acp-codex was picked).
+ *
+ * Arming waitForResponse BEFORE the click is what makes this race-free.
+ */
+async function saveProvider(page: Page) {
+  const saveResponse = page.waitForResponse((response) =>
+    response.url().includes('/api/agents/main/provider')
+    && response.request().method() === 'PATCH');
+
+  await page.getByRole('button', { name: /save provider/i }).click();
+  const response = await saveResponse;
+  expect(response.ok()).toBe(true);
+}
+
 test('provider picker switches built-in and custom providers', async ({ page }) => {
   await page.goto('/settings?token=test&chatId=e2e');
 
   await expect(page.getByText('Agent provider')).toBeVisible();
   const picker = page.getByLabel('Provider', { exact: true });
 
-  for (const provider of ['claude', 'opencode', 'gemini', 'codex'] as ProviderType[]) {
+  for (const provider of ['claude', 'opencode', 'gemini', 'acp-codex'] as ProviderType[]) {
     await picker.selectOption(provider);
-    if (provider === 'codex') {
-      await page.getByLabel('Model').selectOption('gpt-5.5');
+    if (provider === 'acp-codex') {
+      // The model list is fetched per provider, so wait for THIS provider's
+      // options to land rather than selecting into the previous provider's
+      // list (Gemini's, in the iteration order above).
+      const modelPicker = page.getByLabel('Model');
+      await expect(modelPicker).toBeEnabled();
+      await expect(modelPicker.locator('option[value="gpt-5.5"]')).toHaveCount(1);
+      await modelPicker.selectOption('gpt-5.5');
+
       await expect(page.getByRole('button', { name: 'Extra high' })).toBeVisible();
       await page.getByRole('button', { name: 'Extra high' }).click();
     }
-    await page.getByRole('button', { name: /save provider/i }).click();
-    await expect(page.getByText('Provider saved').first()).toBeVisible();
+    await saveProvider(page);
   }
 
   await page.goto('/chat?token=test&chatId=e2e');
@@ -161,8 +273,26 @@ test('provider picker switches built-in and custom providers', async ({ page }) 
   await customPicker.selectOption('acp');
   await page.getByPlaceholder('my-acp-agent').fill('fake-acp');
   await page.getByPlaceholder('--acp').fill('--stdio --verbose');
-  await page.getByRole('button', { name: /save provider/i }).click();
+  await saveProvider(page);
+  // Fresh page load, so no stale toast — the message is a real signal here.
   await expect(page.getByText('Provider saved').first()).toBeVisible();
+});
+
+// Legacy boundary: `codex` was the pre-rename id for the Codex-over-ACP
+// provider. It stays readable in persisted config and on API reads, but it must
+// never be offered as its own choice in the UI — otherwise an operator can pick
+// a provider id that no longer exists in the registry.
+test('the provider picker offers acp-codex and never the legacy codex id', async ({ page }) => {
+  await page.goto('/settings?token=test&chatId=e2e');
+
+  const picker = page.getByLabel('Provider', { exact: true });
+  const values = await picker.locator('option').evaluateAll(
+    (options) => options.map((option) => (option as HTMLOptionElement).value),
+  );
+
+  expect(values).toContain('acp-codex');
+  expect(values).toContain('openai');
+  expect(values).not.toContain('codex');
 });
 
 test('dashboard status shows active provider and model in chat', async ({ page }) => {
@@ -172,9 +302,15 @@ test('dashboard status shows active provider and model in chat', async ({ page }
   await expect(page.getByRole('main').getByText('Model')).toBeVisible();
   await expect(page.getByRole('main').getByText('opencode')).toBeVisible();
 
-  await page.getByLabel('Switch main provider').selectOption('codex');
-  await expect(page.getByText('Provider set to Codex')).toBeVisible();
-  await expect(page.getByText('Runtime').locator('..').getByText('Codex')).toBeVisible();
+  await page.goto('/settings?token=test&chatId=e2e');
+  await page.getByLabel('Provider', { exact: true }).selectOption('acp-codex');
+  const modelPicker = page.getByLabel('Model');
+  await expect(modelPicker.locator('option[value="gpt-5.5"]')).toHaveCount(1);
+  await modelPicker.selectOption('gpt-5.5');
+  await saveProvider(page);
+
+  await page.goto('/chat?token=test&chatId=e2e');
+  await expect(page.getByLabel('Active runtime').getByText('Codex (ACP)', { exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByText('gpt-5.5')).toBeVisible();
 });
 

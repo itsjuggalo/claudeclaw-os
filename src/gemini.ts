@@ -1,71 +1,52 @@
-import { GoogleGenAI } from '@google/genai';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
-import { GOOGLE_API_KEY } from './config.js';
 import { logger } from './logger.js';
 import { requireEnabled } from './kill-switches.js';
 
-let client: GoogleGenAI | null = null;
-
-function getClient(): GoogleGenAI {
-  if (client) return client;
-  if (!GOOGLE_API_KEY) {
-    throw new Error('GOOGLE_API_KEY is not set. Add it to .env for memory extraction.');
-  }
-  client = new GoogleGenAI({ apiKey: GOOGLE_API_KEY });
-  return client;
-}
+const execFileAsync = promisify(execFile);
 
 /**
- * Generate text content via Gemini.
- * Defaults to gemini-2.0-flash. The 2.5 migration is tracked separately
- * — 2.0-flash retires June 2026 and new GCP projects already see 404s,
- * so the default bump belongs in its own PR with a changelog note.
+ * Generate text content via the Claude Code CLI on the claude.ai subscription.
+ *
+ * OAuth/CLI-only policy (2026-06-17, per Mike): memory ingestion, consolidation and
+ * classifiers used to run on the Gemini / DeepSeek api_key wallets — now they route
+ * through `claude -p` (sonnet) with ANTHROPIC_API_KEY stripped, so this can only bill the
+ * subscription, never pay-per-token. Returns the model text ('' on any failure so callers
+ * degrade gracefully). The function/file name is kept for import compatibility.
  */
-export async function generateContent(
-  prompt: string,
-  model = 'gemini-2.0-flash',
-): Promise<string> {
-  // Kill-switch: refuse Gemini calls when LLM_SPAWN_ENABLED is off.
-  // Memory ingestion, classifier paths, and any other generateContent
-  // caller all flow through here.
+export async function generateContent(prompt: string, _modelOverride?: string): Promise<string> {
+  // Kill-switch: refuse LLM calls when LLM_SPAWN_ENABLED is off.
   requireEnabled('LLM_SPAWN_ENABLED');
 
-  // No key configured — silently return empty so callers degrade gracefully
-  // instead of crashing. Memory, consolidation, etc. simply skip.
-  if (!GOOGLE_API_KEY) return '';
-
-  const ai = getClient();
+  const env = { ...process.env };
+  delete env.ANTHROPIC_API_KEY; // force the OAuth/subscription path, never an api key
+  const bin = process.env.CLAUDE_BIN || `${process.env.HOME}/.local/bin/claude`;
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        temperature: 0.1,
-        responseMimeType: 'application/json',
-      },
-    });
-    if (!response.text) {
-      logger.warn({ model }, 'Gemini returned empty response');
-      return '';
-    }
-    return response.text;
+    const { stdout } = await execFileAsync(
+      bin,
+      ['-p', prompt, '--model', 'sonnet', '--effort', 'high', '--output-format', 'json'],
+      { env, maxBuffer: 16 * 1024 * 1024, timeout: 240_000 },
+    );
+    const result = (JSON.parse(stdout) as { result?: string })?.result ?? '';
+    return result.toString();
   } catch (err) {
-    logger.error({ err, model }, 'Gemini generateContent failed');
-    throw err;
+    logger.error({ err }, 'claude CLI generateContent failed');
+    return '';
   }
 }
 
 /**
- * Parse a JSON response from Gemini, with fallback on malformed output.
+ * Parse a JSON response from the model, with fallback on malformed output.
  * Returns null if parsing fails.
  */
 export function parseJsonResponse<T>(text: string): T | null {
   // Try four extraction strategies in order, most permissive last:
-  //   1. Bare JSON (Gemini's responseMimeType=application/json case)
-  //   2. JSON inside ```json ... ``` fences (Haiku tends to wrap)
+  //   1. Bare JSON
+  //   2. JSON inside ```json ... ``` fences
   //   3. JSON inside generic ``` ... ``` fences
-  //   4. First {...} block in the text (Haiku also tends to add prose
-  //      AFTER the fence, which broke the previous regex anchor).
+  //   4. First {...} block in the text (some models add prose AFTER the
+  //      fence, which broke the previous regex anchor).
   const candidates: string[] = [];
   const trimmed = text.trim();
   candidates.push(trimmed);

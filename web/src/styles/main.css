@@ -365,3 +365,79 @@ input, textarea, select {
   transform-origin: top left;
   will-change: transform, opacity;
 }
+/* ── Unified refresh spinner: "nested squares" (shared across all Mission Control sites) ──
+   Inline, sized by font-size (1em box), colored by currentColor / per-square hsl.
+   Used as the busy-state icon on every refresh button. Keep IDENTICAL across sites. */
+.nsq-spinner { position: relative; display: inline-block; width: 1em; height: 1em; vertical-align: -0.15em; }
+.nsq-spinner i {
+  position: absolute; inset: 0; margin: auto; border: 1px solid; border-radius: 1px;
+  transform-origin: center; box-shadow: 0 0 2px currentColor;
+  animation: nsq-magic calc(1.5s / var(--nsq-speed, 1)) ease-in-out infinite alternate;
+}
+.nsq-spinner i:nth-child(1) { width: 20%;  height: 20%;  border-color: hsl(265 82% 63%); animation-delay: 0s;   }
+.nsq-spinner i:nth-child(2) { width: 40%;  height: 40%;  border-color: hsl(257 82% 63%); animation-delay: .1s;  }
+.nsq-spinner i:nth-child(3) { width: 60%;  height: 60%;  border-color: hsl(249 82% 63%); animation-delay: .2s;  }
+.nsq-spinner i:nth-child(4) { width: 80%;  height: 80%;  border-color: hsl(241 82% 63%); animation-delay: .3s;  }
+.nsq-spinner i:nth-child(5) { width: 100%; height: 100%; border-color: hsl(233 82% 63%); animation-delay: .4s;  }
+@keyframes nsq-magic {
+  0%   { transform: scale(.2) rotate(0deg);   }
+  50%  { transform: scale(1)  rotate(90deg);  }
+  100% { transform: scale(1)  rotate(180deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nsq-spinner i { animation: nsq-fade 1s ease-in-out infinite alternate; }
+  @keyframes nsq-fade { from { opacity: .3; } to { opacity: 1; } }
+}
+
+/* Massage console tab strip — a single horizontally-scrolling row on narrow
+   screens (it used to wrap onto three lines and eat a third of a phone). */
+.mc-tabstrip { scrollbar-width: none; -ms-overflow-style: none; }
+.mc-tabstrip::-webkit-scrollbar { display: none; }
+.mc-tabstrip > * { flex: 0 0 auto; }
+
+/* Rendered intake forms come from the massage server as raw HTML — clamp them
+   so a wide table or a long unbroken address can't push the console off a phone
+   (the wrapper scrolls horizontally instead). */
+/* Intake review pane (2026-08-11, Mike: "more professional, not so small").
+   The massage server's reviewHtml paints white inline-styled cards, but this
+   app's dark theme cascades light-gray --color-text into them — light-on-white,
+   the whole form read as faded. Render the pane as a printed white document
+   with its own dark ink and a document-grade type scale instead. */
+.intake-review {
+  max-width: 100%;
+  background: #fff;
+  color: #2b2b2b;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 24px clamp(18px, 3vw, 36px);
+  font-size: 15.5px;
+  line-height: 1.65;
+}
+.intake-review * { max-width: 100%; }
+.intake-review p { margin: 7px 0; }
+.intake-review strong { color: #1d2023; }
+.intake-review h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #9b440d;
+  margin: 4px 0 10px;
+  padding-bottom: 5px;
+  border-bottom: 2px solid #f0e6d6;
+}
+/* the generator's own white cards keep their borders but inherit the ink */
+.intake-review div[style*="background:#fff"] { color: inherit; }
+.intake-review table { display: block; overflow-x: auto; }
+.intake-review td, .intake-review th, .intake-review p, .intake-review div {
+  overflow-wrap: anywhere; word-break: break-word;
+}
+
+/* Erik Explore: the body map pins beside the detail panel on a wide screen, but
+   on a phone the flex row WRAPS and the two stack — a sticky map then stays
+   nailed to the top while the muscle plates scroll underneath it, showing the
+   skeleton through the content. Only pin it once there's a second column to
+   pin beside. Also let it shrink: at 440px fixed it pushed a horizontal
+   scrollbar onto a 390px phone and clipped the BACK figure. */
+.erik-bodymap-col { max-width: 100%; min-width: 0; }
+@media (min-width: 900px) {
+  .erik-bodymap-col { position: sticky; top: 0; }
+}

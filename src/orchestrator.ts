@@ -3,12 +3,16 @@ import fs from 'fs';
 import path from 'path';
 
 import { runAgent, UsageInfo } from './agent.js';
-import { loadAgentConfig, listAgentIds, resolveAgentClaudeMd } from './agent-config.js';
+import { loadAgentConfig, listAgentIds, resolveAgentClaudeMd, resolveAgentId } from './agent-config.js';
 import { PROJECT_ROOT } from './config.js';
-import { logToHiveMind, createInterAgentTask, completeInterAgentTask } from './db.js';
+import { logToHiveMind, createInterAgentTask, completeInterAgentTask, insertAuditLog } from './db.js';
 import { logger } from './logger.js';
 import { buildMemoryContext } from './memory.js';
 import { getSelectedProviderConfig } from './active-provider.js';
+import { isEnabled } from './kill-switches.js';
+import { classifyMessageComplexity } from './message-classifier.js';
+import { extractViaClaude } from './memory-ingest.js';
+import { parseJsonResponse } from './gemini.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -120,6 +124,95 @@ export function parseDelegation(
   return null;
 }
 
+// ── Auto-Assign Classifier (Pack 05) ─────────────────────────────────
+
+/**
+ * Use a fast LLM to pick the best agent for an incoming message and
+ * return delegation instructions, or null to keep the message on the
+ * main agent.
+ *
+ * Honours these gates (cheapest first):
+ *   1. `MISSION_AUTO_ASSIGN_ENABLED` kill switch (default ON)
+ *   2. Empty agent registry → nothing to route to
+ *   3. `classifyMessageComplexity` → skip acks/short chitchat
+ *   4. `LLM_SPAWN_ENABLED` kill switch (global LLM gate)
+ *
+ * On any error, returns null so the message falls through to main.
+ * Never throws.
+ */
+export async function classifyAndAssignAgent(
+  message: string,
+  fromAgent: string,
+  chatId: string,
+): Promise<{ agentId: string; prompt: string } | null> {
+  if (!isEnabled('MISSION_AUTO_ASSIGN_ENABLED')) return null;
+  if (agentRegistry.length === 0) return null;
+  if (classifyMessageComplexity(message) === 'simple') return null;
+  if (!isEnabled('LLM_SPAWN_ENABLED')) return null;
+
+  const choices = [
+    { id: 'main', description: 'General-purpose ClaudeClaw bot — triage, chit-chat, planning, and anything not clearly a specialist task.' },
+    ...agentRegistry.map((a) => ({ id: a.id, description: a.description || a.name })),
+  ];
+
+  const prompt = [
+    'You are a router. Pick the SINGLE best agent to handle the user message below.',
+    '',
+    'Agents:',
+    ...choices.map((c) => `- ${c.id}: ${c.description}`),
+    '',
+    'User message:',
+    message,
+    '',
+    'Reply with ONLY a JSON object on one line: {"agentId":"<id>","reason":"<one short sentence>"}.',
+    'If the message is general chit-chat, planning, or unclear, pick "main".',
+  ].join('\n');
+
+  let raw = '';
+  try {
+    raw = (await extractViaClaude(prompt, 10_000)) ?? '';
+  } catch (err) {
+    logger.warn({ err }, 'auto-assign: classifier LLM failed; falling through to main');
+    return null;
+  }
+  if (!raw) return null;
+
+  const parsed = parseJsonResponse<{ agentId?: unknown; reason?: unknown }>(raw);
+  if (!parsed || typeof parsed.agentId !== 'string') {
+    logger.warn({ raw: raw.slice(0, 200) }, 'auto-assign: unparseable classifier output');
+    return null;
+  }
+
+  const pickedId = parsed.agentId.trim();
+  if (pickedId === 'main' || pickedId === fromAgent) return null;
+  if (!agentRegistry.some((a) => a.id === pickedId)) {
+    logger.warn({ pickedId }, 'auto-assign: classifier picked unknown agent; ignoring');
+    return null;
+  }
+
+  const reason = typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : '';
+  logToHiveMind(
+    fromAgent,
+    chatId,
+    'auto_assign',
+    `Routed to ${pickedId}: ${reason}`,
+  );
+  try {
+    insertAuditLog(
+      fromAgent,
+      chatId,
+      'auto_assign',
+      JSON.stringify({ pickedId, reason, messagePreview: message.slice(0, 200) }),
+      false,
+    );
+  } catch (err) {
+    // Audit failure is non-fatal — routing decision already made.
+    logger.warn({ err }, 'auto-assign: audit log insert failed');
+  }
+
+  return { agentId: pickedId, prompt: message };
+}
+
 /**
  * Delegate a task to another agent. Runs the agent's Claude Code session
  * in-process (same Node.js process) with the target agent's cwd and
@@ -142,12 +235,18 @@ export async function delegateToAgent(
   onProgress?: (msg: string) => void,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<DelegationResult> {
-  let agent = agentRegistry.find((a) => a.id === agentId);
+  // Resolve a display-name/alias to the canonical id up front so the registry
+  // lookup, DB row, and hive-mind log all key off the id (not a name that would
+  // dead-letter). Fall back to the raw input so the existing not-found error
+  // still fires for a genuinely unknown agent.
+  const canonicalId = resolveAgentId(agentId) ?? agentId;
+
+  let agent = agentRegistry.find((a) => a.id === canonicalId);
   if (!agent) {
     // Cache miss: an agent created via the dashboard wizard after this
     // process started won't be in the cache yet. Refresh once and retry.
     rebuildRegistry();
-    agent = agentRegistry.find((a) => a.id === agentId);
+    agent = agentRegistry.find((a) => a.id === canonicalId);
   }
   if (!agent) {
     const available = agentRegistry.map((a) => a.id).join(', ') || '(none)';
@@ -160,20 +259,20 @@ export async function delegateToAgent(
   const start = Date.now();
 
   // Record the task
-  createInterAgentTask(taskId, fromAgent, agentId, chatId, prompt);
+  createInterAgentTask(taskId, fromAgent, canonicalId, chatId, prompt);
   logToHiveMind(
     fromAgent,
     chatId,
     'delegate',
-    `Delegated to ${agentId}: ${prompt.slice(0, 100)}`,
+    `Delegated to ${canonicalId}: ${prompt.slice(0, 100)}`,
   );
 
   onProgress?.(`Delegating to ${agent.name}...`);
 
   try {
     // Load agent config to get its system prompt and MCP allowlist
-    const agentConfig = loadAgentConfig(agentId);
-    const claudeMdPath = resolveAgentClaudeMd(agentId);
+    const agentConfig = loadAgentConfig(canonicalId);
+    const claudeMdPath = resolveAgentClaudeMd(canonicalId);
     let systemPrompt = '';
     if (claudeMdPath) {
       try {
@@ -184,7 +283,7 @@ export async function delegateToAgent(
     }
 
     // Build memory context for the delegated agent
-    const { contextText: memCtx } = await buildMemoryContext(chatId, prompt, agentId);
+    const { contextText: memCtx } = await buildMemoryContext(chatId, prompt, canonicalId);
 
     // Build the delegated prompt with agent role context + memory
     const contextParts: string[] = [];
@@ -218,7 +317,13 @@ export async function delegateToAgent(
         abortCtrl,
         undefined, // no streaming for delegation
         agentConfig.mcpServers,
-        getSelectedProviderConfig(),
+        // Honour the target agent's `provider:` field from agent.yaml —
+        // same reasoning as `agentConfig.model` above. delegateToAgent runs
+        // in-process inside the orchestrator (main), so getSelectedProviderConfig()
+        // would resolve to the CALLER's/main's provider, silently running the
+        // target's model id on the wrong engine once a second provider ships.
+        // Pull the provider from the target's own config instead.
+        agentConfig.provider,
       );
 
       clearTimeout(timer);
@@ -226,7 +331,7 @@ export async function delegateToAgent(
       const durationMs = Date.now() - start;
       completeInterAgentTask(taskId, 'completed', result.text);
       logToHiveMind(
-        agentId,
+        canonicalId,
         chatId,
         'delegate_result',
         `Completed delegation from ${fromAgent}: ${(result.text ?? '').slice(0, 120)}`,
@@ -237,7 +342,7 @@ export async function delegateToAgent(
       );
 
       return {
-        agentId,
+        agentId: canonicalId,
         text: result.text,
         usage: result.usage,
         taskId,
@@ -252,7 +357,7 @@ export async function delegateToAgent(
     const errMsg = err instanceof Error ? err.message : String(err);
     completeInterAgentTask(taskId, 'failed', errMsg);
     logToHiveMind(
-      agentId,
+      canonicalId,
       chatId,
       'delegate_error',
       `Delegation from ${fromAgent} failed: ${errMsg.slice(0, 120)}`,

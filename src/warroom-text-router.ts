@@ -76,6 +76,8 @@ async function runClassifierTurn(prompt: string, abort: AbortController): Promis
     provider,
     cwd: PROJECT_ROOT,
     model: defaultModelForProvider(provider, ROUTER_MODEL),
+    // Deny-all IS the explicit tool-less request (see codex-capability-policy.ts):
+    // a routing/classification turn gets no shell, web search, MCP, or dispatch.
     allowedTools: [],
     disallowedTools: ['*'],
     settingSources: [],

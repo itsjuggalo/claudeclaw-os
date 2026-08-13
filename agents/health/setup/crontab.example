@@ -1,0 +1,7 @@
+# Linux/cron alternative to the launchd plist.
+# WHOOP sync at 07:00 / 10:00 / 13:00 local (idempotent, so repeats are harmless).
+0 7,10,13 * * * cd /PATH/TO/agents/health && /usr/bin/python3 scripts/whoop-sync.py --quiet >> /tmp/whoop-sync.log 2>&1
+
+# The morning check-in triggers the AGENT (an LLM turn), not a plain script, so
+# schedule it with your platform's scheduler to send the "/checkin" prompt to the
+# bot each morning. ClaudeClaw has a built-in scheduler for exactly this.

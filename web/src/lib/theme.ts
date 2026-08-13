@@ -76,6 +76,10 @@ effect(() => {
   const next = theme.value;
   document.documentElement.setAttribute('data-theme', next);
   try { localStorage.setItem(STORAGE_KEY, next); } catch {}
+  // Keep the browser/PWA chrome (Android status bar, iOS standalone title
+  // bar) matched to the active theme's background.
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim();
+  if (bg) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
 });
 
 effect(() => {

@@ -1,0 +1,61 @@
+# git-cliff configuration — generates CHANGELOG.md from Conventional Commit history.
+# Usage:
+#   npm run changelog:preview                    # preview unreleased changes
+#   npx git-cliff --unreleased --tag v1.8.0      # preview a versioned release section
+# Prefer --prepend CHANGELOG.md when cutting a release so older sections stay byte-identical.
+# Docs: https://git-cliff.org
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to ClaudeClaw will be documented here.
+Generated from Conventional Commit history with git-cliff.\n
+"""
+# Strip the sort-order markers used to force group ordering (Features first).
+postprocessors = [
+  { pattern = '<!-- [0-9]+ -->', replace = "" },
+]
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [unreleased]
+{% endif %}\
+{% if message %}\
+{{ message }}
+
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}\n
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+# Link "(#123)" PR references to the upstream repo.
+commit_preprocessors = [
+  { pattern = '\(#(\d+)\)', replace = "([#${1}](https://github.com/earlyaidopters/claudeclaw-os/pull/${1}))" },
+]
+commit_parsers = [
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
+  { message = "^security|^sec", group = "<!-- 2 -->Security" },
+  { message = "^perf", group = "<!-- 3 -->Performance" },
+  { message = "^refactor", group = "<!-- 4 -->Refactor" },
+  { message = "^docs", group = "<!-- 5 -->Documentation" },
+  { message = "^test", group = "<!-- 6 -->Testing" },
+  { message = "^(chore|build|ci|style)", skip = true },
+  { message = "^Merge", skip = true },
+  { body = ".*", group = "<!-- 7 -->Other" },
+]
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9]*"
+sort_commits = "newest"

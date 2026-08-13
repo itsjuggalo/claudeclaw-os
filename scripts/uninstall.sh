@@ -63,7 +63,9 @@ fi
 CONFIG_DIR="${CLAUDECLAW_CONFIG:-$HOME/.claudeclaw}"
 # Also check .env for a custom path
 if [ -f "$PROJECT_ROOT/.env" ]; then
-  env_config=$(grep '^CLAUDECLAW_CONFIG=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2- | sed "s|^~|$HOME|")
+  # Strip one layer of surrounding quotes (mirrors readEnvFile in src/env.ts) BEFORE expanding ~,
+  # so a single-quoted Windows path resolves with backslashes intact.
+  env_config=$(grep '^CLAUDECLAW_CONFIG=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2- | sed -E "s/^'(.*)'\$/\1/; s/^\"(.*)\"\$/\1/" | sed "s|^~|$HOME|")
   [ -n "$env_config" ] && CONFIG_DIR="$env_config"
 fi
 
